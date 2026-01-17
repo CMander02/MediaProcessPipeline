@@ -1,0 +1,240 @@
+# Conversation Title: 我们来讨论一下使用 mineru 和其他相关的PDF转markdown Python库来处理一系列A...
+Original URL: https://gemini.google.com/app/91d7b9ae41015dc5
+Platform: Gemini
+Created At: 2025-12-04 01:50:10
+Total Messages: 2
+
+---
+
+User：[2025-12-04 01:50:10]
+我们来讨论一下使用 mineru 和其他相关的PDF转markdown Python库来处理一系列APP上下载的文章，并进行结构化存储的工作流。
+
+首先已知miner you可以较好地将一个图文并茂的PDF转为markdown加图片的格式。
+
+我对整个工作流的期望是，首先使用manner you将文件识别成图文分离的markdown，然后识别所有的图内容。找出其中的表格。和这些表格在文件中对应插入的位置。再调用其他大模型API将这些表格转回正常的可视化的HTML格式。现在的问题在于一些带有appendix注释的图片。这些图片的注释要如何被附近原文与图片关联的位置处？
+
+其次，假设我们上一步将文件处理好之后，接下来我们需要将文件进行人工标记tag自动tag处理以及递归式的分层RAG。目前分层rag有没有比较好的实现形式？
+
+再次，以上所有的内容需要用一些方式进行储存。首先我们希望整个存储过程不要过于复杂。我可能会通过。 SQ Lite以及SQ Lite vec 这个插件来完成基于SQ Lite的向量化存储。为此需要对整个过程进行字段的设计。首先是分层的read以及整个内容的。 Tag列表标题，abstract等等都需要做向量化的存储，或者至少在搜索时进行实时的向量化搜索。这些也要被纳入字段设计的考量中。基于以上内容为我设计一个上述流程的。整体的。处理框架。以简洁的明确的格式来描述整个框架的文件数，并且描述每个部分如何进行对应的功能。
+
+AI：[2025-12-04 01:51:12]
+这是一个非常有技术深度且务实的工程需求。利用 MinerU (Magic-PDF) 作为核心解析引擎，配合 SQLite + sqlite-vec 进行轻量化向量存储，是一个非常高效且易于维护的单机/小规模集群方案。
+
+针对你提出的 “图表恢复”、“附件注释关联”、“分层RAG”以及“SQLite结构化存储” 四大核心痛点，我为你设计了以下的 PDF深度解析与结构化存储框架 (PDF-Deep-Struct Framework)。
+
+1. 整体架构概览 (System Architecture)
+
+整个框架分为三个核心模组：解析清洗层 (Parser)、语义增强层 (Semantic)、存储检索层 (Storage & RAG)。
+
+代码段
+graph TD
+A[PDF Files] --> B(MinerU Parser);
+B --> C{Layout Analysis};
+C -->|Text| D[Markdown Struct];
+C -->|Images| E[Image Processor];
+C -->|Tables| F[Table Processor];
+
+E --> G[Caption Linking];
+F --> H[LLM: Image-to-HTML];
+
+D & G & H --> I[Content Merger];
+I --> J[Hierarchical Chunking];
+J --> K[Auto-Tagging & Embedding];
+
+K --> L[(SQLite + sqlite-vec)];
+
+2. 关键难点解决方案
+A. 表格还原与图片注释关联 (Advanced Parsing)
+
+这是你最关心的部分。MinerU 虽然强大，但输出通常是 Markdown + Image 文件夹。我们需要“后处理”脚本来介入。
+
+表格 (Tables) -> HTML
+
+策略：MinerU 通常会识别出表格区域并截图（或者我们可以基于其 Layout 信息截图）。
+
+转换：调用多模态大模型（如 GPT-4o, Claude 3.5 Sonnet, 或开源的 Qwen-VL）。
+
+Prompt: "请将这张图片中的表格转换为标准的 HTML <table> 代码。保持原有结构，不要添加 CSS 样式，只输出 HTML。"
+
+插入：在 Markdown 中找到 MinerU 留下的表格占位符（通常是 ![]()），将其替换为清洗后的 HTML 代码。
+
+图片与注释/Appendix 关联 (Caption Linking)
+
+痛点：图片下方的 "Figure 1: xxx" 或侧边的注释在转 Markdown 时容易错位或变成普通正文。
+
+解决方案：基于 Layout 坐标的空间启发式算法。
+
+MinerU 生成的 middle.json 或 layout 文件包含每个 Block 的 bbox (坐标) 和 type。
+
+算法逻辑：
+
+定位类型为 Image 的 Block。
+
+搜索该 Block 正下方 (y轴增加) 或 侧边 (x轴邻近) 距离最近的 Text Block。
+
+正则校验：检查该 Text Block 是否以 Fig, Figure, Table, Note 开头。
+
+合并：将该 Text Block 的内容提取出来，作为 Image 的 caption 属性，或者在 Markdown 中显式重写为 <figure><img ...><figcaption>...</figcaption></figure> 格式，确保存储时的语义连贯性。
+
+B. 分层 RAG 实现形式 (Hierarchical RAG)
+
+推荐采用 "Small-to-Big" (父子索引) 策略，兼顾检索精准度和上下文完整性。
+
+Level 1: Summary/Abstract (文档级)
+
+对整篇文章生成的摘要进行向量化。用于宏观搜索（例如：“找关于Agent进化的文章”）。
+
+Level 2: Parent Chunk (分段/章节级)
+
+按章节或固定 Token (如 1000 tokens) 切分。不直接用于向量检索，而是作为上下文存储。
+
+Level 3: Child Chunk (句子/段落级)
+
+将 Parent Chunk 拆分为小片段 (如 128-256 tokens)。对这些小片段进行向量化。
+
+检索逻辑：User Query -> 匹配 Child Chunk -> 返回对应的 Parent Chunk 给 LLM。
+
+优势：匹配精准（因为片段语义单一），但在回答时 LLM 能看到完整的上下文（因为返回了父块）。
+
+3. 数据库与字段设计 (SQLite + sqlite-vec Schema)
+
+为了保持简洁，我们使用单文件 SQLite。你需要加载 sqlite-vec 插件。 设计原则：元数据分离，向量独立，层级关联。
+
+Table 1: documents (文档表)
+
+存储文件的基本信息。
+
+Field	Type	Description
+id	INTEGER PK	自增 ID
+file_hash	TEXT	文件 MD5，防重
+title	TEXT	文章标题
+authors	TEXT	作者 (JSON array)
+summary	TEXT	全文摘要
+publish_date	TEXT	发布日期
+raw_path	TEXT	原始 PDF 路径
+processed_md_path	TEXT	处理后的 Markdown 路径
+tags	TEXT	JSON 字符串 (人工+自动 Tag)
+created_at	DATETIME	入库时间
+导出到 Google 表格
+Table 2: chunks (内容切片表 - 核心)
+
+存储分层内容。如果是 Child Chunk，则记录 Parent ID。
+
+Field	Type	Description
+id	INTEGER PK	自增 ID
+doc_id	INTEGER	FK -> documents.id
+parent_id	INTEGER	FK -> chunks.id (如果是顶级块则为 NULL)
+level	INTEGER	层级 (0=Summary, 1=Section, 2=Detail)
+content_type	TEXT	'text', 'table_html', 'image_caption'
+content	TEXT	文本内容 或 HTML 代码
+bbox	TEXT	在原 PDF 中的坐标 (可选，用于溯源)
+page_num	INTEGER	页码
+导出到 Google 表格
+Table 3: vec_items (向量虚拟表 - sqlite-vec)
+
+利用 sqlite-vec 的虚拟表特性，专门存储向量。
+
+SQL
+-- 示例 SQL 定义
+CREATE VIRTUAL TABLE vec_items USING vec0(
+chunk_id INTEGER PRIMARY KEY,
+embedding FLOAT[1536]  -- 假设使用 OpenAI embedding 维度
+);
+查询逻辑：先在 vec_items 中搜相似度，拿到 chunk_id，再去 chunks 表里查 parent_id 拿到完整上下文。
+
+4. 整体处理框架 (Python File Structure)
+
+建议的文件结构，简洁明确。
+
+Plaintext
+project_root/
+├── data/                  # 存储 PDF, SQLite db, images
+├── src/
+│   ├── config.py          # 路径配置、LLM API Keys
+│   ├── db.py              # SQLite 连接, sqlite-vec 初始化, CRUD 操作
+│   ├── parser/
+│   │   ├── mineru_wrapper.py   # 调用 MinerU CLI 或 SDK
+│   │   ├── layout_analyzer.py  # 处理 bbox, 关联图片与 Caption
+│   │   └── table_converter.py  # 调用 LLM 将图片转 HTML
+│   ├── processor/
+│   │   ├── text_splitter.py    # 分层切片 (Parent/Child split)
+│   │   ├── tagger.py           # 调用 LLM 自动生成 Tag
+│   │   └── embedder.py         # 调用 Embedding API
+│   └── main.py            # 串联整个 ETL 流程
+└── requirements.txt
+
+5. 功能模块详细描述
+Step 1: parser/mineru_wrapper.py
+
+功能：接收 PDF 路径，运行 MinerU。
+
+输出：解析后的临时目录（包含 middle.json, images/, content.md）。
+
+Step 2: parser/layout_analyzer.py & table_converter.py
+
+功能：
+
+读取 middle.json。
+
+图片处理：遍历所有 Image Block，计算其与周围 Text Block 的欧氏距离。如果距离 < 阈值且 Text 符合 Caption 正则，则将 Text 标记为 Caption，并将其从正文中移除（避免重复），将图片+Caption 组合成一个语义块。
+
+表格处理：识别 Table Block，裁剪出图片，发送给 table_converter.py (LLM API)，获取 HTML。
+
+重组：生成一份“清洗版 Markdown”，其中表格已是 HTML，图片已包含 Caption 语义。
+
+Step 3: processor/text_splitter.py (分层处理)
+
+功能：
+
+读取清洗版 Markdown。
+
+Level 1: 提取 Title, Abstract。
+
+Level 2 (Parent): 按 Markdown Header (##) 或固定长度 (1000 chars) 切分。
+
+Level 3 (Child): 使用 LangChain 或 RecursiveCharacterTextSplitter 将 Parent 切分为 200 chars 的片段，并保留 parent_id 引用。
+
+Step 4: processor/tagger.py
+
+功能：取 Level 1 的摘要或 Level 2 的首段，调用 LLM。
+
+Prompt: "基于这段内容，生成 3-5 个技术标签（Tag），并判断其所属的领域分类。输出 JSON。"
+
+Step 5: db.py (SQLite + Vector)
+
+功能：
+
+初始化 sqlite-vec。
+
+insert_document(): 存元数据。
+
+insert_chunks(): 存文本。
+
+upsert_vectors(): 将文本转 Embedding 后存入虚拟表。
+
+search():
+
+输入 Query -> Embedding。
+
+SQL: SELECT chunk_id FROM vec_items WHERE embedding MATCH ? ORDER BY distance LIMIT 10。
+
+Join chunks 表获取内容。
+
+如果 chunk 是 child，再查一次 chunks 获取 parent 内容返回。
+
+6. 总结与下一步
+
+这套框架的核心优势在于：
+
+解决了 PDF 解析痛点：通过 Layout 坐标计算解决了图片/Caption 分离问题，利用 LLM 解决了表格不可读问题。
+
+高性能存储：SQLite + sqlite-vec 极其轻量，无需部署 Docker 容器（如 Milvus），非常适合个人或实验室级别的知识库。
+
+分层 RAG：Small-to-Big 策略是目前提升 RAG 质量最有效的手段之一。
+
+Would you like me to:
+
+为你编写 db.py 的核心代码，展示如何在 Python 中加载 sqlite-vec 并创建关联表？
+
+为你写出 layout_analyzer.py 中利用坐标匹配图片和 Caption 的具体算法逻辑？
+
