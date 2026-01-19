@@ -34,7 +34,8 @@ class Settings(BaseSettings):
     # WhisperX settings
     hf_token: str = ""
     whisper_model: str = "large-v3-turbo"
-    whisper_model_path: str = ""  # 本地 Whisper 模型路径，留空则自动下载
+    whisper_model_path: str = ""  # 本地 Whisper 模型路径（用于 whisperx）
+    faster_whisper_model_path: str = ""  # 本地 faster-whisper 模型路径
     compute_type: str = "float16"
     device: str = "cuda"
 
