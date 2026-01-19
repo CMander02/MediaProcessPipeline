@@ -8,7 +8,7 @@ const defaultSettings: Settings = {
   openai_api_key: "",
   llm_provider: "anthropic",
   llm_model: "claude-sonnet-4-20250514",
-  whisper_model: "large-v3",
+  whisper_model: "large-v3-turbo",
   whisper_model_path: "",
   whisper_device: "cuda",
   whisper_compute_type: "float16",
