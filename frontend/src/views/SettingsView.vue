@@ -21,6 +21,7 @@ import {
   Microphone,
   FolderOpened,
   Setting,
+  Box,
 } from "@element-plus/icons-vue"
 import { useSettings } from "@/composables/useSettings"
 import { healthCheck } from "@/api"
@@ -243,6 +244,17 @@ const uvrModels = [
                   />
                 </el-select>
               </div>
+
+              <div class="form-group full-width">
+                <label class="form-label">Whisper Model Path</label>
+                <el-input
+                  :model-value="settings.whisper_model_path"
+                  @update:model-value="updateSetting('whisper_model_path', $event)"
+                  placeholder="D:/models/whisper-large-v3"
+                  class="form-input"
+                />
+                <p class="form-hint">Local path to Whisper model. Leave empty to auto-download.</p>
+              </div>
             </div>
 
             <el-divider />
@@ -268,7 +280,67 @@ const uvrModels = [
                 show-password
                 class="form-input"
               />
-              <p class="form-hint">Required for speaker diarization (pyannote models)</p>
+              <p class="form-hint">Required for speaker diarization (pyannote models), or use local paths below</p>
+            </div>
+
+            <el-divider />
+
+            <div class="section-header">
+              <h3 class="section-title">Diarization Model Paths</h3>
+              <p class="section-description">Local paths for pyannote models. Leave empty to use HuggingFace.</p>
+            </div>
+
+            <div class="form-grid single-column">
+              <div class="form-group">
+                <label class="form-label">Pyannote Speaker Diarization</label>
+                <el-input
+                  :model-value="settings.pyannote_model_path"
+                  @update:model-value="updateSetting('pyannote_model_path', $event)"
+                  placeholder="D:/models/pyannote/speaker-diarization-3.1"
+                  class="form-input"
+                />
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">Pyannote Segmentation</label>
+                <el-input
+                  :model-value="settings.pyannote_segmentation_path"
+                  @update:model-value="updateSetting('pyannote_segmentation_path', $event)"
+                  placeholder="D:/models/pyannote/segmentation-3.0"
+                  class="form-input"
+                />
+              </div>
+            </div>
+
+            <el-divider />
+
+            <div class="section-header">
+              <h3 class="section-title">Alignment Model Paths</h3>
+              <p class="section-description">wav2vec2 models for word-level alignment</p>
+            </div>
+
+            <div class="form-grid single-column">
+              <div class="form-group">
+                <label class="form-label">Chinese Alignment Model</label>
+                <el-input
+                  :model-value="settings.alignment_model_zh"
+                  @update:model-value="updateSetting('alignment_model_zh', $event)"
+                  placeholder="D:/models/wav2vec2-large-xlsr-53-chinese-zh-cn"
+                  class="form-input"
+                />
+                <p class="form-hint">jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn</p>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">English Alignment Model</label>
+                <el-input
+                  :model-value="settings.alignment_model_en"
+                  @update:model-value="updateSetting('alignment_model_en', $event)"
+                  placeholder="Leave empty to use torchaudio built-in"
+                  class="form-input"
+                />
+                <p class="form-hint">Leave empty to use torchaudio WAV2VEC2_ASR_BASE_960H</p>
+              </div>
             </div>
           </div>
         </el-tab-pane>
@@ -390,6 +462,92 @@ const uvrModels = [
                   <el-option value="cuda" label="CUDA (GPU)" />
                   <el-option value="cpu" label="CPU" />
                 </el-select>
+              </div>
+
+              <div class="form-group full-width">
+                <label class="form-label">UVR Model Directory</label>
+                <el-input
+                  :model-value="settings.uvr_model_dir"
+                  @update:model-value="updateSetting('uvr_model_dir', $event)"
+                  placeholder="C:/Users/.../AppData/Local/Programs/Ultimate Vocal Remover/models"
+                  class="form-input"
+                />
+                <p class="form-hint">Base directory for UVR models. Individual paths below take priority.</p>
+              </div>
+            </div>
+
+            <el-divider />
+
+            <div class="section-header">
+              <h3 class="section-title">UVR Model Paths</h3>
+              <p class="section-description">Specific paths for each UVR model (optional)</p>
+            </div>
+
+            <div class="form-grid single-column">
+              <div class="form-group">
+                <label class="form-label">UVR-MDX-NET-Inst_HQ_3</label>
+                <el-input
+                  :model-value="settings.uvr_mdx_inst_hq3_path"
+                  @update:model-value="updateSetting('uvr_mdx_inst_hq3_path', $event)"
+                  placeholder="MDX_Net_Models/UVR-MDX-NET-Inst_HQ_3.onnx"
+                  class="form-input"
+                />
+                <p class="form-hint">MDX-Net instrumental separation model</p>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">1_HP-UVR</label>
+                <el-input
+                  :model-value="settings.uvr_hp_uvr_path"
+                  @update:model-value="updateSetting('uvr_hp_uvr_path', $event)"
+                  placeholder="VR_Models/1_HP-UVR.pth"
+                  class="form-input"
+                />
+                <p class="form-hint">VR architecture vocal separation</p>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">UVR-DeNoise-Lite</label>
+                <el-input
+                  :model-value="settings.uvr_denoise_lite_path"
+                  @update:model-value="updateSetting('uvr_denoise_lite_path', $event)"
+                  placeholder="VR_Models/UVR-DeNoise-Lite.pth"
+                  class="form-input"
+                />
+                <p class="form-hint">Lightweight denoising model</p>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">Kim_Vocal_2</label>
+                <el-input
+                  :model-value="settings.uvr_kim_vocal_2_path"
+                  @update:model-value="updateSetting('uvr_kim_vocal_2_path', $event)"
+                  placeholder="Kim_Vocal_2.onnx"
+                  class="form-input"
+                />
+                <p class="form-hint">Best vocal extraction model</p>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">UVR-DeEcho-DeReverb</label>
+                <el-input
+                  :model-value="settings.uvr_deecho_dereverb_path"
+                  @update:model-value="updateSetting('uvr_deecho_dereverb_path', $event)"
+                  placeholder="VR_Models/UVR-DeEcho-DeReverb.pth"
+                  class="form-input"
+                />
+                <p class="form-hint">Echo and reverb removal</p>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">htdemucs</label>
+                <el-input
+                  :model-value="settings.uvr_htdemucs_path"
+                  @update:model-value="updateSetting('uvr_htdemucs_path', $event)"
+                  placeholder="Demucs_Models/v3_v4_repo/..."
+                  class="form-input"
+                />
+                <p class="form-hint">Demucs v4 4-stem separation</p>
               </div>
             </div>
           </div>

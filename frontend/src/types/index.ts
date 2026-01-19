@@ -56,10 +56,17 @@ export interface Settings {
   llm_model: string
   // WhisperX
   whisper_model: string
+  whisper_model_path: string
   whisper_device: "cpu" | "cuda"
   whisper_compute_type: string
   enable_diarization: boolean
   hf_token: string
+  // Pyannote/Diarization model paths
+  pyannote_model_path: string
+  pyannote_segmentation_path: string
+  // Alignment model paths
+  alignment_model_zh: string
+  alignment_model_en: string
   // Paths
   inbox_path: string
   processing_path: string
@@ -69,6 +76,13 @@ export interface Settings {
   // UVR
   uvr_model: string
   uvr_device: "cpu" | "cuda"
+  uvr_model_dir: string
+  uvr_mdx_inst_hq3_path: string
+  uvr_hp_uvr_path: string
+  uvr_denoise_lite_path: string
+  uvr_kim_vocal_2_path: string
+  uvr_deecho_dereverb_path: string
+  uvr_htdemucs_path: string
 }
 
 // Pipeline options
