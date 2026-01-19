@@ -13,7 +13,7 @@ import {
   ElIcon,
 } from "element-plus"
 import {
-  CaretRight,
+  VideoPlay,
   Link,
   FolderOpened,
   Loading,
@@ -22,7 +22,6 @@ import {
   Clock,
   DataLine,
 } from "@element-plus/icons-vue"
-import StatCard from "@/components/StatCard.vue"
 import { useTasks } from "@/composables/useTasks"
 import type { TaskType, PipelineOptions, Task } from "@/types"
 
@@ -100,142 +99,364 @@ const languageOptions = [
     <!-- Header -->
     <div class="page-header">
       <h1 class="page-title">Media Processing Pipeline</h1>
-      <p class="page-description">Transform audio/video into structured knowledge</p>
+      <p class="page-description">Transform audio/video into structured knowledge with AI</p>
     </div>
 
-    <!-- Main Grid -->
-    <div class="grid grid-cols-1 xl:grid-cols-3 gap-8">
-      <!-- Left Column -->
-      <div class="xl:col-span-2 space-y-8">
-        <!-- New Task Card -->
-        <div class="custom-card">
-          <div class="custom-card-header">
-            <h2 class="custom-card-title">New Task</h2>
-            <p class="custom-card-description">Enter a URL or local file path to process</p>
-          </div>
-
-          <form @submit.prevent="handleSubmit" class="space-y-6">
-            <!-- Source Input -->
-            <div class="space-y-3">
-              <label class="text-sm font-medium">Media Source</label>
-              <div class="flex gap-4">
-                <div class="relative flex-1">
-                  <el-input
-                    v-model="source"
-                    placeholder="https://youtube.com/watch?v=... or C:\path\to\file.mp4"
-                    size="large"
-                  >
-                    <template #suffix>
-                      <el-icon>
-                        <Link v-if="isUrl" />
-                        <FolderOpened v-else />
-                      </el-icon>
-                    </template>
-                  </el-input>
-                </div>
-                <el-select v-model="taskType" size="large" style="width: 180px">
-                  <el-option
-                    v-for="opt in taskTypeOptions"
-                    :key="opt.value"
-                    :value="opt.value"
-                    :label="opt.label"
-                  />
-                </el-select>
-              </div>
-            </div>
-
-            <!-- Advanced Options -->
-            <el-collapse>
-              <el-collapse-item title="Advanced Options" name="options">
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pt-2">
-                  <div class="option-card">
-                    <span class="option-card-label">Skip vocal separation</span>
-                    <el-switch v-model="options.skip_separation" />
-                  </div>
-                  <div class="option-card">
-                    <span class="option-card-label">Skip speaker diarization</span>
-                    <el-switch v-model="options.skip_diarization" />
-                  </div>
-                  <div class="option-card">
-                    <div class="space-y-2">
-                      <span class="option-card-label">Language</span>
-                      <el-select v-model="options.language" style="width: 100%">
-                        <el-option
-                          v-for="opt in languageOptions"
-                          :key="opt.value"
-                          :value="opt.value"
-                          :label="opt.label"
-                        />
-                      </el-select>
-                    </div>
-                  </div>
-                </div>
-              </el-collapse-item>
-            </el-collapse>
-
-            <!-- Submit -->
-            <el-button
-              type="primary"
-              size="large"
-              :disabled="!source.trim() || submitting"
-              :loading="submitting"
-              native-type="submit"
-              style="width: 100%"
-            >
-              <el-icon v-if="!submitting" class="mr-1"><CaretRight /></el-icon>
-              {{ submitting ? "Creating..." : "Start Processing" }}
-            </el-button>
-          </form>
+    <!-- Stats Grid - Top Horizontal -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-card-icon total">
+          <el-icon><DataLine /></el-icon>
         </div>
-
-        <!-- Active Tasks -->
-        <div v-if="activeTasks.length > 0" class="custom-card">
-          <div class="custom-card-header">
-            <h2 class="custom-card-title">Active Tasks</h2>
-          </div>
-          <div class="space-y-4">
-            <div
-              v-for="task in activeTasks"
-              :key="task.id"
-              class="border border-[var(--border-color)] rounded-lg p-4 space-y-3"
-            >
-              <div class="flex items-center justify-between">
-                <div class="flex items-center gap-3 min-w-0">
-                  <el-icon class="text-blue-500 animate-spin"><Loading /></el-icon>
-                  <span class="font-medium truncate">{{ task.source }}</span>
-                </div>
-                <el-tag size="small">{{ task.task_type }}</el-tag>
-              </div>
-              <div class="space-y-2">
-                <div class="flex justify-between text-sm text-[var(--text-muted)]">
-                  <span>{{ task.message || "Processing..." }}</span>
-                  <span>{{ getProgress(task) }}%</span>
-                </div>
-                <el-progress :percentage="getProgress(task)" :show-text="false" :stroke-width="6" />
-              </div>
-            </div>
-          </div>
+        <div class="stat-card-content">
+          <div class="stat-card-value">{{ tasks.length }}</div>
+          <div class="stat-card-label">Total Tasks</div>
         </div>
       </div>
+      <div class="stat-card">
+        <div class="stat-card-icon success">
+          <el-icon><CircleCheck /></el-icon>
+        </div>
+        <div class="stat-card-content">
+          <div class="stat-card-value">{{ completed }}</div>
+          <div class="stat-card-label">Completed</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-icon processing">
+          <el-icon :class="{ 'animate-spin': processing > 0 }"><Clock /></el-icon>
+        </div>
+        <div class="stat-card-content">
+          <div class="stat-card-value">{{ processing }}</div>
+          <div class="stat-card-label">Processing</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-icon error">
+          <el-icon><CircleClose /></el-icon>
+        </div>
+        <div class="stat-card-content">
+          <div class="stat-card-value">{{ failed }}</div>
+          <div class="stat-card-label">Failed</div>
+        </div>
+      </div>
+    </div>
 
-      <!-- Right Column - Stats -->
-      <div class="space-y-6">
-        <h2 class="text-lg font-semibold">Statistics</h2>
-        <div class="grid grid-cols-2 xl:grid-cols-1 gap-4">
-          <StatCard label="Total Tasks" :value="tasks.length">
-            <template #icon><DataLine /></template>
-          </StatCard>
-          <StatCard label="Completed" :value="completed" icon-color="#67c23a">
-            <template #icon><CircleCheck /></template>
-          </StatCard>
-          <StatCard label="Processing" :value="processing" icon-color="#409eff">
-            <template #icon><Clock /></template>
-          </StatCard>
-          <StatCard label="Failed" :value="failed" icon-color="#f56c6c">
-            <template #icon><CircleClose /></template>
-          </StatCard>
+    <!-- Main Content -->
+    <div class="dashboard-grid">
+      <!-- New Task Card -->
+      <div class="custom-card new-task-card">
+        <div class="custom-card-header">
+          <h2 class="custom-card-title">Create New Task</h2>
+          <p class="custom-card-description">Enter a URL or local file path to start processing</p>
+        </div>
+
+        <form @submit.prevent="handleSubmit" class="task-form">
+          <!-- Source Input -->
+          <div class="input-group">
+            <label class="input-label">Media Source</label>
+            <div class="input-row">
+              <el-input
+                v-model="source"
+                placeholder="https://youtube.com/watch?v=... or C:\path\to\file.mp4"
+                size="large"
+                class="source-input"
+              >
+                <template #prefix>
+                  <el-icon class="input-prefix-icon">
+                    <Link v-if="isUrl" />
+                    <FolderOpened v-else />
+                  </el-icon>
+                </template>
+              </el-input>
+              <el-select v-model="taskType" size="large" class="type-select">
+                <el-option
+                  v-for="opt in taskTypeOptions"
+                  :key="opt.value"
+                  :value="opt.value"
+                  :label="opt.label"
+                />
+              </el-select>
+            </div>
+          </div>
+
+          <!-- Advanced Options -->
+          <el-collapse class="options-collapse">
+            <el-collapse-item title="Advanced Options" name="options">
+              <div class="options-grid">
+                <div class="option-card">
+                  <span class="option-card-label">Skip vocal separation</span>
+                  <el-switch v-model="options.skip_separation" />
+                </div>
+                <div class="option-card">
+                  <span class="option-card-label">Skip speaker diarization</span>
+                  <el-switch v-model="options.skip_diarization" />
+                </div>
+                <div class="option-card language-option">
+                  <span class="option-card-label">Language</span>
+                  <el-select v-model="options.language" size="default">
+                    <el-option
+                      v-for="opt in languageOptions"
+                      :key="opt.value"
+                      :value="opt.value"
+                      :label="opt.label"
+                    />
+                  </el-select>
+                </div>
+              </div>
+            </el-collapse-item>
+          </el-collapse>
+
+          <!-- Submit Button -->
+          <el-button
+            type="primary"
+            size="large"
+            :disabled="!source.trim() || submitting"
+            :loading="submitting"
+            native-type="submit"
+            class="submit-btn"
+          >
+            <el-icon v-if="!submitting" class="btn-icon"><VideoPlay /></el-icon>
+            {{ submitting ? "Creating Task..." : "Start Processing" }}
+          </el-button>
+        </form>
+      </div>
+
+      <!-- Active Tasks -->
+      <div class="custom-card active-tasks-card">
+        <div class="custom-card-header">
+          <h2 class="custom-card-title">Active Tasks</h2>
+          <p class="custom-card-description">Currently processing</p>
+        </div>
+
+        <div v-if="activeTasks.length > 0" class="active-tasks-list">
+          <div
+            v-for="task in activeTasks"
+            :key="task.id"
+            class="active-task-item"
+          >
+            <div class="task-header">
+              <div class="task-info">
+                <el-icon class="task-spinner"><Loading /></el-icon>
+                <span class="task-source">{{ task.source }}</span>
+              </div>
+              <el-tag size="small" type="info">{{ task.task_type }}</el-tag>
+            </div>
+            <div class="task-progress">
+              <div class="progress-info">
+                <span class="progress-message">{{ task.message || "Processing..." }}</span>
+                <span class="progress-percent">{{ getProgress(task) }}%</span>
+              </div>
+              <el-progress
+                :percentage="getProgress(task)"
+                :show-text="false"
+                :stroke-width="8"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div v-else class="empty-state">
+          <div class="empty-state-icon">
+            <el-icon><Clock /></el-icon>
+          </div>
+          <p class="empty-state-title">No Active Tasks</p>
+          <p class="empty-state-text">Create a new task to start processing media files</p>
         </div>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 24px;
+}
+
+@media (max-width: 1200px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* New Task Card */
+.new-task-card {
+  min-height: 400px;
+}
+
+.task-form {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.input-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.input-row {
+  display: flex;
+  gap: 12px;
+}
+
+.source-input {
+  flex: 1;
+}
+
+.source-input :deep(.el-input__wrapper) {
+  padding: 8px 16px;
+  background: var(--bg-base);
+}
+
+.source-input :deep(.el-input__wrapper):hover {
+  background: var(--bg-elevated);
+}
+
+.input-prefix-icon {
+  color: var(--text-muted);
+  margin-right: 4px;
+}
+
+.type-select {
+  width: 180px;
+  flex-shrink: 0;
+}
+
+.options-collapse {
+  background: transparent;
+}
+
+.options-collapse :deep(.el-collapse-item__header) {
+  height: 44px;
+  font-size: 14px;
+}
+
+.options-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  padding-top: 8px;
+}
+
+.language-option {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.language-option .el-select {
+  width: 100%;
+}
+
+.submit-btn {
+  height: 52px;
+  font-size: 16px;
+  font-weight: 600;
+  border-radius: 10px;
+}
+
+.btn-icon {
+  margin-right: 8px;
+  font-size: 18px;
+}
+
+/* Active Tasks Card */
+.active-tasks-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.active-tasks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.active-task-item {
+  padding: 16px;
+  background: var(--bg-base);
+  border-radius: var(--border-radius-sm);
+  transition: all 0.2s ease;
+}
+
+.active-task-item:hover {
+  background: #e8eaed;
+}
+
+.task-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.task-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.task-spinner {
+  color: var(--primary-color);
+  animation: spin 1s linear infinite;
+  flex-shrink: 0;
+}
+
+.task-source {
+  font-weight: 500;
+  font-size: 14px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.progress-info {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+.progress-message {
+  color: var(--text-muted);
+}
+
+.progress-percent {
+  color: var(--primary-color);
+  font-weight: 600;
+}
+
+/* Empty State */
+.active-tasks-card .empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+}
+
+.active-tasks-card .empty-state-icon {
+  width: 64px;
+  height: 64px;
+  font-size: 28px;
+}
+</style>
