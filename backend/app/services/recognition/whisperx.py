@@ -5,17 +5,29 @@ from pathlib import Path
 from typing import Any
 
 # Fix PyTorch 2.6+ weights_only security issue for pyannote/whisperx models
+# Patch lightning_fabric's _load to force weights_only=False
 import torch
+try:
+    import lightning_fabric.utilities.cloud_io as cloud_io
+
+    _original_lightning_load = cloud_io._load
+
+    def _patched_lightning_load(path_or_url, map_location=None, **kwargs):
+        # Force weights_only=False to load pyannote models
+        kwargs['weights_only'] = False
+        return torch.load(path_or_url, map_location=map_location, **kwargs)
+
+    cloud_io._load = _patched_lightning_load
+except (ImportError, AttributeError):
+    pass
+
+# Also add omegaconf classes for whisper model loading (silero VAD etc)
 try:
     from omegaconf import ListConfig, DictConfig
     from omegaconf.base import ContainerMetadata, SCMode
     from omegaconf.nodes import ValueNode
     torch.serialization.add_safe_globals([
-        ListConfig,
-        DictConfig,
-        ContainerMetadata,
-        SCMode,
-        ValueNode,
+        ListConfig, DictConfig, ContainerMetadata, SCMode, ValueNode,
     ])
 except (ImportError, AttributeError):
     pass
@@ -88,6 +100,82 @@ class WhisperXService:
             return rt.alignment_model_en if rt.alignment_model_en else None
         return None
 
+    def _load_diarization_model(self, model_path: str, device: str):
+        """Load diarization model from local path using pyannote directly.
+
+        Returns a wrapper that accepts whisperx audio format (numpy array).
+        Optimized for long audio files (2+ hours) with reduced batch sizes.
+        """
+        from pyannote.audio import Pipeline
+        import pandas as pd
+        import numpy as np
+
+        path = Path(model_path)
+
+        # If it's a directory, look for config.yaml inside
+        if path.is_dir():
+            config_file = path / "config.yaml"
+            if config_file.exists():
+                model_path = str(config_file)
+            else:
+                raise FileNotFoundError(f"config.yaml not found in {path}")
+
+        logger.info(f"Loading diarization model from: {model_path}")
+        pipeline = Pipeline.from_pretrained(model_path)
+        pipeline = pipeline.to(torch.device(device))
+
+        # Optimize for long audio: reduce batch sizes to prevent OOM
+        # Get batch size from runtime settings
+        rt = get_runtime_settings()
+        diarization_batch_size = rt.diarization_batch_size if hasattr(rt, 'diarization_batch_size') else 16
+
+        if hasattr(pipeline, '_segmentation') and hasattr(pipeline._segmentation, 'batch_size'):
+            pipeline._segmentation.batch_size = diarization_batch_size
+            logger.info(f"Set segmentation batch_size={diarization_batch_size}")
+        if hasattr(pipeline, '_embedding') and hasattr(pipeline._embedding, 'batch_size'):
+            pipeline._embedding.batch_size = diarization_batch_size
+            logger.info(f"Set embedding batch_size={diarization_batch_size}")
+
+        # Create a wrapper that converts whisperx audio format to pyannote format
+        class DiarizationWrapper:
+            SAMPLE_RATE = 16000  # whisperx default sample rate
+
+            def __init__(self, pipeline):
+                self._pipeline = pipeline
+
+            def __call__(self, audio, **kwargs):
+                # Convert numpy array to pyannote format
+                if isinstance(audio, np.ndarray):
+                    audio_data = {
+                        "waveform": torch.from_numpy(audio[None, :]),
+                        "sample_rate": self.SAMPLE_RATE
+                    }
+                else:
+                    audio_data = audio
+
+                # Run diarization with memory optimization
+                # Clear CUDA cache before processing
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+                diarization = self._pipeline(audio_data, **kwargs)
+
+                # Convert to DataFrame format expected by whisperx
+                diarize_df = pd.DataFrame(
+                    diarization.itertracks(yield_label=True),
+                    columns=['segment', 'label', 'speaker']
+                )
+                diarize_df['start'] = diarize_df['segment'].apply(lambda x: x.start)
+                diarize_df['end'] = diarize_df['segment'].apply(lambda x: x.end)
+
+                # Clear cache after processing
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+                return diarize_df
+
+        return DiarizationWrapper(pipeline)
+
     def transcribe(
         self,
         audio_path: str,
@@ -112,7 +200,29 @@ class WhisperXService:
 
         logger.info(f"Transcribing: {audio_path}")
         audio = whisperx.load_audio(audio_path)
-        result = self._model.transcribe(audio, batch_size=16, language=language)
+
+        # Calculate audio duration for logging and batch size optimization
+        audio_duration_sec = len(audio) / 16000  # 16kHz sample rate
+        audio_duration_min = audio_duration_sec / 60
+        logger.info(f"Audio duration: {audio_duration_min:.1f} minutes")
+
+        # Get base batch size from settings
+        base_batch_size = rt.whisper_batch_size if hasattr(rt, 'whisper_batch_size') else 16
+
+        # Auto-reduce batch size for very long audio to prevent OOM
+        if audio_duration_min > 60:
+            batch_size = min(base_batch_size, 8)
+            logger.info(f"Long audio (>{60}min), using batch_size={batch_size}")
+        elif audio_duration_min > 30:
+            batch_size = min(base_batch_size, 12)
+        else:
+            batch_size = base_batch_size
+
+        # Clear CUDA cache before transcription
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        result = self._model.transcribe(audio, batch_size=batch_size, language=language)
 
         detected_lang = result.get("language", language or "unknown")
 
@@ -138,22 +248,22 @@ class WhisperXService:
             result["segments"], model_a, metadata, audio, rt.whisper_device
         )
 
-        # Diarization
+        # Diarization (speaker identification)
         if diarize and rt.enable_diarization and (rt.hf_token or rt.pyannote_model_path):
+            from whisperx.diarize import assign_word_speakers
+
             if self._diarize_model is None:
                 # 优先使用本地 pyannote 模型路径
                 if rt.pyannote_model_path:
-                    logger.info(f"Loading diarization model from: {rt.pyannote_model_path}")
-                    self._diarize_model = whisperx.DiarizationPipeline(
-                        model_name=rt.pyannote_model_path,
-                        device=rt.whisper_device
-                    )
+                    self._diarize_model = self._load_diarization_model(rt.pyannote_model_path, rt.whisper_device)
                 else:
-                    self._diarize_model = whisperx.DiarizationPipeline(
+                    logger.info("Loading diarization model from HuggingFace...")
+                    from whisperx.diarize import DiarizationPipeline
+                    self._diarize_model = DiarizationPipeline(
                         use_auth_token=rt.hf_token, device=rt.whisper_device
                     )
             diarize_segments = self._diarize_model(audio)
-            result = whisperx.assign_word_speakers(diarize_segments, result)
+            result = assign_word_speakers(diarize_segments, result)
 
         return {"language": detected_lang, "segments": result.get("segments", [])}
 

@@ -79,6 +79,7 @@ export interface Settings {
   whisper_model_path: string
   whisper_device: "cpu" | "cuda"
   whisper_compute_type: string
+  whisper_batch_size: number  // Reduce for long audio or low VRAM
   enable_diarization: boolean
   hf_token: string
   // Pyannote/Diarization model paths
@@ -87,6 +88,7 @@ export interface Settings {
   // Alignment model paths
   alignment_model_zh: string
   alignment_model_en: string
+  diarization_batch_size: number  // Reduce for long audio or low VRAM
   // Paths
   inbox_path: string
   processing_path: string

@@ -1,0 +1,50 @@
+graph TD
+    %% 样式定义
+    classDef input fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
+    classDef process fill:#fff3e0,stroke:#ff6f00,stroke-width:2px;
+    classDef ai fill:#f3e5f5,stroke:#4a148c,stroke-width:2px;
+    classDef store fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px;
+
+    %% 阶段 1: 获取与清洗
+    Start((开始)) --> Input{输入来源?}
+    Input -->|URL/链接| DL[yt-dlp 下载器]:::input
+    Input -->|本地文件| Local[扫描 inbox 文件夹]:::input
+    
+    DL --> Meta[提取元数据 JSON<br/>标题/链接/封面]:::process
+    Local --> Meta
+    
+    Meta --> PreProcess{需要降噪?}
+    PreProcess -->|是: UVR5| UVR[UVR5 / Audio-Separator<br/>模型: Kim_Vocal_2]:::process
+    UVR -->|丢弃| Inst[伴奏/噪音]
+    UVR -->|保留| Vocals[人声轨道 .wav]
+    PreProcess -->|否| Vocals
+    
+    %% 阶段 2: 核心识别 (替换 whisper.cpp)
+    Vocals --> VAD[VAD 静音检测]:::process
+    VAD --> WhisperX[WhisperX 引擎]:::ai
+    WhisperX -->|1. 转写| Text[原始文本]
+    WhisperX -->|2. 对齐| Align[音素级时间轴对齐]
+    WhisperX -->|3. 分离| Diar[Pyannote 说话人聚类]
+    
+    %% 阶段 3: 数据生成
+    Diar --> SRT[生成 .srt/.ass 字幕<br/>带说话人标签]:::store
+    Diar --> FullText[合并长文本]:::store
+    
+    %% 阶段 4: AI 深度处理
+    FullText --> LLM_Polish[LLM: 润色与纠错<br/>去除口癖/ASR幻觉]:::ai
+    LLM_Polish --> LLM_Summary[LLM: 结构化摘要<br/>TLDR / 关键点]:::ai
+    
+    LLM_Summary --> LLM_MindMap[LLM: 思维导图生成<br/>输出: Markdown/Markmap]:::ai
+    
+    %% 阶段 5: 分发与归档
+    LLM_MindMap & LLM_Summary & SRT --> Finalize[归档处理]
+    
+    Finalize --> Obsidian[Obsidian 笔记库<br/>Frontmatter + 内容]:::store
+    Finalize --> WebUI[Web 预览界面<br/>可选]:::store
+
+    subgraph 核心改进点
+    direction TB
+    UVR
+    WhisperX
+    LLM_MindMap
+    end

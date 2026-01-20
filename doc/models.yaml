@@ -1,0 +1,233 @@
+# MediaProcessPipeline 模型下载配置
+# 每个模型都提供 HuggingFace 和 ModelScope 两个下载源
+# ModelScope 在国内访问更快，推荐优先使用
+
+# ============================================================================
+# WhisperX 语音识别模型
+# ============================================================================
+whisper-large-v3:
+  description: OpenAI Whisper 大模型，支持多语言语音识别
+  size: ~3GB
+  huggingface: openai/whisper-large-v3
+  modelscope: iic/Whisper-large-v3
+  modelscope_revision: v2.0.5
+  usage: |
+    # HuggingFace (whisperx 默认)
+    import whisperx
+    model = whisperx.load_model("large-v3", device="cuda")
+
+    # ModelScope
+    from modelscope.pipelines import pipeline
+    from modelscope.utils.constant import Tasks
+    pipe = pipeline(
+        task=Tasks.auto_speech_recognition,
+        model='iic/Whisper-large-v3',
+        model_revision="v2.0.5"
+    )
+
+faster-whisper-large-v3:
+  description: CTranslate2 优化版 Whisper，推理速度更快
+  size: ~3GB
+  huggingface: Systran/faster-whisper-large-v3
+  modelscope: keepitsimple/faster-whisper-large-v3
+  usage: |
+    # HuggingFace
+    from faster_whisper import WhisperModel
+    model = WhisperModel("large-v3", device="cuda", compute_type="float16")
+
+    # ModelScope 下载后本地加载
+    from modelscope import snapshot_download
+    model_dir = snapshot_download('keepitsimple/faster-whisper-large-v3')
+
+whisper-large-v3-turbo:
+  description: Whisper large-v3 的快速版本，速度提升 8 倍
+  size: ~1.5GB
+  huggingface: openai/whisper-large-v3-turbo
+  modelscope: iic/Whisper-large-v3-turbo
+  usage: |
+    import whisperx
+    model = whisperx.load_model("large-v3-turbo", device="cuda")
+
+# ============================================================================
+# Pyannote 说话人分离模型 (需要 HF Token 或使用 ModelScope 替代)
+# ============================================================================
+pyannote-speaker-diarization-3.1:
+  description: 说话人分离管道，识别"谁在什么时候说话"
+  size: ~200MB
+  huggingface: pyannote/speaker-diarization-3.1
+  modelscope: pyannote/speaker-diarization-3.1
+  requires_agreement: true  # 需要在 HuggingFace 接受使用条款
+  usage: |
+    # HuggingFace (需要 HF_TOKEN)
+    from pyannote.audio import Pipeline
+    pipeline = Pipeline.from_pretrained(
+        "pyannote/speaker-diarization-3.1",
+        use_auth_token="YOUR_HF_TOKEN"
+    )
+    diarization = pipeline("audio.wav")
+
+pyannote-segmentation-3.0:
+  description: 语音分割模型，检测语音活动和重叠语音
+  size: ~50MB
+  huggingface: pyannote/segmentation-3.0
+  modelscope: ModelBulider/segmentation-3.0
+  requires_agreement: true
+  usage: |
+    # 通常作为 speaker-diarization 的依赖自动加载
+
+# ============================================================================
+# ModelScope 3D-Speaker (pyannote 的国内替代方案，无需 HF Token)
+# ============================================================================
+speech_campplus_sv_zh-cn_16k-common:
+  description: CAM++ 说话人嵌入模型，用于说话人分离
+  size: ~100MB
+  huggingface: null  # 仅在 ModelScope
+  modelscope: damo/speech_campplus_sv_zh-cn_16k-common
+  modelscope_revision: v1.0.0
+  usage: |
+    from modelscope.pipelines import pipeline
+    sv_pipeline = pipeline(
+        task='speaker-verification',
+        model='damo/speech_campplus_sv_zh-cn_16k-common',
+        model_revision='v1.0.0'
+    )
+
+speech_eres2net_sv_zh-cn_16k-common:
+  description: ERes2Net 说话人嵌入模型
+  size: ~100MB
+  huggingface: null
+  modelscope: iic/speech_eres2net_sv_zh-cn_16k-common
+  usage: |
+    from modelscope import snapshot_download
+    model_dir = snapshot_download('iic/speech_eres2net_sv_zh-cn_16k-common')
+
+speech_fsmn_vad_zh-cn-16k-common-pytorch:
+  description: FSMN 语音活动检测 (VAD) 模型
+  size: ~50MB
+  huggingface: null
+  modelscope: iic/speech_fsmn_vad_zh-cn-16k-common-pytorch
+  modelscope_revision: v2.0.4
+  usage: |
+    # ModelScope Pipeline
+    from modelscope.pipelines import pipeline
+    from modelscope.utils.constant import Tasks
+    vad_pipeline = pipeline(
+        task=Tasks.voice_activity_detection,
+        model='iic/speech_fsmn_vad_zh-cn-16k-common-pytorch',
+        model_revision="v2.0.4"
+    )
+
+    # FunASR
+    from funasr import AutoModel
+    model = AutoModel(model="fsmn-vad", model_revision="v2.0.4")
+
+# ============================================================================
+# UVR5 人声分离模型
+# 注意：UVR 模型不在 ModelScope，但可以复用本地 UVR GUI 安装的模型
+# 本地路径: C:/Users/<用户名>/AppData/Local/Programs/Ultimate Vocal Remover/models
+# ============================================================================
+
+# --- 本地已安装的模型 (推荐优先使用) ---
+
+UVR-MDX-NET-Inst_HQ_3:
+  description: MDX-Net 乐器分离模型，本地 UVR 已安装，推荐首选
+  size: 63.7 MB
+  local_path: models/MDX_Net_Models/UVR-MDX-NET-Inst_HQ_3.onnx
+  huggingface: seanghay/uvr_models
+  modelscope: null
+  primary_stem: Instrumental  # 主输出是伴奏，副输出是人声
+  usage: |
+    # 后端会自动检测本地 UVR 安装目录
+    # 无需额外下载，直接使用
+
+1_HP-UVR:
+  description: VR 架构经典人声分离模型，本地已安装
+  size: 120.9 MB
+  local_path: models/VR_Models/1_HP-UVR.pth
+  huggingface: seanghay/uvr_models
+  modelscope: null
+  primary_stem: Instrumental
+
+UVR-DeNoise-Lite:
+  description: VR 架构轻量去噪模型，本地已安装
+  size: 17.1 MB
+  local_path: models/VR_Models/UVR-DeNoise-Lite.pth
+  huggingface: seanghay/uvr_models
+  modelscope: null
+  primary_stem: Noise
+  usage: |
+    # 用于在转录前去除背景噪音
+    separator.load_model("UVR-DeNoise-Lite.pth")
+
+htdemucs:
+  description: Demucs v4 四轨分离模型 (vocals/drums/bass/other)，本地已安装
+  size: 80.2 MB
+  local_path: models/Demucs_Models/v3_v4_repo/955717e8-8726e21a.th
+  huggingface: facebook/demucs
+  modelscope: null
+  usage: |
+    # Demucs 需要使用专门的库
+    # pip install demucs
+    # demucs --two-stems=vocals audio.wav
+
+# --- 可选下载的模型 ---
+
+Kim_Vocal_2:
+  description: MDX-Net 架构人声分离模型，人声提取效果最佳
+  size: ~50MB
+  huggingface: seanghay/uvr_models
+  modelscope: null
+  download_url: https://huggingface.co/seanghay/uvr_models/resolve/main/Kim_Vocal_2.onnx
+  primary_stem: Vocals
+  usage: |
+    # 如需最佳人声提取效果，可下载此模型
+    # audio-separator 会自动下载
+    from audio_separator.separator import Separator
+    separator = Separator(output_format="wav")
+    separator.load_model("Kim_Vocal_2.onnx")
+
+Kim_Vocal_1:
+  description: MDX-Net 架构人声分离模型 v1
+  size: ~50MB
+  huggingface: seanghay/uvr_models
+  modelscope: null
+  primary_stem: Vocals
+
+UVR-DeEcho-DeReverb:
+  description: VR 架构去混响去回声模型
+  size: ~100MB
+  huggingface: seanghay/uvr_models
+  modelscope: null
+  primary_stem: No Echo
+  usage: |
+    # 用于后处理人声，去除回声和混响
+    separator.load_model("UVR-DeEcho-DeReverb.pth")
+
+# ============================================================================
+# 下载脚本示例
+# ============================================================================
+#
+# === 使用 ModelScope 下载所有模型 ===
+#
+# from modelscope import snapshot_download
+# import os
+#
+# os.environ['MODELSCOPE_CACHE'] = 'D:/models/modelscope'
+#
+# # Whisper
+# snapshot_download('iic/Whisper-large-v3', revision='v2.0.5')
+#
+# # 3D-Speaker (pyannote 替代)
+# snapshot_download('damo/speech_campplus_sv_zh-cn_16k-common')
+# snapshot_download('iic/speech_fsmn_vad_zh-cn-16k-common-pytorch')
+#
+# === UVR 模型下载 ===
+#
+# # 方法1: 使用 audio-separator 自动下载
+# pip install audio-separator[gpu]
+# audio-separator --list_models  # 查看所有可用模型
+#
+# # 方法2: 从 HuggingFace 手动下载
+# pip install huggingface_hub
+# from huggingface_hub import hf_hub_download
+# hf_hub_download(repo_id="seanghay/uvr_models", filename="Kim_Vocal_2.onnx", local_dir="./models")

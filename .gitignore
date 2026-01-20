@@ -40,3 +40,23 @@ htmlcov/
 
 # uv
 uv.lock
+
+# Data directories (processing files, media, outputs)
+data/
+backend/data/
+*.wav
+*.mp3
+*.mp4
+*.webm
+*.info.json
+
+# Runtime settings (contains API keys)
+settings.json
+
+# Reference files and images (not code)
+reference/
+image.png
+nul
+
+# Documentation (optional, can be included if needed)
+# doc/

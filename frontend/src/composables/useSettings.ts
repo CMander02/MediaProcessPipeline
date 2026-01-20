@@ -2,8 +2,6 @@ import { ref, onMounted } from "vue"
 import type { Settings } from "@/types"
 import { settingsApi } from "@/api"
 
-const STORAGE_KEY = "pipeline-settings"
-
 const defaultSettings: Settings = {
   // LLM 配置
   llm_provider: "anthropic",
@@ -26,12 +24,14 @@ const defaultSettings: Settings = {
   whisper_model_path: "",
   whisper_device: "cuda",
   whisper_compute_type: "float16",
+  whisper_batch_size: 16,
   enable_diarization: true,
   hf_token: "",
   pyannote_model_path: "",
   pyannote_segmentation_path: "",
   alignment_model_zh: "",
   alignment_model_en: "",
+  diarization_batch_size: 16,
 
   // Paths
   inbox_path: "./data/inbox",
@@ -56,43 +56,49 @@ export function useSettings() {
   const settings = ref<Settings>({ ...defaultSettings })
   const saving = ref(false)
   const saved = ref(false)
+  const loading = ref(false)
+  const error = ref<string | null>(null)
 
-  const loadSettings = () => {
-    const stored = localStorage.getItem(STORAGE_KEY)
-    if (stored) {
-      try {
-        settings.value = { ...defaultSettings, ...JSON.parse(stored) }
-      } catch {
-        // Ignore parse errors
-      }
+  /**
+   * Load settings from backend (primary source)
+   */
+  const loadSettings = async () => {
+    loading.value = true
+    error.value = null
+
+    try {
+      const backendSettings = await settingsApi.get()
+      // Merge with defaults to ensure all fields exist
+      settings.value = { ...defaultSettings, ...backendSettings } as Settings
+      console.log("Settings loaded from backend")
+    } catch (e) {
+      console.warn("Failed to load settings from backend:", e)
+      error.value = "Failed to load settings from server"
+      // Keep default settings
+    } finally {
+      loading.value = false
     }
   }
 
+  /**
+   * Save settings to backend (primary storage)
+   */
   const saveSettings = async () => {
     saving.value = true
+    error.value = null
 
-    // Save to localStorage
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings.value))
-
-    // Sync to backend
     try {
       await settingsApi.update(settings.value as unknown as Record<string, unknown>)
+      console.log("Settings saved to backend")
+      saved.value = true
+      setTimeout(() => {
+        saved.value = false
+      }, 2000)
     } catch (e) {
-      console.warn("Failed to sync settings to backend:", e)
-    }
-
-    saving.value = false
-    saved.value = true
-    setTimeout(() => {
-      saved.value = false
-    }, 2000)
-  }
-
-  const syncToBackend = async () => {
-    try {
-      await settingsApi.update(settings.value as unknown as Record<string, unknown>)
-    } catch (e) {
-      console.warn("Failed to sync settings to backend:", e)
+      console.error("Failed to save settings:", e)
+      error.value = "Failed to save settings to server"
+    } finally {
+      saving.value = false
     }
   }
 
@@ -101,18 +107,17 @@ export function useSettings() {
   }
 
   onMounted(async () => {
-    loadSettings()
-    // Sync settings to backend on mount
-    await syncToBackend()
+    await loadSettings()
   })
 
   return {
     settings,
     saving,
     saved,
+    loading,
+    error,
     saveSettings,
     updateSetting,
     loadSettings,
-    syncToBackend,
   }
 }
