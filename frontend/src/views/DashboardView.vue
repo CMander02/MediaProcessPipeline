@@ -1,16 +1,15 @@
 <script setup lang="ts">
-import { ref, computed } from "vue"
+import { ref, computed, watch } from "vue"
 import {
   ElButton,
   ElInput,
   ElSelect,
   ElOption,
   ElSwitch,
-  ElCollapse,
-  ElCollapseItem,
   ElTag,
   ElProgress,
   ElIcon,
+  ElTooltip,
 } from "element-plus"
 import {
   VideoPlay,
@@ -21,15 +20,17 @@ import {
   CircleClose,
   Clock,
   DataLine,
+  Setting,
+  Close,
 } from "@element-plus/icons-vue"
 import { useTasks } from "@/composables/useTasks"
-import type { TaskType, PipelineOptions, Task } from "@/types"
+import type { PipelineOptions, Task } from "@/types"
 
 const { tasks, createTask } = useTasks()
 
 const source = ref("")
-const taskType = ref<TaskType>("pipeline")
 const submitting = ref(false)
+const showOptions = ref(false)
 const options = ref<PipelineOptions>({
   skip_download: false,
   skip_separation: false,
@@ -37,25 +38,72 @@ const options = ref<PipelineOptions>({
   language: "auto",
 })
 
-const isUrl = computed(() =>
-  source.value.startsWith("http://") || source.value.startsWith("https://")
-)
+// 智能检测输入类型
+const inputType = computed(() => {
+  const val = source.value.trim()
+  if (!val) return null
+  if (val.startsWith("http://") || val.startsWith("https://")) {
+    // 识别常见视频平台
+    if (val.includes("youtube.com") || val.includes("youtu.be")) return "youtube"
+    if (val.includes("bilibili.com") || val.includes("b23.tv")) return "bilibili"
+    return "url"
+  }
+  // 本地路径
+  if (val.match(/^[a-zA-Z]:\\/) || val.startsWith("/") || val.startsWith("./")) {
+    return "local"
+  }
+  return null
+})
+
+const inputIcon = computed(() => {
+  if (!inputType.value) return null
+  return inputType.value === "local" ? FolderOpened : Link
+})
+
+const placeholderText = "粘贴视频链接或本地文件路径，回车开始处理"
+
+// 输入提示
+const inputHint = computed(() => {
+  const val = source.value.trim()
+  if (!val) return null
+  switch (inputType.value) {
+    case "youtube":
+      return "YouTube 视频"
+    case "bilibili":
+      return "Bilibili 视频"
+    case "url":
+      return "网络视频"
+    case "local":
+      return "本地文件"
+    default:
+      return null
+  }
+})
 
 const handleSubmit = async () => {
-  if (!source.value.trim()) return
+  if (!source.value.trim() || submitting.value) return
 
   submitting.value = true
   try {
     await createTask({
-      task_type: taskType.value,
+      task_type: "pipeline", // 始终使用完整流程
       source: source.value.trim(),
       options: { ...options.value },
     })
     source.value = ""
+    showOptions.value = false
   } catch (error) {
     console.error("Failed to create task:", error)
   } finally {
     submitting.value = false
+  }
+}
+
+// 键盘快捷键
+const handleKeydown = (e: KeyboardEvent) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault()
+    handleSubmit()
   }
 }
 
@@ -75,34 +123,103 @@ const activeTasks = computed(() =>
 
 const getProgress = (task: Task) => Math.round(task.progress * 100)
 
-const taskTypeOptions = [
-  { value: "pipeline", label: "Full Pipeline" },
-  { value: "ingestion", label: "Download Only" },
-  { value: "recognition", label: "Transcribe Only" },
-  { value: "analysis", label: "Analyze Only" },
-]
-
 const languageOptions = [
-  { value: "auto", label: "Auto Detect" },
-  { value: "en", label: "English" },
-  { value: "zh", label: "Chinese" },
-  { value: "ja", label: "Japanese" },
-  { value: "ko", label: "Korean" },
-  { value: "de", label: "German" },
-  { value: "fr", label: "French" },
-  { value: "es", label: "Spanish" },
+  { value: "auto", label: "自动检测" },
+  { value: "zh", label: "中文" },
+  { value: "en", label: "英语" },
+  { value: "ja", label: "日语" },
+  { value: "ko", label: "韩语" },
+  { value: "de", label: "德语" },
+  { value: "fr", label: "法语" },
+  { value: "es", label: "西班牙语" },
 ]
 </script>
 
 <template>
   <div class="page-container">
-    <!-- Header -->
+    <!-- 简洁的页面标题 -->
     <div class="page-header">
-      <h1 class="page-title">Media Processing Pipeline</h1>
-      <p class="page-description">Transform audio/video into structured knowledge with AI</p>
+      <h1 class="page-title">媒体处理</h1>
+      <p class="page-description">音视频转文字、摘要、思维导图</p>
     </div>
 
-    <!-- Stats Grid - Top Horizontal -->
+    <!-- 核心输入区域 - 大而醒目 -->
+    <div class="input-section">
+      <div class="input-wrapper" :class="{ 'has-content': source.trim(), 'is-submitting': submitting }">
+        <div class="input-container">
+          <el-icon v-if="inputIcon" class="input-type-icon">
+            <component :is="inputIcon" />
+          </el-icon>
+          <input
+            v-model="source"
+            type="text"
+            :placeholder="placeholderText"
+            class="main-input"
+            :disabled="submitting"
+            @keydown="handleKeydown"
+          />
+          <transition name="fade">
+            <span v-if="inputHint" class="input-hint-badge">{{ inputHint }}</span>
+          </transition>
+          <el-tooltip content="处理选项" placement="top">
+            <button
+              type="button"
+              class="options-toggle"
+              :class="{ active: showOptions }"
+              @click="showOptions = !showOptions"
+            >
+              <el-icon><Setting /></el-icon>
+            </button>
+          </el-tooltip>
+          <button
+            type="button"
+            class="submit-button"
+            :disabled="!source.trim() || submitting"
+            @click="handleSubmit"
+          >
+            <el-icon v-if="submitting" class="spin"><Loading /></el-icon>
+            <el-icon v-else><VideoPlay /></el-icon>
+            <span>{{ submitting ? "处理中..." : "开始" }}</span>
+          </button>
+        </div>
+
+        <!-- 展开的选项面板 -->
+        <transition name="slide">
+          <div v-if="showOptions" class="options-panel">
+            <div class="options-grid">
+              <div class="option-item">
+                <span class="option-label">跳过人声分离</span>
+                <el-switch v-model="options.skip_separation" size="small" />
+              </div>
+              <div class="option-item">
+                <span class="option-label">跳过说话人识别</span>
+                <el-switch v-model="options.skip_diarization" size="small" />
+              </div>
+              <div class="option-item language-item">
+                <span class="option-label">语言</span>
+                <el-select v-model="options.language" size="small" class="language-select">
+                  <el-option
+                    v-for="opt in languageOptions"
+                    :key="opt.value"
+                    :value="opt.value"
+                    :label="opt.label"
+                  />
+                </el-select>
+              </div>
+            </div>
+          </div>
+        </transition>
+      </div>
+
+      <!-- 快捷提示 -->
+      <div class="quick-hints">
+        <span class="hint-item">支持 YouTube、Bilibili、本地音视频文件</span>
+        <span class="hint-sep">·</span>
+        <span class="hint-item">Enter 快速开始</span>
+      </div>
+    </div>
+
+    <!-- 统计卡片 -->
     <div class="stats-grid">
       <div class="stat-card">
         <div class="stat-card-icon total">
@@ -110,7 +227,7 @@ const languageOptions = [
         </div>
         <div class="stat-card-content">
           <div class="stat-card-value">{{ tasks.length }}</div>
-          <div class="stat-card-label">Total Tasks</div>
+          <div class="stat-card-label">全部任务</div>
         </div>
       </div>
       <div class="stat-card">
@@ -119,16 +236,16 @@ const languageOptions = [
         </div>
         <div class="stat-card-content">
           <div class="stat-card-value">{{ completed }}</div>
-          <div class="stat-card-label">Completed</div>
+          <div class="stat-card-label">已完成</div>
         </div>
       </div>
       <div class="stat-card">
         <div class="stat-card-icon processing">
-          <el-icon :class="{ 'animate-spin': processing > 0 }"><Clock /></el-icon>
+          <el-icon :class="{ 'spin': processing > 0 }"><Clock /></el-icon>
         </div>
         <div class="stat-card-content">
           <div class="stat-card-value">{{ processing }}</div>
-          <div class="stat-card-label">Processing</div>
+          <div class="stat-card-label">处理中</div>
         </div>
       </div>
       <div class="stat-card">
@@ -137,260 +254,229 @@ const languageOptions = [
         </div>
         <div class="stat-card-content">
           <div class="stat-card-value">{{ failed }}</div>
-          <div class="stat-card-label">Failed</div>
+          <div class="stat-card-label">失败</div>
         </div>
       </div>
     </div>
 
-    <!-- Main Content -->
-    <div class="dashboard-grid">
-      <!-- New Task Card -->
-      <div class="custom-card new-task-card">
-        <div class="custom-card-header">
-          <h2 class="custom-card-title">Create New Task</h2>
-          <p class="custom-card-description">Enter a URL or local file path to start processing</p>
-        </div>
-
-        <form @submit.prevent="handleSubmit" class="task-form">
-          <!-- Source Input -->
-          <div class="input-group">
-            <label class="input-label">Media Source</label>
-            <div class="input-row">
-              <el-input
-                v-model="source"
-                placeholder="https://youtube.com/watch?v=... or C:\path\to\file.mp4"
-                size="large"
-                class="source-input"
-              >
-                <template #prefix>
-                  <el-icon class="input-prefix-icon">
-                    <Link v-if="isUrl" />
-                    <FolderOpened v-else />
-                  </el-icon>
-                </template>
-              </el-input>
-              <el-select v-model="taskType" size="large" class="type-select">
-                <el-option
-                  v-for="opt in taskTypeOptions"
-                  :key="opt.value"
-                  :value="opt.value"
-                  :label="opt.label"
-                />
-              </el-select>
+    <!-- 活跃任务 -->
+    <div v-if="activeTasks.length > 0" class="active-section">
+      <h2 class="section-title">正在处理</h2>
+      <div class="active-tasks-list">
+        <div
+          v-for="task in activeTasks"
+          :key="task.id"
+          class="active-task-item"
+        >
+          <div class="task-header">
+            <div class="task-info">
+              <el-icon class="task-spinner"><Loading /></el-icon>
+              <span class="task-source">{{ task.source }}</span>
             </div>
+            <span class="task-percent">{{ getProgress(task) }}%</span>
           </div>
-
-          <!-- Advanced Options -->
-          <el-collapse class="options-collapse">
-            <el-collapse-item title="Advanced Options" name="options">
-              <div class="options-grid">
-                <div class="option-card">
-                  <span class="option-card-label">Skip vocal separation</span>
-                  <el-switch v-model="options.skip_separation" />
-                </div>
-                <div class="option-card">
-                  <span class="option-card-label">Skip speaker diarization</span>
-                  <el-switch v-model="options.skip_diarization" />
-                </div>
-                <div class="option-card language-option">
-                  <span class="option-card-label">Language</span>
-                  <el-select v-model="options.language" size="default">
-                    <el-option
-                      v-for="opt in languageOptions"
-                      :key="opt.value"
-                      :value="opt.value"
-                      :label="opt.label"
-                    />
-                  </el-select>
-                </div>
-              </div>
-            </el-collapse-item>
-          </el-collapse>
-
-          <!-- Submit Button -->
-          <el-button
-            type="primary"
-            size="large"
-            :disabled="!source.trim() || submitting"
-            :loading="submitting"
-            native-type="submit"
-            class="submit-btn"
-          >
-            <el-icon v-if="!submitting" class="btn-icon"><VideoPlay /></el-icon>
-            {{ submitting ? "Creating Task..." : "Start Processing" }}
-          </el-button>
-        </form>
-      </div>
-
-      <!-- Active Tasks -->
-      <div class="custom-card active-tasks-card">
-        <div class="custom-card-header">
-          <h2 class="custom-card-title">Active Tasks</h2>
-          <p class="custom-card-description">Currently processing</p>
-        </div>
-
-        <div v-if="activeTasks.length > 0" class="active-tasks-list">
-          <div
-            v-for="task in activeTasks"
-            :key="task.id"
-            class="active-task-item"
-          >
-            <div class="task-header">
-              <div class="task-info">
-                <el-icon class="task-spinner"><Loading /></el-icon>
-                <span class="task-source">{{ task.source }}</span>
-              </div>
-              <el-tag size="small" type="info">{{ task.task_type }}</el-tag>
-            </div>
-            <div class="task-progress">
-              <div class="progress-info">
-                <span class="progress-message">{{ task.message || "Processing..." }}</span>
-                <span class="progress-percent">{{ getProgress(task) }}%</span>
-              </div>
-              <el-progress
-                :percentage="getProgress(task)"
-                :show-text="false"
-                :stroke-width="8"
-              />
-            </div>
+          <div class="task-progress">
+            <el-progress
+              :percentage="getProgress(task)"
+              :show-text="false"
+              :stroke-width="6"
+            />
+            <span class="progress-message">{{ task.message || "处理中..." }}</span>
           </div>
-        </div>
-
-        <div v-else class="empty-state">
-          <div class="empty-state-icon">
-            <el-icon><Clock /></el-icon>
-          </div>
-          <p class="empty-state-title">No Active Tasks</p>
-          <p class="empty-state-text">Create a new task to start processing media files</p>
         </div>
       </div>
+    </div>
+
+    <!-- 空状态 -->
+    <div v-else class="empty-state-inline">
+      <el-icon class="empty-icon"><Clock /></el-icon>
+      <span>暂无进行中的任务，粘贴链接开始处理</span>
     </div>
   </div>
 </template>
 
 <style scoped>
-.dashboard-grid {
-  display: grid;
-  grid-template-columns: 1.5fr 1fr;
-  gap: 24px;
+/* 输入区域 - 核心交互 */
+.input-section {
+  margin-bottom: 32px;
 }
 
-@media (max-width: 1200px) {
-  .dashboard-grid {
-    grid-template-columns: 1fr;
-  }
+.input-wrapper {
+  background: var(--bg-elevated);
+  border: 2px solid var(--border-color);
+  border-radius: 16px;
+  transition: all 0.2s ease;
+  overflow: hidden;
 }
 
-/* New Task Card */
-.new-task-card {
-  min-height: 400px;
+.input-wrapper:focus-within,
+.input-wrapper.has-content {
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 4px var(--primary-bg);
 }
 
-.task-form {
+.input-wrapper.is-submitting {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.input-container {
   display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-
-.input-group {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.input-label {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.input-row {
-  display: flex;
+  align-items: center;
+  padding: 8px 8px 8px 20px;
   gap: 12px;
 }
 
-.source-input {
-  flex: 1;
-}
-
-.source-input :deep(.el-input__wrapper) {
-  padding: 8px 16px;
-  background: var(--bg-base);
-}
-
-.source-input :deep(.el-input__wrapper):hover {
-  background: var(--bg-elevated);
-}
-
-.input-prefix-icon {
-  color: var(--text-muted);
-  margin-right: 4px;
-}
-
-.type-select {
-  width: 180px;
+.input-type-icon {
+  font-size: 20px;
+  color: var(--primary-color);
   flex-shrink: 0;
 }
 
-.options-collapse {
+.main-input {
+  flex: 1;
+  border: none;
+  outline: none;
   background: transparent;
+  font-size: 16px;
+  color: var(--text-primary);
+  padding: 12px 0;
 }
 
-.options-collapse :deep(.el-collapse-item__header) {
-  height: 44px;
-  font-size: 14px;
+.main-input::placeholder {
+  color: var(--text-muted);
+}
+
+.input-hint-badge {
+  padding: 4px 10px;
+  background: var(--primary-bg);
+  color: var(--primary-color);
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.options-toggle {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: var(--bg-base);
+  border-radius: 10px;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.options-toggle:hover {
+  background: var(--border-color);
+  color: var(--text-primary);
+}
+
+.options-toggle.active {
+  background: var(--primary-bg);
+  color: var(--primary-color);
+}
+
+.submit-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 24px;
+  background: var(--primary-color);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.submit-button:hover:not(:disabled) {
+  background: var(--primary-dark);
+}
+
+.submit-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 选项面板 */
+.options-panel {
+  padding: 16px 20px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-base);
 }
 
 .options-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+}
+
+.option-item {
+  display: flex;
+  align-items: center;
   gap: 12px;
-  padding-top: 8px;
 }
 
-.language-option {
-  flex-direction: column;
-  align-items: flex-start;
+.option-label {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.language-item {
+  margin-left: auto;
+}
+
+.language-select {
+  width: 120px;
+}
+
+/* 快捷提示 */
+.quick-hints {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   gap: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-muted);
 }
 
-.language-option .el-select {
-  width: 100%;
+.hint-sep {
+  color: var(--border-color);
 }
 
-.submit-btn {
-  height: 52px;
+/* 活跃任务区域 */
+.active-section {
+  margin-top: 32px;
+}
+
+.section-title {
   font-size: 16px;
   font-weight: 600;
-  border-radius: 10px;
-}
-
-.btn-icon {
-  margin-right: 8px;
-  font-size: 18px;
-}
-
-/* Active Tasks Card */
-.active-tasks-card {
-  display: flex;
-  flex-direction: column;
+  color: var(--text-primary);
+  margin-bottom: 16px;
 }
 
 .active-tasks-list {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
 
 .active-task-item {
-  padding: 16px;
-  background: var(--bg-base);
-  border-radius: var(--border-radius-sm);
-  transition: all 0.2s ease;
-}
-
-.active-task-item:hover {
-  background: #e8eaed;
+  padding: 16px 20px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
 }
 
 .task-header {
@@ -410,7 +496,6 @@ const languageOptions = [
 
 .task-spinner {
   color: var(--primary-color);
-  animation: spin 1s linear infinite;
   flex-shrink: 0;
 }
 
@@ -423,40 +508,110 @@ const languageOptions = [
   text-overflow: ellipsis;
 }
 
+.task-percent {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--primary-color);
+}
+
 .task-progress {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-
-.progress-info {
-  display: flex;
-  justify-content: space-between;
-  font-size: 13px;
+  gap: 6px;
 }
 
 .progress-message {
+  font-size: 13px;
   color: var(--text-muted);
 }
 
-.progress-percent {
-  color: var(--primary-color);
-  font-weight: 600;
-}
-
-/* Empty State */
-.active-tasks-card .empty-state {
-  flex: 1;
+/* 空状态（简化版） */
+.empty-state-inline {
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 10px;
   padding: 40px 20px;
+  color: var(--text-muted);
+  font-size: 14px;
 }
 
-.active-tasks-card .empty-state-icon {
-  width: 64px;
-  height: 64px;
-  font-size: 28px;
+.empty-icon {
+  font-size: 18px;
+}
+
+/* 动画 */
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.15s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+.slide-enter-active,
+.slide-leave-active {
+  transition: all 0.2s ease;
+}
+
+.slide-enter-from,
+.slide-leave-to {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .input-container {
+    flex-wrap: wrap;
+    padding: 12px;
+  }
+
+  .main-input {
+    width: 100%;
+    order: 1;
+  }
+
+  .input-type-icon {
+    order: 0;
+  }
+
+  .input-hint-badge {
+    order: 2;
+  }
+
+  .options-toggle,
+  .submit-button {
+    order: 3;
+  }
+
+  .options-grid {
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .language-item {
+    margin-left: 0;
+  }
+
+  .quick-hints {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .hint-sep {
+    display: none;
+  }
 }
 </style>

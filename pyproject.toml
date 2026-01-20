@@ -1,10 +1,57 @@
 [project]
-name = "template"
+name = "MediaProcessPipeline"
 version = "0.1.0"
-description = "Full-stack template: FastAPI + Agentic AI backend, Vite + shadcn-ui + AI SDK frontend"
-readme = "README.md"
-requires-python = ">=3.11"
-dependencies = []
+description = "Omni-Media Processing Pipeline - Convert audio/video to structured knowledge"
+readme = "doc/oldREADME.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "python-dotenv>=1.0.0",
+    "httpx>=0.28.0",
+    # AI
+    "anthropic>=0.40.0",
+    "openai>=1.0.0",
+]
 
-[tool.uv.workspace]
-members = ["backend"]
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.8.0",
+]
+media = [
+    "yt-dlp>=2024.0.0",
+    # PyTorch GPU - CUDA 12.8 (cu128 索引)
+    "torch~=2.8.0",
+    "torchaudio~=2.8.0",
+    # 音频处理 (UVR5 人声分离)
+    "audio-separator[gpu]>=0.41.0",
+    # 语音识别 (whisperx 依赖 pyannote-audio)
+    "whisperx>=3.7.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+# ============================================================================
+# UV 配置：强制使用 PyTorch CUDA 12.8 索引
+# ============================================================================
+# 4090 + CUDA 13.0 驱动向下兼容 CUDA 12.8
+# torch~=2.8.0 满足 whisperx 和 pyannote-audio 要求
+# ============================================================================
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
