@@ -7,10 +7,15 @@ from typing import Any
 # Fix PyTorch 2.6+ weights_only security issue for pyannote/whisperx models
 import torch
 try:
-    import omegaconf
+    from omegaconf import ListConfig, DictConfig
+    from omegaconf.base import ContainerMetadata, SCMode
+    from omegaconf.nodes import ValueNode
     torch.serialization.add_safe_globals([
-        omegaconf.listconfig.ListConfig,
-        omegaconf.dictconfig.DictConfig,
+        ListConfig,
+        DictConfig,
+        ContainerMetadata,
+        SCMode,
+        ValueNode,
     ])
 except (ImportError, AttributeError):
     pass
@@ -65,6 +70,7 @@ class WhisperXService:
                 model_path,
                 device=rt.whisper_device,
                 compute_type=rt.whisper_compute_type,
+                vad_method="silero",  # Use Silero VAD to avoid PyTorch 2.6+ compatibility issues
             )
             self._current_model_path = model_path
             # Reset align model when whisper model changes
