@@ -160,19 +160,27 @@ class UVRService:
                 "model_used": "mock",
             }
 
-        logger.info(f"Separating vocals: {audio_path}")
+        # Set output directory for this separation
+        self._separator.output_dir = str(output_dir)
+
+        logger.info(f"Separating vocals: {audio_path} -> {output_dir}")
         output_files = self._separator.separate(str(audio_file))
 
         vocals_path = None
+        instrumental_path = None
         for f in output_files:
-            if "vocals" in Path(f).stem.lower():
+            stem_lower = Path(f).stem.lower()
+            if "vocals" in stem_lower:
                 vocals_path = f
-                break
+            elif "instrumental" in stem_lower:
+                instrumental_path = f
 
         rt = get_runtime_settings()
         return {
             "input_path": audio_path,
             "vocals_path": vocals_path,
+            "instrumental_path": instrumental_path,
+            "output_dir": str(output_dir),
             "model_used": rt.uvr_model,
         }
 
@@ -187,5 +195,5 @@ def get_uvr_service() -> UVRService:
     return _service
 
 
-async def separate_vocals(audio_path: str) -> dict[str, Any]:
-    return get_uvr_service().separate(audio_path)
+async def separate_vocals(audio_path: str, output_dir: Path | None = None) -> dict[str, Any]:
+    return get_uvr_service().separate(audio_path, output_dir=output_dir)
