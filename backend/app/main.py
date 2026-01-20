@@ -1,21 +1,22 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import tasks, pipeline, settings
+from app.api.routes import tasks, pipeline
+from app.api.routes import settings as settings_router
 from app.core.config import get_settings
 
-settings = get_settings()
+config = get_settings()
 
 app = FastAPI(
-    title=settings.api_title,
-    version=settings.api_version,
-    debug=settings.debug,
+    title=config.api_title,
+    version=config.api_version,
+    debug=config.debug,
 )
 
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=config.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -24,9 +25,9 @@ app.add_middleware(
 # Include routers
 app.include_router(tasks.router, prefix="/api")
 app.include_router(pipeline.router, prefix="/api")
-app.include_router(settings.router, prefix="/api")
+app.include_router(settings_router.router, prefix="/api")
 
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "service": settings.api_title, "version": settings.api_version}
+    return {"status": "healthy", "service": config.api_title, "version": config.api_version}

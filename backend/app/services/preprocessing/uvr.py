@@ -66,7 +66,7 @@ class UVRService:
         try:
             from audio_separator.separator import Separator
 
-            # Determine model directory
+            # Determine base model directory
             if model_dir:
                 base_model_dir = Path(model_dir)
             else:
@@ -74,59 +74,64 @@ class UVRService:
 
             logger.info(f"Loading UVR model: {model_name}")
 
-            # Check for specific model path first
-            specific_path = self._get_model_path(model_name)
-            if specific_path:
-                # If specific path is set, use it
-                full_path = Path(specific_path)
-                if not full_path.is_absolute() and base_model_dir:
-                    full_path = base_model_dir / specific_path
-                if full_path.exists():
-                    logger.info(f"Using specific model path: {full_path}")
-                    self._separator = Separator(output_format="wav")
-                    self._separator.load_model(str(full_path))
-                    self._current_model = model_name
-                    self._current_model_dir = model_dir
-                    return
+            # Determine which subdirectory contains the model
+            # audio-separator expects model_file_dir to be the directory containing the model file
+            # AND the mdx_model_data.json / vr_model_data.json config files
+            model_file = None
+            model_file_dir = None
 
-            # Try to find model in standard directory structure
             if base_model_dir:
-                logger.info(f"Using UVR model directory: {base_model_dir}")
-
                 # Search for model file in common subdirectories
                 search_dirs = [
-                    base_model_dir / "MDX_Net_Models",
-                    base_model_dir / "VR_Models",
-                    base_model_dir / "Demucs_Models",
-                    base_model_dir,
+                    ("MDX_Net_Models", [".onnx"]),
+                    ("VR_Models", [".pth"]),
+                    ("Demucs_Models", [".yaml", ".th", ""]),
                 ]
 
-                model_file = None
-                for search_dir in search_dirs:
-                    if not search_dir.exists():
+                for subdir_name, extensions in search_dirs:
+                    subdir = base_model_dir / subdir_name
+                    if not subdir.exists():
                         continue
-                    # Try exact name with extensions
-                    for ext in [".onnx", ".pth", ""]:
-                        candidate = search_dir / f"{model_name}{ext}"
+                    for ext in extensions:
+                        candidate = subdir / f"{model_name}{ext}"
                         if candidate.exists():
                             model_file = candidate
+                            model_file_dir = subdir
                             break
                     if model_file:
                         break
 
-                if model_file:
-                    logger.info(f"Found model file: {model_file}")
-                    self._separator = Separator(output_format="wav")
-                    self._separator.load_model(str(model_file))
-                else:
-                    # Let audio-separator try to find/download it
-                    self._separator = Separator(
-                        output_format="wav",
-                        model_file_dir=str(base_model_dir / "MDX_Net_Models"),
-                    )
-                    self._separator.load_model(model_name)
+                # Also check base directory
+                if not model_file:
+                    for ext in [".onnx", ".pth", ""]:
+                        candidate = base_model_dir / f"{model_name}{ext}"
+                        if candidate.exists():
+                            model_file = candidate
+                            model_file_dir = base_model_dir
+                            break
+
+            if model_file and model_file_dir:
+                logger.info(f"Found model file: {model_file}")
+                logger.info(f"Using model_file_dir: {model_file_dir}")
+                # Create separator with model_file_dir set to the directory containing the model
+                # This allows audio-separator to find the mdx_model_data.json config file
+                self._separator = Separator(
+                    output_format="wav",
+                    model_file_dir=str(model_file_dir),
+                )
+                # Load using filename (not full path) since we set model_file_dir
+                self._separator.load_model(model_file.name)
+            elif base_model_dir:
+                # Fallback: let audio-separator try to find/download it
+                logger.info(f"Model not found locally, using base dir: {base_model_dir}")
+                self._separator = Separator(
+                    output_format="wav",
+                    model_file_dir=str(base_model_dir / "MDX_Net_Models"),
+                )
+                self._separator.load_model(model_name)
             else:
                 # Use default download directory
+                logger.info("No model directory configured, using default")
                 self._separator = Separator(output_format="wav")
                 self._separator.load_model(model_name)
 
