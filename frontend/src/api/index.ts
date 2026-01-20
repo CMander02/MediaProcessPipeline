@@ -91,5 +91,22 @@ export const pipelineApi = {
   archives: (limit = 50) => request<{ archives: ArchiveItem[] }>(`/api/pipeline/archives?limit=${limit}`),
 }
 
+// Settings API
+export const settingsApi = {
+  get: () => request<Record<string, unknown>>("/api/settings"),
+
+  update: (settings: Record<string, unknown>) =>
+    request<Record<string, unknown>>("/api/settings", {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    }),
+
+  patch: (updates: Record<string, unknown>) =>
+    request<Record<string, unknown>>("/api/settings", {
+      method: "PATCH",
+      body: JSON.stringify(updates),
+    }),
+}
+
 // Health check
 export const healthCheck = () => request<{ status: string; message: string }>("/health")

@@ -1,5 +1,6 @@
 import { ref, onMounted } from "vue"
 import type { Settings } from "@/types"
+import { settingsApi } from "@/api"
 
 const STORAGE_KEY = "pipeline-settings"
 
@@ -69,8 +70,17 @@ export function useSettings() {
 
   const saveSettings = async () => {
     saving.value = true
+
+    // Save to localStorage
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings.value))
-    await new Promise((r) => setTimeout(r, 500))
+
+    // Sync to backend
+    try {
+      await settingsApi.update(settings.value as unknown as Record<string, unknown>)
+    } catch (e) {
+      console.warn("Failed to sync settings to backend:", e)
+    }
+
     saving.value = false
     saved.value = true
     setTimeout(() => {
@@ -78,12 +88,22 @@ export function useSettings() {
     }, 2000)
   }
 
+  const syncToBackend = async () => {
+    try {
+      await settingsApi.update(settings.value as unknown as Record<string, unknown>)
+    } catch (e) {
+      console.warn("Failed to sync settings to backend:", e)
+    }
+  }
+
   const updateSetting = <K extends keyof Settings>(key: K, value: Settings[K]) => {
     settings.value = { ...settings.value, [key]: value }
   }
 
-  onMounted(() => {
+  onMounted(async () => {
     loadSettings()
+    // Sync settings to backend on mount
+    await syncToBackend()
   })
 
   return {
@@ -93,5 +113,6 @@ export function useSettings() {
     saveSettings,
     updateSetting,
     loadSettings,
+    syncToBackend,
   }
 }
