@@ -4,10 +4,23 @@ import type { Settings } from "@/types"
 const STORAGE_KEY = "pipeline-settings"
 
 const defaultSettings: Settings = {
-  anthropic_api_key: "",
-  openai_api_key: "",
+  // LLM 配置
   llm_provider: "anthropic",
-  llm_model: "claude-sonnet-4-20250514",
+  // Anthropic
+  anthropic_api_key: "",
+  anthropic_api_base: "",
+  anthropic_model: "claude-sonnet-4-20250514",
+  // OpenAI
+  openai_api_key: "",
+  openai_api_base: "",
+  openai_model: "gpt-4o",
+  // Custom (OpenAI Compatible)
+  custom_api_key: "",
+  custom_api_base: "",
+  custom_model: "",
+  custom_name: "Custom",
+
+  // WhisperX
   whisper_model: "large-v3-turbo",
   whisper_model_path: "",
   whisper_device: "cuda",
@@ -18,11 +31,15 @@ const defaultSettings: Settings = {
   pyannote_segmentation_path: "",
   alignment_model_zh: "",
   alignment_model_en: "",
+
+  // Paths
   inbox_path: "./data/inbox",
   processing_path: "./data/processing",
   outputs_path: "./data/outputs",
   archive_path: "./data/archive",
   obsidian_vault_path: "",
+
+  // UVR
   uvr_model: "UVR-MDX-NET-Inst_HQ_3",
   uvr_device: "cuda",
   uvr_model_dir: "",

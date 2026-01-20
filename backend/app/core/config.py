@@ -1,7 +1,18 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
+from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class LLMProviderConfig(BaseModel):
+    """单个 LLM Provider 配置"""
+    name: str  # 显示名称
+    api_base: str = ""  # API Base URL (留空使用官方默认)
+    api_key: str = ""
+    model: str = ""  # 默认模型
+    enabled: bool = True
 
 
 class Settings(BaseSettings):
@@ -25,44 +36,103 @@ class Settings(BaseSettings):
     data_outputs: Path = Path("../data/outputs")
     data_archive: Path = Path("../data/archive")
 
-    # AI Provider (for analysis)
-    anthropic_api_key: str = ""
-    openai_api_key: str = ""
-    default_model: str = "claude-sonnet-4-20250514"
-    max_tokens: int = 4096
+    # =========================================================================
+    # LLM Configuration (使用 LiteLLM 统一处理)
+    # =========================================================================
+    # 当前使用的 provider (对应 llm_providers 的 key)
+    llm_provider: str = "anthropic"
 
+    # 内置 provider 配置 (可通过环境变量覆盖)
+    anthropic_api_key: str = ""
+    anthropic_api_base: str = ""  # 留空使用官方
+    anthropic_model: str = "claude-sonnet-4-20250514"
+
+    openai_api_key: str = ""
+    openai_api_base: str = ""  # 留空使用官方
+    openai_model: str = "gpt-4o"
+
+    # 自定义 OpenAI Compatible provider
+    custom_api_key: str = ""
+    custom_api_base: str = ""  # 例如: http://localhost:11434/v1
+    custom_model: str = ""  # 例如: llama3, qwen2
+    custom_name: str = "Custom"  # 显示名称
+
+    # LiteLLM 通用设置
+    max_tokens: int = 4096
+    temperature: float = 0.7
+
+    # =========================================================================
     # WhisperX settings
+    # =========================================================================
     hf_token: str = ""
     whisper_model: str = "large-v3-turbo"
-    whisper_model_path: str = ""  # 本地 Whisper 模型路径（用于 whisperx）
+    whisper_model_path: str = ""  # 本地 Whisper 模型路径
     faster_whisper_model_path: str = ""  # 本地 faster-whisper 模型路径
     compute_type: str = "float16"
     device: str = "cuda"
 
     # Pyannote/Diarization settings
-    pyannote_model_path: str = ""  # 本地 pyannote 模型路径
-    pyannote_segmentation_path: str = ""  # 本地 segmentation 模型路径
+    pyannote_model_path: str = ""
+    pyannote_segmentation_path: str = ""
 
     # wav2vec2 alignment model paths (per language)
-    alignment_model_zh: str = ""  # 中文对齐模型路径
-    alignment_model_en: str = ""  # 英文对齐模型路径
+    alignment_model_zh: str = ""
+    alignment_model_en: str = ""
 
+    # =========================================================================
     # UVR settings
-    uvr_model: str = "UVR-MDX-NET-Inst_HQ_3"  # 默认使用本地已有模型
-    uvr_model_dir: str = ""  # UVR 模型目录路径
-    # 具体 UVR 模型文件路径（可选，优先于 uvr_model_dir）
-    uvr_mdx_inst_hq3_path: str = ""  # UVR-MDX-NET-Inst_HQ_3.onnx
-    uvr_hp_uvr_path: str = ""  # 1_HP-UVR.pth
-    uvr_denoise_lite_path: str = ""  # UVR-DeNoise-Lite.pth
-    uvr_kim_vocal_2_path: str = ""  # Kim_Vocal_2.onnx
-    uvr_deecho_dereverb_path: str = ""  # UVR-DeEcho-DeReverb.pth
-    uvr_htdemucs_path: str = ""  # htdemucs 模型路径
+    # =========================================================================
+    uvr_model: str = "UVR-MDX-NET-Inst_HQ_3"
+    uvr_model_dir: str = ""
+    uvr_mdx_inst_hq3_path: str = ""
+    uvr_hp_uvr_path: str = ""
+    uvr_denoise_lite_path: str = ""
+    uvr_kim_vocal_2_path: str = ""
+    uvr_deecho_dereverb_path: str = ""
+    uvr_htdemucs_path: str = ""
 
-    # Bilibili settings
-    bilibili_sessdata: str = ""  # Optional: for higher quality downloads (login cookie)
-
-    # Obsidian (optional)
+    # =========================================================================
+    # Other settings
+    # =========================================================================
+    bilibili_sessdata: str = ""
     obsidian_vault_path: str = ""
+
+    def get_llm_config(self, provider: str | None = None) -> dict:
+        """
+        获取指定 provider 的 LiteLLM 配置
+
+        返回可直接传给 litellm.completion() 的参数
+        """
+        provider = provider or self.llm_provider
+
+        if provider == "anthropic":
+            config = {
+                "model": f"anthropic/{self.anthropic_model}",
+                "api_key": self.anthropic_api_key,
+            }
+            if self.anthropic_api_base:
+                config["api_base"] = self.anthropic_api_base
+        elif provider == "openai":
+            config = {
+                "model": self.openai_model,  # OpenAI 不需要前缀
+                "api_key": self.openai_api_key,
+            }
+            if self.openai_api_base:
+                config["api_base"] = self.openai_api_base
+        elif provider == "custom":
+            # OpenAI Compatible API
+            config = {
+                "model": f"openai/{self.custom_model}",  # 使用 openai/ 前缀
+                "api_key": self.custom_api_key,
+                "api_base": self.custom_api_base,
+            }
+        else:
+            raise ValueError(f"Unknown LLM provider: {provider}")
+
+        config["max_tokens"] = self.max_tokens
+        config["temperature"] = self.temperature
+
+        return config
 
 
 @lru_cache

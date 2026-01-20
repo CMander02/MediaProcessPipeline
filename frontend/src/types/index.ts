@@ -47,13 +47,33 @@ export interface ArchiveItem {
   has_mindmap: boolean
 }
 
+// LLM Provider types
+export type LLMProvider = "anthropic" | "openai" | "custom"
+
+export interface LLMProviderSettings {
+  api_key: string
+  api_base: string  // 留空使用官方默认
+  model: string
+}
+
 // Settings types
 export interface Settings {
-  // API
+  // LLM 配置
+  llm_provider: LLMProvider
+  // Anthropic
   anthropic_api_key: string
+  anthropic_api_base: string
+  anthropic_model: string
+  // OpenAI
   openai_api_key: string
-  llm_provider: "anthropic" | "openai"
-  llm_model: string
+  openai_api_base: string
+  openai_model: string
+  // Custom (OpenAI Compatible)
+  custom_api_key: string
+  custom_api_base: string
+  custom_model: string
+  custom_name: string
+
   // WhisperX
   whisper_model: string
   whisper_model_path: string
