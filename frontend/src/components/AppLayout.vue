@@ -10,6 +10,7 @@ import {
   DArrowRight,
   Menu as MenuIcon,
 } from "@element-plus/icons-vue"
+import { useLocale } from "@/composables/useLocale"
 import type { PageName, NavItem } from "@/types"
 
 defineProps<{
@@ -20,13 +21,15 @@ const emit = defineEmits<{
   (e: "navigate", page: PageName): void
 }>()
 
+const { t } = useLocale()
+
 const collapsed = ref(true)
 
 const navItems: NavItem[] = [
-  { id: "home", label: "Dashboard", icon: "HomeFilled" },
-  { id: "tasks", label: "Tasks", icon: "List" },
-  { id: "archives", label: "Archives", icon: "FolderOpened" },
-  { id: "settings", label: "Settings", icon: "Setting" },
+  { id: "home", label: "nav.dashboard", icon: "HomeFilled" },
+  { id: "tasks", label: "nav.tasks", icon: "List" },
+  { id: "archives", label: "nav.archives", icon: "FolderOpened" },
+  { id: "settings", label: "nav.settings", icon: "Setting" },
 ]
 
 const iconMap = {
@@ -41,12 +44,23 @@ const iconMap = {
   <div class="app-layout">
     <!-- Sidebar -->
     <aside class="sidebar" :class="{ collapsed }">
-      <!-- Logo -->
+      <!-- Logo + Toggle -->
       <div class="sidebar-header">
         <el-icon class="sidebar-logo">
           <MenuIcon />
         </el-icon>
-        <span v-show="!collapsed" class="sidebar-title">MediaPipeline</span>
+        <span v-if="!collapsed" class="sidebar-title">MediaPipeline</span>
+        <!-- 展开/收起按钮始终在header右侧 -->
+        <button
+          class="sidebar-collapse-btn"
+          @click="collapsed = !collapsed"
+          :title="collapsed ? '展开侧栏' : '收起侧栏'"
+        >
+          <el-icon>
+            <DArrowRight v-if="collapsed" />
+            <DArrowLeft v-else />
+          </el-icon>
+        </button>
       </div>
 
       <!-- Navigation -->
@@ -61,19 +75,9 @@ const iconMap = {
           <el-icon class="sidebar-nav-item-icon">
             <component :is="iconMap[item.icon as keyof typeof iconMap]" />
           </el-icon>
-          <span v-show="!collapsed" class="sidebar-nav-item-label">{{ item.label }}</span>
+          <span v-if="!collapsed" class="sidebar-nav-item-label">{{ t(item.label) }}</span>
         </div>
       </nav>
-
-      <!-- Toggle -->
-      <div class="sidebar-footer">
-        <div class="sidebar-toggle" @click="collapsed = !collapsed">
-          <el-icon>
-            <DArrowRight v-if="collapsed" />
-            <DArrowLeft v-else />
-          </el-icon>
-        </div>
-      </div>
     </aside>
 
     <!-- Main content -->
@@ -82,3 +86,44 @@ const iconMap = {
     </main>
   </div>
 </template>
+
+<style scoped>
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: var(--header-height);
+  padding: 0 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.sidebar.collapsed .sidebar-header {
+  justify-content: center;
+  padding: 0;
+}
+
+.sidebar-collapse-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-sidebar);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.sidebar.collapsed .sidebar-collapse-btn {
+  margin-left: 0;
+}
+
+.sidebar-collapse-btn:hover {
+  background: var(--bg-sidebar-hover);
+  color: #fff;
+}
+</style>

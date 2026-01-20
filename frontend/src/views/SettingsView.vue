@@ -12,6 +12,8 @@ import {
   ElDivider,
   ElIcon,
   ElAlert,
+  ElRadioGroup,
+  ElRadioButton,
 } from "element-plus"
 import {
   CircleCheck,
@@ -21,14 +23,21 @@ import {
   Microphone,
   FolderOpened,
   Setting,
-  Box,
+  Sunny,
+  Moon,
+  Monitor,
 } from "@element-plus/icons-vue"
 import { useSettings } from "@/composables/useSettings"
+import { useTheme, type ThemeMode } from "@/composables/useTheme"
+import { useLocale, type LocaleCode } from "@/composables/useLocale"
 import { healthCheck } from "@/api"
 
 const { settings, saving, saved, saveSettings, updateSetting } = useSettings()
+const { themeMode, setTheme } = useTheme()
+const { currentLocale, setLocale, t } = useLocale()
+
 const backendStatus = ref<"checking" | "online" | "offline">("checking")
-const activeTab = ref("api")
+const activeTab = ref("appearance")
 
 onMounted(async () => {
   try {
@@ -39,8 +48,17 @@ onMounted(async () => {
   }
 })
 
+const handleThemeChange = (mode: ThemeMode) => {
+  setTheme(mode)
+}
+
+const handleLocaleChange = (locale: LocaleCode) => {
+  setLocale(locale)
+}
+
 const whisperModels = [
   { value: "large-v3", label: "Large V3 (Best)" },
+  { value: "large-v3-turbo", label: "Large V3 Turbo" },
   { value: "large-v2", label: "Large V2" },
   { value: "medium", label: "Medium" },
   { value: "small", label: "Small" },
@@ -78,8 +96,8 @@ const uvrModels = [
     <!-- Header -->
     <div class="page-header flex-between">
       <div>
-        <h1 class="page-title">Settings</h1>
-        <p class="page-description">Configure pipeline processing options</p>
+        <h1 class="page-title">{{ t('settings.title') }}</h1>
+        <p class="page-description">{{ t('settings.description') }}</p>
       </div>
       <div class="header-actions">
         <el-tag
@@ -92,11 +110,11 @@ const uvrModels = [
             <CircleCheck v-else-if="backendStatus === 'online'" />
             <WarningFilled v-else />
           </el-icon>
-          Backend {{ backendStatus }}
+          {{ backendStatus === 'online' ? t('settings.backendOnline') : backendStatus === 'offline' ? t('settings.backendOffline') : t('settings.backendChecking') }}
         </el-tag>
         <el-button type="primary" :loading="saving" @click="saveSettings">
           <el-icon v-if="!saving && saved" class="mr-1"><CircleCheck /></el-icon>
-          {{ saved ? "Saved!" : "Save Changes" }}
+          {{ saved ? t('settings.saved') : t('settings.save') }}
         </el-button>
       </div>
     </div>
@@ -104,6 +122,81 @@ const uvrModels = [
     <!-- Settings Tabs -->
     <div class="settings-container">
       <el-tabs v-model="activeTab" class="settings-tabs">
+        <!-- Appearance Tab -->
+        <el-tab-pane name="appearance">
+          <template #label>
+            <span class="tab-label">
+              <el-icon><Sunny /></el-icon>
+              {{ t('settings.appearance') }}
+            </span>
+          </template>
+
+          <div class="settings-section">
+            <div class="section-header">
+              <h3 class="section-title">{{ t('settings.appearance') }}</h3>
+              <p class="section-description">{{ t('settings.appearanceDesc') }}</p>
+            </div>
+
+            <!-- Theme Selection -->
+            <div class="appearance-option">
+              <div class="option-info">
+                <label class="form-label">{{ t('settings.theme') }}</label>
+              </div>
+              <div class="theme-selector">
+                <button
+                  class="theme-btn"
+                  :class="{ active: themeMode === 'light' }"
+                  @click="handleThemeChange('light')"
+                >
+                  <el-icon><Sunny /></el-icon>
+                  <span>{{ t('settings.themeLight') }}</span>
+                </button>
+                <button
+                  class="theme-btn"
+                  :class="{ active: themeMode === 'dark' }"
+                  @click="handleThemeChange('dark')"
+                >
+                  <el-icon><Moon /></el-icon>
+                  <span>{{ t('settings.themeDark') }}</span>
+                </button>
+                <button
+                  class="theme-btn"
+                  :class="{ active: themeMode === 'system' }"
+                  @click="handleThemeChange('system')"
+                >
+                  <el-icon><Monitor /></el-icon>
+                  <span>{{ t('settings.themeSystem') }}</span>
+                </button>
+              </div>
+            </div>
+
+            <el-divider />
+
+            <!-- Language Selection -->
+            <div class="appearance-option">
+              <div class="option-info">
+                <label class="form-label">{{ t('settings.language') }}</label>
+              </div>
+              <div class="language-selector">
+                <button
+                  class="lang-btn"
+                  :class="{ active: currentLocale === 'zh' }"
+                  @click="handleLocaleChange('zh')"
+                >
+                  中文
+                </button>
+                <button
+                  class="lang-btn"
+                  :class="{ active: currentLocale === 'en' }"
+                  @click="handleLocaleChange('en')"
+                >
+                  English
+                </button>
+              </div>
+            </div>
+          </div>
+        </el-tab-pane>
+
         <!-- API Tab -->
         <el-tab-pane name="api">
           <template #label>
@@ -635,6 +728,79 @@ const uvrModels = [
   color: var(--text-muted);
 }
 
+/* Appearance Options */
+.appearance-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 0;
+}
+
+.option-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.theme-selector {
+  display: flex;
+  gap: 8px;
+}
+
+.theme-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--bg-base);
+  border: 2px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.theme-btn:hover {
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+}
+
+.theme-btn.active {
+  border-color: var(--primary-color);
+  background: var(--primary-bg);
+  color: var(--primary-color);
+}
+
+.language-selector {
+  display: flex;
+  gap: 8px;
+}
+
+.lang-btn {
+  padding: 10px 20px;
+  background: var(--bg-base);
+  border: 2px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.lang-btn:hover {
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+}
+
+.lang-btn.active {
+  border-color: var(--primary-color);
+  background: var(--primary-bg);
+  color: var(--primary-color);
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -702,6 +868,23 @@ const uvrModels = [
 
   .settings-section {
     padding: 20px;
+  }
+
+  .appearance-option {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .theme-selector,
+  .language-selector {
+    width: 100%;
+  }
+
+  .theme-btn,
+  .lang-btn {
+    flex: 1;
+    justify-content: center;
   }
 }
 </style>
