@@ -22,6 +22,7 @@ import {
   DataLine,
   Setting,
   Close,
+  Paperclip,
 } from "@element-plus/icons-vue"
 import { useTasks } from "@/composables/useTasks"
 import type { PipelineOptions, Task } from "@/types"
@@ -31,6 +32,24 @@ const { tasks, createTask } = useTasks()
 const source = ref("")
 const submitting = ref(false)
 const showOptions = ref(false)
+const fileInputRef = ref<HTMLInputElement | null>(null)
+const selectedFile = ref<File | null>(null)
+
+// Handle native file selection
+const handleFileChange = (e: Event) => {
+  const input = e.target as HTMLInputElement
+  if (input.files && input.files.length > 0) {
+    const file = input.files[0]
+    selectedFile.value = file
+    source.value = `[本地文件] ${file.name}`
+  }
+  // 重置 input 以便可以再次选择同一文件
+  input.value = ""
+}
+
+const openFilePicker = () => {
+  fileInputRef.value?.click()
+}
 const options = ref<PipelineOptions>({
   skip_download: false,
   skip_separation: false,
@@ -85,12 +104,33 @@ const handleSubmit = async () => {
 
   submitting.value = true
   try {
+    let taskSource = source.value.trim()
+
+    // 如果有选中的本地文件，先上传
+    if (selectedFile.value) {
+      const formData = new FormData()
+      formData.append("file", selectedFile.value)
+
+      const uploadRes = await fetch("http://localhost:8000/api/pipeline/upload", {
+        method: "POST",
+        body: formData,
+      })
+
+      if (!uploadRes.ok) {
+        throw new Error("文件上传失败")
+      }
+
+      const uploadData = await uploadRes.json()
+      taskSource = uploadData.file_path
+    }
+
     await createTask({
-      task_type: "pipeline", // 始终使用完整流程
-      source: source.value.trim(),
+      task_type: "pipeline",
+      source: taskSource,
       options: { ...options.value },
     })
     source.value = ""
+    selectedFile.value = null
     showOptions.value = false
   } catch (error) {
     console.error("Failed to create task:", error)
@@ -122,6 +162,23 @@ const activeTasks = computed(() =>
 )
 
 const getProgress = (task: Task) => Math.round(task.progress * 100)
+
+// Pipeline step definitions
+const pipelineSteps = [
+  { id: "download", name: "下载媒体" },
+  { id: "separate", name: "分离人声" },
+  { id: "transcribe", name: "转录音频" },
+  { id: "analyze", name: "分析内容" },
+  { id: "polish", name: "润色字幕" },
+  { id: "summarize", name: "生成摘要" },
+  { id: "archive", name: "归档保存" },
+]
+
+const getStepStatus = (task: Task, stepId: string): "completed" | "active" | "pending" => {
+  if (task.completed_steps?.includes(stepId)) return "completed"
+  if (task.current_step === stepId) return "active"
+  return "pending"
+}
 
 const languageOptions = [
   { value: "auto", label: "自动检测" },
@@ -161,6 +218,22 @@ const languageOptions = [
           <transition name="fade">
             <span v-if="inputHint" class="input-hint-badge">{{ inputHint }}</span>
           </transition>
+          <input
+            ref="fileInputRef"
+            type="file"
+            accept="video/*,audio/*,.mp4,.mkv,.avi,.webm,.mov,.mp3,.wav,.flac,.m4a,.ogg"
+            class="hidden-file-input"
+            @change="handleFileChange"
+          />
+          <el-tooltip content="选择本地文件" placement="top">
+            <button
+              type="button"
+              class="file-picker-toggle"
+              @click="openFilePicker"
+            >
+              <el-icon><Paperclip /></el-icon>
+            </button>
+          </el-tooltip>
           <el-tooltip content="处理选项" placement="top">
             <button
               type="button"
@@ -259,7 +332,7 @@ const languageOptions = [
       </div>
     </div>
 
-    <!-- 活跃任务 -->
+    <!-- 活跃任务 - 步骤式进度 -->
     <div v-if="activeTasks.length > 0" class="active-section">
       <h2 class="section-title">正在处理</h2>
       <div class="active-tasks-list">
@@ -270,18 +343,25 @@ const languageOptions = [
         >
           <div class="task-header">
             <div class="task-info">
-              <el-icon class="task-spinner"><Loading /></el-icon>
+              <el-icon class="task-spinner spin"><Loading /></el-icon>
               <span class="task-source">{{ task.source }}</span>
             </div>
-            <span class="task-percent">{{ getProgress(task) }}%</span>
           </div>
-          <div class="task-progress">
-            <el-progress
-              :percentage="getProgress(task)"
-              :show-text="false"
-              :stroke-width="6"
-            />
-            <span class="progress-message">{{ task.message || "处理中..." }}</span>
+          <!-- Step-based progress -->
+          <div class="task-steps">
+            <div
+              v-for="step in pipelineSteps"
+              :key="step.id"
+              class="step-item"
+              :class="getStepStatus(task, step.id)"
+            >
+              <span class="step-icon">
+                <el-icon v-if="getStepStatus(task, step.id) === 'completed'"><CircleCheck /></el-icon>
+                <el-icon v-else-if="getStepStatus(task, step.id) === 'active'" class="spin"><Loading /></el-icon>
+                <span v-else class="step-dot" />
+              </span>
+              <span class="step-name">{{ step.name }}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -292,6 +372,7 @@ const languageOptions = [
       <el-icon class="empty-icon"><Clock /></el-icon>
       <span>暂无进行中的任务，粘贴链接开始处理</span>
     </div>
+
   </div>
 </template>
 
@@ -357,6 +438,11 @@ const languageOptions = [
   white-space: nowrap;
 }
 
+.hidden-file-input {
+  display: none;
+}
+
+.file-picker-toggle,
 .options-toggle {
   width: 40px;
   height: 40px;
@@ -372,6 +458,7 @@ const languageOptions = [
   flex-shrink: 0;
 }
 
+.file-picker-toggle:hover,
 .options-toggle:hover {
   background: var(--border-color);
   color: var(--text-primary);
@@ -514,15 +601,52 @@ const languageOptions = [
   color: var(--primary-color);
 }
 
-.task-progress {
+/* Step-based progress */
+.task-steps {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 12px;
 }
 
-.progress-message {
+.step-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 13px;
   color: var(--text-muted);
+}
+
+.step-item.completed {
+  color: var(--success-color, #67c23a);
+}
+
+.step-item.active {
+  color: var(--primary-color);
+  font-weight: 500;
+}
+
+.step-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+}
+
+.step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border-color);
+}
+
+.step-item.active .step-dot {
+  background: var(--primary-color);
+}
+
+.step-name {
+  white-space: nowrap;
 }
 
 /* 空状态（简化版） */

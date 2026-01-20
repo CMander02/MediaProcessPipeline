@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import tasks, pipeline
+from app.api.routes import tasks, pipeline, filesystem
 from app.api.routes import settings as settings_router
 from app.api.routes.settings import get_runtime_settings, SETTINGS_FILE
 from app.core.config import get_settings
@@ -47,6 +47,7 @@ app.add_middleware(
 app.include_router(tasks.router, prefix="/api")
 app.include_router(pipeline.router, prefix="/api")
 app.include_router(settings_router.router, prefix="/api")
+app.include_router(filesystem.router, prefix="/api")
 
 
 @app.get("/health")

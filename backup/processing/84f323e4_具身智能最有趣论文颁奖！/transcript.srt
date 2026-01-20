@@ -1,0 +1,35 @@
+1
+00:00:00,098 --> 00:00:20,466
+Hello大家好我是华哲是清华大学交叉信息研究院助理教授我们上一期介绍了2025巨生智能最值得读的十篇论文那么今天给大家分享一些好玩的东西就是2025年巨生智能有哪些超酷的论文可以把
+
+2
+00:00:20,609 --> 00:00:49,393
+科幻照进现实那么首先呢是我们的第一个奖项叫做好莱坞Demo奖有两篇提名他们都让科幻照进了现实一篇叫做Olaf bring an animated character to life in the physical world他把迪士尼的动画人物真的搬进了现实世界另一个呢叫做Hitter a humanoid table tennis robot via hierarchical planning and learning让机器人学会打乒乓球当然最终
+
+3
+00:00:49,698 --> 00:01:03,826
+当选的是Olaf我想说因为什么技术在可爱面前都不值一提它不是好莱坞级别的demo而是迪士尼级别的demo因为它真的来自迪士尼亚然后是我们的奥卡姆剃刀奖
+
+4
+00:01:04,385 --> 00:01:23,346
+主打简洁高效完美诠释了少即是多第一篇提名的是叫做AIMBOTA SIMPLE AXILIARY VISUAL CUE TO ENHANCE SPATIAL AWARENESS OF VISUAL MOTOR POLICIES这个论文思路简直绝了大家记得玩CS的时候在屏幕上用笔画准星的兄弟吗?
+
+5
+00:01:23,554 --> 00:01:50,129
+那么这篇论文就是类似的思路在机器人做任务的时候给他加一个类似的准型做视觉提示居然他的能力就大幅提升了超级简洁也超级的好想但是为什么想到的不是你第二篇提名的是Vision in ActionLearning Active Perception from Human Demonstration让机器人从人类演示里面学相机运动不用复杂系统就能解决遮挡问题
+
+6
+00:01:50,337 --> 00:02:17,873
+那么最终当选的是AIMBOT因为AIMBOT在简洁性上确实略胜一筹接下来是分布外思考讲两篇都是在突破技术的边界一篇我们在上一期已经介绍过了叫做Much ado about Noising那么它确实揭秘了生成式模型在机器人控制中的成功秘密而另一篇叫做Robot PanoptesThe all-seeing robot with whole body dexterity堪称
+
+7
+00:02:17,985 --> 00:02:46,834
+全能感知机器人全身装了21个摄像头类似一条蛇能够用身体的所有部位跟环境互动和感知最后获奖的当然是让人过目难忘的Robot Panoptes那么看到这样的机器人谁不感叹一句机器人还能这样最后是开放生态讲两篇都是科研圈的福利担当第一篇叫做Toddler Bot Open Source Machine Learning Compatible Humanoid Platform for Local Manipulation
+
+8
+00:02:47,169 --> 00:03:14,449
+开源迷你类人机器人平台续航墙兼容机器学习不管你是学生还是科研人员还是在家的一个DIY爱好者都能用上低成本的硬件做研究第二篇叫做Beyond MimicFrom Motion Tracking to Versatile Humanoid Control via Guided Diffusion提供了稳定易用的类人运动跟踪代码库直接降低了类人控制的研究门槛让多少科研人员少走弯路
+
+9
+00:03:14,562 --> 00:03:40,466
+最终Beyond Mimic显盛毕竟那么多的机器人在跳舞里面说不定藏着的都是Beyond Mimic的算法好了2025巨神智能的年度论文盘点系列到这里就结束了还有哪篇论文的demo打在你的心趴上呢欢迎打在评论区跟大家分享互动我是雪花哲Harry欢迎大家一键三连关注我不迷路让你在AI狂飙的时代不掉队拜拜

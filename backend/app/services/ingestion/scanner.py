@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
+from app.api.routes.settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,8 @@ class LocalScanner:
         self._index: dict[str, str] = {}
 
     def scan(self) -> list[dict[str, Any]]:
-        inbox = self._settings.data_inbox.resolve()
+        rt = get_runtime_settings()
+        inbox = Path(rt.data_root).resolve()
         inbox.mkdir(parents=True, exist_ok=True)
 
         audio_ext = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".opus"}

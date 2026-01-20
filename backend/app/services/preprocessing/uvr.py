@@ -148,8 +148,9 @@ class UVRService:
         if not audio_file.exists():
             raise FileNotFoundError(f"File not found: {audio_path}")
 
-        settings = get_settings()
-        output_dir = output_dir or settings.data_processing.resolve()
+        if output_dir is None:
+            rt = get_runtime_settings()
+            output_dir = Path(rt.data_root).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
         if self._separator is None:
@@ -160,26 +161,31 @@ class UVRService:
                 "model_used": "mock",
             }
 
-        # Set output directory for this separation
-        self._separator.output_dir = str(output_dir)
+        # Set output directory for this separation (must be absolute path)
+        output_dir_abs = output_dir.resolve()
+        self._separator.output_dir = str(output_dir_abs)
 
-        logger.info(f"Separating vocals: {audio_path} -> {output_dir}")
+        logger.info(f"Separating vocals: {audio_path} -> {output_dir_abs}")
         output_files = self._separator.separate(str(audio_file))
 
         vocals_path = None
-        instrumental_path = None
         for f in output_files:
-            stem_lower = Path(f).stem.lower()
+            file_path = Path(f)
+            stem_lower = file_path.stem.lower()
             if "vocals" in stem_lower:
                 vocals_path = f
             elif "instrumental" in stem_lower:
-                instrumental_path = f
+                # Delete instrumental/background music file - not needed
+                try:
+                    file_path.unlink()
+                    logger.info(f"Deleted instrumental file: {f}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete instrumental file {f}: {e}")
 
         rt = get_runtime_settings()
         return {
             "input_path": audio_path,
             "vocals_path": vocals_path,
-            "instrumental_path": instrumental_path,
             "output_dir": str(output_dir),
             "model_used": rt.uvr_model,
         }

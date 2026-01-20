@@ -75,3 +75,7 @@ class Task(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
     completed_at: datetime | None = None
+    # Step-based progress tracking
+    current_step: str | None = None
+    steps: list[str] = Field(default_factory=list)
+    completed_steps: list[str] = Field(default_factory=list)

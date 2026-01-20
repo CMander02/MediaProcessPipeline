@@ -13,6 +13,7 @@ dependencies = [
     "httpx>=0.28.0",
     # AI - 使用 litellm 统一处理各种 LLM API
     "litellm>=1.40.0",
+    "python-multipart>=0.0.21",
 ]
 
 [project.optional-dependencies]

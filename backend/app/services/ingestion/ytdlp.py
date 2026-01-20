@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
+from app.api.routes.settings import get_runtime_settings
 from app.models import MediaMetadata, MediaType
 
 logger = logging.getLogger(__name__)
@@ -19,13 +20,15 @@ class YtdlpService:
     def download(self, url: str, output_dir: Path | None = None) -> dict[str, Any]:
         import yt_dlp
 
-        output_dir = output_dir or self._settings.data_processing.resolve()
+        if output_dir is None:
+            rt = get_runtime_settings()
+            output_dir = Path(rt.data_root).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
         ydl_opts = {
             "format": "bestaudio/best",
             "outtmpl": str(output_dir / "%(title)s.%(ext)s"),
-            "writeinfojson": True,
+            "writeinfojson": False,  # Don't write info.json
             "quiet": not self._settings.debug,
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
@@ -49,12 +52,37 @@ class YtdlpService:
             if matching:
                 output_file = max(matching, key=lambda p: p.stat().st_mtime)
 
+        # Clean up any leftover temporary files (original video, info.json, etc.)
+        self._cleanup_temp_files(output_dir, title, keep_file=output_file)
+
         return {
             "url": url,
             "title": title,
             "file_path": str(output_file) if output_file.exists() else None,
             "info": info,
         }
+
+    def _cleanup_temp_files(self, output_dir: Path, title: str, keep_file: Path | None = None):
+        """Clean up temporary files after download (original video, info.json, etc.)."""
+        # Extensions to clean up
+        temp_extensions = {'.webm', '.mp4', '.mkv', '.m4a', '.info.json', '.json', '.part', '.ytdl'}
+
+        for file in output_dir.iterdir():
+            if not file.is_file():
+                continue
+            # Skip the file we want to keep
+            if keep_file and file == keep_file:
+                continue
+            # Skip files that don't match the title pattern
+            if title not in file.stem and not file.name.endswith('.info.json'):
+                continue
+            # Delete temp files
+            if file.suffix in temp_extensions or file.name.endswith('.info.json'):
+                try:
+                    file.unlink()
+                    logger.info(f"Cleaned up temp file: {file}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete temp file {file}: {e}")
 
     def extract_metadata(self, info: dict[str, Any], file_path: str | None = None) -> MediaMetadata:
         upload_date = None

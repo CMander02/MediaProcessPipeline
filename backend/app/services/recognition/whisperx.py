@@ -310,10 +310,44 @@ async def transcribe_audio(
     language: str | None = None,
     output_dir: Path | None = None,
 ) -> dict[str, Any]:
+    """
+    Transcribe audio file, automatically splitting long audio (>30min)
+    at VAD silence points and merging results.
+    """
+    from app.services.preprocessing.vad_splitter import split_long_audio, merge_srt_segments
+
     service = get_whisperx_service()
-    result = service.transcribe(audio_path, language)
-    segments = service.to_segments(result)
-    srt_content = service.to_srt(segments)
+
+    # Check if audio needs splitting (>30 minutes)
+    audio_segments = await split_long_audio(audio_path, output_dir)
+
+    if len(audio_segments) == 1 and audio_segments[0].get('is_original', True):
+        # Short audio, process normally
+        result = service.transcribe(audio_path, language)
+        segments = service.to_segments(result)
+        srt_content = service.to_srt(segments)
+    else:
+        # Long audio, process segments and merge
+        logger.info(f"Processing {len(audio_segments)} audio segments")
+        all_srt_contents = []
+        all_segments = []
+        detected_language = None
+
+        for i, seg in enumerate(audio_segments):
+            logger.info(f"Transcribing segment {i+1}/{len(audio_segments)}: {seg['path']}")
+            result = service.transcribe(seg['path'], language)
+            segments = service.to_segments(result)
+            srt_content = service.to_srt(segments)
+
+            all_srt_contents.append(srt_content)
+            all_segments.extend(segments)
+
+            if detected_language is None:
+                detected_language = result.get("language")
+
+        # Merge SRT with corrected timestamps
+        srt_content = merge_srt_segments(audio_segments, all_srt_contents)
+        segments = all_segments
 
     # Save SRT file to output_dir if provided
     srt_path = None
@@ -325,8 +359,8 @@ async def transcribe_audio(
         logger.info(f"Saved SRT to: {srt_path}")
 
     return {
-        "language": result["language"],
-        "segments": [s.model_dump() for s in segments],
+        "language": result.get("language", language or "unknown") if len(audio_segments) == 1 else detected_language,
+        "segments": [s.model_dump() if hasattr(s, 'model_dump') else s for s in segments],
         "srt": srt_content,
         "srt_path": str(srt_path) if srt_path else None,
     }

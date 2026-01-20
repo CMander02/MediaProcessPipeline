@@ -29,6 +29,19 @@ export interface Task {
   created_at: string
   updated_at: string
   completed_at?: string
+  // Step-based progress tracking
+  current_step?: string
+  steps: string[]
+  completed_steps: string[]
+}
+
+// Pipeline steps
+export type PipelineStep = "download" | "separate" | "transcribe" | "analyze" | "polish" | "summarize" | "archive"
+
+export interface PipelineStepInfo {
+  id: PipelineStep
+  name: string
+  name_en: string
 }
 
 export interface TaskCreate {
@@ -45,6 +58,50 @@ export interface ArchiveItem {
   has_transcript: boolean
   has_summary: boolean
   has_mindmap: boolean
+  has_video?: boolean
+  has_audio?: boolean
+  media_file?: string
+  metadata?: MediaMetadata
+  analysis?: ContentAnalysis
+}
+
+export interface ContentAnalysis {
+  language: string
+  content_type: string
+  main_topics: string[]
+  keywords: string[]
+  proper_nouns: string[]
+  speakers_detected: number
+  tone: string
+}
+
+export interface HistoryStats {
+  total: number
+  completed: number
+  failed: number
+  cancelled: number
+}
+
+export interface HistoryEntry {
+  id: string
+  title: string
+  source: string
+  source_type: string
+  status: string
+  created_at: string
+  completed_at?: string
+  duration_seconds?: number
+  output_dir?: string
+  error?: string
+  metadata?: ContentAnalysis
+}
+
+export interface Subtitle {
+  index: number
+  startTime: number  // milliseconds
+  endTime: number
+  text: string
+  speaker?: string
 }
 
 // LLM Provider types
@@ -89,11 +146,8 @@ export interface Settings {
   alignment_model_zh: string
   alignment_model_en: string
   diarization_batch_size: number  // Reduce for long audio or low VRAM
-  // Paths
-  inbox_path: string
-  processing_path: string
-  outputs_path: string
-  archive_path: string
+  // Paths - simplified flat structure
+  data_root: string  // All task outputs go to data/{task_id}/
   obsidian_vault_path: string
   // UVR
   uvr_model: string

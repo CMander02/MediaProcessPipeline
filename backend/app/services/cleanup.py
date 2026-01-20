@@ -1,0 +1,217 @@
+"""Cleanup service for managing temporary files."""
+
+import logging
+import shutil
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+from app.api.routes.settings import get_runtime_settings
+from app.services.history import get_history_service
+
+logger = logging.getLogger(__name__)
+
+
+class CleanupService:
+    """Service for cleaning up temporary and orphaned files."""
+
+    def get_data_root(self) -> Path:
+        """Get the data root directory."""
+        rt = get_runtime_settings()
+        return Path(rt.data_root).resolve()
+
+    def cleanup_failed_task(self, task_id: str) -> dict[str, Any]:
+        """
+        Clean up files from a failed task.
+
+        Args:
+            task_id: The task ID (can be full UUID or short form)
+
+        Returns:
+            Dict with cleanup results
+        """
+        data_root = self.get_data_root()
+        cleaned = []
+        errors = []
+
+        # Find directories starting with the task_id
+        task_id_short = task_id[:8] if len(task_id) >= 8 else task_id
+
+        for item in data_root.iterdir():
+            if item.is_dir() and item.name.startswith(task_id_short):
+                try:
+                    shutil.rmtree(item)
+                    cleaned.append(str(item))
+                    logger.info(f"Cleaned up task directory: {item}")
+                except Exception as e:
+                    errors.append({"path": str(item), "error": str(e)})
+                    logger.error(f"Failed to clean up {item}: {e}")
+
+        return {
+            "task_id": task_id,
+            "cleaned": cleaned,
+            "errors": errors,
+        }
+
+    def cleanup_orphaned_files(self, max_age_hours: int = 24) -> dict[str, Any]:
+        """
+        Clean up orphaned temporary files older than specified age.
+
+        This removes:
+        - Directories without metadata.json (incomplete processing)
+        - Directories not in history
+        - Old temporary segment files
+
+        Args:
+            max_age_hours: Maximum age in hours for orphaned files
+
+        Returns:
+            Dict with cleanup results
+        """
+        data_root = self.get_data_root()
+        history = get_history_service()
+        cutoff_time = datetime.now() - timedelta(hours=max_age_hours)
+
+        cleaned = []
+        errors = []
+        skipped = []
+
+        # Get all task IDs from history
+        history_ids = {entry.id[:8] for entry in history.list_tasks(limit=1000)}
+
+        for item in data_root.iterdir():
+            # Skip non-directories and system files
+            if not item.is_dir():
+                continue
+            if item.name in ('settings.json', 'history.json') or item.name.startswith('.'):
+                continue
+
+            # Check if directory is in history
+            task_id_prefix = item.name.split('_')[0]
+            if task_id_prefix in history_ids:
+                skipped.append(str(item))
+                continue
+
+            # Check age
+            try:
+                mtime = datetime.fromtimestamp(item.stat().st_mtime)
+                if mtime > cutoff_time:
+                    skipped.append(str(item))
+                    continue
+            except OSError:
+                continue
+
+            # Check if it has metadata (completed task)
+            if (item / "metadata.json").exists():
+                skipped.append(str(item))
+                continue
+
+            # Clean up orphaned directory
+            try:
+                shutil.rmtree(item)
+                cleaned.append(str(item))
+                logger.info(f"Cleaned up orphaned directory: {item}")
+            except Exception as e:
+                errors.append({"path": str(item), "error": str(e)})
+                logger.error(f"Failed to clean up {item}: {e}")
+
+        return {
+            "max_age_hours": max_age_hours,
+            "cleaned": cleaned,
+            "skipped": skipped,
+            "errors": errors,
+        }
+
+    def get_disk_usage(self) -> dict[str, Any]:
+        """
+        Get disk usage statistics for the data directory.
+
+        Returns:
+            Dict with usage statistics
+        """
+        data_root = self.get_data_root()
+
+        total_size = 0
+        file_count = 0
+        dir_count = 0
+
+        type_sizes = {
+            "video": 0,
+            "audio": 0,
+            "transcript": 0,
+            "other": 0,
+        }
+
+        video_exts = {'.mp4', '.mkv', '.avi', '.webm', '.mov'}
+        audio_exts = {'.mp3', '.wav', '.flac', '.m4a', '.ogg'}
+        transcript_exts = {'.srt', '.txt', '.md', '.json'}
+
+        for item in data_root.rglob('*'):
+            if item.is_file():
+                file_count += 1
+                try:
+                    size = item.stat().st_size
+                    total_size += size
+
+                    suffix = item.suffix.lower()
+                    if suffix in video_exts:
+                        type_sizes["video"] += size
+                    elif suffix in audio_exts:
+                        type_sizes["audio"] += size
+                    elif suffix in transcript_exts:
+                        type_sizes["transcript"] += size
+                    else:
+                        type_sizes["other"] += size
+                except OSError:
+                    pass
+            elif item.is_dir():
+                dir_count += 1
+
+        def format_size(bytes: int) -> str:
+            if bytes < 1024:
+                return f"{bytes} B"
+            elif bytes < 1024 * 1024:
+                return f"{bytes / 1024:.1f} KB"
+            elif bytes < 1024 * 1024 * 1024:
+                return f"{bytes / (1024 * 1024):.1f} MB"
+            else:
+                return f"{bytes / (1024 * 1024 * 1024):.2f} GB"
+
+        return {
+            "path": str(data_root),
+            "total_size": total_size,
+            "total_size_formatted": format_size(total_size),
+            "file_count": file_count,
+            "directory_count": dir_count,
+            "by_type": {
+                k: {"bytes": v, "formatted": format_size(v)}
+                for k, v in type_sizes.items()
+            },
+        }
+
+
+# Global instance
+_service: CleanupService | None = None
+
+
+def get_cleanup_service() -> CleanupService:
+    """Get or create the cleanup service instance."""
+    global _service
+    if _service is None:
+        _service = CleanupService()
+    return _service
+
+
+async def cleanup_failed_task(task_id: str) -> dict[str, Any]:
+    """Clean up files from a failed task."""
+    return get_cleanup_service().cleanup_failed_task(task_id)
+
+
+async def cleanup_orphaned_files(max_age_hours: int = 24) -> dict[str, Any]:
+    """Clean up orphaned temporary files."""
+    return get_cleanup_service().cleanup_orphaned_files(max_age_hours)
+
+
+async def get_disk_usage() -> dict[str, Any]:
+    """Get disk usage statistics."""
+    return get_cleanup_service().get_disk_usage()

@@ -197,7 +197,7 @@ const uvrModels = [
           </div>
         </el-tab-pane>
 
-        <!-- API Tab -->
+        <!-- API Tab - Left-Right Split Layout -->
         <el-tab-pane name="api">
           <template #label>
             <span class="tab-label">
@@ -212,155 +212,174 @@ const uvrModels = [
               <p class="section-description">选择用于文本分析和摘要的 AI 服务</p>
             </div>
 
-            <!-- Provider Selection -->
-            <div class="provider-selector">
-              <button
-                class="provider-btn"
-                :class="{ active: settings.llm_provider === 'anthropic' }"
-                @click="updateSetting('llm_provider', 'anthropic')"
-              >
-                <span class="provider-name">Anthropic</span>
-                <span class="provider-desc">Claude 系列模型</span>
-              </button>
-              <button
-                class="provider-btn"
-                :class="{ active: settings.llm_provider === 'openai' }"
-                @click="updateSetting('llm_provider', 'openai')"
-              >
-                <span class="provider-name">OpenAI</span>
-                <span class="provider-desc">GPT 系列模型</span>
-              </button>
-              <button
-                class="provider-btn"
-                :class="{ active: settings.llm_provider === 'custom' }"
-                @click="updateSetting('llm_provider', 'custom')"
-              >
-                <span class="provider-name">{{ settings.custom_name || 'Custom' }}</span>
-                <span class="provider-desc">OpenAI Compatible</span>
-              </button>
-            </div>
-
-            <el-divider />
-
-            <!-- Anthropic Config -->
-            <div v-if="settings.llm_provider === 'anthropic'" class="provider-config">
-              <div class="form-grid">
-                <div class="form-group">
-                  <label class="form-label">Model</label>
-                  <el-select
-                    :model-value="settings.anthropic_model"
-                    @update:model-value="updateSetting('anthropic_model', $event as string)"
-                    class="form-input"
-                  >
-                    <el-option value="claude-sonnet-4-20250514" label="Claude Sonnet 4" />
-                    <el-option value="claude-opus-4-20250514" label="Claude Opus 4" />
-                    <el-option value="claude-3-5-haiku-20241022" label="Claude 3.5 Haiku" />
-                  </el-select>
-                </div>
-                <div class="form-group">
-                  <label class="form-label">API Base <span class="optional">(可选)</span></label>
-                  <el-input
-                    :model-value="settings.anthropic_api_base"
-                    @update:model-value="updateSetting('anthropic_api_base', $event)"
-                    placeholder="留空使用官方 API"
-                    class="form-input"
-                  />
-                </div>
-                <div class="form-group full-width">
-                  <label class="form-label">API Key</label>
-                  <el-input
-                    type="password"
-                    :model-value="settings.anthropic_api_key"
-                    @update:model-value="updateSetting('anthropic_api_key', $event)"
-                    placeholder="sk-ant-api03-..."
-                    show-password
-                    class="form-input"
-                  />
-                </div>
+            <!-- Left-Right Split Layout -->
+            <div class="llm-split-layout">
+              <!-- Left: Provider List -->
+              <div class="provider-list">
+                <button
+                  class="provider-list-btn"
+                  :class="{ active: settings.llm_provider === 'anthropic' }"
+                  @click="updateSetting('llm_provider', 'anthropic')"
+                >
+                  <div class="provider-list-icon">A</div>
+                  <div class="provider-list-info">
+                    <span class="provider-list-name">Anthropic</span>
+                    <span class="provider-list-desc">Claude 系列模型</span>
+                  </div>
+                  <span v-if="settings.llm_provider === 'anthropic'" class="provider-active-badge">当前</span>
+                </button>
+                <button
+                  class="provider-list-btn"
+                  :class="{ active: settings.llm_provider === 'openai' }"
+                  @click="updateSetting('llm_provider', 'openai')"
+                >
+                  <div class="provider-list-icon">O</div>
+                  <div class="provider-list-info">
+                    <span class="provider-list-name">OpenAI</span>
+                    <span class="provider-list-desc">GPT 系列模型</span>
+                  </div>
+                  <span v-if="settings.llm_provider === 'openai'" class="provider-active-badge">当前</span>
+                </button>
+                <button
+                  class="provider-list-btn"
+                  :class="{ active: settings.llm_provider === 'custom' }"
+                  @click="updateSetting('llm_provider', 'custom')"
+                >
+                  <div class="provider-list-icon">C</div>
+                  <div class="provider-list-info">
+                    <span class="provider-list-name">{{ settings.custom_name || 'Custom' }}</span>
+                    <span class="provider-list-desc">OpenAI Compatible</span>
+                  </div>
+                  <span v-if="settings.llm_provider === 'custom'" class="provider-active-badge">当前</span>
+                </button>
               </div>
-            </div>
 
-            <!-- OpenAI Config -->
-            <div v-else-if="settings.llm_provider === 'openai'" class="provider-config">
-              <div class="form-grid">
-                <div class="form-group">
-                  <label class="form-label">Model</label>
-                  <el-select
-                    :model-value="settings.openai_model"
-                    @update:model-value="updateSetting('openai_model', $event as string)"
-                    class="form-input"
-                  >
-                    <el-option value="gpt-4o" label="GPT-4o" />
-                    <el-option value="gpt-4o-mini" label="GPT-4o mini" />
-                    <el-option value="gpt-4-turbo" label="GPT-4 Turbo" />
-                    <el-option value="o1" label="o1" />
-                    <el-option value="o1-mini" label="o1-mini" />
-                  </el-select>
+              <!-- Right: Provider Config -->
+              <div class="provider-config-panel">
+                <!-- Anthropic Config -->
+                <div v-if="settings.llm_provider === 'anthropic'" class="provider-config">
+                  <h4 class="config-title">Anthropic 配置</h4>
+                  <div class="config-form">
+                    <div class="form-group">
+                      <label class="form-label">Model</label>
+                      <el-select
+                        :model-value="settings.anthropic_model"
+                        @update:model-value="updateSetting('anthropic_model', $event as string)"
+                        class="form-input"
+                      >
+                        <el-option value="claude-sonnet-4-20250514" label="Claude Sonnet 4" />
+                        <el-option value="claude-opus-4-20250514" label="Claude Opus 4" />
+                        <el-option value="claude-3-5-haiku-20241022" label="Claude 3.5 Haiku" />
+                      </el-select>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">API Base <span class="optional">(可选)</span></label>
+                      <el-input
+                        :model-value="settings.anthropic_api_base"
+                        @update:model-value="updateSetting('anthropic_api_base', $event)"
+                        placeholder="留空使用官方 API"
+                        class="form-input"
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">API Key</label>
+                      <el-input
+                        type="password"
+                        :model-value="settings.anthropic_api_key"
+                        @update:model-value="updateSetting('anthropic_api_key', $event)"
+                        placeholder="sk-ant-api03-..."
+                        show-password
+                        class="form-input"
+                      />
+                    </div>
+                  </div>
                 </div>
-                <div class="form-group">
-                  <label class="form-label">API Base <span class="optional">(可选)</span></label>
-                  <el-input
-                    :model-value="settings.openai_api_base"
-                    @update:model-value="updateSetting('openai_api_base', $event)"
-                    placeholder="留空使用官方 API"
-                    class="form-input"
-                  />
-                </div>
-                <div class="form-group full-width">
-                  <label class="form-label">API Key</label>
-                  <el-input
-                    type="password"
-                    :model-value="settings.openai_api_key"
-                    @update:model-value="updateSetting('openai_api_key', $event)"
-                    placeholder="sk-..."
-                    show-password
-                    class="form-input"
-                  />
-                </div>
-              </div>
-            </div>
 
-            <!-- Custom OpenAI Compatible Config -->
-            <div v-else-if="settings.llm_provider === 'custom'" class="provider-config">
-              <div class="form-grid">
-                <div class="form-group">
-                  <label class="form-label">Provider Name</label>
-                  <el-input
-                    :model-value="settings.custom_name"
-                    @update:model-value="updateSetting('custom_name', $event)"
-                    placeholder="e.g. Ollama, DeepSeek, Groq"
-                    class="form-input"
-                  />
+                <!-- OpenAI Config -->
+                <div v-else-if="settings.llm_provider === 'openai'" class="provider-config">
+                  <h4 class="config-title">OpenAI 配置</h4>
+                  <div class="config-form">
+                    <div class="form-group">
+                      <label class="form-label">Model</label>
+                      <el-select
+                        :model-value="settings.openai_model"
+                        @update:model-value="updateSetting('openai_model', $event as string)"
+                        class="form-input"
+                      >
+                        <el-option value="gpt-4o" label="GPT-4o" />
+                        <el-option value="gpt-4o-mini" label="GPT-4o mini" />
+                        <el-option value="gpt-4-turbo" label="GPT-4 Turbo" />
+                        <el-option value="o1" label="o1" />
+                        <el-option value="o1-mini" label="o1-mini" />
+                      </el-select>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">API Base <span class="optional">(可选)</span></label>
+                      <el-input
+                        :model-value="settings.openai_api_base"
+                        @update:model-value="updateSetting('openai_api_base', $event)"
+                        placeholder="留空使用官方 API"
+                        class="form-input"
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">API Key</label>
+                      <el-input
+                        type="password"
+                        :model-value="settings.openai_api_key"
+                        @update:model-value="updateSetting('openai_api_key', $event)"
+                        placeholder="sk-..."
+                        show-password
+                        class="form-input"
+                      />
+                    </div>
+                  </div>
                 </div>
-                <div class="form-group">
-                  <label class="form-label">Model Name</label>
-                  <el-input
-                    :model-value="settings.custom_model"
-                    @update:model-value="updateSetting('custom_model', $event)"
-                    placeholder="e.g. llama3, qwen2, deepseek-chat"
-                    class="form-input"
-                  />
-                </div>
-                <div class="form-group full-width">
-                  <label class="form-label">API Base URL</label>
-                  <el-input
-                    :model-value="settings.custom_api_base"
-                    @update:model-value="updateSetting('custom_api_base', $event)"
-                    placeholder="e.g. http://localhost:11434/v1"
-                    class="form-input"
-                  />
-                  <p class="form-hint">OpenAI Compatible API endpoint</p>
-                </div>
-                <div class="form-group full-width">
-                  <label class="form-label">API Key <span class="optional">(如需要)</span></label>
-                  <el-input
-                    type="password"
-                    :model-value="settings.custom_api_key"
-                    @update:model-value="updateSetting('custom_api_key', $event)"
-                    placeholder="留空表示无需认证 (如本地 Ollama)"
-                    show-password
-                    class="form-input"
-                  />
+
+                <!-- Custom OpenAI Compatible Config -->
+                <div v-else-if="settings.llm_provider === 'custom'" class="provider-config">
+                  <h4 class="config-title">自定义 OpenAI Compatible 配置</h4>
+                  <div class="config-form">
+                    <div class="form-group">
+                      <label class="form-label">Provider Name</label>
+                      <el-input
+                        :model-value="settings.custom_name"
+                        @update:model-value="updateSetting('custom_name', $event)"
+                        placeholder="e.g. Ollama, DeepSeek, Groq"
+                        class="form-input"
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">Model Name</label>
+                      <el-input
+                        :model-value="settings.custom_model"
+                        @update:model-value="updateSetting('custom_model', $event)"
+                        placeholder="e.g. llama3, qwen2, deepseek-chat"
+                        class="form-input"
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">API Base URL</label>
+                      <el-input
+                        :model-value="settings.custom_api_base"
+                        @update:model-value="updateSetting('custom_api_base', $event)"
+                        placeholder="e.g. http://localhost:11434/v1"
+                        class="form-input"
+                      />
+                      <p class="form-hint">OpenAI Compatible API endpoint</p>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">API Key <span class="optional">(如需要)</span></label>
+                      <el-input
+                        type="password"
+                        :model-value="settings.custom_api_key"
+                        @update:model-value="updateSetting('custom_api_key', $event)"
+                        placeholder="留空表示无需认证 (如本地 Ollama)"
+                        show-password
+                        class="form-input"
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -544,49 +563,17 @@ const uvrModels = [
 
             <div class="form-grid single-column">
               <div class="form-group">
-                <label class="form-label">Inbox Path</label>
+                <label class="form-label">数据根目录</label>
                 <el-input
-                  :model-value="settings.inbox_path"
-                  @update:model-value="updateSetting('inbox_path', $event)"
-                  placeholder="./data/inbox"
+                  :model-value="settings.data_root"
+                  @update:model-value="updateSetting('data_root', $event)"
+                  placeholder="./data"
                   class="form-input"
                 />
-                <p class="form-hint">Directory for incoming media files</p>
-              </div>
-
-              <div class="form-group">
-                <label class="form-label">Processing Path</label>
-                <el-input
-                  :model-value="settings.processing_path"
-                  @update:model-value="updateSetting('processing_path', $event)"
-                  placeholder="./data/processing"
-                  class="form-input"
-                />
-                <p class="form-hint">Temporary storage during processing</p>
-              </div>
-
-              <div class="form-group">
-                <label class="form-label">Outputs Path</label>
-                <el-input
-                  :model-value="settings.outputs_path"
-                  @update:model-value="updateSetting('outputs_path', $event)"
-                  placeholder="./data/outputs"
-                  class="form-input"
-                />
-                <p class="form-hint">Final processed outputs</p>
+                <p class="form-hint">所有任务输出到 data/{task_id}/ 目录下，包含原始文件、转录、摘要等</p>
               </div>
 
               <el-divider />
-
-              <div class="form-group">
-                <label class="form-label">Archive Path</label>
-                <el-input
-                  :model-value="settings.archive_path"
-                  @update:model-value="updateSetting('archive_path', $event)"
-                  placeholder="./data/archive"
-                  class="form-input"
-                />
-              </div>
 
               <div class="form-group">
                 <label class="form-label">Obsidian Vault Path (Optional)</label>
@@ -596,7 +583,7 @@ const uvrModels = [
                   placeholder="C:\Users\...\ObsidianVault"
                   class="form-input"
                 />
-                <p class="form-hint">Auto-sync archives to your Obsidian vault</p>
+                <p class="form-hint">自动同步 markdown 文件到 Obsidian vault</p>
               </div>
             </div>
           </div>
@@ -934,8 +921,115 @@ const uvrModels = [
   color: var(--primary-color);
 }
 
+/* LLM Split Layout */
+.llm-split-layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 24px;
+  min-height: 300px;
+}
+
+.provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.provider-list-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: var(--bg-base);
+  border: 2px solid var(--border-color);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: left;
+}
+
+.provider-list-btn:hover {
+  border-color: var(--text-muted);
+}
+
+.provider-list-btn.active {
+  border-color: var(--primary-color);
+  background: var(--primary-bg);
+}
+
+.provider-list-icon {
+  width: 40px;
+  height: 40px;
+  background: var(--border-color);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.provider-list-btn.active .provider-list-icon {
+  background: var(--primary-color);
+  color: #fff;
+}
+
+.provider-list-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.provider-list-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.provider-list-btn.active .provider-list-name {
+  color: var(--primary-color);
+}
+
+.provider-list-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.provider-active-badge {
+  padding: 3px 8px;
+  background: var(--primary-color);
+  color: #fff;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.provider-config-panel {
+  background: var(--bg-base);
+  border-radius: 12px;
+  padding: 24px;
+  border: 1px solid var(--border-color);
+}
+
+.config-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 20px;
+}
+
+.config-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
 .provider-config {
-  margin-top: 8px;
+  margin-top: 0;
 }
 
 .optional {
@@ -1028,6 +1122,34 @@ const uvrModels = [
   .lang-btn {
     flex: 1;
     justify-content: center;
+  }
+
+  .llm-split-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .provider-list {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .provider-list-btn {
+    flex: 1;
+    min-width: 120px;
+  }
+
+  .provider-list-info {
+    display: none;
+  }
+
+  .provider-list-icon {
+    width: 32px;
+    height: 32px;
+    font-size: 14px;
+  }
+
+  .provider-active-badge {
+    display: none;
   }
 }
 </style>

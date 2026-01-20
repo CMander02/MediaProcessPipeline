@@ -30,11 +30,8 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
-    # Data paths
-    data_inbox: Path = Path("../data/inbox")
-    data_processing: Path = Path("../data/processing")
-    data_outputs: Path = Path("../data/outputs")
-    data_archive: Path = Path("../data/archive")
+    # Data paths - simplified flat structure
+    data_root: Path = Path("../data")  # All task outputs go to data/{task_id}/
 
     # =========================================================================
     # LLM Configuration (使用 LiteLLM 统一处理)

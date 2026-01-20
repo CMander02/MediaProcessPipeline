@@ -11,8 +11,10 @@ from pydantic import BaseModel
 router = APIRouter(prefix="/settings", tags=["settings"])
 logger = logging.getLogger(__name__)
 
-# Settings file path - stored in backend directory
-SETTINGS_FILE = Path(__file__).parent.parent.parent.parent / "data" / "settings.json"
+# Settings file path - stored in project root data directory
+# __file__ = backend/app/api/routes/settings.py
+# parent x5 = project root
+SETTINGS_FILE = Path(__file__).parent.parent.parent.parent.parent / "data" / "settings.json"
 
 
 class RuntimeSettings(BaseModel):
@@ -56,11 +58,8 @@ class RuntimeSettings(BaseModel):
     uvr_deecho_dereverb_path: str = ""
     uvr_htdemucs_path: str = ""
 
-    # Paths
-    inbox_path: str = "./data/inbox"
-    processing_path: str = "./data/processing"
-    outputs_path: str = "./data/outputs"
-    archive_path: str = "./data/archive"
+    # Paths - simplified flat structure
+    data_root: str = "../data"  # All task outputs go to project root data/{task_id}/
     obsidian_vault_path: str = ""
 
 
