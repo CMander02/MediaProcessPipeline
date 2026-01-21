@@ -4,7 +4,7 @@
 
 import type { Task, TaskCreate, TaskStatus, ArchiveItem, MediaMetadata } from "@/types"
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
+const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:18000"
 
 // API functions
 async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {

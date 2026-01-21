@@ -55,8 +55,7 @@ class Settings(BaseSettings):
     custom_name: str = "Custom"  # 显示名称
 
     # LiteLLM 通用设置
-    max_tokens: int = 4096
-    temperature: float = 0.7
+    temperature: float = 0.1
 
     # =========================================================================
     # WhisperX settings
@@ -126,7 +125,6 @@ class Settings(BaseSettings):
         else:
             raise ValueError(f"Unknown LLM provider: {provider}")
 
-        config["max_tokens"] = self.max_tokens
         config["temperature"] = self.temperature
 
         return config

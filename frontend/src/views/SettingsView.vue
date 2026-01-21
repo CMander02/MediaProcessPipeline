@@ -462,6 +462,17 @@ const uvrModels = [
 
             <div class="toggle-setting">
               <div class="toggle-info">
+                <label class="form-label">Word-level Alignment</label>
+                <p class="form-hint">Use wav2vec2 for precise word timestamps. Disable to skip downloading alignment models.</p>
+              </div>
+              <el-switch
+                :model-value="settings.enable_alignment"
+                @update:model-value="updateSetting('enable_alignment', $event as boolean)"
+              />
+            </div>
+
+            <div class="toggle-setting" style="margin-top: 12px">
+              <div class="toggle-info">
                 <label class="form-label">Speaker Diarization</label>
                 <p class="form-hint">Identify and label different speakers in the audio</p>
               </div>

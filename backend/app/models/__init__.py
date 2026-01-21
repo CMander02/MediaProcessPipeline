@@ -2,6 +2,7 @@
 
 from app.models.chat import ChatRequest, ChatResponse, Message
 from app.models.task import (
+    ChapterInfo,
     MediaMetadata,
     MediaType,
     Task,
@@ -12,6 +13,7 @@ from app.models.task import (
 )
 
 __all__ = [
+    "ChapterInfo",
     "ChatRequest",
     "ChatResponse",
     "MediaMetadata",

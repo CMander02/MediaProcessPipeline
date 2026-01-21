@@ -1,0 +1,524 @@
+# MediaProcessPipeline 执行流程详解
+
+## 1. 输入方式
+
+系统支持三种输入方式：
+
+### 1.1 URL 输入（在线媒体）
+- **YouTube**: `https://youtube.com/watch?v=xxx` 或 `https://youtu.be/xxx`
+- **Bilibili**: `https://bilibili.com/video/xxx` 或 `https://b23.tv/xxx`
+- **其他 yt-dlp 支持的网站**
+
+### 1.2 本地文件路径
+- **视频格式**: `.mp4`, `.mkv`, `.avi`, `.webm`, `.mov`
+- **音频格式**: `.mp3`, `.wav`, `.flac`, `.m4a`, `.ogg`
+- 支持 Windows 绝对路径：`C:\path\to\file.mp4`
+- 支持带引号的路径：`"C:\path with spaces\file.mp4"`
+
+### 1.3 文件上传
+- 通过 `POST /api/pipeline/upload` 端点上传本地文件
+- 文件保存到 `{data_root}/uploads/` 目录
+
+---
+
+## 2. 完整管线执行流程
+
+当创建类型为 `pipeline` 的任务时，系统按以下步骤顺序执行：
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           Pipeline 执行流程                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ① DOWNLOAD (下载/复制)                                                     │
+│     │                                                                       │
+│     ├─ URL输入 → yt-dlp 下载 → 提取音频 (.wav)                              │
+│     │         → 提取元数据 (标题/作者/简介/标签/章节)                        │
+│     │                                                                       │
+│     └─ 本地文件 → 复制到任务目录                                             │
+│              ├─ 视频文件 → ffmpeg 提取音频                                   │
+│              └─ 音频文件 → 直接使用                                          │
+│                                                                             │
+│  ② SEPARATE (人声分离)                                                       │
+│     │                                                                       │
+│     ├─ skip_separation=false → UVR5 分离人声 → vocals.wav                   │
+│     │                                                                       │
+│     └─ skip_separation=true → 跳过，直接使用原音频                           │
+│                                                                             │
+│  ③ TRANSCRIBE (语音转录)                                                     │
+│     │                                                                       │
+│     ├─ 音频时长 ≤ 30分钟 → 直接转录                                          │
+│     │                                                                       │
+│     └─ 音频时长 > 30分钟 → VAD 静音点分片 → 分段转录 → 合并 SRT              │
+│                                                                             │
+│  ④ ANALYZE (内容分析)                                                        │
+│     │                                                                       │
+│     └─ LLM 分析 (输入: 转录文本 + 视频元数据)                                │
+│           → 提取语言/类型/话题/关键词/专有名词                               │
+│                                                                             │
+│  ⑤ POLISH (字幕润色) - 并行处理                                              │
+│     │                                                                       │
+│     └─ LLM 并行润色 (64段/chunk, 16段重叠, 最多8并发)                        │
+│           → 修正错误/添加标点/移除填充词                                     │
+│                                                                             │
+│  ⑥ SUMMARIZE (生成摘要)                                                      │
+│     │                                                                       │
+│     ├─ LLM 生成 TLDR/关键要点/待办事项                                       │
+│     │                                                                       │
+│     └─ LLM 生成思维导图 (限制3层深度)                                        │
+│                                                                             │
+│  ⑦ ARCHIVE (归档保存)                                                        │
+│     │                                                                       │
+│     └─ 保存所有产出文件到 data/{task_id}_{title}/                           │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 3. 各阶段详细说明
+
+### 3.1 Step 1: DOWNLOAD (下载媒体)
+
+**代码位置**: `backend/app/api/routes/tasks.py:317-389`
+
+#### URL 输入处理
+```python
+# 使用 yt-dlp 下载
+ingest = await download_media(source)
+audio_path = ingest.get("file_path")
+metadata = MediaMetadata(**ingest.get("metadata", {}))
+```
+
+**yt-dlp 配置** (`backend/app/services/ingestion/ytdlp.py`):
+- 格式选择: `bestaudio/best`
+- 输出格式: WAV (通过 FFmpeg 后处理)
+- 采样率: 192kbps
+
+#### 提取的元数据
+
+| 字段 | 来源 | 说明 |
+|------|------|------|
+| `title` | yt-dlp | 视频标题 |
+| `uploader` | yt-dlp | 作者/频道名 |
+| `description` | yt-dlp | 视频简介 (截取前5000字符) |
+| `tags` | yt-dlp | 标签列表 + 分类 |
+| `chapters` | yt-dlp | 章节标记 (标题+时间戳) |
+| `duration_seconds` | yt-dlp | 时长 |
+| `upload_date` | yt-dlp | 上传日期 |
+
+#### 本地文件处理
+```python
+# 视频文件 → 提取音频
+if source_path.suffix.lower() in video_exts:
+    audio_path = task_dir / f"{title}.wav"
+    _extract_audio_from_video(dest_source, audio_path)
+
+# 音频文件 → 直接使用
+elif source_path.suffix.lower() in audio_exts:
+    audio_path = str(dest_source)
+```
+
+**ffmpeg 提取音频参数**:
+```
+-vn              # 无视频
+-acodec pcm_s16le # 16位PCM
+-ar 16000        # 16kHz采样率
+-ac 1            # 单声道
+```
+
+---
+
+### 3.2 Step 2: SEPARATE (人声分离)
+
+**代码位置**: `backend/app/services/preprocessing/uvr.py`
+
+#### 可跳过选项
+```python
+skip_separation = task.options.get("skip_separation", False)
+if skip_separation:
+    vocals_path = audio_path  # 跳过分离
+else:
+    preprocess = await separate_vocals(audio_path, output_dir=task_dir)
+    vocals_path = preprocess.get("vocals_path", audio_path)
+```
+
+#### UVR5 模型配置
+| 设置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `uvr_model` | `UVR-MDX-NET-Inst_HQ_3` | 主模型 |
+| `uvr_model_dir` | 自动检测 | 模型目录 |
+| 输出格式 | WAV | 固定 |
+
+**支持的模型**:
+- `UVR-MDX-NET-Inst_HQ_3` (默认, MDX-Net)
+- `1_HP-UVR` (VR 架构)
+- `UVR-DeNoise-Lite`
+- `Kim_Vocal_2`
+- `UVR-DeEcho-DeReverb`
+- `htdemucs` (Demucs)
+
+**注意**: 分离后自动删除 instrumental 文件，只保留 vocals。
+
+---
+
+### 3.3 Step 3: TRANSCRIBE (语音转录)
+
+**代码位置**: `backend/app/services/recognition/whisperx.py`
+
+#### WhisperX 配置
+| 设置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `whisper_model` | `large-v3-turbo` | Whisper 模型 |
+| `whisper_model_path` | 空 | 本地模型路径 |
+| `whisper_device` | `cuda` | 计算设备 |
+| `whisper_compute_type` | `float16` | 计算精度 |
+| `whisper_batch_size` | `16` | 批次大小 |
+| `enable_diarization` | `true` | 启用说话人分离 |
+
+#### 长音频自动分片
+
+**代码位置**: `backend/app/services/preprocessing/vad_splitter.py`
+
+```
+音频时长判断:
+├─ ≤ 30分钟 → 直接转录
+└─ > 30分钟 → VAD 分片处理
+        │
+        ├─ 加载 Silero VAD 模型
+        ├─ 检测静音点 (语音间隔)
+        ├─ 在30分钟边界附近寻找最近静音点 (±2分钟)
+        ├─ 分割音频文件
+        ├─ 逐段转录
+        └─ 合并 SRT (修正时间戳偏移)
+```
+
+**分片参数**:
+```python
+SPLIT_THRESHOLD_SECONDS = 30 * 60  # 30分钟阈值
+# 在目标时间±2分钟内寻找静音点
+if abs(closest - target_time) <= 120:
+    split_points.append(closest)
+```
+
+#### 批次大小自动调整
+```python
+# 根据音频时长自动减小 batch_size 防止 OOM
+if audio_duration_min > 60:
+    batch_size = min(base_batch_size, 8)
+elif audio_duration_min > 30:
+    batch_size = min(base_batch_size, 12)
+else:
+    batch_size = base_batch_size
+```
+
+#### 说话人分离 (Diarization)
+```python
+if diarize and rt.enable_diarization:
+    # 优先使用本地 pyannote 模型
+    if rt.pyannote_model_path:
+        self._diarize_model = self._load_diarization_model(...)
+    else:
+        # 使用 HuggingFace Token 下载
+        self._diarize_model = DiarizationPipeline(use_auth_token=rt.hf_token, ...)
+```
+
+---
+
+### 3.4 Step 4: ANALYZE (内容分析)
+
+**代码位置**: `backend/app/services/analysis/llm.py`
+**Prompt 位置**: `backend/app/services/analysis/prompts/analyze.py`
+
+**第一阶段 LLM 调用** - 结合视频元数据提取内容信息：
+
+```python
+# 传入视频元数据辅助分析
+video_metadata = {
+    "uploader": metadata.uploader,
+    "description": metadata.description,
+    "tags": metadata.tags,
+    "chapters": [{"title": ch.title, "start_time": ch.start_time} for ch in metadata.chapters],
+}
+analysis = await analyze_content(transcript, metadata.title, metadata=video_metadata)
+```
+
+**输入信息**:
+- 转录文本 (截取前 8000 字符)
+- 视频标题
+- 作者名
+- 视频简介 (截取前 1000 字符)
+- 标签列表 (最多 20 个)
+- 章节标记 (最多 30 个)
+
+**输出格式**:
+```json
+{
+    "language": "zh-CN",
+    "content_type": "技术讲座",
+    "main_topics": ["主题1", "主题2", "主题3"],
+    "keywords": ["关键词1", "关键词2", "关键词3"],
+    "proper_nouns": ["专有名词1", "专有名词2"],
+    "speakers_detected": 2,
+    "tone": "教学"
+}
+```
+
+---
+
+### 3.5 Step 5: POLISH (字幕润色) - 并行处理
+
+**代码位置**: `backend/app/services/analysis/llm.py`
+**Prompt 位置**: `backend/app/services/analysis/prompts/polish.py`
+
+#### 并行分块润色
+
+**第二阶段 LLM 调用** - 使用上下文信息并行润色字幕：
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                    并行分块润色机制                             │
+├────────────────────────────────────────────────────────────────┤
+│                                                                │
+│  参数配置:                                                      │
+│  ├─ chunk_size = 64 段 (每块处理的字幕条数)                     │
+│  ├─ overlap = 16 段 (块之间的重叠区域)                          │
+│  └─ max_concurrency = 8 (最大并行 LLM 调用数)                   │
+│                                                                │
+│  处理流程 (1000 段字幕示例):                                    │
+│                                                                │
+│  段落: [1-64] [49-112] [97-160] ... (共约 21 块)               │
+│                                                                │
+│  并行执行:                                                      │
+│  ┌─────────┬─────────┬─────────┬─────────┬─────────┬───────┐   │
+│  │ chunk 0 │ chunk 1 │ chunk 2 │ chunk 3 │ chunk 4 │  ...  │   │
+│  └─────────┴─────────┴─────────┴─────────┴─────────┴───────┘   │
+│       ↓         ↓         ↓         ↓         ↓                │
+│  [Semaphore 限制最多 8 个并发]                                  │
+│                                                                │
+│  合并策略:                                                      │
+│  ├─ chunk 0: 保留 1-64 全部                                    │
+│  ├─ chunk 1: 跳过前 16 段，保留 17-64 (即原始 65-112)          │
+│  └─ 依次类推...                                                 │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
+```
+
+**润色 Prompt 使用分析结果作为上下文**:
+```python
+prompt = get_polish_prompt(
+    text=chunk_srt,
+    language=context.get("language"),
+    content_type=context.get("content_type"),
+    main_topics=context.get("main_topics"),
+    keywords=context.get("keywords"),
+    proper_nouns=context.get("proper_nouns"),
+)
+```
+
+---
+
+### 3.6 Step 6: SUMMARIZE (生成摘要)
+
+**代码位置**: `backend/app/services/analysis/llm.py`
+**Prompt 位置**:
+- `backend/app/services/analysis/prompts/summarize.py`
+- `backend/app/services/analysis/prompts/mindmap.py`
+
+**并行生成**:
+```python
+summary = await summarize_text(transcript)  # TLDR + 关键要点
+mindmap = await generate_mindmap(transcript)  # Markmap 格式
+```
+
+**摘要输出格式**:
+```json
+{
+    "tldr": "一句话总结（不超过100字）",
+    "key_facts": ["关键要点1", "关键要点2", "..."],
+    "action_items": ["待办事项1", "..."],
+    "topics": ["主题1", "主题2"]
+}
+```
+
+**思维导图格式** (Markmap, 限制3层深度):
+```markdown
+- 根节点：全文概括（不超过30字）
+  - 一级主题1
+    - 二级要点1.1
+      - 三级细节1.1.1
+      - 三级细节1.1.2
+    - 二级要点1.2
+  - 一级主题2
+    - 二级要点2.1
+  - 一级主题3
+```
+
+**思维导图约束**:
+- 根节点: 全文一句话概括
+- 最大深度: 3层 (根 → 一级 → 二级 → 三级)
+- 一级主题: 3-6 个
+- 每个节点文字: 不超过 20 字
+
+---
+
+### 3.7 Step 7: ARCHIVE (归档保存)
+
+**代码位置**: `backend/app/services/archiving/archive.py`
+
+#### 输出目录结构
+```
+data/{task_id_short}_{title}/
+├── source/                      # 原始文件
+│   └── {original_filename}
+├── metadata.json                # 媒体元信息 (含 description, tags, chapters)
+├── analysis.json                # LLM 内容分析结果
+├── transcript.srt               # 原始转录 SRT
+├── transcript_polished.srt      # 润色后 SRT
+├── transcript_polished.md       # 润色后 Markdown
+└── summary.md                   # 摘要 + 思维导图
+```
+
+#### Obsidian 同步
+如果配置了 `obsidian_vault_path`，会自动将 `.md` 文件复制到：
+```
+{obsidian_vault_path}/MediaPipeline/{output_dir_name}/
+```
+
+---
+
+## 4. Prompt 配置
+
+所有 LLM Prompt 模板位于 `backend/app/services/analysis/prompts/` 目录：
+
+```
+prompts/
+├── __init__.py      # 导出所有 prompt 函数
+├── analyze.py       # 内容分析 prompt (get_analyze_prompt)
+├── polish.py        # 润色 prompt (get_polish_prompt, get_simple_polish_prompt)
+├── summarize.py     # 摘要 prompt (get_summarize_prompt)
+└── mindmap.py       # 思维导图 prompt (get_mindmap_prompt)
+```
+
+每个 prompt 都是一个函数，接收参数并返回格式化的 prompt 字符串。
+
+---
+
+## 5. LLM 配置
+
+### 5.1 支持的 Provider
+
+| Provider | 模型前缀 | 默认模型 |
+|----------|----------|----------|
+| `anthropic` | `anthropic/` | `claude-sonnet-4-20250514` |
+| `openai` | 无 | `gpt-4o` |
+| `custom` | `openai/` | 用户自定义 |
+
+### 5.2 通用参数
+```python
+temperature = 0.1  # 低温度保证输出稳定性
+# max_tokens 不设置，使用模型默认值
+```
+
+### 5.3 Custom Provider 配置
+支持任何 OpenAI Compatible API：
+```json
+{
+    "llm_provider": "custom",
+    "custom_api_base": "http://localhost:11434/v1",
+    "custom_model": "llama3",
+    "custom_api_key": "optional"
+}
+```
+
+---
+
+## 6. 性能优化配置
+
+### 6.1 低显存环境
+```json
+{
+    "whisper_batch_size": 8,
+    "diarization_batch_size": 8,
+    "whisper_compute_type": "int8"
+}
+```
+
+### 6.2 长音频处理 (2小时+)
+系统会自动：
+1. 在 VAD 静音点分片 (每30分钟)
+2. 减小 batch_size (>60分钟时降至8)
+3. 分段转录后合并
+
+### 6.3 跳过人声分离
+对于清晰语音录音：
+```json
+{
+    "task_type": "pipeline",
+    "source": "path/to/file",
+    "options": {
+        "skip_separation": true
+    }
+}
+```
+
+### 6.4 并行润色性能
+
+润色阶段使用并行处理，性能参数：
+- **chunk_size**: 64 段/块 (适合大多数 LLM 上下文)
+- **overlap**: 16 段 (保证连贯性)
+- **max_concurrency**: 8 (根据 API 限制可调整)
+
+对于 1000 段字幕：
+- 串行处理: ~21 次 LLM 调用 (顺序执行)
+- 并行处理: ~21 次 LLM 调用 (最多 8 个同时执行)
+
+---
+
+## 7. API 快速参考
+
+### 创建管线任务
+```http
+POST /api/tasks
+Content-Type: application/json
+
+{
+    "task_type": "pipeline",
+    "source": "https://youtube.com/watch?v=xxx",
+    "options": {
+        "skip_separation": false
+    }
+}
+```
+
+### 任务状态轮询
+```http
+GET /api/tasks/{task_id}
+```
+
+### 直接调用单步骤
+```http
+POST /api/pipeline/download     # 下载
+POST /api/pipeline/separate     # 分离
+POST /api/pipeline/transcribe   # 转录
+POST /api/pipeline/polish       # 润色
+POST /api/pipeline/summarize    # 摘要
+POST /api/pipeline/mindmap      # 思维导图
+```
+
+---
+
+## 8. 任务状态流转
+
+```
+pending → queued → processing → completed
+                        │
+                        └─→ failed
+                        └─→ cancelled
+```
+
+**进度计算**:
+```python
+progress = completed_steps / total_steps
+# total_steps = 7 (download, separate, transcribe, analyze, polish, summarize, archive)
+```

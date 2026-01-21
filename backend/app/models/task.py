@@ -34,6 +34,12 @@ class MediaType(StrEnum):
     OTHER = "other"
 
 
+class ChapterInfo(BaseModel):
+    """Video chapter/timestamp marker."""
+    title: str
+    start_time: float  # seconds
+
+
 class MediaMetadata(BaseModel):
     title: str
     source_url: str | None = None
@@ -43,6 +49,10 @@ class MediaMetadata(BaseModel):
     media_type: MediaType = MediaType.OTHER
     file_path: str | None = None
     file_hash: str | None = None
+    # Extended metadata from yt-dlp
+    description: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    chapters: list[ChapterInfo] = Field(default_factory=list)
     extra: dict[str, Any] = Field(default_factory=dict)
 
 

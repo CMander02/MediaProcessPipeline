@@ -8,7 +8,7 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.api.routes.settings import get_runtime_settings
-from app.models import MediaMetadata, MediaType
+from app.models import MediaMetadata, MediaType, ChapterInfo
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,13 @@ class YtdlpService:
                     logger.warning(f"Failed to delete temp file {file}: {e}")
 
     def extract_metadata(self, info: dict[str, Any], file_path: str | None = None) -> MediaMetadata:
+        """
+        Extract comprehensive metadata from yt-dlp info dict.
+
+        Extracts:
+        - Basic info: title, uploader, upload_date, duration
+        - Extended info: description, tags, chapters
+        """
         upload_date = None
         if info.get("upload_date"):
             try:
@@ -96,15 +103,47 @@ class YtdlpService:
         if file_path and Path(file_path).exists():
             file_hash = self._compute_hash(file_path)
 
+        # Extract tags (handle both 'tags' and 'categories')
+        tags = []
+        if info.get("tags"):
+            tags.extend(info["tags"])
+        if info.get("categories"):
+            tags.extend(info["categories"])
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_tags = []
+        for tag in tags:
+            if tag and tag not in seen:
+                seen.add(tag)
+                unique_tags.append(tag)
+
+        # Extract chapters
+        chapters = []
+        if info.get("chapters"):
+            for ch in info["chapters"]:
+                if ch.get("title") and ch.get("start_time") is not None:
+                    chapters.append(ChapterInfo(
+                        title=ch["title"],
+                        start_time=float(ch["start_time"])
+                    ))
+
+        # Extract description (limit length)
+        description = info.get("description")
+        if description and len(description) > 5000:
+            description = description[:5000] + "..."
+
         return MediaMetadata(
             title=info.get("title", "Unknown"),
             source_url=info.get("webpage_url") or info.get("original_url"),
-            uploader=info.get("uploader") or info.get("channel"),
+            uploader=info.get("uploader") or info.get("channel") or info.get("uploader_id"),
             upload_date=upload_date,
             duration_seconds=info.get("duration"),
             media_type=MediaType.VIDEO,
             file_path=file_path,
             file_hash=file_hash,
+            description=description,
+            tags=unique_tags,
+            chapters=chapters,
         )
 
     def _compute_hash(self, file_path: str) -> str:

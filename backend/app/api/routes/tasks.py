@@ -406,8 +406,15 @@ async def run_pipeline(task: Task):
     _update_step(task, PipelineStep.TRANSCRIBE, completed=True)
 
     # Step 4: Analyze content (first LLM pass - extract metadata)
+    # Pass video metadata (description, tags, chapters) to improve analysis
     _update_step(task, PipelineStep.ANALYZE)
-    analysis = await analyze_content(transcript, metadata.title)
+    video_metadata = {
+        "uploader": metadata.uploader,
+        "description": metadata.description,
+        "tags": metadata.tags,
+        "chapters": [{"title": ch.title, "start_time": ch.start_time} for ch in metadata.chapters] if metadata.chapters else None,
+    }
+    analysis = await analyze_content(transcript, metadata.title, metadata=video_metadata)
     _update_step(task, PipelineStep.ANALYZE, completed=True)
 
     # Step 5: Polish transcript (second LLM pass - sliding window)

@@ -39,6 +39,7 @@ class RuntimeSettings(BaseModel):
     whisper_device: str = "cuda"
     whisper_compute_type: str = "float16"
     whisper_batch_size: int = 16  # Reduce for long audio or low VRAM
+    enable_alignment: bool = True  # Enable wav2vec2 alignment for word-level timestamps
     enable_diarization: bool = True
     hf_token: str = ""
     pyannote_model_path: str = ""

@@ -226,27 +226,32 @@ class WhisperXService:
 
         detected_lang = result.get("language", language or "unknown")
 
-        # Alignment - reload if language changed
-        if self._align_model is None or self._align_model_lang != detected_lang:
-            align_model_path = self._get_alignment_model_path(detected_lang)
-            if align_model_path:
-                logger.info(f"Loading alignment model from: {align_model_path}")
-                model_a, metadata = whisperx.load_align_model(
-                    language_code=detected_lang,
-                    device=rt.whisper_device,
-                    model_name=align_model_path,
-                )
-            else:
-                model_a, metadata = whisperx.load_align_model(
-                    language_code=detected_lang, device=rt.whisper_device
-                )
-            self._align_model = (model_a, metadata)
-            self._align_model_lang = detected_lang
+        # Alignment - only if enabled in settings
+        if rt.enable_alignment:
+            # Reload alignment model if language changed
+            if self._align_model is None or self._align_model_lang != detected_lang:
+                align_model_path = self._get_alignment_model_path(detected_lang)
+                if align_model_path:
+                    logger.info(f"Loading alignment model from: {align_model_path}")
+                    model_a, metadata = whisperx.load_align_model(
+                        language_code=detected_lang,
+                        device=rt.whisper_device,
+                        model_name=align_model_path,
+                    )
+                else:
+                    logger.info(f"Loading alignment model for language: {detected_lang}")
+                    model_a, metadata = whisperx.load_align_model(
+                        language_code=detected_lang, device=rt.whisper_device
+                    )
+                self._align_model = (model_a, metadata)
+                self._align_model_lang = detected_lang
 
-        model_a, metadata = self._align_model
-        result = whisperx.align(
-            result["segments"], model_a, metadata, audio, rt.whisper_device
-        )
+            model_a, metadata = self._align_model
+            result = whisperx.align(
+                result["segments"], model_a, metadata, audio, rt.whisper_device
+            )
+        else:
+            logger.info("Alignment disabled, skipping wav2vec2 alignment")
 
         # Diarization (speaker identification)
         if diarize and rt.enable_diarization and (rt.hf_token or rt.pyannote_model_path):

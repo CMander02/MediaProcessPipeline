@@ -1,5 +1,6 @@
 """LLM service for text analysis using LiteLLM with two-phase polishing."""
 
+import asyncio
 import json
 import logging
 import re
@@ -7,68 +8,15 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.api.routes.settings import get_runtime_settings
+from app.services.analysis.prompts import (
+    get_analyze_prompt,
+    get_polish_prompt,
+    get_simple_polish_prompt,
+    get_summarize_prompt,
+    get_mindmap_prompt,
+)
 
 logger = logging.getLogger(__name__)
-
-# Phase 1: Content analysis prompt
-ANALYZE_PROMPT = """请分析以下转录文本，提取关键信息。文本标题: {title}
-
-转录内容:
-{text}
-
-请返回 JSON 格式:
-{{
-    "language": "检测到的主要语言代码，如 zh-CN, en-US, ja-JP",
-    "content_type": "内容类型，如 技术讲座/访谈/播客/会议/教程/演讲",
-    "main_topics": ["主要话题1", "主要话题2"],
-    "keywords": ["关键词1", "关键词2", "关键词3"],
-    "proper_nouns": ["专有名词1", "专有名词2"],
-    "speakers_detected": 1,
-    "tone": "语气风格，如 正式/非正式/教学/对话"
-}}
-
-只返回 JSON，不要其他内容。"""
-
-# Phase 2: Polish prompt with context
-POLISH_PROMPT = """你是专业的字幕校对编辑。请根据以下上下文信息润色字幕片段。
-
-## 内容分析
-- 语言: {language}
-- 内容类型: {content_type}
-- 主要话题: {main_topics}
-- 关键词: {keywords}
-- 专有名词（请保持一致拼写）: {proper_nouns}
-
-## 润色要求
-1. 修正语音识别错误和错别字
-2. 添加适当的标点符号
-3. 移除口语填充词（如"呃"、"那个"、"就是说"等）
-4. 保持原意和说话者风格
-5. **重要**: 保持 [SPEAKER_XX] 标记不变
-6. 保持 SRT 时间戳格式不变
-
-## 待润色的字幕片段
-{text}
-
-请输出润色后的完整 SRT 片段，保持格式不变:"""
-
-# Simple polish prompt (fallback when no context)
-SIMPLE_POLISH_PROMPT = """请整理以下转录文本：修正错别字，添加适当的标点符号，移除口语化的填充词（如"呃"、"那个"等），
-但保持原意和说话者的风格。如果有 [SPEAKER_XX] 标记，请保持不变。输出完整文本，不要总结。
-
-{text}"""
-
-SUMMARIZE_PROMPT = """分析以下转录文本，返回 JSON 格式：
-{{"tldr": "一句话总结", "key_facts": ["关键要点1", "关键要点2", ...], "action_items": ["待办事项..."], "topics": ["主题1", "主题2", ...]}}
-
-{text}"""
-
-MINDMAP_PROMPT = """将以下文本转换为 markmap 格式的思维导图（使用 2 空格缩进）：
-- 主题
-  - 子主题
-    - 细节
-
-{text}"""
 
 
 class LLMService:
@@ -109,7 +57,6 @@ class LLMService:
         else:
             return None
 
-        config["max_tokens"] = self._static_settings.max_tokens
         config["temperature"] = self._static_settings.temperature
         return config
 
@@ -128,23 +75,45 @@ class LLMService:
                 messages=[{"role": "user", "content": prompt}],
                 api_key=config.get("api_key"),
                 api_base=config.get("api_base"),
-                max_tokens=config.get("max_tokens", 4096),
-                temperature=config.get("temperature", 0.7),
+                temperature=config.get("temperature", 0.1),
             )
             return response.choices[0].message.content or ""
         except Exception as e:
             logger.error(f"LLM error: {e}")
             raise
 
-    async def analyze_content(self, text: str, title: str) -> dict[str, Any]:
+    async def analyze_content(
+        self,
+        text: str,
+        title: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """
         Phase 1: Analyze content to extract metadata.
         This provides context for the polishing phase.
+
+        Args:
+            text: Transcript text
+            title: Video/audio title
+            metadata: Optional metadata dict with uploader, description, tags, chapters
         """
         # Truncate text if too long (take first 8000 chars for analysis)
         truncated = text[:8000] if len(text) > 8000 else text
 
-        prompt = ANALYZE_PROMPT.format(title=title, text=truncated)
+        # Extract metadata fields
+        uploader = metadata.get("uploader") if metadata else None
+        description = metadata.get("description") if metadata else None
+        tags = metadata.get("tags") if metadata else None
+        chapters = metadata.get("chapters") if metadata else None
+
+        prompt = get_analyze_prompt(
+            title=title,
+            text=truncated,
+            uploader=uploader,
+            description=description,
+            tags=tags,
+            chapters=chapters,
+        )
         resp = await self._call(prompt)
 
         try:
@@ -196,72 +165,107 @@ class LLMService:
             result.append(f"{seg['index']}\n{seg['timestamp']}\n{seg['text']}")
         return '\n\n'.join(result)
 
-    async def polish_with_context(self, srt_content: str, context: dict[str, Any]) -> str:
+    async def polish_with_context_parallel(
+        self,
+        srt_content: str,
+        context: dict[str, Any],
+        chunk_size: int = 64,
+        overlap: int = 16,
+        max_concurrency: int = 8,
+    ) -> str:
         """
-        Phase 2: Polish transcript using sliding window with context.
+        Phase 2: Polish transcript using parallel chunks with context.
         Preserves [SPEAKER_XX] markers and SRT format.
+
+        Args:
+            srt_content: SRT content to polish
+            context: Analysis context from phase 1
+            chunk_size: Number of segments per chunk (default 64)
+            overlap: Overlap between chunks (default 16)
+            max_concurrency: Maximum parallel LLM calls (default 8)
         """
         segments = self._parse_srt(srt_content)
         if not segments:
             # Fallback to simple polish if not valid SRT
-            return await self._call(SIMPLE_POLISH_PROMPT.format(text=srt_content))
+            prompt = get_simple_polish_prompt(srt_content)
+            return await self._call(prompt)
 
-        # Sliding window parameters
-        # Modern LLMs have large context windows (64K+), so we can process more at once
-        window_size = 200  # segments per window
-        overlap = 20  # overlap between windows
-
-        logger.info(f"Polishing {len(segments)} segments with window_size={window_size}, overlap={overlap}")
-
-        polished_segments = []
+        # Generate all chunks with overlap
+        chunks: list[tuple[int, int, list[dict]]] = []
         i = 0
-        window_num = 0
-
+        chunk_idx = 0
         while i < len(segments):
-            window_num += 1
-            # Get window of segments
-            window_end = min(i + window_size, len(segments))
-            window = segments[i:window_end]
+            end = min(i + chunk_size, len(segments))
+            chunks.append((chunk_idx, i, end, segments[i:end]))
+            chunk_idx += 1
+            # Move forward by (chunk_size - overlap) to create overlap
+            i += chunk_size - overlap
 
-            logger.info(f"Processing window {window_num}: segments {i+1}-{window_end} of {len(segments)}")
+        logger.info(
+            f"Polishing {len(segments)} segments in {len(chunks)} chunks, "
+            f"chunk_size={chunk_size}, overlap={overlap}, max_concurrency={max_concurrency}"
+        )
 
-            # Convert window to SRT text
-            window_srt = self._segments_to_srt(window)
+        # Create semaphore to limit concurrency
+        semaphore = asyncio.Semaphore(max_concurrency)
 
-            # Build context string
-            prompt = POLISH_PROMPT.format(
-                language=context.get("language", "unknown"),
-                content_type=context.get("content_type", "unknown"),
-                main_topics=", ".join(context.get("main_topics", [])),
-                keywords=", ".join(context.get("keywords", [])),
-                proper_nouns=", ".join(context.get("proper_nouns", [])),
-                text=window_srt
-            )
+        async def process_chunk(
+            idx: int, start: int, end: int, chunk_segments: list[dict]
+        ) -> tuple[int, list[dict]]:
+            """Process a single chunk with semaphore control."""
+            async with semaphore:
+                logger.info(f"Processing chunk {idx}: segments {start+1}-{end} of {len(segments)}")
 
-            # Call LLM
-            polished_window = await self._call(prompt)
+                # Convert chunk to SRT text
+                chunk_srt = self._segments_to_srt(chunk_segments)
 
-            # Parse polished result
-            polished_segs = self._parse_srt(polished_window)
+                # Build prompt with context
+                prompt = get_polish_prompt(
+                    text=chunk_srt,
+                    language=context.get("language", "unknown"),
+                    content_type=context.get("content_type", "unknown"),
+                    main_topics=context.get("main_topics"),
+                    keywords=context.get("keywords"),
+                    proper_nouns=context.get("proper_nouns"),
+                )
 
-            if polished_segs:
-                logger.info(f"Window {window_num}: input {len(window)} segments, output {len(polished_segs)} segments")
-                # If this is first window, take all
-                if i == 0:
-                    polished_segments.extend(polished_segs)
+                # Call LLM
+                polished_chunk = await self._call(prompt)
+
+                # Parse polished result
+                polished_segs = self._parse_srt(polished_chunk)
+
+                if not polished_segs:
+                    logger.warning(f"Chunk {idx}: invalid response, keeping original")
+                    polished_segs = chunk_segments
                 else:
-                    # Skip overlapping segments from previous window
-                    polished_segments.extend(polished_segs[overlap:] if len(polished_segs) > overlap else polished_segs)
+                    logger.info(
+                        f"Chunk {idx}: input {len(chunk_segments)} segments, "
+                        f"output {len(polished_segs)} segments"
+                    )
+
+                return (idx, polished_segs)
+
+        # Process all chunks in parallel (with semaphore limiting concurrency)
+        tasks = [
+            process_chunk(idx, start, end, segs)
+            for idx, start, end, segs in chunks
+        ]
+        results = await asyncio.gather(*tasks)
+
+        # Sort by chunk index to maintain order
+        results.sort(key=lambda x: x[0])
+
+        # Merge results, handling overlaps
+        polished_segments = []
+        for i, (chunk_idx, polished_segs) in enumerate(results):
+            if i == 0:
+                # First chunk: take all segments
+                polished_segments.extend(polished_segs)
             else:
-                logger.warning(f"Window {window_num}: LLM returned invalid SRT, keeping original segments")
-                # Keep original segments if LLM fails to return valid SRT
-                if i == 0:
-                    polished_segments.extend(window)
-                else:
-                    polished_segments.extend(window[overlap:] if len(window) > overlap else window)
-
-            # Move window, accounting for overlap
-            i += window_size - overlap
+                # Subsequent chunks: skip overlap segments
+                skip = overlap if len(polished_segs) > overlap else 0
+                polished_segments.extend(polished_segs[skip:])
 
         # Re-index segments
         for idx, seg in enumerate(polished_segments, 1):
@@ -273,8 +277,9 @@ class LLMService:
     async def polish(self, text: str, context: dict[str, Any] | None = None) -> str:
         """Polish text, optionally with context from analysis phase."""
         if context:
-            return await self.polish_with_context(text, context)
-        return await self._call(SIMPLE_POLISH_PROMPT.format(text=text))
+            return await self.polish_with_context_parallel(text, context)
+        prompt = get_simple_polish_prompt(text)
+        return await self._call(prompt)
 
     def srt_to_markdown(self, srt_content: str, title: str = "") -> str:
         """
@@ -339,7 +344,8 @@ class LLMService:
         return '\n'.join(lines)
 
     async def summarize(self, text: str) -> dict[str, Any]:
-        resp = await self._call(SUMMARIZE_PROMPT.format(text=text))
+        prompt = get_summarize_prompt(text)
+        resp = await self._call(prompt)
         try:
             start, end = resp.find("{"), resp.rfind("}") + 1
             if start >= 0 and end > start:
@@ -349,7 +355,8 @@ class LLMService:
         return {"tldr": resp, "key_facts": [], "action_items": [], "topics": []}
 
     async def mindmap(self, text: str) -> str:
-        resp = await self._call(MINDMAP_PROMPT.format(text=text))
+        prompt = get_mindmap_prompt(text)
+        resp = await self._call(prompt)
         lines = [l for l in resp.strip().split("\n") if l.strip().startswith("-")]
         return "\n".join(lines) if lines else resp
 
@@ -364,9 +371,13 @@ def get_llm_service() -> LLMService:
     return _service
 
 
-async def analyze_content(text: str, title: str) -> dict[str, Any]:
+async def analyze_content(
+    text: str,
+    title: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Analyze content to extract metadata (Phase 1)."""
-    return await get_llm_service().analyze_content(text, title)
+    return await get_llm_service().analyze_content(text, title, metadata)
 
 
 async def polish_text(text: str, context: dict[str, Any] | None = None) -> str:
