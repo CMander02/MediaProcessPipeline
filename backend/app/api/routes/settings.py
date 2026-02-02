@@ -33,13 +33,26 @@ class RuntimeSettings(BaseModel):
     custom_model: str = ""
     custom_name: str = "Custom"
 
-    # WhisperX
+    # ASR Backend Selection
+    asr_backend: str = "qwen3"  # "qwen3" | "whisperx"
+
+    # Qwen3-ASR Settings
+    qwen3_asr_model_path: str = ""  # Local path, empty = use HuggingFace
+    qwen3_aligner_model_path: str = ""  # ForcedAligner path for timestamps
+    qwen3_enable_timestamps: bool = True
+    qwen3_batch_size: int = 32
+    qwen3_max_new_tokens: int = 4096
+    qwen3_device: str = "cuda"
+
+    # WhisperX (backup)
     whisper_model: str = "large-v3-turbo"
     whisper_model_path: str = ""
     whisper_device: str = "cuda"
     whisper_compute_type: str = "float16"
     whisper_batch_size: int = 16  # Reduce for long audio or low VRAM
     enable_alignment: bool = True  # Enable wav2vec2 alignment for word-level timestamps
+
+    # Speaker Diarization (shared by both backends)
     enable_diarization: bool = True
     hf_token: str = ""
     pyannote_model_path: str = ""

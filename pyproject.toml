@@ -31,6 +31,8 @@ media = [
     "audio-separator[gpu]>=0.41.0",
     # 语音识别 (whisperx 依赖 pyannote-audio)
     "whisperx>=3.7.0",
+    # Qwen3-ASR (可选, 支持本地模型)
+    "qwen-asr>=0.0.6",
 ]
 
 [tool.ruff]

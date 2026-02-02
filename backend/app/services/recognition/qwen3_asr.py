@@ -1,0 +1,430 @@
+"""Qwen3-ASR transcription service."""
+
+import logging
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+import torch
+
+from app.api.routes.settings import get_runtime_settings
+from app.models import TranscriptSegment
+
+logger = logging.getLogger(__name__)
+
+
+def _get_short_path_win32(long_path: str) -> str:
+    """Convert long path to short (8.3) path on Windows.
+
+    This helps with non-ASCII paths that some libraries can't handle.
+    """
+    if sys.platform != "win32":
+        return long_path
+
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        buf_size = kernel32.GetShortPathNameW(long_path, None, 0)
+        if buf_size == 0:
+            return long_path
+        buf = ctypes.create_unicode_buffer(buf_size)
+        kernel32.GetShortPathNameW(long_path, buf, buf_size)
+        return buf.value
+    except Exception:
+        return long_path
+
+
+def _check_unicode_path_issue() -> bool:
+    """Check if we're in a path with non-ASCII characters that could cause issues.
+
+    Returns True if there's a potential Unicode path issue.
+    """
+    if sys.platform != "win32":
+        return False
+
+    # Check if the current working directory or site-packages has non-ASCII
+    try:
+        import site
+        for path in site.getsitepackages():
+            if not path.isascii():
+                return True
+        return not os.getcwd().isascii()
+    except Exception:
+        return False
+
+
+# Check for Unicode path issues at module load time
+_has_unicode_path_issue = _check_unicode_path_issue()
+if _has_unicode_path_issue:
+    logger.warning(
+        "Detected non-ASCII characters in Python path. "
+        "Qwen3-ASR may fail due to nagisa/dynet Unicode path limitations. "
+        "Consider using WhisperX backend or moving project to an ASCII-only path."
+    )
+
+
+class Qwen3ASRService:
+    """Qwen3-ASR based transcription service with optional forced alignment."""
+
+    def __init__(self):
+        self._model = None
+        self._aligner = None
+        self._current_model_path: str | None = None
+        self._current_aligner_path: str | None = None
+        self._diarize_model = None
+        self._load_error: str | None = None
+
+    def _get_model_path(self) -> str:
+        """Get Qwen3-ASR model path from runtime settings."""
+        rt = get_runtime_settings()
+        if rt.qwen3_asr_model_path:
+            return rt.qwen3_asr_model_path
+        # Default to HuggingFace model ID
+        return "Qwen/Qwen3-ASR-1.7B"
+
+    def _get_aligner_path(self) -> str | None:
+        """Get Qwen3 ForcedAligner model path from runtime settings."""
+        rt = get_runtime_settings()
+        if rt.qwen3_aligner_model_path:
+            return rt.qwen3_aligner_model_path
+        return None
+
+    def _ensure_init(self):
+        """Initialize or reinitialize model with current settings."""
+        rt = get_runtime_settings()
+        model_path = self._get_model_path()
+        aligner_path = self._get_aligner_path()
+
+        # Check if we need to reinitialize (settings changed)
+        if (
+            self._model is not None
+            and self._current_model_path == model_path
+            and self._current_aligner_path == aligner_path
+        ):
+            return
+
+        try:
+            # Import qwen_asr - may fail on Windows with non-ASCII paths due to nagisa
+            from qwen_asr import Qwen3ASRModel
+
+            logger.info(f"Loading Qwen3-ASR model: {model_path}")
+
+            # Determine dtype based on device
+            dtype = torch.bfloat16 if rt.qwen3_device.startswith("cuda") else torch.float32
+
+            # Build model kwargs
+            model_kwargs = {
+                "dtype": dtype,
+                "device_map": rt.qwen3_device,
+                "max_inference_batch_size": rt.qwen3_batch_size,
+                "max_new_tokens": rt.qwen3_max_new_tokens,
+            }
+
+            # Add aligner if configured and timestamps enabled
+            if rt.qwen3_enable_timestamps and aligner_path:
+                logger.info(f"Loading Qwen3 ForcedAligner: {aligner_path}")
+                model_kwargs["aligner_path"] = aligner_path
+
+            self._model = Qwen3ASRModel.from_pretrained(model_path, **model_kwargs)
+            self._current_model_path = model_path
+            self._current_aligner_path = aligner_path
+
+        except ImportError as e:
+            logger.warning(f"qwen-asr not installed - mock mode: {e}")
+            self._model = None
+            self._load_error = f"qwen-asr not installed: {e}"
+        except RuntimeError as e:
+            # Handle nagisa Unicode path issue on Windows
+            error_msg = str(e)
+            if "nagisa" in error_msg.lower() or "Could not read model" in error_msg:
+                self._load_error = (
+                    "Qwen3-ASR failed to load due to Unicode path issue with nagisa/dynet. "
+                    "The nagisa library (required for ForcedAligner) cannot handle non-ASCII "
+                    "characters in paths. Solutions:\n"
+                    "1. Move the project to a path with only ASCII characters\n"
+                    "2. Use the WhisperX backend instead (set asr_backend='whisperx')\n"
+                    "3. Create a symlink/junction with ASCII-only path to the .venv"
+                )
+                logger.error(self._load_error)
+            else:
+                self._load_error = f"Qwen3-ASR failed to load: {e}"
+                logger.error(self._load_error)
+            self._model = None
+        except Exception as e:
+            self._load_error = f"Qwen3-ASR failed to load: {e}"
+            logger.error(self._load_error)
+            self._model = None
+
+    def _load_diarization_model(self, model_path: str, device: str):
+        """Load diarization model from local path using pyannote directly.
+
+        Returns a wrapper that accepts audio format (numpy array).
+        Optimized for long audio files (2+ hours) with reduced batch sizes.
+        """
+        from pyannote.audio import Pipeline
+        import pandas as pd
+        import numpy as np
+
+        path = Path(model_path)
+
+        # If it's a directory, look for config.yaml inside
+        if path.is_dir():
+            config_file = path / "config.yaml"
+            if config_file.exists():
+                model_path = str(config_file)
+            else:
+                raise FileNotFoundError(f"config.yaml not found in {path}")
+
+        logger.info(f"Loading diarization model from: {model_path}")
+        pipeline = Pipeline.from_pretrained(model_path)
+        pipeline = pipeline.to(torch.device(device))
+
+        # Optimize for long audio: reduce batch sizes to prevent OOM
+        rt = get_runtime_settings()
+        diarization_batch_size = getattr(rt, 'diarization_batch_size', 16)
+
+        if hasattr(pipeline, '_segmentation') and hasattr(pipeline._segmentation, 'batch_size'):
+            pipeline._segmentation.batch_size = diarization_batch_size
+            logger.info(f"Set segmentation batch_size={diarization_batch_size}")
+        if hasattr(pipeline, '_embedding') and hasattr(pipeline._embedding, 'batch_size'):
+            pipeline._embedding.batch_size = diarization_batch_size
+            logger.info(f"Set embedding batch_size={diarization_batch_size}")
+
+        # Create a wrapper that converts numpy audio to pyannote format
+        class DiarizationWrapper:
+            SAMPLE_RATE = 16000
+
+            def __init__(self, pipeline):
+                self._pipeline = pipeline
+
+            def __call__(self, audio, **kwargs):
+                # Convert numpy array to pyannote format
+                if isinstance(audio, np.ndarray):
+                    audio_data = {
+                        "waveform": torch.from_numpy(audio[None, :]),
+                        "sample_rate": self.SAMPLE_RATE
+                    }
+                else:
+                    audio_data = audio
+
+                # Clear CUDA cache before processing
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+                diarization = self._pipeline(audio_data, **kwargs)
+
+                # Convert to DataFrame format
+                diarize_df = pd.DataFrame(
+                    diarization.itertracks(yield_label=True),
+                    columns=['segment', 'label', 'speaker']
+                )
+                diarize_df['start'] = diarize_df['segment'].apply(lambda x: x.start)
+                diarize_df['end'] = diarize_df['segment'].apply(lambda x: x.end)
+
+                # Clear cache after processing
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+                return diarize_df
+
+        return DiarizationWrapper(pipeline)
+
+    def transcribe(
+        self,
+        audio_path: str,
+        language: str | None = None,
+        diarize: bool = True,
+    ) -> dict[str, Any]:
+        """Transcribe audio using Qwen3-ASR.
+
+        Args:
+            audio_path: Path to audio file
+            language: Language hint (None = auto-detect)
+            diarize: Whether to perform speaker diarization
+
+        Returns:
+            dict with "language" and "segments" keys
+        """
+        self._ensure_init()
+        rt = get_runtime_settings()
+
+        audio_file = Path(audio_path)
+        if not audio_file.exists():
+            raise FileNotFoundError(f"File not found: {audio_path}")
+
+        if self._model is None:
+            error_msg = self._load_error or "qwen-asr not available"
+            logger.warning(f"Mock mode - returning placeholder: {error_msg}")
+            return {
+                "language": language or "zh",
+                "segments": [{"start": 0.0, "end": 5.0, "text": f"[Qwen3-ASR error: {error_msg}]"}],
+            }
+
+        logger.info(f"Transcribing with Qwen3-ASR: {audio_path}")
+
+        # Clear CUDA cache before transcription
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # Qwen3-ASR transcribe() accepts: audio, language, return_time_stamps
+        # Returns a list of ASRResult objects with .language, .text, .time_stamps
+        results = self._model.transcribe(
+            audio=str(audio_path),
+            language=language,
+            return_time_stamps=rt.qwen3_enable_timestamps,
+        )
+
+        # Parse result - results is a list of ASRResult objects
+        segments, detected_lang = self._parse_result(results, rt.qwen3_enable_timestamps)
+
+        # Speaker diarization using Pyannote (if enabled)
+        if diarize and rt.enable_diarization and rt.pyannote_model_path:
+            segments = self._apply_diarization(audio_path, segments, rt)
+
+        return {"language": detected_lang, "segments": segments}
+
+    def _parse_result(
+        self, results: list[Any], return_time_stamps: bool
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Parse Qwen3-ASR result into segment list.
+
+        Qwen3ASRModel.transcribe() returns a list of ASRResult objects with:
+        - .language: detected language
+        - .text: full transcription text
+        - .time_stamps: list of (start, end, text) tuples (if return_time_stamps=True)
+
+        Returns:
+            (segments, detected_language)
+        """
+        segments = []
+        detected_lang = "unknown"
+
+        for result in results:
+            # Get detected language from first result
+            if hasattr(result, 'language') and result.language:
+                detected_lang = result.language
+
+            if return_time_stamps and hasattr(result, 'time_stamps') and result.time_stamps:
+                # Parse timestamps: list of (start, end, text) tuples
+                for ts in result.time_stamps:
+                    if isinstance(ts, (list, tuple)) and len(ts) >= 3:
+                        segments.append({
+                            "start": float(ts[0]),
+                            "end": float(ts[1]),
+                            "text": str(ts[2]).strip(),
+                        })
+                    elif isinstance(ts, dict):
+                        segments.append({
+                            "start": ts.get("start", 0.0),
+                            "end": ts.get("end", 0.0),
+                            "text": ts.get("text", "").strip(),
+                        })
+            elif hasattr(result, 'text') and result.text:
+                # No timestamps, just full text
+                segments.append({
+                    "start": 0.0,
+                    "end": 0.0,
+                    "text": result.text.strip(),
+                })
+
+        return segments, detected_lang
+
+    def _apply_diarization(
+        self,
+        audio_path: str,
+        segments: list[dict[str, Any]],
+        rt: Any,
+    ) -> list[dict[str, Any]]:
+        """Apply speaker diarization to segments using Pyannote."""
+        import numpy as np
+        import soundfile as sf
+
+        # Load diarization model if not cached
+        if self._diarize_model is None:
+            self._diarize_model = self._load_diarization_model(
+                rt.pyannote_model_path,
+                rt.qwen3_device,
+            )
+
+        # Load audio for diarization
+        audio_data, sample_rate = sf.read(audio_path)
+        if sample_rate != 16000:
+            # Resample to 16kHz
+            import librosa
+            audio_data = librosa.resample(audio_data, orig_sr=sample_rate, target_sr=16000)
+
+        # Ensure mono
+        if len(audio_data.shape) > 1:
+            audio_data = np.mean(audio_data, axis=1)
+
+        # Run diarization
+        diarize_df = self._diarize_model(audio_data.astype(np.float32))
+
+        # Assign speakers to segments based on overlap
+        for seg in segments:
+            seg_start = seg.get("start", 0.0)
+            seg_end = seg.get("end", 0.0)
+
+            if seg_start == 0.0 and seg_end == 0.0:
+                # No timestamps, skip speaker assignment
+                continue
+
+            # Find speaker with maximum overlap
+            max_overlap = 0.0
+            best_speaker = None
+
+            for _, row in diarize_df.iterrows():
+                overlap_start = max(seg_start, row["start"])
+                overlap_end = min(seg_end, row["end"])
+                overlap = max(0.0, overlap_end - overlap_start)
+
+                if overlap > max_overlap:
+                    max_overlap = overlap
+                    best_speaker = row["speaker"]
+
+            seg["speaker"] = best_speaker
+
+        return segments
+
+    def to_segments(self, result: dict[str, Any]) -> list[TranscriptSegment]:
+        """Convert transcription result to TranscriptSegment list."""
+        return [
+            TranscriptSegment(
+                start=s.get("start", 0.0),
+                end=s.get("end", 0.0),
+                text=s.get("text", "").strip(),
+                speaker=s.get("speaker"),
+            )
+            for s in result.get("segments", [])
+        ]
+
+    def to_srt(self, segments: list[TranscriptSegment]) -> str:
+        """Generate SRT subtitle content from segments."""
+        lines = []
+        for i, seg in enumerate(segments, 1):
+            start = self._fmt_time(seg.start)
+            end = self._fmt_time(seg.end)
+            text = f"[{seg.speaker}] {seg.text}" if seg.speaker else seg.text
+            lines.append(f"{i}\n{start} --> {end}\n{text}\n")
+        return "\n".join(lines)
+
+    def _fmt_time(self, seconds: float) -> str:
+        """Format seconds to SRT timestamp format."""
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = int(seconds % 60)
+        ms = int((seconds % 1) * 1000)
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+# Singleton instance
+_service: Qwen3ASRService | None = None
+
+
+def get_qwen3_service() -> Qwen3ASRService:
+    """Get singleton Qwen3ASRService instance."""
+    global _service
+    if _service is None:
+        _service = Qwen3ASRService()
+    return _service
