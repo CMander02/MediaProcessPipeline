@@ -25,9 +25,11 @@ import {
   Paperclip,
 } from "@element-plus/icons-vue"
 import { useTasks } from "@/composables/useTasks"
-import type { PipelineOptions, Task } from "@/types"
+import { useSettings } from "@/composables/useSettings"
+import type { PipelineOptions, Task, ASRBackend } from "@/types"
 
 const { tasks, createTask } = useTasks()
+const { settings, updateSetting } = useSettings()
 
 const source = ref("")
 const submitting = ref(false)
@@ -260,6 +262,26 @@ const languageOptions = [
         <transition name="slide">
           <div v-if="showOptions" class="options-panel">
             <div class="options-grid">
+              <!-- ASR 后端选择 -->
+              <div class="option-item asr-backend-item">
+                <span class="option-label">识别引擎</span>
+                <div class="asr-backend-toggle">
+                  <button
+                    class="asr-btn"
+                    :class="{ active: settings.asr_backend === 'qwen3' }"
+                    @click="updateSetting('asr_backend', 'qwen3' as ASRBackend)"
+                  >
+                    Qwen3
+                  </button>
+                  <button
+                    class="asr-btn"
+                    :class="{ active: settings.asr_backend === 'whisperx' }"
+                    @click="updateSetting('asr_backend', 'whisperx' as ASRBackend)"
+                  >
+                    Whisper
+                  </button>
+                </div>
+              </div>
               <div class="option-item">
                 <span class="option-label">跳过人声分离</span>
                 <el-switch v-model="options.skip_separation" size="small" />
@@ -524,6 +546,36 @@ const languageOptions = [
 
 .language-select {
   width: 120px;
+}
+
+/* ASR Backend Toggle */
+.asr-backend-toggle {
+  display: flex;
+  background: var(--bg-base);
+  border-radius: 6px;
+  padding: 2px;
+  border: 1px solid var(--border-color);
+}
+
+.asr-btn {
+  padding: 4px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.asr-btn:hover {
+  color: var(--text-primary);
+}
+
+.asr-btn.active {
+  background: var(--primary-color);
+  color: #fff;
 }
 
 /* 快捷提示 */
