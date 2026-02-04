@@ -121,10 +121,15 @@ class Qwen3ASRService:
                 "max_new_tokens": rt.qwen3_max_new_tokens,
             }
 
-            # Add aligner if configured and timestamps enabled
+            # Add forced aligner if configured and timestamps enabled
+            # Note: parameter is 'forced_aligner' (not 'aligner_path') per qwen-asr API
             if rt.qwen3_enable_timestamps and aligner_path:
                 logger.info(f"Loading Qwen3 ForcedAligner: {aligner_path}")
-                model_kwargs["aligner_path"] = aligner_path
+                model_kwargs["forced_aligner"] = aligner_path
+                model_kwargs["forced_aligner_kwargs"] = {
+                    "dtype": dtype,
+                    "device_map": rt.qwen3_device,
+                }
 
             self._model = Qwen3ASRModel.from_pretrained(model_path, **model_kwargs)
             self._current_model_path = model_path

@@ -164,8 +164,8 @@ def get_ytdlp_service() -> YtdlpService:
     return _service
 
 
-async def download_media(url: str) -> dict[str, Any]:
+async def download_media(url: str, output_dir: Path | None = None) -> dict[str, Any]:
     service = get_ytdlp_service()
-    result = service.download(url)
+    result = service.download(url, output_dir=output_dir)
     metadata = service.extract_metadata(result["info"], result.get("file_path"))
     return {"file_path": result.get("file_path"), "metadata": metadata.model_dump(mode="json")}

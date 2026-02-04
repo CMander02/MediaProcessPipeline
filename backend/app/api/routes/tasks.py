@@ -369,22 +369,20 @@ async def run_pipeline(task: Task):
 
     else:
         # Handle URL - download
-        ingest = await download_media(source)
+        # First, fetch metadata to get title for task directory
+        import yt_dlp
+        with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+            info = ydl.extract_info(source, download=False)
+            title = info.get("title", "unknown") if info else "unknown"
+
+        # Create task directory with title BEFORE downloading
+        task_dir = _create_task_dir(task.id, title)
+        source_dir = task_dir / "source"
+
+        # Download directly to task source directory
+        ingest = await download_media(source, output_dir=source_dir)
         audio_path = ingest.get("file_path")
         metadata = MediaMetadata(**ingest.get("metadata", {"title": source}))
-
-        # Create task directory with title
-        task_dir = _create_task_dir(task.id, metadata.title)
-
-        # Copy downloaded file to task directory
-        source_file = Path(audio_path)
-        if source_file.exists():
-            dest_source = task_dir / "source" / source_file.name
-            if not dest_source.exists():
-                shutil.copy2(source_file, dest_source)
-                # Store original video/audio for playback
-                if source_file.suffix.lower() in {".mp4", ".mkv", ".avi", ".webm", ".mov"}:
-                    metadata.file_path = str(dest_source)
 
     _update_step(task, PipelineStep.DOWNLOAD, completed=True)
 

@@ -115,9 +115,11 @@ class UVRService:
                 logger.info(f"Using model_file_dir: {model_file_dir}")
                 # Create separator with model_file_dir set to the directory containing the model
                 # This allows audio-separator to find the mdx_model_data.json config file
+                # Use output_single_stem="Vocals" to only output vocals (no instrumental)
                 self._separator = Separator(
                     output_format="wav",
                     model_file_dir=str(model_file_dir),
+                    output_single_stem="Vocals",
                 )
                 # Load using filename (not full path) since we set model_file_dir
                 self._separator.load_model(model_file.name)
@@ -127,12 +129,16 @@ class UVRService:
                 self._separator = Separator(
                     output_format="wav",
                     model_file_dir=str(base_model_dir / "MDX_Net_Models"),
+                    output_single_stem="Vocals",
                 )
                 self._separator.load_model(model_name)
             else:
                 # Use default download directory
                 logger.info("No model directory configured, using default")
-                self._separator = Separator(output_format="wav")
+                self._separator = Separator(
+                    output_format="wav",
+                    output_single_stem="Vocals",
+                )
                 self._separator.load_model(model_name)
 
             self._current_model = model_name
@@ -168,19 +174,13 @@ class UVRService:
         logger.info(f"Separating vocals: {audio_path} -> {output_dir_abs}")
         output_files = self._separator.separate(str(audio_file))
 
+        # With output_single_stem="Vocals", only vocals file is produced
         vocals_path = None
         for f in output_files:
             file_path = Path(f)
             stem_lower = file_path.stem.lower()
             if "vocals" in stem_lower:
                 vocals_path = f
-            elif "instrumental" in stem_lower:
-                # Delete instrumental/background music file - not needed
-                try:
-                    file_path.unlink()
-                    logger.info(f"Deleted instrumental file: {f}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete instrumental file {f}: {e}")
 
         rt = get_runtime_settings()
         return {
