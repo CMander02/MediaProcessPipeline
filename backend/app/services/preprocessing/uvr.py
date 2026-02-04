@@ -175,12 +175,32 @@ class UVRService:
         output_files = self._separator.separate(str(audio_file))
 
         # With output_single_stem="Vocals", only vocals file is produced
+        # Note: audio-separator may return just filename or relative path,
+        # so we need to check both output_dir and current working directory
         vocals_path = None
         for f in output_files:
             file_path = Path(f)
             stem_lower = file_path.stem.lower()
             if "vocals" in stem_lower:
-                vocals_path = f
+                # If path is not absolute, it might be in output_dir or cwd
+                if not file_path.is_absolute():
+                    # Check if file exists in output_dir
+                    expected_path = output_dir_abs / file_path.name
+                    if expected_path.exists():
+                        vocals_path = str(expected_path)
+                    else:
+                        # File might be in cwd, move it to output_dir
+                        cwd_path = Path.cwd() / file_path.name
+                        if cwd_path.exists():
+                            import shutil
+                            dest_path = output_dir_abs / file_path.name
+                            shutil.move(str(cwd_path), str(dest_path))
+                            logger.info(f"Moved vocals file from cwd to: {dest_path}")
+                            vocals_path = str(dest_path)
+                        else:
+                            vocals_path = f
+                else:
+                    vocals_path = f
 
         rt = get_runtime_settings()
         return {

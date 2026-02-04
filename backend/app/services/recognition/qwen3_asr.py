@@ -286,6 +286,13 @@ class Qwen3ASRService:
         segments, detected_lang = self._parse_result(results, rt.qwen3_enable_timestamps)
         logger.info(f"Parsed {len(segments)} segments, detected language: {detected_lang}")
 
+        # Merge character-level segments into sentences (for Chinese with ForcedAligner)
+        if rt.qwen3_enable_timestamps and segments and len(segments) > 1:
+            # Check if segments look like character-level (very short text per segment)
+            avg_text_len = sum(len(s.get("text", "")) for s in segments) / len(segments)
+            if avg_text_len < 3:  # Likely character-level
+                segments = self._merge_character_segments(segments)
+
         # Speaker diarization using Pyannote (if enabled)
         if diarize and rt.enable_diarization and rt.pyannote_model_path:
             segments = self._apply_diarization(audio_path, segments, rt)
@@ -349,6 +356,96 @@ class Qwen3ASRService:
 
         return segments, detected_lang
 
+    def _merge_character_segments(
+        self,
+        segments: list[dict[str, Any]],
+        max_gap: float = 0.5,
+        max_duration: float = 10.0,
+    ) -> list[dict[str, Any]]:
+        """Merge character-level segments into sentence-level segments.
+
+        For Chinese text, ForcedAligner returns character-level timestamps.
+        This function merges consecutive characters into sentences based on:
+        - Time gap between characters (if gap > max_gap, start new segment)
+        - Maximum segment duration (if duration > max_duration, start new segment)
+        - Punctuation marks (。！？；：，、) as natural break points
+
+        Args:
+            segments: List of character-level segments
+            max_gap: Maximum time gap (seconds) between characters to merge
+            max_duration: Maximum duration (seconds) for a single segment
+
+        Returns:
+            List of merged sentence-level segments
+        """
+        if not segments:
+            return segments
+
+        # Chinese sentence-ending punctuation
+        sentence_end_punct = set("。！？；")
+        # Chinese clause punctuation (can break but not required)
+        clause_punct = set("，、：")
+
+        merged = []
+        current = {
+            "start": segments[0].get("start", 0.0),
+            "end": segments[0].get("end", 0.0),
+            "text": segments[0].get("text", ""),
+            "speaker": segments[0].get("speaker"),
+        }
+
+        for seg in segments[1:]:
+            seg_start = seg.get("start", 0.0)
+            seg_end = seg.get("end", 0.0)
+            seg_text = seg.get("text", "")
+            seg_speaker = seg.get("speaker")
+
+            # Calculate gap from previous segment
+            gap = seg_start - current["end"]
+            current_duration = current["end"] - current["start"]
+
+            # Decide whether to start a new segment
+            should_break = False
+
+            # Break on large time gap
+            if gap > max_gap:
+                should_break = True
+            # Break if current segment is too long
+            elif current_duration > max_duration:
+                should_break = True
+            # Break on sentence-ending punctuation
+            elif current["text"] and current["text"][-1] in sentence_end_punct:
+                should_break = True
+            # Break on speaker change
+            elif seg_speaker and current.get("speaker") and seg_speaker != current["speaker"]:
+                should_break = True
+
+            if should_break:
+                # Save current segment if it has content
+                if current["text"].strip():
+                    merged.append(current)
+                # Start new segment
+                current = {
+                    "start": seg_start,
+                    "end": seg_end,
+                    "text": seg_text,
+                    "speaker": seg_speaker,
+                }
+            else:
+                # Merge into current segment
+                current["end"] = seg_end
+                current["text"] += seg_text
+                # Keep speaker from first segment with speaker info
+                if seg_speaker and not current.get("speaker"):
+                    current["speaker"] = seg_speaker
+
+        # Don't forget the last segment
+        if current["text"].strip():
+            merged.append(current)
+
+        logger.info(f"Merged {len(segments)} character segments into {len(merged)} sentence segments")
+        return merged
+
     def _apply_diarization(
         self,
         audio_path: str,
@@ -369,15 +466,19 @@ class Qwen3ASRService:
         # Load audio for diarization
         logger.info(f"Loading audio for diarization: {audio_path}")
         audio_data, sample_rate = sf.read(audio_path)
+        logger.info(f"Loaded audio: shape={audio_data.shape}, sample_rate={sample_rate}")
+
+        # Ensure mono first (before resampling for efficiency)
+        if len(audio_data.shape) > 1:
+            logger.info("Converting to mono...")
+            audio_data = np.mean(audio_data, axis=1)
+
         if sample_rate != 16000:
             # Resample to 16kHz
             import librosa
-            logger.info(f"Resampling audio from {sample_rate}Hz to 16000Hz")
+            logger.info(f"Resampling audio from {sample_rate}Hz to 16000Hz (this may take a moment)...")
             audio_data = librosa.resample(audio_data, orig_sr=sample_rate, target_sr=16000)
-
-        # Ensure mono
-        if len(audio_data.shape) > 1:
-            audio_data = np.mean(audio_data, axis=1)
+            logger.info(f"Resampling complete, new shape: {audio_data.shape}")
 
         duration_sec = len(audio_data) / 16000
         logger.info(f"Running diarization on {duration_sec:.1f}s audio...")
