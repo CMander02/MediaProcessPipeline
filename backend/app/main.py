@@ -1,4 +1,5 @@
 import logging
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -9,7 +10,12 @@ from app.api.routes import settings as settings_router
 from app.api.routes.settings import get_runtime_settings, SETTINGS_FILE
 from app.core.config import get_settings
 
-logging.basicConfig(level=logging.INFO)
+# Force UTF-8 encoding for stdout/stderr on Windows
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+logging.basicConfig(level=logging.INFO, encoding="utf-8")
 logger = logging.getLogger(__name__)
 
 config = get_settings()
