@@ -2,7 +2,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from "vue"
 import type { Task, TaskCreate, TaskStatus } from "@/types"
 import { tasksApi } from "@/api"
 
-export function useTasks(pollInterval = 3000) {
+export function useTasks(pollInterval = 200) {
   const tasks = ref<Task[]>([])
   const loading = ref(true)
   const error = ref<string | null>(null)
@@ -25,6 +25,10 @@ export function useTasks(pollInterval = 3000) {
   const createTask = async (data: TaskCreate) => {
     const task = await tasksApi.create(data)
     tasks.value = [task, ...tasks.value]
+    // Immediately start polling after task creation
+    startPolling()
+    // Fetch updated status after a short delay (backend starts processing immediately)
+    setTimeout(() => fetchTasks(), 300)
     return task
   }
 

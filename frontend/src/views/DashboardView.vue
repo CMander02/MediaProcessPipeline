@@ -113,7 +113,7 @@ const handleSubmit = async () => {
       const formData = new FormData()
       formData.append("file", selectedFile.value)
 
-      const uploadRes = await fetch("http://localhost:8000/api/pipeline/upload", {
+      const uploadRes = await fetch("http://127.0.0.1:18000/api/pipeline/upload", {
         method: "POST",
         body: formData,
       })
@@ -271,7 +271,7 @@ const languageOptions = [
                     :class="{ active: settings.asr_backend === 'qwen3' }"
                     @click="updateSetting('asr_backend', 'qwen3' as ASRBackend)"
                   >
-                    Qwen3
+                    Qwen3-ASR
                   </button>
                   <button
                     class="asr-btn"

@@ -49,7 +49,7 @@ const searchQuery = ref("")
 const selectedPath = ref("")
 
 // API base URL
-const API_BASE = "http://localhost:8000/api"
+const API_BASE = "http://localhost:18000/api"
 
 // Path segments for breadcrumb
 const pathSegments = computed(() => {

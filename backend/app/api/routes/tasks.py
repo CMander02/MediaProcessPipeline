@@ -315,6 +315,57 @@ def _extract_audio_from_video(video_path: Path, output_path: Path) -> Path:
     return output_path
 
 
+def _cleanup_intermediate_files(task_dir: Path, audio_path: str, vocals_path: str) -> None:
+    """Clean up intermediate audio files to save disk space.
+
+    Removes:
+    - Vocals separation output (*_Vocals_*.wav)
+    - Audio segments from VAD splitting (segment_*.wav)
+    - Extracted audio from video ({title}.wav in task_dir root)
+    """
+    cleaned_files = []
+    cleaned_size = 0
+
+    # 1. Remove vocals file (if different from original audio)
+    if vocals_path and vocals_path != audio_path:
+        vocals_file = Path(vocals_path)
+        if vocals_file.exists():
+            size = vocals_file.stat().st_size
+            vocals_file.unlink()
+            cleaned_files.append(vocals_file.name)
+            cleaned_size += size
+
+    # 2. Remove segment files (segment_000.wav, segment_001.wav, etc.)
+    for segment_file in task_dir.glob("segment_*.wav"):
+        size = segment_file.stat().st_size
+        segment_file.unlink()
+        cleaned_files.append(segment_file.name)
+        cleaned_size += size
+
+    # 3. Remove extracted audio from video (in task_dir root, not in source/)
+    #    These are .wav files directly in task_dir (not vocals, not segments)
+    audio_path_obj = Path(audio_path)
+    for wav_file in task_dir.glob("*.wav"):
+        # Skip if it's the original audio in source directory
+        if "source" in str(wav_file.parent):
+            continue
+        # Skip vocals file (already handled)
+        if "_Vocals_" in wav_file.name or "(Vocals)" in wav_file.name:
+            continue
+        # Skip segment files (already handled)
+        if wav_file.name.startswith("segment_"):
+            continue
+        # This is likely the extracted audio from video
+        size = wav_file.stat().st_size
+        wav_file.unlink()
+        cleaned_files.append(wav_file.name)
+        cleaned_size += size
+
+    if cleaned_files:
+        size_mb = cleaned_size / (1024 * 1024)
+        _logger.info(f"Cleaned up {len(cleaned_files)} intermediate files ({size_mb:.1f} MB): {cleaned_files}")
+
+
 async def run_pipeline(task: Task):
     """Run full pipeline: ingest → preprocess → recognize → analyze → archive."""
 
@@ -438,6 +489,10 @@ async def run_pipeline(task: Task):
         work_dir=task_dir,
         analysis=analysis
     )
+
+    # Cleanup intermediate audio files to save space
+    _cleanup_intermediate_files(task_dir, audio_path, vocals_path)
+
     _update_step(task, PipelineStep.ARCHIVE, completed=True)
 
     task.result = {
