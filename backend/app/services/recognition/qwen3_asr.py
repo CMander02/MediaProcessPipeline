@@ -91,17 +91,17 @@ class Qwen3ASRService:
         return None
 
     def _ensure_init(self):
-        """Initialize or reinitialize model with current settings."""
+        """Initialize or reinitialize model with current settings.
+
+        Note: We no longer load ForcedAligner by default since we use VAD-based
+        segmentation which provides sentence-level timestamps. This makes loading
+        faster and uses less VRAM.
+        """
         rt = get_runtime_settings()
         model_path = self._get_model_path()
-        aligner_path = self._get_aligner_path()
 
         # Check if we need to reinitialize (settings changed)
-        if (
-            self._model is not None
-            and self._current_model_path == model_path
-            and self._current_aligner_path == aligner_path
-        ):
+        if self._model is not None and self._current_model_path == model_path:
             return
 
         try:
@@ -113,7 +113,7 @@ class Qwen3ASRService:
             # Determine dtype based on device
             dtype = torch.bfloat16 if rt.qwen3_device.startswith("cuda") else torch.float32
 
-            # Build model kwargs
+            # Build model kwargs - no ForcedAligner needed with VAD-based approach
             model_kwargs = {
                 "dtype": dtype,
                 "device_map": rt.qwen3_device,
@@ -121,40 +121,23 @@ class Qwen3ASRService:
                 "max_new_tokens": rt.qwen3_max_new_tokens,
             }
 
-            # Add forced aligner if configured and timestamps enabled
-            # Note: parameter is 'forced_aligner' (not 'aligner_path') per qwen-asr API
-            if rt.qwen3_enable_timestamps and aligner_path:
-                logger.info(f"Loading Qwen3 ForcedAligner: {aligner_path}")
-                model_kwargs["forced_aligner"] = aligner_path
-                model_kwargs["forced_aligner_kwargs"] = {
-                    "dtype": dtype,
-                    "device_map": rt.qwen3_device,
-                }
+            # Note: We don't load ForcedAligner anymore since we use VAD for segmentation
+            # This is faster and uses less VRAM while producing sentence-level output
+            # similar to WhisperX
 
             self._model = Qwen3ASRModel.from_pretrained(model_path, **model_kwargs)
             self._current_model_path = model_path
-            self._current_aligner_path = aligner_path
+            self._current_aligner_path = None  # Not used with VAD approach
+
+            logger.info("Qwen3-ASR model loaded (VAD mode, no ForcedAligner)")
 
         except ImportError as e:
             logger.warning(f"qwen-asr not installed - mock mode: {e}")
             self._model = None
             self._load_error = f"qwen-asr not installed: {e}"
         except RuntimeError as e:
-            # Handle nagisa Unicode path issue on Windows
-            error_msg = str(e)
-            if "nagisa" in error_msg.lower() or "Could not read model" in error_msg:
-                self._load_error = (
-                    "Qwen3-ASR failed to load due to Unicode path issue with nagisa/dynet. "
-                    "The nagisa library (required for ForcedAligner) cannot handle non-ASCII "
-                    "characters in paths. Solutions:\n"
-                    "1. Move the project to a path with only ASCII characters\n"
-                    "2. Use the WhisperX backend instead (set asr_backend='whisperx')\n"
-                    "3. Create a symlink/junction with ASCII-only path to the .venv"
-                )
-                logger.error(self._load_error)
-            else:
-                self._load_error = f"Qwen3-ASR failed to load: {e}"
-                logger.error(self._load_error)
+            self._load_error = f"Qwen3-ASR failed to load: {e}"
+            logger.error(self._load_error)
             self._model = None
         except Exception as e:
             self._load_error = f"Qwen3-ASR failed to load: {e}"
@@ -243,6 +226,9 @@ class Qwen3ASRService:
     ) -> dict[str, Any]:
         """Transcribe audio using Qwen3-ASR.
 
+        Uses VAD-based segmentation for sentence-level timestamps (like WhisperX),
+        instead of ForcedAligner's character-level timestamps.
+
         Args:
             audio_path: Path to audio file
             language: Language hint (None = auto-detect)
@@ -272,9 +258,158 @@ class Qwen3ASRService:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        # Qwen3-ASR transcribe() accepts: audio, language, return_time_stamps
-        # Returns a list of ASRResult objects with .language, .text, .time_stamps
-        logger.info(f"Starting Qwen3-ASR transcribe (timestamps={rt.qwen3_enable_timestamps})...")
+        # Use VAD-based segmentation for sentence-level timestamps
+        # This is more like WhisperX behavior - VAD provides segment boundaries,
+        # ASR provides text for each segment
+        segments, detected_lang = self._transcribe_with_vad(audio_path, language)
+
+        # Speaker diarization using Pyannote (if enabled)
+        if diarize and rt.enable_diarization and rt.pyannote_model_path:
+            segments = self._apply_diarization(audio_path, segments, rt)
+
+        return {"language": detected_lang, "segments": segments}
+
+    def _transcribe_with_vad(
+        self,
+        audio_path: str,
+        language: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Transcribe audio using VAD segmentation + Qwen3-ASR.
+
+        This approach:
+        1. Uses Silero VAD to detect speech segments
+        2. Extracts each segment as a separate audio chunk
+        3. Transcribes each chunk with Qwen3-ASR (no ForcedAligner needed)
+        4. Combines results with VAD-provided timestamps
+
+        This is similar to how WhisperX works and produces sentence-level output.
+        """
+        import numpy as np
+        import soundfile as sf
+        import tempfile
+
+        from app.services.preprocessing.vad_splitter import get_vad_splitter
+
+        logger.info("Using VAD-based segmentation for Qwen3-ASR")
+
+        # Load audio
+        audio_data, sample_rate = sf.read(audio_path)
+
+        # Ensure mono
+        if len(audio_data.shape) > 1:
+            audio_data = np.mean(audio_data, axis=1)
+
+        # Get VAD speech timestamps
+        vad = get_vad_splitter()
+        vad._load_model()
+
+        # Resample to 16kHz for VAD if needed
+        if sample_rate != 16000:
+            import torchaudio
+            waveform = torch.from_numpy(audio_data).unsqueeze(0).float()
+            resampler = torchaudio.transforms.Resample(sample_rate, 16000)
+            waveform_16k = resampler(waveform).squeeze().numpy()
+        else:
+            waveform_16k = audio_data
+
+        # Get speech timestamps using VAD
+        logger.info("Running VAD to detect speech segments...")
+        get_speech_ts = vad._utils[0]
+        speech_timestamps = get_speech_ts(
+            torch.from_numpy(waveform_16k),
+            vad._model,
+            sampling_rate=16000,
+            return_seconds=False,
+            # Merge short segments, split long ones
+            min_speech_duration_ms=250,
+            max_speech_duration_s=30,
+            min_silence_duration_ms=300,
+        )
+        logger.info(f"VAD detected {len(speech_timestamps)} speech segments")
+
+        if not speech_timestamps:
+            # No speech detected, transcribe whole file
+            logger.warning("No speech detected by VAD, transcribing whole file")
+            results = self._model.transcribe(
+                audio=audio_path,
+                language=language,
+                return_time_stamps=False,
+            )
+            if results and hasattr(results[0], 'text'):
+                return [{
+                    "start": 0.0,
+                    "end": len(audio_data) / sample_rate,
+                    "text": results[0].text.strip(),
+                }], results[0].language if hasattr(results[0], 'language') else "unknown"
+            return [], "unknown"
+
+        # Process each VAD segment
+        segments = []
+        detected_lang = None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for i, ts in enumerate(speech_timestamps):
+                start_sample = ts['start']
+                end_sample = ts['end']
+
+                # Convert to original sample rate
+                start_sample_orig = int(start_sample * sample_rate / 16000)
+                end_sample_orig = int(end_sample * sample_rate / 16000)
+
+                # Extract segment
+                segment_audio = audio_data[start_sample_orig:end_sample_orig]
+
+                if len(segment_audio) < 100:  # Skip very short segments
+                    continue
+
+                # Save segment to temp file
+                segment_path = Path(tmpdir) / f"segment_{i:04d}.wav"
+                sf.write(str(segment_path), segment_audio, sample_rate)
+
+                # Transcribe segment (no timestamps needed - VAD provides them)
+                try:
+                    results = self._model.transcribe(
+                        audio=str(segment_path),
+                        language=language,
+                        return_time_stamps=False,
+                    )
+
+                    if results and hasattr(results[0], 'text') and results[0].text.strip():
+                        start_sec = start_sample / 16000
+                        end_sec = end_sample / 16000
+
+                        segments.append({
+                            "start": start_sec,
+                            "end": end_sec,
+                            "text": results[0].text.strip(),
+                        })
+
+                        if detected_lang is None and hasattr(results[0], 'language'):
+                            detected_lang = results[0].language
+
+                        if (i + 1) % 10 == 0:
+                            logger.info(f"Transcribed {i + 1}/{len(speech_timestamps)} segments")
+
+                except Exception as e:
+                    logger.warning(f"Failed to transcribe segment {i}: {e}")
+                    continue
+
+        logger.info(f"VAD transcription complete: {len(segments)} segments")
+        return segments, detected_lang or "unknown"
+
+    def _transcribe_with_forced_aligner(
+        self,
+        audio_path: str,
+        language: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Transcribe using ForcedAligner for character-level timestamps.
+
+        This is the original approach - returns character/word level timestamps.
+        Use _transcribe_with_vad for sentence-level output.
+        """
+        rt = get_runtime_settings()
+
+        logger.info(f"Starting Qwen3-ASR transcribe with ForcedAligner...")
         results = self._model.transcribe(
             audio=str(audio_path),
             language=language,
@@ -282,22 +417,17 @@ class Qwen3ASRService:
         )
         logger.info(f"Qwen3-ASR transcribe complete, got {len(results)} result(s)")
 
-        # Parse result - results is a list of ASRResult objects
+        # Parse result
         segments, detected_lang = self._parse_result(results, rt.qwen3_enable_timestamps)
         logger.info(f"Parsed {len(segments)} segments, detected language: {detected_lang}")
 
-        # Merge character-level segments into sentences (for Chinese with ForcedAligner)
+        # Merge character-level segments into sentences
         if rt.qwen3_enable_timestamps and segments and len(segments) > 1:
-            # Check if segments look like character-level (very short text per segment)
             avg_text_len = sum(len(s.get("text", "")) for s in segments) / len(segments)
             if avg_text_len < 3:  # Likely character-level
                 segments = self._merge_character_segments(segments)
 
-        # Speaker diarization using Pyannote (if enabled)
-        if diarize and rt.enable_diarization and rt.pyannote_model_path:
-            segments = self._apply_diarization(audio_path, segments, rt)
-
-        return {"language": detected_lang, "segments": segments}
+        return segments, detected_lang
 
     def _parse_result(
         self, results: list[Any], return_time_stamps: bool
