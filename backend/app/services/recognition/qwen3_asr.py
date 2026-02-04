@@ -274,14 +274,17 @@ class Qwen3ASRService:
 
         # Qwen3-ASR transcribe() accepts: audio, language, return_time_stamps
         # Returns a list of ASRResult objects with .language, .text, .time_stamps
+        logger.info(f"Starting Qwen3-ASR transcribe (timestamps={rt.qwen3_enable_timestamps})...")
         results = self._model.transcribe(
             audio=str(audio_path),
             language=language,
             return_time_stamps=rt.qwen3_enable_timestamps,
         )
+        logger.info(f"Qwen3-ASR transcribe complete, got {len(results)} result(s)")
 
         # Parse result - results is a list of ASRResult objects
         segments, detected_lang = self._parse_result(results, rt.qwen3_enable_timestamps)
+        logger.info(f"Parsed {len(segments)} segments, detected language: {detected_lang}")
 
         # Speaker diarization using Pyannote (if enabled)
         if diarize and rt.enable_diarization and rt.pyannote_model_path:
@@ -294,10 +297,11 @@ class Qwen3ASRService:
     ) -> tuple[list[dict[str, Any]], str]:
         """Parse Qwen3-ASR result into segment list.
 
-        Qwen3ASRModel.transcribe() returns a list of ASRResult objects with:
+        Qwen3ASRModel.transcribe() returns a list of ASRTranscription objects with:
         - .language: detected language
         - .text: full transcription text
-        - .time_stamps: list of (start, end, text) tuples (if return_time_stamps=True)
+        - .time_stamps: ForcedAlignResult (iterable of ForcedAlignItem objects)
+                        Each ForcedAlignItem has: .text, .start_time, .end_time
 
         Returns:
             (segments, detected_language)
@@ -311,19 +315,29 @@ class Qwen3ASRService:
                 detected_lang = result.language
 
             if return_time_stamps and hasattr(result, 'time_stamps') and result.time_stamps:
-                # Parse timestamps: list of (start, end, text) tuples
-                for ts in result.time_stamps:
-                    if isinstance(ts, (list, tuple)) and len(ts) >= 3:
+                # time_stamps is a ForcedAlignResult containing ForcedAlignItem objects
+                # Each ForcedAlignItem has .text, .start_time, .end_time attributes
+                for item in result.time_stamps:
+                    # ForcedAlignItem object with attributes
+                    if hasattr(item, 'start_time') and hasattr(item, 'end_time'):
                         segments.append({
-                            "start": float(ts[0]),
-                            "end": float(ts[1]),
-                            "text": str(ts[2]).strip(),
+                            "start": float(item.start_time),
+                            "end": float(item.end_time),
+                            "text": str(item.text).strip() if hasattr(item, 'text') else "",
                         })
-                    elif isinstance(ts, dict):
+                    # Fallback: dict format
+                    elif isinstance(item, dict):
                         segments.append({
-                            "start": ts.get("start", 0.0),
-                            "end": ts.get("end", 0.0),
-                            "text": ts.get("text", "").strip(),
+                            "start": float(item.get("start_time", item.get("start", 0.0))),
+                            "end": float(item.get("end_time", item.get("end", 0.0))),
+                            "text": str(item.get("text", "")).strip(),
+                        })
+                    # Fallback: tuple format (start, end, text)
+                    elif isinstance(item, (list, tuple)) and len(item) >= 3:
+                        segments.append({
+                            "start": float(item[0]),
+                            "end": float(item[1]),
+                            "text": str(item[2]).strip(),
                         })
             elif hasattr(result, 'text') and result.text:
                 # No timestamps, just full text
@@ -353,18 +367,23 @@ class Qwen3ASRService:
             )
 
         # Load audio for diarization
+        logger.info(f"Loading audio for diarization: {audio_path}")
         audio_data, sample_rate = sf.read(audio_path)
         if sample_rate != 16000:
             # Resample to 16kHz
             import librosa
+            logger.info(f"Resampling audio from {sample_rate}Hz to 16000Hz")
             audio_data = librosa.resample(audio_data, orig_sr=sample_rate, target_sr=16000)
 
         # Ensure mono
         if len(audio_data.shape) > 1:
             audio_data = np.mean(audio_data, axis=1)
 
+        duration_sec = len(audio_data) / 16000
+        logger.info(f"Running diarization on {duration_sec:.1f}s audio...")
         # Run diarization
         diarize_df = self._diarize_model(audio_data.astype(np.float32))
+        logger.info(f"Diarization complete: found {len(diarize_df)} speaker segments")
 
         # Assign speakers to segments based on overlap
         for seg in segments:
