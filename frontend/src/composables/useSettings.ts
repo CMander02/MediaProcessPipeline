@@ -19,12 +19,24 @@ const defaultSettings: Settings = {
   custom_model: "",
   custom_name: "Custom",
 
+  // ASR Backend
+  asr_backend: "qwen3",
+
+  // Qwen3-ASR
+  qwen3_asr_model_path: "",
+  qwen3_aligner_model_path: "",
+  qwen3_enable_timestamps: true,
+  qwen3_batch_size: 32,
+  qwen3_max_new_tokens: 4096,
+  qwen3_device: "cuda",
+
   // WhisperX
   whisper_model: "large-v3-turbo",
   whisper_model_path: "",
   whisper_device: "cuda",
   whisper_compute_type: "float16",
   whisper_batch_size: 16,
+  enable_alignment: true,
   enable_diarization: true,
   hf_token: "",
   pyannote_model_path: "",
@@ -34,10 +46,7 @@ const defaultSettings: Settings = {
   diarization_batch_size: 16,
 
   // Paths
-  inbox_path: "./data/inbox",
-  processing_path: "./data/processing",
-  outputs_path: "./data/outputs",
-  archive_path: "./data/archive",
+  data_root: "../data",
   obsidian_vault_path: "",
 
   // UVR

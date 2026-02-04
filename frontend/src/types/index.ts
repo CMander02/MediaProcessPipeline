@@ -104,6 +104,9 @@ export interface Subtitle {
   speaker?: string
 }
 
+// ASR Backend types
+export type ASRBackend = "qwen3" | "whisperx"
+
 // LLM Provider types
 export type LLMProvider = "anthropic" | "openai" | "custom"
 
@@ -131,12 +134,24 @@ export interface Settings {
   custom_model: string
   custom_name: string
 
-  // WhisperX
+  // ASR Backend Selection
+  asr_backend: ASRBackend
+
+  // Qwen3-ASR Settings
+  qwen3_asr_model_path: string
+  qwen3_aligner_model_path: string
+  qwen3_enable_timestamps: boolean
+  qwen3_batch_size: number
+  qwen3_max_new_tokens: number
+  qwen3_device: "cpu" | "cuda"
+
+  // WhisperX (backup/alternative)
   whisper_model: string
   whisper_model_path: string
   whisper_device: "cpu" | "cuda"
   whisper_compute_type: string
-  whisper_batch_size: number  // Reduce for long audio or low VRAM
+  whisper_batch_size: number
+  enable_alignment: boolean
   enable_diarization: boolean
   hf_token: string
   // Pyannote/Diarization model paths

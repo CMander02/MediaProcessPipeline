@@ -397,84 +397,172 @@ const uvrModels = [
 
           <div class="settings-section">
             <div class="section-header">
-              <h3 class="section-title">Transcription Settings</h3>
-              <p class="section-description">Configure WhisperX for speech recognition and speaker diarization</p>
+              <h3 class="section-title">ASR Backend</h3>
+              <p class="section-description">选择语音识别引擎</p>
             </div>
 
-            <div class="form-grid">
-              <div class="form-group">
-                <label class="form-label">Whisper Model</label>
-                <el-select
-                  :model-value="settings.whisper_model"
-                  @update:model-value="updateSetting('whisper_model', $event as string)"
-                  class="form-input"
+            <!-- ASR Backend Split Layout (similar to LLM) -->
+            <div class="llm-split-layout">
+              <!-- Left: Backend List -->
+              <div class="provider-list">
+                <button
+                  class="provider-list-btn"
+                  :class="{ active: settings.asr_backend === 'qwen3' }"
+                  @click="updateSetting('asr_backend', 'qwen3')"
                 >
-                  <el-option
-                    v-for="m in whisperModels"
-                    :key="m.value"
-                    :value="m.value"
-                    :label="m.label"
-                  />
-                </el-select>
+                  <div class="provider-list-icon">Q</div>
+                  <div class="provider-list-info">
+                    <span class="provider-list-name">Qwen3-ASR</span>
+                    <span class="provider-list-desc">中文优化，速度快</span>
+                  </div>
+                  <span v-if="settings.asr_backend === 'qwen3'" class="provider-active-badge">当前</span>
+                </button>
+                <button
+                  class="provider-list-btn"
+                  :class="{ active: settings.asr_backend === 'whisperx' }"
+                  @click="updateSetting('asr_backend', 'whisperx')"
+                >
+                  <div class="provider-list-icon">W</div>
+                  <div class="provider-list-info">
+                    <span class="provider-list-name">WhisperX</span>
+                    <span class="provider-list-desc">多语言，稳定可靠</span>
+                  </div>
+                  <span v-if="settings.asr_backend === 'whisperx'" class="provider-active-badge">当前</span>
+                </button>
               </div>
 
-              <div class="form-group">
-                <label class="form-label">Device</label>
-                <el-select
-                  :model-value="settings.whisper_device"
-                  @update:model-value="updateSetting('whisper_device', $event as 'cpu' | 'cuda')"
-                  class="form-input"
-                >
-                  <el-option value="cuda" label="CUDA (GPU)" />
-                  <el-option value="cpu" label="CPU" />
-                </el-select>
-              </div>
+              <!-- Right: Backend Config -->
+              <div class="provider-config-panel">
+                <!-- Qwen3-ASR Config -->
+                <div v-if="settings.asr_backend === 'qwen3'" class="provider-config">
+                  <h4 class="config-title">Qwen3-ASR 配置</h4>
+                  <div class="config-form">
+                    <div class="form-group">
+                      <label class="form-label">Device</label>
+                      <el-select
+                        :model-value="settings.qwen3_device"
+                        @update:model-value="updateSetting('qwen3_device', $event as 'cpu' | 'cuda')"
+                        class="form-input"
+                      >
+                        <el-option value="cuda" label="CUDA (GPU)" />
+                        <el-option value="cpu" label="CPU" />
+                      </el-select>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">Model Path</label>
+                      <el-input
+                        :model-value="settings.qwen3_asr_model_path"
+                        @update:model-value="updateSetting('qwen3_asr_model_path', $event)"
+                        placeholder="留空使用 HuggingFace: Qwen/Qwen3-ASR-1.7B"
+                        class="form-input"
+                      />
+                      <p class="form-hint">本地模型路径，留空自动下载</p>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">ForcedAligner Path <span class="optional">(可选)</span></label>
+                      <el-input
+                        :model-value="settings.qwen3_aligner_model_path"
+                        @update:model-value="updateSetting('qwen3_aligner_model_path', $event)"
+                        placeholder="Qwen3-ForcedAligner-0.6B 路径"
+                        class="form-input"
+                      />
+                      <p class="form-hint">用于精确时间戳对齐</p>
+                    </div>
+                    <div class="toggle-setting" style="margin-top: 8px; padding: 12px 16px;">
+                      <div class="toggle-info">
+                        <label class="form-label">启用时间戳</label>
+                        <p class="form-hint">生成带时间戳的字幕</p>
+                      </div>
+                      <el-switch
+                        :model-value="settings.qwen3_enable_timestamps"
+                        @update:model-value="updateSetting('qwen3_enable_timestamps', $event as boolean)"
+                      />
+                    </div>
+                  </div>
+                </div>
 
-              <div class="form-group">
-                <label class="form-label">Compute Type</label>
-                <el-select
-                  :model-value="settings.whisper_compute_type"
-                  @update:model-value="updateSetting('whisper_compute_type', $event as string)"
-                  class="form-input"
-                >
-                  <el-option
-                    v-for="c in computeTypes"
-                    :key="c.value"
-                    :value="c.value"
-                    :label="c.label"
-                  />
-                </el-select>
-              </div>
-
-              <div class="form-group full-width">
-                <label class="form-label">Whisper Model Path</label>
-                <el-input
-                  :model-value="settings.whisper_model_path"
-                  @update:model-value="updateSetting('whisper_model_path', $event)"
-                  placeholder="D:/models/whisper-large-v3"
-                  class="form-input"
-                />
-                <p class="form-hint">Local path to Whisper model. Leave empty to auto-download.</p>
+                <!-- WhisperX Config -->
+                <div v-else-if="settings.asr_backend === 'whisperx'" class="provider-config">
+                  <h4 class="config-title">WhisperX 配置</h4>
+                  <div class="config-form">
+                    <div class="form-group">
+                      <label class="form-label">Model</label>
+                      <el-select
+                        :model-value="settings.whisper_model"
+                        @update:model-value="updateSetting('whisper_model', $event as string)"
+                        class="form-input"
+                      >
+                        <el-option
+                          v-for="m in whisperModels"
+                          :key="m.value"
+                          :value="m.value"
+                          :label="m.label"
+                        />
+                      </el-select>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">Device</label>
+                      <el-select
+                        :model-value="settings.whisper_device"
+                        @update:model-value="updateSetting('whisper_device', $event as 'cpu' | 'cuda')"
+                        class="form-input"
+                      >
+                        <el-option value="cuda" label="CUDA (GPU)" />
+                        <el-option value="cpu" label="CPU" />
+                      </el-select>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">Compute Type</label>
+                      <el-select
+                        :model-value="settings.whisper_compute_type"
+                        @update:model-value="updateSetting('whisper_compute_type', $event as string)"
+                        class="form-input"
+                      >
+                        <el-option
+                          v-for="c in computeTypes"
+                          :key="c.value"
+                          :value="c.value"
+                          :label="c.label"
+                        />
+                      </el-select>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">Model Path</label>
+                      <el-input
+                        :model-value="settings.whisper_model_path"
+                        @update:model-value="updateSetting('whisper_model_path', $event)"
+                        placeholder="留空自动下载"
+                        class="form-input"
+                      />
+                      <p class="form-hint">本地 faster-whisper 模型路径</p>
+                    </div>
+                    <div class="toggle-setting" style="margin-top: 8px; padding: 12px 16px;">
+                      <div class="toggle-info">
+                        <label class="form-label">Word-level Alignment</label>
+                        <p class="form-hint">使用 wav2vec2 精确对齐</p>
+                      </div>
+                      <el-switch
+                        :model-value="settings.enable_alignment"
+                        @update:model-value="updateSetting('enable_alignment', $event as boolean)"
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
             <el-divider />
 
-            <div class="toggle-setting">
-              <div class="toggle-info">
-                <label class="form-label">Word-level Alignment</label>
-                <p class="form-hint">Use wav2vec2 for precise word timestamps. Disable to skip downloading alignment models.</p>
-              </div>
-              <el-switch
-                :model-value="settings.enable_alignment"
-                @update:model-value="updateSetting('enable_alignment', $event as boolean)"
-              />
+            <!-- Shared: Speaker Diarization -->
+            <div class="section-header">
+              <h3 class="section-title">Speaker Diarization</h3>
+              <p class="section-description">说话人识别（两个后端共用 Pyannote）</p>
             </div>
 
-            <div class="toggle-setting" style="margin-top: 12px">
+            <div class="toggle-setting">
               <div class="toggle-info">
-                <label class="form-label">Speaker Diarization</label>
-                <p class="form-hint">Identify and label different speakers in the audio</p>
+                <label class="form-label">启用说话人识别</label>
+                <p class="form-hint">区分音频中的不同说话人</p>
               </div>
               <el-switch
                 :model-value="settings.enable_diarization"
@@ -482,27 +570,7 @@ const uvrModels = [
               />
             </div>
 
-            <div class="form-group full-width" style="margin-top: 20px">
-              <label class="form-label">HuggingFace Token</label>
-              <el-input
-                type="password"
-                :model-value="settings.hf_token"
-                @update:model-value="updateSetting('hf_token', $event)"
-                placeholder="hf_..."
-                show-password
-                class="form-input"
-              />
-              <p class="form-hint">Required for speaker diarization (pyannote models), or use local paths below</p>
-            </div>
-
-            <el-divider />
-
-            <div class="section-header">
-              <h3 class="section-title">Diarization Model Paths</h3>
-              <p class="section-description">Local paths for pyannote models. Leave empty to use HuggingFace.</p>
-            </div>
-
-            <div class="form-grid single-column">
+            <div class="form-grid single-column" style="margin-top: 20px">
               <div class="form-group">
                 <label class="form-label">Pyannote Speaker Diarization</label>
                 <el-input
@@ -522,36 +590,51 @@ const uvrModels = [
                   class="form-input"
                 />
               </div>
+
+              <div class="form-group">
+                <label class="form-label">HuggingFace Token <span class="optional">(无本地模型时需要)</span></label>
+                <el-input
+                  type="password"
+                  :model-value="settings.hf_token"
+                  @update:model-value="updateSetting('hf_token', $event)"
+                  placeholder="hf_..."
+                  show-password
+                  class="form-input"
+                />
+              </div>
             </div>
 
             <el-divider />
 
-            <div class="section-header">
-              <h3 class="section-title">Alignment Model Paths</h3>
-              <p class="section-description">wav2vec2 models for word-level alignment</p>
-            </div>
-
-            <div class="form-grid single-column">
-              <div class="form-group">
-                <label class="form-label">Chinese Alignment Model</label>
-                <el-input
-                  :model-value="settings.alignment_model_zh"
-                  @update:model-value="updateSetting('alignment_model_zh', $event)"
-                  placeholder="D:/models/wav2vec2-large-xlsr-53-chinese-zh-cn"
-                  class="form-input"
-                />
-                <p class="form-hint">jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn</p>
+            <!-- WhisperX only: Alignment Model Paths -->
+            <div v-if="settings.asr_backend === 'whisperx'">
+              <div class="section-header">
+                <h3 class="section-title">Alignment Model Paths</h3>
+                <p class="section-description">wav2vec2 models for word-level alignment (WhisperX only)</p>
               </div>
 
-              <div class="form-group">
-                <label class="form-label">English Alignment Model</label>
-                <el-input
-                  :model-value="settings.alignment_model_en"
-                  @update:model-value="updateSetting('alignment_model_en', $event)"
-                  placeholder="Leave empty to use torchaudio built-in"
-                  class="form-input"
-                />
-                <p class="form-hint">Leave empty to use torchaudio WAV2VEC2_ASR_BASE_960H</p>
+              <div class="form-grid single-column">
+                <div class="form-group">
+                  <label class="form-label">Chinese Alignment Model</label>
+                  <el-input
+                    :model-value="settings.alignment_model_zh"
+                    @update:model-value="updateSetting('alignment_model_zh', $event)"
+                    placeholder="D:/models/wav2vec2-large-xlsr-53-chinese-zh-cn"
+                    class="form-input"
+                  />
+                  <p class="form-hint">jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn</p>
+                </div>
+
+                <div class="form-group">
+                  <label class="form-label">English Alignment Model</label>
+                  <el-input
+                    :model-value="settings.alignment_model_en"
+                    @update:model-value="updateSetting('alignment_model_en', $event)"
+                    placeholder="Leave empty to use torchaudio built-in"
+                    class="form-input"
+                  />
+                  <p class="form-hint">Leave empty to use torchaudio WAV2VEC2_ASR_BASE_960H</p>
+                </div>
               </div>
             </div>
           </div>

@@ -75,8 +75,9 @@ async def create_task(task_create: TaskCreate, background_tasks: BackgroundTasks
         options=task_create.options,
         webhook_url=task_create.webhook_url,
         status=TaskStatus.QUEUED,
-        # Add step tracking
-        current_step=None,
+        # Add step tracking - set initial step immediately so progress shows
+        current_step=PipelineStep.DOWNLOAD,
+        message="等待处理...",
         steps=[s["id"] for s in PIPELINE_STEPS],
         completed_steps=[],
     )
