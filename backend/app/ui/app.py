@@ -588,7 +588,7 @@ def create_ui() -> gr.Blocks:
                         interactive=True,
                         scale=3,
                     )
-                    asr_status = gr.Markdown("", scale=2)
+                    asr_status = gr.Markdown("")
 
                 with gr.Accordion("所有设置", open=True):
                     settings_table = gr.Dataframe(
