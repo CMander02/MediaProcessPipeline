@@ -359,21 +359,67 @@ class Qwen3ASRService:
 
         logger.info(f"VAD detected {len(timestamps)} speech segments")
 
-        # Merge short segments (< 1s gap) to avoid too many tiny chunks
-        merged = []
+        # Convert raw timestamps to seconds
+        raw_segments = []
         for ts in timestamps:
             start = ts.get("start", ts.get("start_sec", 0))
             end = ts.get("end", ts.get("end_sec", 0))
-            # Convert sample indices to seconds if needed
             if isinstance(start, int) and start > 1000:
                 start = start / sample_rate
                 end = end / sample_rate
-            if merged and (start - merged[-1]["end"]) < 1.0:
-                merged[-1]["end"] = end
-            else:
-                merged.append({"start": start, "end": end})
+            raw_segments.append({"start": float(start), "end": float(end)})
 
-        logger.info(f"Merged to {len(merged)} chunks")
+        # Merge segments with small gaps (< 0.3s) to reduce tiny chunks,
+        # but keep segments under max_duration by splitting at the largest gap.
+        max_duration = 30.0  # seconds per chunk
+        merge_gap = 0.3      # merge if gap < this
+
+        merged = []
+        for seg in raw_segments:
+            if merged and (seg["start"] - merged[-1]["end"]) < merge_gap:
+                merged[-1]["end"] = seg["end"]
+            else:
+                merged.append({"start": seg["start"], "end": seg["end"]})
+
+        # Split chunks that are too long at the largest internal gap
+        final = []
+        for chunk in merged:
+            duration = chunk["end"] - chunk["start"]
+            if duration <= max_duration:
+                final.append(chunk)
+                continue
+            # Find internal VAD segments within this chunk to find split points
+            internal = [s for s in raw_segments
+                        if s["start"] >= chunk["start"] and s["end"] <= chunk["end"]]
+            if len(internal) < 2:
+                final.append(chunk)
+                continue
+            # Find the gap closest to the midpoint
+            mid = chunk["start"] + duration / 2
+            best_idx = 0
+            best_dist = float("inf")
+            for i in range(len(internal) - 1):
+                gap_mid = (internal[i]["end"] + internal[i + 1]["start"]) / 2
+                dist = abs(gap_mid - mid)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_idx = i
+            # Split at the gap
+            split_point = (internal[best_idx]["end"] + internal[best_idx + 1]["start"]) / 2
+            final.append({"start": chunk["start"], "end": split_point})
+            final.append({"start": split_point, "end": chunk["end"]})
+
+        # Recursively split if still too long (one more pass)
+        merged = []
+        for chunk in final:
+            if chunk["end"] - chunk["start"] > max_duration * 1.5:
+                mid = (chunk["start"] + chunk["end"]) / 2
+                merged.append({"start": chunk["start"], "end": mid})
+                merged.append({"start": mid, "end": chunk["end"]})
+            else:
+                merged.append(chunk)
+
+        logger.info(f"VAD segmented to {len(merged)} chunks (max {max_duration}s each)")
 
         # Transcribe each chunk
         segments = []
