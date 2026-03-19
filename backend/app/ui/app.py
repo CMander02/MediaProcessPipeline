@@ -536,7 +536,7 @@ def create_ui() -> gr.Blocks:
             # ---------------------------------------------------------------
             # Tab 2: 历史
             # ---------------------------------------------------------------
-            with gr.TabItem("历史", id="history"):
+            with gr.TabItem("历史", id="history") as history_tab:
                 gr.Markdown("*点击表格中的任务 ID（第一列）可自动填入下方查看详情*", elem_id="history-hint")
                 history_table = gr.Dataframe(
                     headers=TASK_HEADERS,
@@ -546,6 +546,7 @@ def create_ui() -> gr.Blocks:
                 )
                 refresh_history_btn = gr.Button("刷新", size="sm")
                 refresh_history_btn.click(fn=refresh_tasks, outputs=history_table)
+                history_tab.select(fn=refresh_tasks, outputs=history_table)
                 demo.load(fn=refresh_tasks, outputs=history_table)
 
                 with gr.Row():
@@ -570,18 +571,22 @@ def create_ui() -> gr.Blocks:
             # ---------------------------------------------------------------
             # Tab 3: 结果
             # ---------------------------------------------------------------
-            with gr.TabItem("结果", id="results"):
+            with gr.TabItem("结果", id="results") as results_tab:
                 with gr.Row():
                     result_dropdown = gr.Dropdown(
                         choices=[],
-                        label="已完成任务",
+                        label="已完成任务（切换到此 tab 自动刷新）",
                         allow_custom_value=True,
                         scale=4,
                     )
                     refresh_results_btn = gr.Button("刷新列表", size="sm", scale=1)
 
-                # Populate dropdown on load and on refresh
+                # Populate dropdown on load, on refresh, and on tab select
                 refresh_results_btn.click(
+                    fn=_get_completed_choices,
+                    outputs=result_dropdown,
+                )
+                results_tab.select(
                     fn=_get_completed_choices,
                     outputs=result_dropdown,
                 )
