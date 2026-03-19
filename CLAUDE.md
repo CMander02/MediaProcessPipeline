@@ -1,135 +1,62 @@
-# MediaProcessPipeline
+# MediaProcessPipeline - Dev Spec
 
 媒体处理管线 - 将音视频转化为结构化知识。
 
-## 项目结构
+## 架构
 
 ```
-MediaProcessPipeline/
-├── backend/                    # Python 后端 (FastAPI)
-│   ├── run.py                  # 启动入口 (端口 18000)
-│   ├── app/
-│   │   ├── main.py             # FastAPI 应用
-│   │   ├── core/config.py      # 配置
-│   │   ├── models/             # 数据模型
-│   │   ├── api/routes/         # API 路由
-│   │   │   ├── tasks.py        # 任务管理 + 管线处理
-│   │   │   ├── pipeline.py     # 管道操作
-│   │   │   ├── settings.py     # 运行时设置
-│   │   │   └── filesystem.py   # 文件浏览
-│   │   └── services/           # 业务逻辑
-│   │       ├── ingestion/      # yt-dlp 下载
-│   │       ├── preprocessing/  # UVR5 人声分离 + VAD 切分
-│   │       ├── recognition/    # WhisperX / Qwen3-ASR 转录
-│   │       ├── analysis/       # LLM 润色/摘要/思维导图
-│   │       └── archiving/      # 归档导出
-│   └── .env.example
-├── frontend/                   # Vue 3 + UnoCSS + Element Plus
-│   └── src/
-│       ├── App.vue             # 根组件
-│       ├── main.ts             # Vue 入口
-│       ├── style.css           # UnoCSS + 自定义样式
-│       ├── api/                # API 客户端
-│       │   └── index.ts
-│       ├── composables/        # Vue composables
-│       │   ├── useTasks.ts     # 任务管理 (200ms 轮询)
-│       │   └── useSettings.ts  # 设置管理
-│       ├── components/         # UI 组件
-│       │   ├── AppLayout.vue   # 侧边栏布局
-│       │   ├── FileSystemPicker.vue  # 本地文件选择器
-│       │   └── ...
-│       ├── views/              # 页面组件
-│       │   ├── DashboardView.vue   # 首页 (任务创建 + ASR切换)
-│       │   ├── TasksView.vue
-│       │   ├── ArchivesView.vue
-│       │   └── SettingsView.vue
-│       └── types/              # TypeScript 类型
-│           └── index.ts
-├── data/                       # 数据目录 (任务输出)
-│   └── {task_id}_{title}/      # 每个任务的输出目录
-│       ├── source/             # 原始媒体文件
-│       ├── metadata.json       # 媒体元数据
-│       ├── analysis.json       # LLM 分析结果
-│       ├── transcript.srt      # 原始转录
-│       ├── transcript_polished.srt  # 润色后转录
-│       ├── transcript_polished.md   # Markdown 格式
-│       └── summary.md          # 摘要 + 思维导图
-└── scripts/                    # 开发脚本
-    ├── dev.ps1                 # 启动开发服务器
-    └── stop.ps1                # 停止服务
+CLI (mpp) / Gradio (后续) / HTTP
+        ↓
+  FastAPI Daemon (:18000)
+  ├─ TaskQueue    asyncio.Queue, 单 worker (GPU 瓶颈)
+  ├─ TaskStore    SQLite (data/tasks.db)
+  ├─ EventBus    in-process pub/sub → SSE
+  └─ Services    ASR, UVR, LLM (不变)
 ```
 
-## 快速开始
+## 开发规范
 
-```powershell
-.\scripts\dev.ps1      # 启动开发服务器 (后端 18000, 前端 5173)
-.\scripts\stop.ps1     # 停止服务
-```
+### 后端 (Python / FastAPI)
 
-## 开发
+- 端口固定 **18000**
+- 包管理用 **uv**
+- 启动 daemon: `cd backend && uv run python -m app.cli serve` 或 `uv run python run.py --reload`
+- Windows 上必须用 UTF-8 编码处理文件路径（emoji 文件名）
+- 所有 service 使用 singleton 模式，通过 `get_xxx_service()` 获取
+- 核心模块在 `app.core/`: settings, database, events, queue, pipeline
+- Runtime settings 定义在 `app.core.settings`，API route 是薄 wrapper
+- LLM 调用统一走 LiteLLM，支持 anthropic / openai / custom (OpenAI compatible)
+- ASR 后端支持 WhisperX 和 Qwen3-ASR，通过 runtime settings 切换
+- UVR5 人声分离保留——工作场景多样，不止访谈，可能有背景音乐等复杂音频
 
-```bash
-# 后端
-cd backend
-uv sync
-uv run python run.py --reload
+### CLI (`mpp`)
 
-# 前端
-cd frontend
-npm install
-npm run dev
-```
+- 入口: `cd backend && uv run python -m app.cli <command>`
+- 快捷脚本: `scripts/mpp.ps1` (PowerShell) / `scripts/mpp` (bash)
+- 命令: `serve`, `run <source>`, `status`, `list`, `show <id>`, `cancel <id>`, `config [key] [value]`
+- daemon 未运行时 `list` 和 `config` 可离线读 SQLite / settings.json
 
-## 处理管线
+### 前端
 
-1. **下载媒体** - yt-dlp 下载 YouTube/Bilibili 或复制本地文件
-2. **分离人声** - UVR5 (audio-separator) 去除背景音乐
-3. **转录音频** - WhisperX 或 Qwen3-ASR (可切换)
-4. **分析内容** - LLM 提取元数据 (语言/主题/说话人等)
-5. **润色字幕** - LLM 滑动窗口纠错 + 添加标点
-6. **生成摘要** - LLM 生成摘要和思维导图
-7. **归档保存** - 输出到任务目录，可选同步 Obsidian
+- **重写计划**：从 Vue 3 + Element Plus 迁移到 **Gradio**（Python 全栈）
+- Gradio 内置 Audio/Video/File 组件，适合媒体处理场景
+- 可嵌入 FastAPI：`gr.mount_gradio_app(app, demo, path="/ui")`
 
-处理完成后自动清理中间文件 (人声分离输出、VAD切分音频)。
+### 通信协议
 
-## ASR 后端
+- SSE (Server-Sent Events): `GET /api/tasks/events` (全局) 和 `GET /api/tasks/{id}/events` (单任务)
+- 旧轮询方式仍兼容 (`GET /api/tasks/{id}`)
 
-支持两种 ASR 后端，可在 Dashboard 或 Settings 中切换：
+### 数据持久化
 
-- **WhisperX** (默认) - 基于 Whisper，支持多语言，自带 VAD 和对齐
-- **Qwen3-ASR** - 基于 Qwen3，使用 Silero VAD 进行语音分割
-
-长音频 (>30分钟) 会自动在静音点切分后并行处理。
-
-## API 端点
-
-### 任务管理
-- `POST /api/tasks` - 创建任务
-- `GET /api/tasks` - 列出任务
-- `GET /api/tasks/{id}` - 获取任务详情
-- `POST /api/tasks/{id}/cancel` - 取消任务
-
-### 管道操作
-- `POST /api/pipeline/upload` - 上传本地文件
-- `POST /api/pipeline/download` - 下载媒体
-- `POST /api/pipeline/separate` - 人声分离
-- `POST /api/pipeline/transcribe` - 转录音频
-- `GET /api/pipeline/archives` - 列出归档
-
-### 设置
-- `GET /api/settings` - 获取设置
-- `PUT /api/settings` - 更新设置
-
-## 技术栈
-
-- **Backend**: Python 3.11+, FastAPI, uv
-- **Frontend**: Vue 3.5 + UnoCSS + Element Plus + TypeScript
-- **ASR**: WhisperX, Qwen3-ASR
-- **Audio**: UVR5 (audio-separator), Silero VAD
-- **LLM**: Anthropic / OpenAI / DeepSeek (可配置)
+- 任务存 SQLite `data/tasks.db`（active + history 统一存储）
+- Settings 存 `data/settings.json`
+- 任务产出存 `data/{task_id_short}_{title}/`
 
 ## 注意事项
 
-- 后端端口固定为 **18000** (不是 8000)
-- Windows 上使用 UTF-8 编码处理 emoji 文件名
-- 前端轮询间隔 200ms，任务创建后立即开始轮询
+- 后端端口 **18000** 不是 8000
+- UVR 模型路径：用户可能本地已安装 UVR，可以自动扫描常见安装路径
+- ffmpeg 必须在 PATH 中
+- CUDA 显存管理：切换 ASR 后端时需要释放旧模型显存
+- `ccworkspace/` 目录存放开发过程中的分析和规划文档

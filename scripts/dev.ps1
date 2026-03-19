@@ -18,10 +18,11 @@ Write-Status "Project root: $ProjectRoot"
 # Detect PowerShell executable (pwsh for PS7, powershell for PS5)
 $PSExe = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh" } else { "powershell" }
 
-# Start backend
+# Start backend (cd to backend/ for imports, --project points to pyproject.toml)
+# Use "python -m uvicorn" to avoid Windows script path canonicalization bug in uv
 $BackendPath = Join-Path $ProjectRoot "backend"
 Write-Status "Starting backend on port 18000..."
-Start-Process $PSExe -ArgumentList "-NoExit", "-Command", "cd '$BackendPath'; uv run uvicorn app.main:app --reload --port 18000" -WindowStyle Normal
+Start-Process $PSExe -ArgumentList "-NoExit", "-Command", "cd '$BackendPath'; uv run --project '$ProjectRoot' python -m uvicorn app.main:app --reload --port 18000" -WindowStyle Normal
 
 Start-Sleep -Milliseconds 500
 

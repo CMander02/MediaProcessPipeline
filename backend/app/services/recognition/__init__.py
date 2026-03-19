@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from app.api.routes.settings import get_runtime_settings
+from app.core.settings import get_runtime_settings
 from app.services.recognition.whisperx import WhisperXService, get_whisperx_service
 
 # Lazy import for Qwen3ASR to avoid nagisa import issues at module load time

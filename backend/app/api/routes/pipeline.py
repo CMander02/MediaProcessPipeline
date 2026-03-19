@@ -13,7 +13,7 @@ from app.services.recognition import transcribe_audio
 from app.services.analysis import polish_text, summarize_text, generate_mindmap
 from app.services.archiving import list_archives
 from app.services.cleanup import cleanup_failed_task, cleanup_orphaned_files, get_disk_usage
-from app.api.routes.settings import get_runtime_settings
+from app.core.settings import get_runtime_settings
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 

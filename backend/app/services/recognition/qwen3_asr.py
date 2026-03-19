@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 
-from app.api.routes.settings import get_runtime_settings
+from app.core.settings import get_runtime_settings
 from app.models import TranscriptSegment
 
 logger = logging.getLogger(__name__)
@@ -302,6 +302,9 @@ class Qwen3ASRService:
         # Get VAD speech timestamps
         vad = get_vad_splitter()
         vad._load_model()
+
+        # Ensure float32 (soundfile may return float64)
+        audio_data = audio_data.astype(np.float32)
 
         # Resample to 16kHz for VAD if needed
         if sample_rate != 16000:

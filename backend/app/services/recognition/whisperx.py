@@ -33,7 +33,7 @@ except (ImportError, AttributeError):
     pass
 
 from app.core.config import get_settings
-from app.api.routes.settings import get_runtime_settings
+from app.core.settings import get_runtime_settings
 from app.models import TranscriptSegment
 
 logger = logging.getLogger(__name__)

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
-from app.api.routes.settings import get_runtime_settings
+from app.core.settings import get_runtime_settings
 from app.models import MediaMetadata
 
 logger = logging.getLogger(__name__)

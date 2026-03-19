@@ -6,8 +6,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from app.api.routes.settings import get_runtime_settings
-from app.services.history import get_history_service
+from app.core.settings import get_runtime_settings
+from app.core.database import get_task_store
 
 logger = logging.getLogger(__name__)
 
@@ -69,15 +69,16 @@ class CleanupService:
             Dict with cleanup results
         """
         data_root = self.get_data_root()
-        history = get_history_service()
+        store = get_task_store()
         cutoff_time = datetime.now() - timedelta(hours=max_age_hours)
 
         cleaned = []
         errors = []
         skipped = []
 
-        # Get all task IDs from history
-        history_ids = {entry.id[:8] for entry in history.list_tasks(limit=1000)}
+        # Get all task IDs from the task store
+        all_tasks = store.list(limit=1000)
+        history_ids = {str(t.id)[:8] for t in all_tasks}
 
         for item in data_root.iterdir():
             # Skip non-directories and system files

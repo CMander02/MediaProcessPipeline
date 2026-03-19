@@ -7,8 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import tasks, pipeline, filesystem
 from app.api.routes import settings as settings_router
-from app.api.routes.settings import get_runtime_settings, SETTINGS_FILE
+from app.core.settings import get_runtime_settings, SETTINGS_FILE
 from app.core.config import get_settings
+from app.core.database import init_db, close_db
+from app.core.events import get_event_bus
+from app.core.pipeline import process_task
+from app.core.queue import get_task_queue
 
 # Force UTF-8 encoding for stdout/stderr on Windows
 if sys.platform == "win32":
@@ -23,15 +27,27 @@ config = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: load runtime settings from file
+    # Startup
     rt = get_runtime_settings()
     logger.info(f"Loaded runtime settings from {SETTINGS_FILE}")
     logger.info(f"  LLM Provider: {rt.llm_provider}")
     if rt.llm_provider == "custom":
         logger.info(f"  Custom Model: {rt.custom_model}")
         logger.info(f"  Custom API Base: {rt.custom_api_base}")
+
+    # Initialize SQLite task store
+    init_db()
+
+    # Start task queue worker
+    queue = get_task_queue()
+    queue.set_pipeline(process_task)
+    await queue.start()
+
     yield
-    # Shutdown: nothing to clean up
+
+    # Shutdown
+    await queue.stop()
+    close_db()
 
 app = FastAPI(
     title=config.api_title,
