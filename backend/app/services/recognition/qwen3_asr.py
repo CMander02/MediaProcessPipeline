@@ -283,21 +283,27 @@ class Qwen3ASRService:
         """
         rt = get_runtime_settings()
 
-        logger.info("Transcribing with native Qwen3-ASR (no external VAD)")
+        # Timestamps require ForcedAligner — only request if aligner is loaded
+        has_aligner = self._current_aligner_path is not None
+        use_timestamps = rt.qwen3_enable_timestamps and has_aligner
+
+        if not has_aligner and rt.qwen3_enable_timestamps:
+            logger.info("Timestamps requested but no ForcedAligner loaded — transcribing without timestamps")
+        logger.info(f"Transcribing with native Qwen3-ASR (no external VAD, timestamps={use_timestamps})")
 
         results = self._model.transcribe(
             audio=str(audio_path),
             language=language,
-            return_time_stamps=rt.qwen3_enable_timestamps,
+            return_time_stamps=use_timestamps,
         )
         logger.info(f"Qwen3-ASR transcribe complete, got {len(results)} result(s)")
 
         # Parse result into segments
-        segments, detected_lang = self._parse_result(results, rt.qwen3_enable_timestamps)
+        segments, detected_lang = self._parse_result(results, use_timestamps)
         logger.info(f"Parsed {len(segments)} segments, detected language: {detected_lang}")
 
         # If timestamps enabled and we got character-level output, merge into sentences
-        if rt.qwen3_enable_timestamps and segments and len(segments) > 1:
+        if use_timestamps and segments and len(segments) > 1:
             avg_text_len = sum(len(s.get("text", "")) for s in segments) / len(segments)
             if avg_text_len < 3:  # Likely character-level from ForcedAligner
                 segments = self._merge_character_segments(segments)
