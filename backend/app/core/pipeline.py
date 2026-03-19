@@ -298,6 +298,37 @@ async def run_pipeline(task: Task) -> None:
     srt = recognition.get("srt", "")
     await _update_step(task, PipelineStep.TRANSCRIBE, completed=True)
 
+    # Guard: skip LLM if transcript is empty or trivially short
+    if not transcript or len(transcript.strip()) < 10:
+        logger.warning(f"Transcript is empty or too short ({len(transcript)} chars), skipping LLM analysis")
+        # Still archive what we have (metadata, empty transcript)
+        await _update_step(task, PipelineStep.ANALYZE, completed=True)
+        await _update_step(task, PipelineStep.POLISH, completed=True)
+
+        await _update_step(task, PipelineStep.ARCHIVE)
+        archive = await archive_result(
+            metadata,
+            polished_srt="",
+            summary={"tldr": "未检测到有效语音内容", "key_facts": [], "action_items": [], "topics": []},
+            mindmap="",
+            original_srt=srt,
+            work_dir=task_dir,
+            analysis={"language": "unknown", "content_type": "unknown", "main_topics": [],
+                       "keywords": [], "proper_nouns": [], "speakers_detected": 0, "tone": "unknown"},
+        )
+        _cleanup_intermediate_files(task_dir, audio_path, vocals_path)
+        await _update_step(task, PipelineStep.ARCHIVE, completed=True)
+
+        task.result = {
+            "metadata": metadata.model_dump(mode="json"),
+            "transcript_segments": 0,
+            "archive": archive,
+            "output_dir": str(task_dir),
+            "analysis": {},
+            "warning": "未检测到有效语音内容，跳过 LLM 分析",
+        }
+        return
+
     # Step 4: Analyze + Summarize + Mindmap (parallel)
     # These three LLM calls only need the raw transcript, so run them concurrently.
     # This saves ~1 LLM call duration of wall time.
