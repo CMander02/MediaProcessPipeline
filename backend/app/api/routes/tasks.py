@@ -2,6 +2,9 @@
 
 Thin HTTP layer — all business logic lives in core.pipeline, core.queue,
 core.database, and core.events.
+
+IMPORTANT: Fixed routes (/stats, /events, /history) MUST be defined BEFORE
+the /{task_id} catch-all, otherwise FastAPI tries to parse "events" as a UUID.
 """
 
 import asyncio
@@ -22,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Task CRUD
+# Fixed-path routes (BEFORE /{task_id} to avoid route conflicts)
 # ---------------------------------------------------------------------------
 
 @router.post("", response_model=Task)
@@ -63,6 +66,68 @@ async def get_stats():
     return store.stats()
 
 
+@router.get("/events")
+async def stream_all_events():
+    """SSE stream for ALL task events (global dashboard)."""
+    bus = get_event_bus()
+    q = bus.subscribe_global()
+
+    async def event_generator():
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=30.0)
+                    yield event.to_sse()
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await bus.unsubscribe_global(q)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/history/stats")
+async def get_history_stats():
+    """Get history statistics (tasks in terminal states)."""
+    store = get_task_store()
+    return store.stats()
+
+
+@router.get("/history")
+async def get_history(status: str | None = None, limit: int = 50, offset: int = 0):
+    """Get task history (completed/failed/cancelled)."""
+    store = get_task_store()
+    if status:
+        tasks = store.list(status=status, limit=limit, offset=offset)
+    else:
+        completed = store.list(status="completed", limit=limit, offset=offset)
+        failed = store.list(status="failed", limit=limit, offset=offset)
+        cancelled = store.list(status="cancelled", limit=limit, offset=offset)
+        tasks = sorted(
+            completed + failed + cancelled,
+            key=lambda t: t.created_at,
+            reverse=True,
+        )[:limit]
+    return {
+        "stats": store.stats(),
+        "tasks": tasks,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Dynamic-path routes (/{task_id} AFTER all fixed paths)
+# ---------------------------------------------------------------------------
+
 @router.get("/{task_id}", response_model=Task)
 async def get_task(task_id: UUID):
     """Get task by ID."""
@@ -96,41 +161,6 @@ async def delete_task(task_id: UUID):
     raise HTTPException(404, "Task not found")
 
 
-# ---------------------------------------------------------------------------
-# SSE endpoints
-# ---------------------------------------------------------------------------
-
-@router.get("/events")
-async def stream_all_events():
-    """SSE stream for ALL task events (global dashboard)."""
-    bus = get_event_bus()
-    q = bus.subscribe_global()
-
-    async def event_generator():
-        try:
-            while True:
-                try:
-                    event = await asyncio.wait_for(q.get(), timeout=30.0)
-                    yield event.to_sse()
-                except asyncio.TimeoutError:
-                    # Send keepalive
-                    yield ": keepalive\n\n"
-        except asyncio.CancelledError:
-            pass
-        finally:
-            await bus.unsubscribe_global(q)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
 @router.get("/{task_id}/events")
 async def stream_task_events(task_id: UUID):
     """SSE stream for a specific task's events."""
@@ -144,14 +174,12 @@ async def stream_task_events(task_id: UUID):
 
     async def event_generator():
         try:
-            # Send current state as initial event
             yield f"data: {{\"task_id\": \"{task_id}\", \"type\": \"snapshot\", \"data\": {{\"status\": \"{task.status}\", \"progress\": {task.progress}, \"message\": \"{task.message or ''}\"}}}}\n\n"
 
             while True:
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=30.0)
                     yield event.to_sse()
-                    # Stop streaming after terminal states
                     if event.event_type in ("completed", "failed", "cancelled"):
                         break
                 except asyncio.TimeoutError:
@@ -170,40 +198,6 @@ async def stream_task_events(task_id: UUID):
             "X-Accel-Buffering": "no",
         },
     )
-
-
-# ---------------------------------------------------------------------------
-# History-compatible endpoints (kept for API backwards compat)
-# ---------------------------------------------------------------------------
-
-@router.get("/history/stats")
-async def get_history_stats():
-    """Get history statistics (tasks in terminal states)."""
-    store = get_task_store()
-    return store.stats()
-
-
-@router.get("/history")
-async def get_history(status: str | None = None, limit: int = 50, offset: int = 0):
-    """Get task history (completed/failed/cancelled)."""
-    store = get_task_store()
-    # Only return terminal-state tasks for history view
-    if status:
-        tasks = store.list(status=status, limit=limit, offset=offset)
-    else:
-        # All terminal states
-        completed = store.list(status="completed", limit=limit, offset=offset)
-        failed = store.list(status="failed", limit=limit, offset=offset)
-        cancelled = store.list(status="cancelled", limit=limit, offset=offset)
-        tasks = sorted(
-            completed + failed + cancelled,
-            key=lambda t: t.created_at,
-            reverse=True,
-        )[:limit]
-    return {
-        "stats": store.stats(),
-        "tasks": tasks,
-    }
 
 
 @router.delete("/history/{task_id}")

@@ -96,7 +96,10 @@ export function ResultViewer({ tasks }: { tasks: Task[] }) {
 
 async function fetchFile(outputDir: string, filename: string): Promise<string> {
   try {
-    const res = await fetch(`/api/filesystem/read?path=${encodeURIComponent(outputDir + "/" + filename)}`)
+    // Use backslash for Windows paths, forward slash for Unix
+    const sep = outputDir.includes("\\") ? "\\" : "/"
+    const fullPath = outputDir + sep + filename
+    const res = await fetch(`/api/filesystem/read?path=${encodeURIComponent(fullPath)}`)
     if (!res.ok) return ""
     const data = await res.json()
     return data.content ?? ""

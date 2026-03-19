@@ -91,6 +91,33 @@ async def browse_directory(
         }
 
 
+@router.get("/read")
+async def read_file(
+    path: str = Query(..., description="File path to read"),
+):
+    """Read a text file and return its content. Only allows files under data/."""
+    try:
+        file_path = Path(path).resolve()
+
+        # Security: only allow reading files under the data root
+        from app.core.settings import get_runtime_settings
+        data_root = Path(get_runtime_settings().data_root).resolve()
+        if not str(file_path).startswith(str(data_root)):
+            return {"success": False, "error": "Access denied: path outside data directory"}
+
+        if not file_path.exists():
+            return {"success": False, "error": f"File not found: {path}"}
+        if not file_path.is_file():
+            return {"success": False, "error": f"Not a file: {path}"}
+
+        content = file_path.read_text(encoding="utf-8")
+        return {"success": True, "content": content, "path": str(file_path)}
+    except UnicodeDecodeError:
+        return {"success": False, "error": "File is not valid UTF-8 text"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @router.get("/drives")
 async def list_drives():
     """
