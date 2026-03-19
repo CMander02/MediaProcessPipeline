@@ -152,6 +152,9 @@ async def submit_from_file(file, skip_separation: bool) -> str:
     if not file_path.exists():
         return f"⚠ 文件不存在: {file}"
 
+    if file_path.suffix.lower() not in MEDIA_EXTENSIONS:
+        return f"⚠ 不支持的格式: {file_path.suffix}（支持 {', '.join(MEDIA_EXTENSIONS)}）"
+
     # Copy to uploads dir so pipeline can find it
     rt = get_runtime_settings()
     upload_dir = Path(rt.data_root).resolve() / "uploads"
@@ -462,7 +465,7 @@ def create_ui() -> gr.Blocks:
                         with gr.Row():
                             file_input = gr.File(
                                 label="拖拽上传文件",
-                                file_types=["video", "audio"],
+                                file_count="single",
                                 scale=5,
                             )
                             upload_btn = gr.Button("上传并处理", variant="primary", scale=1)
