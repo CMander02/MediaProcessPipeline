@@ -39,16 +39,27 @@ class TaskEvent:
 class EventBus:
     """Simple in-process pub/sub for task events."""
 
-    def __init__(self):
+    def __init__(self, log_buffer_size: int = 200):
         # Global subscribers (receive ALL events)
         self._global_subs: list[asyncio.Queue[TaskEvent]] = []
         # Per-task subscribers
         self._task_subs: dict[str, list[asyncio.Queue[TaskEvent]]] = {}
         self._lock = asyncio.Lock()
+        # Ring buffer of recent events for UI log display
+        self._log_buffer: list[TaskEvent] = []
+        self._log_buffer_size = log_buffer_size
+
+    def get_recent_log(self, n: int = 50) -> list[TaskEvent]:
+        """Return the last N events from the log buffer (newest last)."""
+        return self._log_buffer[-n:]
 
     async def publish(self, event: TaskEvent) -> None:
         """Publish an event to all matching subscribers."""
         async with self._lock:
+            # Append to log buffer
+            self._log_buffer.append(event)
+            if len(self._log_buffer) > self._log_buffer_size:
+                self._log_buffer = self._log_buffer[-self._log_buffer_size:]
             # Deliver to global subscribers
             for q in self._global_subs:
                 try:

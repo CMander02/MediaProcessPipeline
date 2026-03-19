@@ -14,6 +14,7 @@ from typing import Any
 import gradio as gr
 
 from app.core.database import get_task_store
+from app.core.events import get_event_bus
 from app.core.queue import get_task_queue
 from app.core.settings import get_runtime_settings, patch_runtime_settings
 from app.core.pipeline import PIPELINE_STEPS, PipelineStep
@@ -410,6 +411,33 @@ def switch_asr_backend(backend: str) -> tuple[str, list[list], Any]:
     return f"✓ ASR 后端已切换为 **{backend}**", _render_settings(), get_runtime_settings().model_dump()
 
 
+def get_event_log() -> str:
+    """Get recent events as a formatted log string for display."""
+    bus = get_event_bus()
+    events = bus.get_recent_log(80)
+    if not events:
+        return "暂无事件"
+    lines = []
+    for e in events:
+        ts = e.timestamp.split("T")[1][:8] if "T" in e.timestamp else e.timestamp
+        tid = e.task_id[:8]
+        etype = e.event_type
+        data_str = ""
+        if e.data:
+            if "step" in e.data:
+                step_name = STEP_NAMES.get(e.data["step"], e.data["step"])
+                pct = e.data.get("progress", "")
+                if pct:
+                    pct = f" {int(float(pct)*100)}%"
+                data_str = f" {step_name}{pct}"
+            elif "error" in e.data:
+                data_str = f" {e.data['error'][:80]}"
+            elif "output_dir" in e.data:
+                data_str = f" → {e.data['output_dir']}"
+        lines.append(f"[{ts}] {tid} {etype}{data_str}")
+    return "\n".join(reversed(lines))  # Newest first
+
+
 # ---------------------------------------------------------------------------
 # Build Gradio UI
 # ---------------------------------------------------------------------------
@@ -623,5 +651,20 @@ def create_ui() -> gr.Blocks:
                     return _render_settings(), get_runtime_settings().model_dump()
 
                 demo.load(fn=_load_all, outputs=[settings_table, all_settings_json])
+
+            # ---------------------------------------------------------------
+            # Tab 5: 日志
+            # ---------------------------------------------------------------
+            with gr.TabItem("日志", id="logs"):
+                gr.Markdown("### 事件日志\n实时显示任务处理事件（最新在上）")
+                log_output = gr.Textbox(
+                    value=get_event_log,
+                    label="Events",
+                    lines=30,
+                    max_lines=50,
+                    interactive=False,
+                )
+                log_timer = gr.Timer(value=2)
+                log_timer.tick(fn=get_event_log, outputs=log_output)
 
     return demo
