@@ -462,7 +462,7 @@ def create_ui() -> gr.Blocks:
                         with gr.Row():
                             file_input = gr.File(
                                 label="拖拽上传文件",
-                                file_types=list(MEDIA_EXTENSIONS),
+                                file_types=["video", "audio"],
                                 scale=5,
                             )
                             upload_btn = gr.Button("上传并处理", variant="primary", scale=1)
