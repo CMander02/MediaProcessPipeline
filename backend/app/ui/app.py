@@ -6,21 +6,18 @@ Talks to the same daemon via internal imports (no HTTP round-trip).
 
 from __future__ import annotations
 
-import json
 import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from uuid import UUID
 
 import gradio as gr
 
 from app.core.database import get_task_store
-from app.core.events import TaskEvent, get_event_bus
 from app.core.queue import get_task_queue
 from app.core.settings import get_runtime_settings, patch_runtime_settings
 from app.core.pipeline import PIPELINE_STEPS, PipelineStep
-from app.models.task import Task, TaskCreate, TaskStatus, TaskType
+from app.models.task import Task, TaskStatus, TaskType
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +92,45 @@ def _task_to_row(t: Task) -> list:
     ]
 
 
+def _get_completed_choices():
+    """Return gr.update with choices for completed tasks dropdown."""
+    store = get_task_store()
+    tasks = store.list(status="completed", limit=30)
+    choices = []
+    for t in tasks:
+        src = t.source
+        if len(src) > 50:
+            src = "..." + src[-47:]
+        choices.append(f"{str(t.id)[:8]} | {src}")
+    if not choices:
+        return gr.update(choices=[], value=None)
+    return gr.update(choices=choices, value=None)
+
+
+def _get_recent_completed(n: int = 3) -> str:
+    """Return markdown for the last N completed tasks."""
+    store = get_task_store()
+    tasks = store.list(status="completed", limit=n)
+    if not tasks:
+        return "*暂无已完成任务*"
+    lines = []
+    for t in tasks:
+        src = t.source
+        if len(src) > 50:
+            src = "..." + src[-47:]
+        tid = str(t.id)[:8]
+        output_dir = ""
+        if t.result:
+            output_dir = t.result.get("output_dir", "")
+        time_str = _fmt_time(t.completed_at or t.updated_at)
+        dur = _fmt_duration(t.created_at, t.completed_at)
+        line = f"- 🟢 **`{tid}`** {src} — {time_str} ({dur})"
+        if output_dir:
+            line += f"  `{output_dir}`"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Core actions
 # ---------------------------------------------------------------------------
@@ -154,11 +190,14 @@ async def _submit(source: str, skip_separation: bool) -> str:
 
 def refresh_tasks() -> list[list]:
     store = get_task_store()
-    return [_task_to_row(t) for t in store.list(limit=50)]
+    rows = [_task_to_row(t) for t in store.list(limit=50)]
+    if not rows:
+        return [["", "暂无任务记录，提交任务后将在此显示", "", "", "", "", ""]]
+    return rows
 
 
-def refresh_active() -> tuple[str, list[list], str]:
-    """Returns: (stats_md, active_rows, progress_detail_md)"""
+def refresh_active() -> tuple[str, list[list], str, str]:
+    """Returns: (stats_md, active_rows, progress_detail_md, recently_completed_md)"""
     store = get_task_store()
     queue = get_task_queue()
 
@@ -174,7 +213,10 @@ def refresh_active() -> tuple[str, list[list], str]:
 
     # Active table
     active = store.list_by_statuses([TaskStatus.QUEUED, TaskStatus.PROCESSING])
-    rows = [_task_to_row(t) for t in active]
+    if active:
+        rows = [_task_to_row(t) for t in active]
+    else:
+        rows = [["", "队列空闲，等待新任务...", "", "", "", "", ""]]
 
     # Detailed progress for current task
     current_id = queue.current_task_id
@@ -205,12 +247,15 @@ def refresh_active() -> tuple[str, list[list], str]:
         else:
             detail = "*空闲 — 提交任务开始处理*"
 
-    return stats, rows, detail
+    # Recently completed
+    recent = _get_recent_completed(3)
+
+    return stats, rows, detail, recent
 
 
 def get_task_detail(task_id_prefix: str) -> str:
     if not task_id_prefix:
-        return "选择一个任务查看详情"
+        return "输入任务 ID 前缀或从历史列表点击 ID 查看详情"
 
     store = get_task_store()
     tasks = store.list(limit=200)
@@ -257,13 +302,17 @@ def get_task_detail(task_id_prefix: str) -> str:
 
 def view_task_output(task_id_prefix: str) -> tuple[str, str, str]:
     if not task_id_prefix:
-        return "", "", ""
+        return "*选择一个已完成的任务查看结果*", "", ""
+
+    # If the input comes from the dropdown, extract the ID prefix
+    if " | " in task_id_prefix:
+        task_id_prefix = task_id_prefix.split(" | ")[0].strip()
 
     store = get_task_store()
     tasks = store.list(limit=200)
     matches = [t for t in tasks if str(t.id).startswith(task_id_prefix.strip())]
     if not matches or not matches[0].result:
-        return "未找到结果", "", ""
+        return f"未找到 `{task_id_prefix}` 的结果", "", ""
 
     output_dir = Path(matches[0].result.get("output_dir", ""))
     if not output_dir.exists():
@@ -280,7 +329,45 @@ def view_task_output(task_id_prefix: str) -> tuple[str, str, str]:
             polished = f.read_text(encoding="utf-8")
             break
 
-    return _read("summary.md"), polished, _read("transcript.srt")
+    summary = _read("summary.md")
+    srt = _read("transcript.srt")
+
+    if not summary and not polished and not srt:
+        return "*输出目录存在但未找到结果文件*", "", ""
+
+    return summary, polished, srt
+
+
+def view_from_dropdown(choice: str) -> tuple[str, str, str]:
+    """Load results from the completed-tasks dropdown."""
+    if not choice:
+        return "*从下拉列表选择一个已完成的任务*", "", ""
+    task_id = choice.split(" | ")[0].strip()
+    return view_task_output(task_id)
+
+
+def history_select_and_detail(evt: gr.SelectData, table_data) -> tuple[str, str]:
+    """When user clicks a cell in history table, extract task ID and show detail.
+
+    Returns (task_id_prefix, detail_markdown).
+    """
+    if evt.index is not None and table_data is not None:
+        row_idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
+        try:
+            # Get the ID from the first column of the clicked row
+            if hasattr(table_data, "values"):
+                # pandas DataFrame
+                row = table_data.values[row_idx]
+            elif isinstance(table_data, list) and len(table_data) > row_idx:
+                row = table_data[row_idx]
+            else:
+                return "", ""
+            task_id = str(row[0]).strip()
+            if task_id:
+                return task_id, get_task_detail(task_id)
+        except (IndexError, KeyError, TypeError):
+            pass
+    return "", ""
 
 
 async def cancel_task(task_id_prefix: str) -> str:
@@ -314,6 +401,12 @@ def save_setting(key: str, value: str) -> str:
     return f"✓ {key} = {typed}"
 
 
+def switch_asr_backend(backend: str) -> tuple[str, list[list], Any]:
+    """Switch ASR backend via radio button."""
+    patch_runtime_settings({"asr_backend": backend})
+    return f"✓ ASR 后端已切换为 **{backend}**", _render_settings(), get_runtime_settings().model_dump()
+
+
 # ---------------------------------------------------------------------------
 # Build Gradio UI
 # ---------------------------------------------------------------------------
@@ -341,37 +434,39 @@ def _render_settings():
     return rows
 
 
+def _get_current_asr() -> str:
+    return get_runtime_settings().asr_backend
+
+
 def create_ui() -> gr.Blocks:
     with gr.Blocks(title="MediaProcessPipeline") as demo:
-        gr.Markdown("# MediaProcessPipeline")
+        gr.Markdown("# MediaProcessPipeline\n媒体处理管线 — 将音视频转化为结构化知识")
 
-        with gr.Tabs():
+        with gr.Tabs() as tabs:
             # ---------------------------------------------------------------
             # Tab 1: 处理
             # ---------------------------------------------------------------
             with gr.TabItem("处理", id="process"):
                 stats_md = gr.Markdown("loading...")
 
-                # --- Input area ---
-                gr.Markdown("### 提交任务")
-                with gr.Row():
-                    source_input = gr.Textbox(
-                        placeholder="粘贴视频链接或本地文件路径，回车提交",
-                        label="URL / 路径",
-                        scale=5,
-                    )
-                    submit_btn = gr.Button("提交", variant="primary", scale=1)
-
-                with gr.Row():
-                    file_input = gr.File(
-                        label="或拖拽上传文件",
-                        file_types=[f"*{ext}" for ext in MEDIA_EXTENSIONS],
-                        scale=5,
-                    )
-                    upload_btn = gr.Button("上传并处理", variant="primary", scale=1)
-
-                with gr.Row():
-                    skip_sep = gr.Checkbox(label="跳过人声分离", value=False)
+                # --- Input area (compact) ---
+                with gr.Accordion("提交新任务", open=True):
+                    with gr.Row():
+                        source_input = gr.Textbox(
+                            placeholder="粘贴视频链接或本地文件路径，回车提交",
+                            label="URL / 路径",
+                            scale=5,
+                        )
+                        submit_btn = gr.Button("提交", variant="primary", scale=1)
+                    with gr.Accordion("上传文件 / 高级选项", open=False):
+                        with gr.Row():
+                            file_input = gr.File(
+                                label="拖拽上传文件",
+                                file_types=[f"*{ext}" for ext in MEDIA_EXTENSIONS],
+                                scale=5,
+                            )
+                            upload_btn = gr.Button("上传并处理", variant="primary", scale=1)
+                        skip_sep = gr.Checkbox(label="跳过人声分离", value=False)
 
                 submit_status = gr.Markdown("")
 
@@ -379,12 +474,16 @@ def create_ui() -> gr.Blocks:
                 progress_md = gr.Markdown("*空闲*")
 
                 # --- Active tasks ---
-                gr.Markdown("### 队列")
                 active_table = gr.Dataframe(
                     headers=TASK_HEADERS,
                     datatype=["str"] * 7,
                     interactive=False,
+                    label="队列",
                 )
+
+                # --- Recently completed ---
+                with gr.Accordion("最近完成", open=True):
+                    recent_md = gr.Markdown("*暂无已完成任务*")
 
                 # --- Wiring ---
                 submit_btn.click(
@@ -399,33 +498,42 @@ def create_ui() -> gr.Blocks:
                     fn=submit_from_file, inputs=[file_input, skip_sep], outputs=submit_status,
                 ).then(fn=lambda: None, outputs=file_input)
 
-                # Auto-refresh
+                # Auto-refresh (now also updates recent_md)
                 timer = gr.Timer(value=2)
-                timer.tick(fn=refresh_active, outputs=[stats_md, active_table, progress_md])
+                timer.tick(fn=refresh_active, outputs=[stats_md, active_table, progress_md, recent_md])
 
             # ---------------------------------------------------------------
             # Tab 2: 历史
             # ---------------------------------------------------------------
             with gr.TabItem("历史", id="history"):
+                gr.Markdown("*点击表格中的任务 ID（第一列）可自动填入下方查看详情*", elem_id="history-hint")
                 history_table = gr.Dataframe(
                     headers=TASK_HEADERS,
                     datatype=["str"] * 7,
                     interactive=False,
+                    label="任务历史",
                 )
                 refresh_history_btn = gr.Button("刷新", size="sm")
                 refresh_history_btn.click(fn=refresh_tasks, outputs=history_table)
                 demo.load(fn=refresh_tasks, outputs=history_table)
 
-                gr.Markdown("---")
                 with gr.Row():
-                    detail_input = gr.Textbox(placeholder="任务 ID 前缀", label="任务 ID", scale=3)
+                    detail_input = gr.Textbox(placeholder="任务 ID 前缀（点击上方表格自动填入）", label="任务 ID", scale=3)
                     detail_btn = gr.Button("查看详情", scale=1)
                     cancel_btn = gr.Button("取消任务", variant="stop", scale=1)
 
-                detail_md = gr.Markdown("")
+                detail_md = gr.Markdown("输入任务 ID 前缀或从历史列表点击 ID 查看详情")
                 cancel_status = gr.Markdown("")
 
+                # Click on history table -> auto-fill detail input and show detail
+                history_table.select(
+                    fn=history_select_and_detail,
+                    inputs=history_table,
+                    outputs=[detail_input, detail_md],
+                )
+
                 detail_btn.click(fn=get_task_detail, inputs=detail_input, outputs=detail_md)
+                detail_input.submit(fn=get_task_detail, inputs=detail_input, outputs=detail_md)
                 cancel_btn.click(fn=cancel_task, inputs=detail_input, outputs=cancel_status)
 
             # ---------------------------------------------------------------
@@ -433,20 +541,33 @@ def create_ui() -> gr.Blocks:
             # ---------------------------------------------------------------
             with gr.TabItem("结果", id="results"):
                 with gr.Row():
-                    result_task_id = gr.Textbox(placeholder="已完成任务 ID 前缀", label="任务 ID", scale=3)
-                    load_result_btn = gr.Button("加载结果", variant="primary", scale=1)
+                    result_dropdown = gr.Dropdown(
+                        choices=[],
+                        label="已完成任务",
+                        allow_custom_value=True,
+                        scale=4,
+                    )
+                    refresh_results_btn = gr.Button("刷新列表", size="sm", scale=1)
+
+                # Populate dropdown on load and on refresh
+                refresh_results_btn.click(
+                    fn=_get_completed_choices,
+                    outputs=result_dropdown,
+                )
+                demo.load(fn=_get_completed_choices, outputs=result_dropdown)
 
                 with gr.Tabs():
                     with gr.TabItem("摘要"):
-                        summary_md = gr.Markdown("")
+                        summary_md = gr.Markdown("*选择一个已完成的任务查看结果*")
                     with gr.TabItem("润色字幕"):
                         polished_md = gr.Markdown("")
                     with gr.TabItem("原始 SRT"):
                         srt_text = gr.Textbox(label="SRT", lines=20, interactive=False)
 
-                load_result_btn.click(
-                    fn=view_task_output,
-                    inputs=result_task_id,
+                # Load results when dropdown selection changes
+                result_dropdown.change(
+                    fn=view_from_dropdown,
+                    inputs=result_dropdown,
                     outputs=[summary_md, polished_md, srt_text],
                 )
 
@@ -454,26 +575,46 @@ def create_ui() -> gr.Blocks:
             # Tab 4: 设置
             # ---------------------------------------------------------------
             with gr.TabItem("设置", id="settings"):
-                gr.Markdown("### 常用设置")
-                settings_table = gr.Dataframe(
-                    headers=["组", "Key", "Value"],
-                    datatype=["str", "str", "str"],
-                    interactive=False,
-                )
-
+                # Quick ASR toggle at top
+                gr.Markdown("### ASR 后端")
                 with gr.Row():
-                    setting_key = gr.Textbox(label="Key", placeholder="e.g. asr_backend", scale=2)
-                    setting_value = gr.Textbox(label="Value", placeholder="e.g. qwen3", scale=2)
-                    save_btn = gr.Button("保存", variant="primary", scale=1)
+                    asr_radio = gr.Radio(
+                        choices=["qwen3", "whisperx"],
+                        value=_get_current_asr,
+                        label="当前 ASR 后端",
+                        interactive=True,
+                        scale=3,
+                    )
+                    asr_status = gr.Markdown("", scale=2)
 
-                save_status = gr.Markdown("")
+                with gr.Accordion("所有设置", open=True):
+                    settings_table = gr.Dataframe(
+                        headers=["组", "Key", "Value"],
+                        datatype=["str", "str", "str"],
+                        interactive=False,
+                        label="设置一览",
+                    )
+
+                    with gr.Row():
+                        setting_key = gr.Textbox(label="Key", placeholder="e.g. asr_backend", scale=2)
+                        setting_value = gr.Textbox(label="Value", placeholder="e.g. qwen3", scale=2)
+                        save_btn = gr.Button("保存", variant="primary", scale=1)
+
+                    save_status = gr.Markdown("")
+
+                with gr.Accordion("全部设置 (JSON)", open=False):
+                    all_settings_json = gr.JSON(label="settings.json")
+
+                # ASR radio wiring
+                asr_radio.change(
+                    fn=switch_asr_backend,
+                    inputs=asr_radio,
+                    outputs=[asr_status, settings_table, all_settings_json],
+                )
 
                 save_btn.click(
                     fn=save_setting, inputs=[setting_key, setting_value], outputs=save_status,
                 ).then(fn=_render_settings, outputs=settings_table)
-
-                gr.Markdown("### 全部设置 (JSON)")
-                all_settings_json = gr.JSON(label="settings.json")
 
                 def _load_all():
                     return _render_settings(), get_runtime_settings().model_dump()

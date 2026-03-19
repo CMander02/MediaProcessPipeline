@@ -49,7 +49,8 @@ async def transcribe_audio(
 ) -> dict[str, Any]:
     """Transcribe audio file using the configured ASR backend.
 
-    Automatically splits long audio (>30min) at VAD silence points and merges results.
+    For WhisperX: splits long audio (>30min) at VAD silence points and merges results.
+    For Qwen3-ASR: passes audio directly (Qwen3-ASR handles chunking natively).
 
     Args:
         audio_path: Path to audio file
@@ -59,42 +60,49 @@ async def transcribe_audio(
     Returns:
         dict with keys: language, segments, srt, srt_path
     """
-    from app.services.preprocessing.vad_splitter import split_long_audio, merge_srt_segments
-
     rt = get_runtime_settings()
     service = get_asr_service()
 
-    # Check if audio needs splitting (>30 minutes)
-    audio_segments = await split_long_audio(audio_path, output_dir)
-
-    if len(audio_segments) == 1 and audio_segments[0].get('is_original', True):
-        # Short audio, process normally
+    if rt.asr_backend == "qwen3":
+        # Qwen3-ASR handles long audio natively - no external VAD splitting needed
         result = service.transcribe(audio_path, language)
         segments = service.to_segments(result)
         srt_content = service.to_srt(segments)
         detected_language = result.get("language", language or "unknown")
     else:
-        # Long audio, process segments and merge
-        logger.info(f"Processing {len(audio_segments)} audio segments")
-        all_srt_contents = []
-        all_segments = []
-        detected_language = None
+        # WhisperX needs VAD-based splitting for long audio (>30min)
+        from app.services.preprocessing.vad_splitter import split_long_audio, merge_srt_segments
 
-        for i, seg in enumerate(audio_segments):
-            logger.info(f"Transcribing segment {i+1}/{len(audio_segments)}: {seg['path']}")
-            result = service.transcribe(seg['path'], language)
+        audio_segments = await split_long_audio(audio_path, output_dir)
+
+        if len(audio_segments) == 1 and audio_segments[0].get('is_original', True):
+            # Short audio, process normally
+            result = service.transcribe(audio_path, language)
             segments = service.to_segments(result)
             srt_content = service.to_srt(segments)
+            detected_language = result.get("language", language or "unknown")
+        else:
+            # Long audio, process segments and merge
+            logger.info(f"Processing {len(audio_segments)} audio segments")
+            all_srt_contents = []
+            all_segments = []
+            detected_language = None
 
-            all_srt_contents.append(srt_content)
-            all_segments.extend(segments)
+            for i, seg in enumerate(audio_segments):
+                logger.info(f"Transcribing segment {i+1}/{len(audio_segments)}: {seg['path']}")
+                result = service.transcribe(seg['path'], language)
+                segments = service.to_segments(result)
+                srt_content = service.to_srt(segments)
 
-            if detected_language is None:
-                detected_language = result.get("language")
+                all_srt_contents.append(srt_content)
+                all_segments.extend(segments)
 
-        # Merge SRT with corrected timestamps
-        srt_content = merge_srt_segments(audio_segments, all_srt_contents)
-        segments = all_segments
+                if detected_language is None:
+                    detected_language = result.get("language")
+
+            # Merge SRT with corrected timestamps
+            srt_content = merge_srt_segments(audio_segments, all_srt_contents)
+            segments = all_segments
 
     # Save SRT file to output_dir if provided
     srt_path = None

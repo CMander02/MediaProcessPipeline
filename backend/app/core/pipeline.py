@@ -4,6 +4,7 @@ This module owns the full processing pipeline (download → archive) and uses
 TaskStore + EventBus for state management instead of in-memory dicts.
 """
 
+import asyncio
 import logging
 import re
 import shutil
@@ -41,9 +42,8 @@ PIPELINE_STEPS = [
     {"id": PipelineStep.DOWNLOAD, "name": "下载媒体", "name_en": "Downloading"},
     {"id": PipelineStep.SEPARATE, "name": "分离人声", "name_en": "Separating vocals"},
     {"id": PipelineStep.TRANSCRIBE, "name": "转录音频", "name_en": "Transcribing"},
-    {"id": PipelineStep.ANALYZE, "name": "分析内容", "name_en": "Analyzing content"},
+    {"id": PipelineStep.ANALYZE, "name": "分析+摘要+脑图", "name_en": "Analyzing & summarizing"},
     {"id": PipelineStep.POLISH, "name": "润色字幕", "name_en": "Polishing transcript"},
-    {"id": PipelineStep.SUMMARIZE, "name": "生成摘要", "name_en": "Generating summary"},
     {"id": PipelineStep.ARCHIVE, "name": "归档保存", "name_en": "Archiving"},
 ]
 
@@ -298,7 +298,9 @@ async def run_pipeline(task: Task) -> None:
     srt = recognition.get("srt", "")
     await _update_step(task, PipelineStep.TRANSCRIBE, completed=True)
 
-    # Step 4: Analyze content
+    # Step 4: Analyze + Summarize + Mindmap (parallel)
+    # These three LLM calls only need the raw transcript, so run them concurrently.
+    # This saves ~1 LLM call duration of wall time.
     await _update_step(task, PipelineStep.ANALYZE)
     video_metadata = {
         "uploader": metadata.uploader,
@@ -306,21 +308,19 @@ async def run_pipeline(task: Task) -> None:
         "tags": metadata.tags,
         "chapters": [{"title": ch.title, "start_time": ch.start_time} for ch in metadata.chapters] if metadata.chapters else None,
     }
-    analysis = await analyze_content(transcript, metadata.title, metadata=video_metadata)
+    analysis, summary, mindmap = await asyncio.gather(
+        analyze_content(transcript, metadata.title, metadata=video_metadata),
+        summarize_text(transcript),
+        generate_mindmap(transcript),
+    )
     await _update_step(task, PipelineStep.ANALYZE, completed=True)
 
-    # Step 5: Polish transcript
+    # Step 5: Polish transcript (depends on analysis context from step 4)
     await _update_step(task, PipelineStep.POLISH)
     polished = await polish_text(srt, context=analysis)
     await _update_step(task, PipelineStep.POLISH, completed=True)
 
-    # Step 6: Generate summary and mindmap
-    await _update_step(task, PipelineStep.SUMMARIZE)
-    summary = await summarize_text(transcript)
-    mindmap = await generate_mindmap(transcript)
-    await _update_step(task, PipelineStep.SUMMARIZE, completed=True)
-
-    # Step 7: Archive
+    # Step 6: Archive
     await _update_step(task, PipelineStep.ARCHIVE)
     archive = await archive_result(
         metadata,

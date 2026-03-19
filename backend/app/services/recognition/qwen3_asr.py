@@ -93,9 +93,8 @@ class Qwen3ASRService:
     def _ensure_init(self):
         """Initialize or reinitialize model with current settings.
 
-        Note: We no longer load ForcedAligner by default since we use VAD-based
-        segmentation which provides sentence-level timestamps. This makes loading
-        faster and uses less VRAM.
+        ForcedAligner is not loaded by default. Qwen3-ASR handles audio
+        chunking natively via its internal toolkit.
         """
         rt = get_runtime_settings()
         model_path = self._get_model_path()
@@ -113,7 +112,7 @@ class Qwen3ASRService:
             # Determine dtype based on device
             dtype = torch.bfloat16 if rt.qwen3_device.startswith("cuda") else torch.float32
 
-            # Build model kwargs - no ForcedAligner needed with VAD-based approach
+            # Build model kwargs
             model_kwargs = {
                 "dtype": dtype,
                 "device_map": rt.qwen3_device,
@@ -121,15 +120,14 @@ class Qwen3ASRService:
                 "max_new_tokens": rt.qwen3_max_new_tokens,
             }
 
-            # Note: We don't load ForcedAligner anymore since we use VAD for segmentation
-            # This is faster and uses less VRAM while producing sentence-level output
-            # similar to WhisperX
+            # Note: ForcedAligner not loaded by default - Qwen3-ASR handles
+            # segmentation natively via its internal toolkit
 
             self._model = Qwen3ASRModel.from_pretrained(model_path, **model_kwargs)
             self._current_model_path = model_path
-            self._current_aligner_path = None  # Not used with VAD approach
+            self._current_aligner_path = None
 
-            logger.info("Qwen3-ASR model loaded (VAD mode, no ForcedAligner)")
+            logger.info("Qwen3-ASR model loaded (native mode, no ForcedAligner)")
 
         except ImportError as e:
             logger.warning(f"qwen-asr not installed - mock mode: {e}")
@@ -226,8 +224,8 @@ class Qwen3ASRService:
     ) -> dict[str, Any]:
         """Transcribe audio using Qwen3-ASR.
 
-        Uses VAD-based segmentation for sentence-level timestamps (like WhisperX),
-        instead of ForcedAligner's character-level timestamps.
+        Delegates to the native Qwen3-ASR model which handles audio chunking
+        internally. No external VAD splitting is needed.
 
         Args:
             audio_path: Path to audio file
@@ -258,10 +256,9 @@ class Qwen3ASRService:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        # Use VAD-based segmentation for sentence-level timestamps
-        # This is more like WhisperX behavior - VAD provides segment boundaries,
-        # ASR provides text for each segment
-        segments, detected_lang = self._transcribe_with_vad(audio_path, language)
+        # Qwen3-ASR handles audio natively - no external VAD needed.
+        # The model's internal chunking handles long audio (up to 20min+).
+        segments, detected_lang = self._transcribe_native(audio_path, language)
 
         # Speaker diarization using Pyannote (if enabled)
         if diarize and rt.enable_diarization and rt.pyannote_model_path:
@@ -269,136 +266,55 @@ class Qwen3ASRService:
 
         return {"language": detected_lang, "segments": segments}
 
-    def _transcribe_with_vad(
+    def _transcribe_native(
         self,
         audio_path: str,
         language: str | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
-        """Transcribe audio using VAD segmentation + Qwen3-ASR.
+        """Transcribe audio using Qwen3-ASR natively.
 
-        This approach:
-        1. Uses Silero VAD to detect speech segments
-        2. Extracts each segment as a separate audio chunk
-        3. Transcribes each chunk with Qwen3-ASR (no ForcedAligner needed)
-        4. Combines results with VAD-provided timestamps
+        Qwen3-ASR handles audio chunking internally via its own toolkit.
+        No external VAD is needed -- this removes a redundant Silero VAD pass
+        and the overhead of splitting/writing/reading temp wav files.
 
-        This is similar to how WhisperX works and produces sentence-level output.
+        With return_time_stamps=True the model returns timestamped segments
+        via its ForcedAligner; with False we get a single text blob per call.
+        We request timestamps so we get sentence-level output directly.
         """
-        import numpy as np
-        import soundfile as sf
-        import tempfile
+        rt = get_runtime_settings()
 
-        from app.services.preprocessing.vad_splitter import get_vad_splitter
+        logger.info("Transcribing with native Qwen3-ASR (no external VAD)")
 
-        logger.info("Using VAD-based segmentation for Qwen3-ASR")
-
-        # Load audio
-        audio_data, sample_rate = sf.read(audio_path)
-
-        # Ensure mono
-        if len(audio_data.shape) > 1:
-            audio_data = np.mean(audio_data, axis=1)
-
-        # Get VAD speech timestamps
-        vad = get_vad_splitter()
-        vad._load_model()
-
-        # Ensure float32 (soundfile may return float64)
-        audio_data = audio_data.astype(np.float32)
-
-        # Resample to 16kHz for VAD if needed
-        if sample_rate != 16000:
-            import torchaudio
-            waveform = torch.from_numpy(audio_data).unsqueeze(0).float()
-            resampler = torchaudio.transforms.Resample(sample_rate, 16000)
-            waveform_16k = resampler(waveform).squeeze().numpy()
-        else:
-            waveform_16k = audio_data
-
-        # Get speech timestamps using VAD
-        logger.info("Running VAD to detect speech segments...")
-        get_speech_ts = vad._utils[0]
-        speech_timestamps = get_speech_ts(
-            torch.from_numpy(waveform_16k),
-            vad._model,
-            sampling_rate=16000,
-            return_seconds=False,
-            # Merge short segments, split long ones
-            min_speech_duration_ms=250,
-            max_speech_duration_s=30,
-            min_silence_duration_ms=300,
+        results = self._model.transcribe(
+            audio=str(audio_path),
+            language=language,
+            return_time_stamps=rt.qwen3_enable_timestamps,
         )
-        logger.info(f"VAD detected {len(speech_timestamps)} speech segments")
+        logger.info(f"Qwen3-ASR transcribe complete, got {len(results)} result(s)")
 
-        if not speech_timestamps:
-            # No speech detected, transcribe whole file
-            logger.warning("No speech detected by VAD, transcribing whole file")
-            results = self._model.transcribe(
-                audio=audio_path,
-                language=language,
-                return_time_stamps=False,
-            )
-            if results and hasattr(results[0], 'text'):
-                return [{
-                    "start": 0.0,
-                    "end": len(audio_data) / sample_rate,
-                    "text": results[0].text.strip(),
-                }], results[0].language if hasattr(results[0], 'language') else "unknown"
-            return [], "unknown"
+        # Parse result into segments
+        segments, detected_lang = self._parse_result(results, rt.qwen3_enable_timestamps)
+        logger.info(f"Parsed {len(segments)} segments, detected language: {detected_lang}")
 
-        # Process each VAD segment
-        segments = []
-        detected_lang = None
+        # If timestamps enabled and we got character-level output, merge into sentences
+        if rt.qwen3_enable_timestamps and segments and len(segments) > 1:
+            avg_text_len = sum(len(s.get("text", "")) for s in segments) / len(segments)
+            if avg_text_len < 3:  # Likely character-level from ForcedAligner
+                segments = self._merge_character_segments(segments)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            for i, ts in enumerate(speech_timestamps):
-                start_sample = ts['start']
-                end_sample = ts['end']
-
-                # Convert to original sample rate
-                start_sample_orig = int(start_sample * sample_rate / 16000)
-                end_sample_orig = int(end_sample * sample_rate / 16000)
-
-                # Extract segment
-                segment_audio = audio_data[start_sample_orig:end_sample_orig]
-
-                if len(segment_audio) < 100:  # Skip very short segments
-                    continue
-
-                # Save segment to temp file
-                segment_path = Path(tmpdir) / f"segment_{i:04d}.wav"
-                sf.write(str(segment_path), segment_audio, sample_rate)
-
-                # Transcribe segment (no timestamps needed - VAD provides them)
+        # If no timestamps, we get a single blob -- wrap it as one segment
+        if not rt.qwen3_enable_timestamps and segments:
+            # Segments from _parse_result will have start=0, end=0 for no-timestamp mode.
+            # Try to get audio duration for the end timestamp.
+            if segments[0].get("end", 0.0) == 0.0:
                 try:
-                    results = self._model.transcribe(
-                        audio=str(segment_path),
-                        language=language,
-                        return_time_stamps=False,
-                    )
+                    import soundfile as sf
+                    info = sf.info(str(audio_path))
+                    segments[0]["end"] = info.duration
+                except Exception:
+                    pass
 
-                    if results and hasattr(results[0], 'text') and results[0].text.strip():
-                        start_sec = start_sample / 16000
-                        end_sec = end_sample / 16000
-
-                        segments.append({
-                            "start": start_sec,
-                            "end": end_sec,
-                            "text": results[0].text.strip(),
-                        })
-
-                        if detected_lang is None and hasattr(results[0], 'language'):
-                            detected_lang = results[0].language
-
-                        if (i + 1) % 10 == 0:
-                            logger.info(f"Transcribed {i + 1}/{len(speech_timestamps)} segments")
-
-                except Exception as e:
-                    logger.warning(f"Failed to transcribe segment {i}: {e}")
-                    continue
-
-        logger.info(f"VAD transcription complete: {len(segments)} segments")
-        return segments, detected_lang or "unknown"
+        return segments, detected_lang
 
     def _transcribe_with_forced_aligner(
         self,
@@ -408,7 +324,7 @@ class Qwen3ASRService:
         """Transcribe using ForcedAligner for character-level timestamps.
 
         This is the original approach - returns character/word level timestamps.
-        Use _transcribe_with_vad for sentence-level output.
+        Use _transcribe_native for the default (native chunking) approach.
         """
         rt = get_runtime_settings()
 
