@@ -256,9 +256,13 @@ class Qwen3ASRService:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        # Qwen3-ASR handles audio natively - no external VAD needed.
-        # The model's internal chunking handles long audio (up to 20min+).
-        segments, detected_lang = self._transcribe_native(audio_path, language)
+        # With ForcedAligner: native transcribe returns timestamped segments.
+        # Without ForcedAligner: use VAD to split audio into chunks, transcribe each.
+        has_aligner = self._current_aligner_path is not None
+        if has_aligner:
+            segments, detected_lang = self._transcribe_native(audio_path, language)
+        else:
+            segments, detected_lang = self._transcribe_with_vad_chunks(audio_path, language)
 
         # Speaker diarization using Pyannote (if enabled)
         if diarize and rt.enable_diarization and rt.pyannote_model_path:
@@ -320,6 +324,99 @@ class Qwen3ASRService:
                 except Exception:
                     pass
 
+        return segments, detected_lang
+
+    def _transcribe_with_vad_chunks(
+        self,
+        audio_path: str,
+        language: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Transcribe by splitting audio with VAD, then transcribing each chunk.
+
+        Used when ForcedAligner is not available — provides segment-level
+        timestamps from VAD boundaries instead of a single text blob.
+        """
+        import torchaudio
+
+        logger.info("No ForcedAligner — using VAD chunking for segmented output")
+
+        # Load audio
+        waveform, sample_rate = torchaudio.load(str(audio_path))
+        if waveform.shape[0] > 1:
+            waveform = waveform.mean(dim=0, keepdim=True)
+        if sample_rate != 16000:
+            waveform = torchaudio.functional.resample(waveform, sample_rate, 16000)
+            sample_rate = 16000
+
+        # Run Silero VAD
+        vad_model, utils = torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True)
+        get_ts = utils[0]
+        timestamps = get_ts(waveform.squeeze(), vad_model, sampling_rate=sample_rate, return_seconds=True)
+
+        if not timestamps:
+            logger.warning("VAD detected no speech, transcribing whole file")
+            return self._transcribe_native(audio_path, language)
+
+        logger.info(f"VAD detected {len(timestamps)} speech segments")
+
+        # Merge short segments (< 1s gap) to avoid too many tiny chunks
+        merged = []
+        for ts in timestamps:
+            start = ts.get("start", ts.get("start_sec", 0))
+            end = ts.get("end", ts.get("end_sec", 0))
+            # Convert sample indices to seconds if needed
+            if isinstance(start, int) and start > 1000:
+                start = start / sample_rate
+                end = end / sample_rate
+            if merged and (start - merged[-1]["end"]) < 1.0:
+                merged[-1]["end"] = end
+            else:
+                merged.append({"start": start, "end": end})
+
+        logger.info(f"Merged to {len(merged)} chunks")
+
+        # Transcribe each chunk
+        segments = []
+        detected_lang = language or "unknown"
+
+        for i, chunk in enumerate(merged):
+            start_sample = int(chunk["start"] * sample_rate)
+            end_sample = int(chunk["end"] * sample_rate)
+            chunk_wav = waveform[:, start_sample:end_sample]
+
+            if chunk_wav.shape[1] < 1600:  # < 0.1s
+                continue
+
+            # Save to temp file for model.transcribe()
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                tmp_path = tmp.name
+                torchaudio.save(tmp_path, chunk_wav, sample_rate)
+
+            try:
+                results = self._model.transcribe(
+                    audio=tmp_path,
+                    language=language,
+                    return_time_stamps=False,
+                )
+                parsed, lang = self._parse_result(results, False)
+                if lang and lang != "unknown":
+                    detected_lang = lang
+
+                for seg in parsed:
+                    text = seg.get("text", "").strip()
+                    if text:
+                        segments.append({
+                            "start": round(chunk["start"], 3),
+                            "end": round(chunk["end"], 3),
+                            "text": text,
+                        })
+            except Exception as e:
+                logger.warning(f"Chunk {i} transcription failed: {e}")
+            finally:
+                Path(tmp_path).unlink(missing_ok=True)
+
+        logger.info(f"VAD chunked transcription: {len(segments)} segments")
         return segments, detected_lang
 
     def _transcribe_with_forced_aligner(
