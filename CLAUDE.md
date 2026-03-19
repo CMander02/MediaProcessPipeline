@@ -5,7 +5,7 @@
 ## 架构
 
 ```
-CLI (mpp) / Gradio (后续) / HTTP
+CLI (mpp) / Gradio (/ui) / HTTP
         ↓
   FastAPI Daemon (:18000)
   ├─ TaskQueue    asyncio.Queue, 单 worker (GPU 瓶颈)
@@ -36,11 +36,13 @@ CLI (mpp) / Gradio (后续) / HTTP
 - 命令: `serve`, `run <source>`, `status`, `list`, `show <id>`, `cancel <id>`, `config [key] [value]`
 - daemon 未运行时 `list` 和 `config` 可离线读 SQLite / settings.json
 
-### 前端
+### 前端 (Gradio)
 
-- **重写计划**：从 Vue 3 + Element Plus 迁移到 **Gradio**（Python 全栈）
-- Gradio 内置 Audio/Video/File 组件，适合媒体处理场景
-- 可嵌入 FastAPI：`gr.mount_gradio_app(app, demo, path="/ui")`
+- Gradio UI 在 `app/ui/app.py`，mount 在 `/ui`
+- `mpp serve` 时通过 `mount_gradio_ui(app)` 挂载，`--reload` 模式下不加载 Gradio
+- 4 个 Tab: 处理（提交+活跃队列）、历史、结果查看、设置
+- Gradio 直接调用 core 层（不走 HTTP），共享 TaskStore / EventBus / Queue
+- 旧 Vue 前端在 `frontend/` 目录，已弃用
 
 ### 通信协议
 

@@ -75,3 +75,18 @@ app.include_router(filesystem.router, prefix="/api")
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": config.api_title, "version": config.api_version}
+
+
+def mount_gradio_ui(fastapi_app):
+    """Mount Gradio UI at /ui. Called from serve.py before uvicorn.run()."""
+    try:
+        import gradio as gr
+        from app.ui.app import create_ui
+
+        blocks = create_ui()
+        gr.mount_gradio_app(fastapi_app, blocks, path="/ui", ssr_mode=False)
+        logger.info("Gradio UI mounted at /ui")
+    except ImportError:
+        logger.info("Gradio not installed, UI disabled")
+    except Exception as e:
+        logger.warning(f"Failed to mount Gradio UI: {e}", exc_info=True)
