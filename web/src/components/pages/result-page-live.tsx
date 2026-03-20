@@ -49,7 +49,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
       }
     })
 
-    // Also poll task state every 3s for robustness
+    // Fallback poll every 10s (SSE is primary, this catches dropped connections)
     const interval = setInterval(async () => {
       try {
         const t = await api.tasks.get(taskId)
@@ -58,7 +58,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
           clearInterval(interval)
         }
       } catch {}
-    }, 3000)
+    }, 10000)
 
     return () => {
       unsub()

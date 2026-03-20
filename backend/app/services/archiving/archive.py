@@ -127,8 +127,19 @@ class ArchiveService:
         for task_dir in sorted(data_root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
             if not task_dir.is_dir():
                 continue
-            # Skip system files
-            if task_dir.name.startswith('.') or task_dir.name == 'settings.json' or task_dir.name == 'history.json':
+            # Skip system/utility directories and non-archive dirs
+            if task_dir.name.startswith('.') or task_dir.name in (
+                'settings.json', 'history.json', 'uploads', 'manual_task',
+            ):
+                continue
+
+            # Skip directories that don't look like archives (no metadata, no transcript, no summary)
+            has_any_output = (
+                (task_dir / "metadata.json").exists()
+                or (task_dir / "transcript.srt").exists()
+                or (task_dir / "summary.md").exists()
+            )
+            if not has_any_output:
                 continue
 
             # Try to load metadata
