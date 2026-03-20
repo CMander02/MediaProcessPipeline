@@ -1,11 +1,15 @@
 /**
  * Full-viewport result viewer for completed archives.
- * Evolved from result/result-page.tsx — receives archivePath as prop,
- * no archive picker, adds back button.
+ * Resizable left/right panels. Left column is sticky (doesn't scroll with right).
  */
 import { useCallback, useEffect, useState } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
+import {
+  ResizablePanelGroup,
+  ResizablePanel,
+  ResizableHandle,
+} from "@/components/ui/resizable"
 import { useArchives, type ArchiveItem } from "@/hooks/use-archives"
 import { useMediaSync } from "@/hooks/use-media-sync"
 import { parseSRT, type Subtitle } from "@/lib/srt"
@@ -102,57 +106,65 @@ export function ResultPageComplete({ archivePath }: { archivePath: string }) {
       )}
 
       {content && !loading && (
-        <div className="flex-1 min-h-0 flex gap-5 p-4">
-          {/* Left column */}
-          <div className="w-[420px] shrink-0 overflow-y-auto space-y-3 pr-1">
-            {mediaUrl && (
-              <MediaPlayer src={mediaUrl} type={mediaType} bindMedia={bindMedia} />
-            )}
-            <SpeakerPanel subtitles={subtitles} />
-            <SpeakerTimeline
-              subtitles={subtitles}
-              duration={duration}
-              currentTime={currentTime}
-              onSeek={seekTo}
-            />
-            <AnalysisBadges analysis={content.analysis} />
-          </div>
-
-          {/* Right column — tabbed content */}
-          <div className="flex-1 min-w-0 flex flex-col">
-            <Tabs defaultValue="summary" className="flex flex-col flex-1 min-h-0">
-              <TabsList className="shrink-0">
-                <TabsTrigger value="summary">摘要</TabsTrigger>
-                <TabsTrigger value="transcript">字幕</TabsTrigger>
-                <TabsTrigger value="polished">润色</TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="summary" className="mt-3 flex-1 min-h-0">
-                <div className="rounded-md border h-full">
-                  <SummaryTab content={content.summary} />
+        <ResizablePanelGroup direction="horizontal" className="flex-1 min-h-0">
+          {/* Left panel — sticky, scrolls independently */}
+          <ResizablePanel defaultSize={35} minSize={20} maxSize={55}>
+            <div className="h-full overflow-y-auto p-4 space-y-3">
+              {mediaUrl && (
+                <div className="sticky top-0 z-10">
+                  <MediaPlayer src={mediaUrl} type={mediaType} bindMedia={bindMedia} />
                 </div>
-              </TabsContent>
+              )}
+              <SpeakerPanel subtitles={subtitles} />
+              <SpeakerTimeline
+                subtitles={subtitles}
+                duration={duration}
+                currentTime={currentTime}
+                onSeek={seekTo}
+              />
+              <AnalysisBadges analysis={content.analysis} />
+            </div>
+          </ResizablePanel>
 
-              <TabsContent value="transcript" className="mt-3 flex-1 min-h-0">
-                <div className="rounded-md border h-full">
-                  <TranscriptTab
-                    subtitles={subtitles}
-                    currentSegmentIndex={currentSegmentIndex}
-                    autoScroll={autoScroll}
-                    onSegmentClick={(sub) => seekTo(sub.startTime)}
-                    onManualScroll={onManualScroll}
-                  />
-                </div>
-              </TabsContent>
+          <ResizableHandle withHandle />
 
-              <TabsContent value="polished" className="mt-3 flex-1 min-h-0">
-                <div className="rounded-md border h-full">
-                  <SummaryTab content={content.polished} />
-                </div>
-              </TabsContent>
-            </Tabs>
-          </div>
-        </div>
+          {/* Right panel — tabbed content */}
+          <ResizablePanel defaultSize={65} minSize={30}>
+            <div className="h-full flex flex-col p-4">
+              <Tabs defaultValue="summary" className="flex flex-col flex-1 min-h-0">
+                <TabsList className="shrink-0">
+                  <TabsTrigger value="summary">摘要</TabsTrigger>
+                  <TabsTrigger value="transcript">字幕</TabsTrigger>
+                  <TabsTrigger value="polished">润色</TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="summary" className="mt-3 flex-1 min-h-0">
+                  <div className="rounded-md border h-full">
+                    <SummaryTab content={content.summary} />
+                  </div>
+                </TabsContent>
+
+                <TabsContent value="transcript" className="mt-3 flex-1 min-h-0">
+                  <div className="rounded-md border h-full">
+                    <TranscriptTab
+                      subtitles={subtitles}
+                      currentSegmentIndex={currentSegmentIndex}
+                      autoScroll={autoScroll}
+                      onSegmentClick={(sub) => seekTo(sub.startTime)}
+                      onManualScroll={onManualScroll}
+                    />
+                  </div>
+                </TabsContent>
+
+                <TabsContent value="polished" className="mt-3 flex-1 min-h-0">
+                  <div className="rounded-md border h-full">
+                    <SummaryTab content={content.polished} />
+                  </div>
+                </TabsContent>
+              </Tabs>
+            </div>
+          </ResizablePanel>
+        </ResizablePanelGroup>
       )}
     </div>
   )
