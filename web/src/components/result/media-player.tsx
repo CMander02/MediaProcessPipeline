@@ -7,7 +7,6 @@ interface MediaPlayerProps {
 }
 
 export function MediaPlayer({ src, type, bindMedia }: MediaPlayerProps) {
-  const containerRef = useRef<HTMLDivElement>(null)
   const mediaRef = useRef<HTMLMediaElement | null>(null)
 
   // Bind/unbind media element
@@ -21,9 +20,21 @@ export function MediaPlayer({ src, type, bindMedia }: MediaPlayerProps) {
     }
   }, [bindMedia, src])
 
+  // Stop media loading on unmount to prevent lingering requests
+  useEffect(() => {
+    return () => {
+      const el = mediaRef.current
+      if (el) {
+        el.pause()
+        el.removeAttribute("src")
+        el.load() // aborts any pending network requests
+      }
+    }
+  }, [])
+
   if (type === "video") {
     return (
-      <div ref={containerRef} className="w-full rounded-lg overflow-hidden bg-black">
+      <div className="w-full rounded-lg overflow-hidden bg-black">
         <video
           ref={(el) => { mediaRef.current = el }}
           src={src}
@@ -36,7 +47,7 @@ export function MediaPlayer({ src, type, bindMedia }: MediaPlayerProps) {
   }
 
   return (
-    <div ref={containerRef} className="w-full rounded-lg overflow-hidden bg-muted p-6 flex items-center justify-center">
+    <div className="w-full rounded-lg overflow-hidden bg-muted p-6 flex items-center justify-center">
       <audio
         ref={(el) => { mediaRef.current = el }}
         src={src}
