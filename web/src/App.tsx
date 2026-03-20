@@ -25,7 +25,7 @@ export default function App() {
     <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="border-b bg-card">
-        <div className="mx-auto max-w-6xl flex items-center gap-3 px-6 h-14">
+        <div className="mx-auto max-w-7xl flex items-center gap-3 px-6 h-14">
           <AudioLines className="h-5 w-5 text-primary" aria-hidden="true" />
           <h1 className="text-base font-semibold">MediaProcessPipeline</h1>
           <span className="text-xs text-muted-foreground">
@@ -34,7 +34,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-6 py-6">
+      <main className="mx-auto max-w-7xl px-6 py-6">
         <Tabs defaultValue="process" className="space-y-6">
           <TabsList>
             <TabsTrigger value="process">处理</TabsTrigger>
@@ -99,7 +99,7 @@ export default function App() {
 
           {/* Results */}
           <TabsContent value="results">
-            <ResultViewer tasks={completedTasks} />
+            <ResultViewer />
           </TabsContent>
 
           {/* Settings */}
