@@ -23,17 +23,17 @@ export function SummaryTab({ content }: SummaryTabProps) {
   return (
     <ScrollArea className="h-full">
       <div className="p-4 space-y-6">
+        {/* Mindmap — prominent, at top, click to fullscreen */}
+        {parsed.markmapBlock && (
+          <MindmapViewer markdown={parsed.markmapBlock} />
+        )}
+
         {/* Key Facts cards */}
         {parsed.keyFacts.length > 0 && (
           <KeyFactsCards facts={parsed.keyFacts} />
         )}
 
-        {/* Mindmap */}
-        {parsed.markmapBlock && (
-          <MindmapViewer markdown={parsed.markmapBlock} />
-        )}
-
-        {/* Rendered markdown */}
+        {/* Rendered markdown body */}
         <article className="prose prose-sm dark:prose-invert max-w-none">
           <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
             {parsed.body}
