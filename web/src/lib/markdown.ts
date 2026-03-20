@@ -24,13 +24,15 @@ export function parseSummaryMarkdown(content: string): ParsedSummary {
     body = fmMatch[2]
   }
 
-  // Extract markmap fenced block
+  // Extract markmap fenced block and its heading
   let markmapBlock: string | null = null
   const mmMatch = body.match(/```markmap\n([\s\S]*?)```/)
   if (mmMatch) {
     markmapBlock = mmMatch[1].trim()
     body = body.replace(mmMatch[0], "").trim()
   }
+  // Remove empty "Mind Map" heading (leftover after markmap extraction or from old archives)
+  body = body.replace(/^##\s*Mind\s*Map\s*$/gm, "").trim()
 
   // Extract sections by ## headings
   const sections: { title: string; content: string }[] = []
