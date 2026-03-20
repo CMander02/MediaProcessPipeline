@@ -11,7 +11,12 @@ interface ArchiveCardProps {
 
 export function ArchiveCard({ archive, onClick }: ArchiveCardProps) {
   const [imgError, setImgError] = useState(false)
-  const thumbnailUrl = `/api/pipeline/archives/thumbnail?path=${encodeURIComponent(archive.path)}`
+
+  // Only attempt thumbnail for video archives
+  const showThumbnail = archive.has_video && !imgError
+  const thumbnailUrl = archive.has_video
+    ? `/api/pipeline/archives/thumbnail?path=${encodeURIComponent(archive.path)}`
+    : null
 
   const contentType = archive.analysis?.content_type
   const mediaIcon = archive.has_video ? (
@@ -27,7 +32,7 @@ export function ArchiveCard({ archive, onClick }: ArchiveCardProps) {
     >
       {/* Thumbnail area */}
       <div className="relative aspect-video w-full bg-muted overflow-hidden">
-        {!imgError ? (
+        {showThumbnail && thumbnailUrl ? (
           <img
             src={thumbnailUrl}
             alt=""
