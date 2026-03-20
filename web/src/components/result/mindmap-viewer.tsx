@@ -35,7 +35,7 @@ export function MindmapViewer({ markdown, fillContainer }: MindmapViewerProps) {
         ref.current = Markmap.create(svgEl, {
           autoFit: true,
           duration: 300,
-          initialExpandLevel: 1,
+          initialExpandLevel: 2,
         }, root) as unknown as { destroy?: () => void; fit?: () => void }
 
         setError(null)
