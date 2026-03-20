@@ -174,9 +174,7 @@ export function ResultPageComplete({ archivePath }: { archivePath: string }) {
 
                   {content.mindmap && (
                     <TabsContent value="mindmap" className="mt-3 flex-1 min-h-0">
-                      <div className="rounded-md border h-full p-4">
-                        <MindmapViewer markdown={content.mindmap} />
-                      </div>
+                      <MindmapViewer markdown={content.mindmap} fillContainer />
                     </TabsContent>
                   )}
                 </Tabs>
