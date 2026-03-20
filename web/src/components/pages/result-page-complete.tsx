@@ -112,7 +112,7 @@ export function ResultPageComplete({ archivePath }: { archivePath: string }) {
             className="absolute inset-0"
           >
             {/* Left panel — media + info, scrolls independently */}
-            <ResizablePanel defaultSize={35} minSize={25} maxSize={50}>
+            <ResizablePanel defaultSize="35%" minSize="20%" maxSize="50%">
               <div className="h-full overflow-y-auto p-4 space-y-3">
                 {mediaUrl && (
                   <div className="sticky top-0 z-10 bg-background pb-2">
@@ -133,7 +133,7 @@ export function ResultPageComplete({ archivePath }: { archivePath: string }) {
             <ResizableHandle withHandle />
 
             {/* Right panel — tabbed content */}
-            <ResizablePanel defaultSize={65} minSize={35}>
+            <ResizablePanel defaultSize="65%" minSize="35%">
               <div className="h-full flex flex-col p-4">
                 <Tabs defaultValue="summary" className="flex flex-col flex-1 min-h-0">
                   <TabsList className="shrink-0">
