@@ -1,10 +1,12 @@
 """Filesystem browsing routes for file/folder selection."""
 
 import os
+import mimetypes
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, HTTPException
+from fastapi.responses import FileResponse
 
 router = APIRouter(prefix="/filesystem", tags=["filesystem"])
 
@@ -116,6 +118,35 @@ async def read_file(
         return {"success": False, "error": "File is not valid UTF-8 text"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@router.get("/media")
+async def serve_media(
+    path: str = Query(..., description="Media file path to serve"),
+):
+    """Serve a media file with correct Content-Type and Range support.
+
+    Security: only allows files under data_root.
+    """
+    from app.core.settings import get_runtime_settings
+
+    file_path = Path(path).resolve()
+    data_root = Path(get_runtime_settings().data_root).resolve()
+
+    if not str(file_path).startswith(str(data_root)):
+        raise HTTPException(status_code=403, detail="Access denied: path outside data directory")
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+
+    content_type, _ = mimetypes.guess_type(str(file_path))
+    if content_type is None:
+        content_type = "application/octet-stream"
+
+    return FileResponse(
+        path=str(file_path),
+        media_type=content_type,
+        filename=file_path.name,
+    )
 
 
 @router.get("/drives")
