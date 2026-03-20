@@ -91,7 +91,6 @@ class Settings(BaseSettings):
     # Other settings
     # =========================================================================
     bilibili_sessdata: str = ""
-    obsidian_vault_path: str = ""
 
     def get_llm_config(self, provider: str | None = None) -> dict:
         """

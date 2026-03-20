@@ -1,4 +1,4 @@
-"""Archiving service - Obsidian export."""
+"""Archiving service — structured output."""
 
 from app.services.archiving.archive import ArchiveService, archive_result, list_archives
 

@@ -274,14 +274,7 @@ export function SettingsPanel() {
             onSave={updateSetting}
             saving={saving}
             saved={saved}
-          />
-          <SettingRow
-            label="Obsidian 库路径"
-            settingKey="obsidian_vault_path"
-            value={String(settings.obsidian_vault_path ?? "")}
-            onSave={updateSetting}
-            saving={saving}
-            saved={saved}
+            placeholder="绝对路径，如 C:\data\mpp"
           />
         </CardContent>
       </Card>
@@ -299,6 +292,7 @@ export function SettingsPanel() {
             onSave={updateSetting}
             saving={saving}
             saved={saved}
+            placeholder="模型名或绝对路径"
           />
           <SettingRow
             label="设备"
@@ -324,9 +318,10 @@ interface SettingRowProps {
   saving: Record<string, boolean>
   saved: Record<string, boolean>
   masked?: boolean
+  placeholder?: string
 }
 
-function SettingRow({ label, settingKey, value, onSave, saving, saved, masked }: SettingRowProps) {
+function SettingRow({ label, settingKey, value, onSave, saving, saved, masked, placeholder }: SettingRowProps) {
   const [editValue, setEditValue] = useState(value)
 
   // Sync with external value
@@ -353,6 +348,7 @@ function SettingRow({ label, settingKey, value, onSave, saving, saved, masked }:
         onKeyDown={(e) => e.key === "Enter" && handleSave()}
         className="flex-1 h-8 text-sm"
         autoComplete="off"
+        placeholder={placeholder}
       />
       {isDirty && (
         <Button

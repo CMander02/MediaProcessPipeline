@@ -1,13 +1,11 @@
-"""Archive service for generating Obsidian-compatible output."""
+"""Archive service for generating structured output."""
 
 import json
 import logging
-import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from app.core.config import get_settings
 from app.core.settings import get_runtime_settings
 from app.models import MediaMetadata
 
@@ -31,9 +29,6 @@ tags: [media-pipeline]
 
 
 class ArchiveService:
-    def __init__(self):
-        self._settings = get_settings()
-
     def archive(
         self,
         metadata: MediaMetadata,
@@ -106,10 +101,6 @@ class ArchiveService:
             mm_path = output_dir / "mindmap.md"
             mm_path.write_text(mindmap, encoding="utf-8")
             files["mindmap"] = str(mm_path)
-
-        # Sync to Obsidian
-        if self._settings.obsidian_vault_path:
-            self._sync_obsidian(output_dir)
 
         logger.info(f"Archived to: {output_dir}")
         return {"output_dir": str(output_dir), "files": files}
@@ -204,15 +195,6 @@ class ArchiveService:
 
     def _fmt_list(self, items: list[str]) -> str:
         return "\n".join(f"- {i}" for i in items) if items else "- None"
-
-    def _sync_obsidian(self, output_dir: Path):
-        vault = Path(self._settings.obsidian_vault_path)
-        if not vault.exists():
-            return
-        dest = vault / "MediaPipeline" / output_dir.name
-        dest.mkdir(parents=True, exist_ok=True)
-        for md in output_dir.glob("*.md"):
-            shutil.copy2(md, dest / md.name)
 
 
 _service: ArchiveService | None = None

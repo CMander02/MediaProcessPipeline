@@ -448,7 +448,7 @@ SETTING_GROUPS = {
     "ASR": ["asr_backend", "qwen3_device", "qwen3_asr_model_path", "whisper_model", "whisper_device"],
     "LLM": ["llm_provider", "custom_name", "custom_model", "custom_api_base", "anthropic_model", "openai_model"],
     "处理": ["uvr_model", "uvr_device", "enable_diarization", "enable_alignment"],
-    "路径": ["data_root", "obsidian_vault_path", "uvr_model_dir"],
+    "路径": ["data_root", "uvr_model_dir"],
 }
 
 

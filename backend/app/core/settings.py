@@ -74,9 +74,8 @@ class RuntimeSettings(BaseModel):
     uvr_deecho_dereverb_path: str = ""
     uvr_htdemucs_path: str = ""
 
-    # Paths - simplified flat structure
+    # Paths
     data_root: str = "../data"
-    obsidian_vault_path: str = ""
 
 
 # Global runtime settings storage
