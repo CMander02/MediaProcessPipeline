@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { api, type Settings } from "@/lib/api"
+import { usePreferences } from "@/hooks/use-preferences"
 import { Save, Check, Moon, Sun } from "lucide-react"
 
 export function SettingsPanel() {
@@ -16,6 +17,7 @@ export function SettingsPanel() {
   const [darkMode, setDarkMode] = useState(
     () => document.documentElement.classList.contains("dark"),
   )
+  const { prefs, update: updatePrefs } = usePreferences()
 
   useEffect(() => {
     api.settings.get().then(setSettings).catch(() => {})
@@ -61,6 +63,29 @@ export function SettingsPanel() {
             </div>
             <Switch checked={darkMode} onCheckedChange={toggleDark} />
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Startup page */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">启动页面</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <RadioGroup
+            value={prefs.startupPage}
+            onValueChange={(v) => updatePrefs({ startupPage: v as "files" | "last" })}
+            className="flex gap-4"
+          >
+            <div className="flex items-center gap-2">
+              <RadioGroupItem value="files" id="startup-files" />
+              <Label htmlFor="startup-files">文件列表</Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <RadioGroupItem value="last" id="startup-last" />
+              <Label htmlFor="startup-last">上次打开的归档</Label>
+            </div>
+          </RadioGroup>
         </CardContent>
       </Card>
 

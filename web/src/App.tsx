@@ -1,126 +1,82 @@
-import { useState } from "react"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Separator } from "@/components/ui/separator"
-import { SubmitForm } from "@/components/submit-form"
-import { StatsBar } from "@/components/stats-bar"
-import { TaskCard } from "@/components/task-card"
-import { TaskDetail } from "@/components/task-detail"
-import { ResultViewer } from "@/components/result-viewer"
-import { SettingsPanel } from "@/components/settings-panel"
-import { EventLog } from "@/components/event-log"
-import { useTasks } from "@/hooks/use-tasks"
-import { AudioLines } from "lucide-react"
+import { useEffect, useState } from "react"
+import { useRoute, navigate } from "@/lib/router"
+import { getPreferences } from "@/hooks/use-preferences"
+import { FilesPage } from "@/components/pages/files-page"
+import { SubmitPage } from "@/components/pages/submit-page"
+import { ResultPageWrapper } from "@/components/pages/result-page-wrapper"
+import { SettingsModal } from "@/components/settings-modal"
+import { AudioLines, FolderOpen, Plus, Settings } from "lucide-react"
+import { cn } from "@/lib/utils"
 
 export default function App() {
-  const { tasks, stats, refresh } = useTasks()
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
+  const route = useRoute()
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
-  const activeTasks = tasks.filter(
-    (t) => t.status === "processing" || t.status === "queued",
-  )
-  const completedTasks = tasks.filter((t) => t.status === "completed")
-  const recentCompleted = completedTasks.slice(0, 5)
+  // Startup page routing
+  useEffect(() => {
+    if (window.location.hash && window.location.hash !== "#/" && window.location.hash !== "#") return
+    const prefs = getPreferences()
+    if (prefs.startupPage === "last" && prefs.lastArchivePath) {
+      navigate(`#/result/archive?path=${encodeURIComponent(prefs.lastArchivePath)}`, { replace: true })
+    } else {
+      navigate("#/files", { replace: true })
+    }
+  }, [])
+
+  const navItems = [
+    { page: "files" as const, icon: FolderOpen, label: "文件" },
+    { page: "submit" as const, icon: Plus, label: "处理" },
+  ]
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="flex h-screen flex-col bg-background">
       {/* Header */}
-      <header className="border-b bg-card">
-        <div className="mx-auto max-w-7xl flex items-center gap-3 px-6 h-14">
-          <AudioLines className="h-5 w-5 text-primary" aria-hidden="true" />
-          <h1 className="text-base font-semibold">MediaProcessPipeline</h1>
-          <span className="text-xs text-muted-foreground">
-            音视频 &rarr; 结构化知识
-          </span>
+      <header className="shrink-0 border-b bg-card">
+        <div className="flex items-center h-12 px-4 gap-1">
+          <AudioLines className="h-4.5 w-4.5 text-primary mr-2" aria-hidden="true" />
+          <span className="text-sm font-semibold mr-4">MPP</span>
+
+          {/* Nav links */}
+          <nav className="flex items-center gap-0.5">
+            {navItems.map((item) => (
+              <button
+                key={item.page}
+                onClick={() => navigate(`#/${item.page}`)}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors",
+                  route.page === item.page
+                    ? "bg-primary/10 text-primary font-medium"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted",
+                )}
+              >
+                <item.icon className="h-4 w-4" />
+                {item.label}
+              </button>
+            ))}
+          </nav>
+
+          <div className="flex-1" />
+
+          {/* Settings gear */}
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="rounded-md p-2 text-muted-foreground transition-colors hover:text-foreground hover:bg-muted"
+            title="设置"
+          >
+            <Settings className="h-4 w-4" />
+          </button>
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-6 py-6">
-        <Tabs defaultValue="process" className="space-y-6">
-          <TabsList>
-            <TabsTrigger value="process">处理</TabsTrigger>
-            <TabsTrigger value="history">历史</TabsTrigger>
-            <TabsTrigger value="results">结果</TabsTrigger>
-            <TabsTrigger value="settings">设置</TabsTrigger>
-            <TabsTrigger value="logs">日志</TabsTrigger>
-          </TabsList>
-
-          {/* Process */}
-          <TabsContent value="process" className="space-y-6">
-            <StatsBar stats={stats} />
-            <SubmitForm onSubmitted={refresh} />
-            <Separator />
-
-            {activeTasks.length > 0 && (
-              <section className="space-y-3">
-                <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-                  正在处理
-                </h2>
-                <div className="space-y-2">
-                  {activeTasks.map((t) => (
-                    <TaskCard key={t.id} task={t} onClick={() => setSelectedTaskId(t.id)} />
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {recentCompleted.length > 0 && (
-              <section className="space-y-3">
-                <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-                  最近完成
-                </h2>
-                <div className="space-y-2">
-                  {recentCompleted.map((t) => (
-                    <TaskCard key={t.id} task={t} onClick={() => setSelectedTaskId(t.id)} />
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {activeTasks.length === 0 && recentCompleted.length === 0 && (
-              <div className="py-12 text-center text-muted-foreground">
-                <AudioLines className="h-10 w-10 mx-auto mb-3 opacity-20" aria-hidden="true" />
-                <p>粘贴链接或上传文件开始处理&hellip;</p>
-              </div>
-            )}
-          </TabsContent>
-
-          {/* History */}
-          <TabsContent value="history" className="space-y-4">
-            {tasks.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-8 text-center">暂无任务</p>
-            ) : (
-              <div className="grid gap-2">
-                {tasks.map((t) => (
-                  <TaskCard key={t.id} task={t} onClick={() => setSelectedTaskId(t.id)} />
-                ))}
-              </div>
-            )}
-          </TabsContent>
-
-          {/* Results */}
-          <TabsContent value="results">
-            <ResultViewer />
-          </TabsContent>
-
-          {/* Settings */}
-          <TabsContent value="settings">
-            <SettingsPanel />
-          </TabsContent>
-
-          {/* Logs */}
-          <TabsContent value="logs">
-            <EventLog />
-          </TabsContent>
-        </Tabs>
+      {/* Page content */}
+      <main className="flex-1 min-h-0">
+        {route.page === "files" && <FilesPage />}
+        {route.page === "submit" && <SubmitPage />}
+        {route.page === "result" && <ResultPageWrapper />}
       </main>
 
-      {/* Task detail panel */}
-      {selectedTaskId && (
-        <TaskDetail
-          taskId={selectedTaskId}
-          onClose={() => setSelectedTaskId(null)}
-        />
-      )}
+      {/* Settings modal */}
+      <SettingsModal open={settingsOpen} onOpenChange={setSettingsOpen} />
     </div>
   )
 }

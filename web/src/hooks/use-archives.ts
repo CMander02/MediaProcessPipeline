@@ -11,6 +11,7 @@ export interface ArchiveItem {
   has_audio: boolean
   media_file: string | null
   metadata: Record<string, unknown>
+  duration_seconds: number | null
   analysis: {
     language?: string
     content_type?: string

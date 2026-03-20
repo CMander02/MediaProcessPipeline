@@ -26,8 +26,8 @@ Start-Process $PSExe -ArgumentList "-NoExit", "-Command", "cd '$BackendPath'; uv
 
 Start-Sleep -Milliseconds 500
 
-# Start frontend
-$FrontendPath = Join-Path $ProjectRoot "frontend"
+# Start frontend (web/ is the active React frontend)
+$FrontendPath = Join-Path $ProjectRoot "web"
 if (Test-Path $FrontendPath) {
     Write-Status "Starting frontend on port 5173..."
     Start-Process $PSExe -ArgumentList "-NoExit", "-Command", "cd '$FrontendPath'; npm run dev" -WindowStyle Normal

@@ -164,6 +164,9 @@ class ArchiveService:
                         has_audio = True
                         media_file = str(f)
 
+            # Extract duration from metadata
+            duration_seconds = metadata.get("duration_seconds") or metadata.get("duration")
+
             archives.append({
                 "path": str(task_dir),
                 "date": datetime.fromtimestamp(task_dir.stat().st_mtime).strftime("%Y-%m-%d"),
@@ -176,6 +179,7 @@ class ArchiveService:
                 "media_file": media_file,
                 "metadata": metadata,
                 "analysis": analysis,
+                "duration_seconds": duration_seconds,
             })
             if len(archives) >= limit:
                 break

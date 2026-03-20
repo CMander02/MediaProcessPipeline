@@ -1,9 +1,13 @@
 """Direct pipeline operation routes."""
 
+import json
+import logging
 import shutil
+import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Any
 
@@ -14,6 +18,8 @@ from app.services.analysis import polish_text, summarize_text, generate_mindmap
 from app.services.archiving import list_archives
 from app.services.cleanup import cleanup_failed_task, cleanup_orphaned_files, get_disk_usage
 from app.core.settings import get_runtime_settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 
@@ -103,6 +109,58 @@ async def mindmap(req: AnalyzeRequest):
 async def archives(limit: int = 50):
     """List archived content."""
     return {"archives": await list_archives(limit)}
+
+
+@router.get("/archives/thumbnail")
+async def archive_thumbnail(path: str):
+    """Get or generate a thumbnail for an archive directory.
+
+    Checks for existing thumbnail.jpg/cover.jpg/cover.png, otherwise
+    extracts a frame at 3s from the source video via ffmpeg.
+    """
+    archive_dir = Path(path)
+    if not archive_dir.is_dir():
+        raise HTTPException(404, "Archive directory not found")
+
+    # Check for existing thumbnail / cover
+    for candidate in ["thumbnail.jpg", "cover.jpg", "cover.png"]:
+        thumb = archive_dir / candidate
+        if thumb.exists():
+            media_type = "image/png" if candidate.endswith(".png") else "image/jpeg"
+            return FileResponse(thumb, media_type=media_type)
+
+    # Try to generate from video in source/
+    source_dir = archive_dir / "source"
+    video_file = None
+    if source_dir.exists():
+        for f in source_dir.iterdir():
+            if f.suffix.lower() in [".mp4", ".mkv", ".avi", ".webm", ".mov"]:
+                video_file = f
+                break
+
+    if not video_file:
+        raise HTTPException(404, "No thumbnail or video found")
+
+    # Generate thumbnail via ffmpeg
+    thumb_path = archive_dir / "thumbnail.jpg"
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-ss", "3", "-i", str(video_file),
+                "-vframes", "1", "-vf", "scale=480:-2",
+                "-q:v", "5", str(thumb_path),
+            ],
+            capture_output=True,
+            timeout=15,
+        )
+    except Exception as e:
+        logger.warning(f"ffmpeg thumbnail failed: {e}")
+        raise HTTPException(500, "Thumbnail generation failed")
+
+    if thumb_path.exists():
+        return FileResponse(thumb_path, media_type="image/jpeg")
+
+    raise HTTPException(500, "Thumbnail generation produced no output")
 
 
 @router.post("/cleanup/{task_id}")
