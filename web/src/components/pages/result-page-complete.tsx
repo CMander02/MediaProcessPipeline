@@ -13,7 +13,6 @@ import {
 import { useArchives, type ArchiveItem } from "@/hooks/use-archives"
 import { useMediaSync } from "@/hooks/use-media-sync"
 import { parseSRT, type Subtitle } from "@/lib/srt"
-import { parseSummaryMarkdown } from "@/lib/markdown"
 import { navigate } from "@/lib/router"
 import { MediaPlayer } from "@/components/result/media-player"
 import { SpeakerPanel } from "@/components/result/speaker-panel"
@@ -60,16 +59,9 @@ export function ResultPageComplete({ archivePath }: { archivePath: string }) {
       // Use polished SRT if available, fallback to raw
       const srt = polishedSrt || rawSrt
 
-      // Mindmap: prefer separate file, fallback to embedded in summary (old archives)
-      let mindmapContent = mindmap
-      if (!mindmapContent && summary) {
-        const parsed = parseSummaryMarkdown(summary)
-        mindmapContent = parsed.markmapBlock ?? ""
-      }
-
       setContent({
         summary,
-        mindmap: mindmapContent,
+        mindmap,
         analysis: archive?.analysis ?? {},
       })
       setSubtitles(srt ? parseSRT(srt) : [])
