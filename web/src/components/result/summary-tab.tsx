@@ -4,7 +4,6 @@ import rehypeHighlight from "rehype-highlight"
 import { useMemo } from "react"
 import { parseSummaryMarkdown } from "@/lib/markdown"
 import { KeyFactsCards } from "./key-facts-cards"
-import { MindmapViewer } from "./mindmap-viewer"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
 interface SummaryTabProps {
@@ -23,11 +22,6 @@ export function SummaryTab({ content }: SummaryTabProps) {
   return (
     <ScrollArea className="h-full">
       <div className="p-4 space-y-6">
-        {/* Mindmap — prominent, at top, click to fullscreen */}
-        {parsed.markmapBlock && (
-          <MindmapViewer markdown={parsed.markmapBlock} />
-        )}
-
         {/* Key Facts cards */}
         {parsed.keyFacts.length > 0 && (
           <KeyFactsCards facts={parsed.keyFacts} />

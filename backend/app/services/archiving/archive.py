@@ -27,11 +27,6 @@ tags: [media-pipeline]
 
 ### Key Facts
 {key_facts}
-
-## Mind Map
-```markmap
-{mindmap}
-```
 """
 
 
@@ -93,8 +88,8 @@ class ArchiveService:
             md_path.write_text(markdown_content, encoding="utf-8")
             files["polished_md"] = str(md_path)
 
-        # Summary with mindmap
-        if summary or mindmap:
+        # Summary (without mindmap)
+        if summary:
             sum_path = output_dir / "summary.md"
             content = SUMMARY_TEMPLATE.format(
                 title=metadata.title,
@@ -102,10 +97,15 @@ class ArchiveService:
                 date=date_str,
                 tldr=summary.get("tldr", "") if summary else "",
                 key_facts=self._fmt_list(summary.get("key_facts", []) if summary else []),
-                mindmap=mindmap or "- No mindmap",
             )
             sum_path.write_text(content, encoding="utf-8")
             files["summary"] = str(sum_path)
+
+        # Mindmap (separate file)
+        if mindmap:
+            mm_path = output_dir / "mindmap.md"
+            mm_path.write_text(mindmap, encoding="utf-8")
+            files["mindmap"] = str(mm_path)
 
         # Sync to Obsidian
         if self._settings.obsidian_vault_path:

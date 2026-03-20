@@ -13,19 +13,20 @@ import {
 import { useArchives, type ArchiveItem } from "@/hooks/use-archives"
 import { useMediaSync } from "@/hooks/use-media-sync"
 import { parseSRT, type Subtitle } from "@/lib/srt"
+import { parseSummaryMarkdown } from "@/lib/markdown"
 import { navigate } from "@/lib/router"
 import { MediaPlayer } from "@/components/result/media-player"
 import { SpeakerPanel } from "@/components/result/speaker-panel"
 import { SpeakerTimeline } from "@/components/result/speaker-timeline"
 import { TranscriptTab } from "@/components/result/transcript-tab"
 import { SummaryTab } from "@/components/result/summary-tab"
+import { MindmapViewer } from "@/components/result/mindmap-viewer"
 import { AnalysisBadges } from "@/components/result/analysis-badges"
 import { ArrowLeft, Loader2 } from "lucide-react"
 
 interface ArchiveContent {
   summary: string
-  srt: string
-  polished: string
+  mindmap: string
   analysis: ArchiveItem["analysis"]
 }
 
@@ -49,20 +50,31 @@ export function ResultPageComplete({ archivePath }: { archivePath: string }) {
     setLoading(true)
     try {
       const sep = path.includes("\\") ? "\\" : "/"
-      const [summary, srt, polished] = await Promise.all([
+      const [summary, polishedSrt, rawSrt, mindmap] = await Promise.all([
         fetchFileContent(path + sep + "summary.md"),
+        fetchFileContent(path + sep + "transcript_polished.srt"),
         fetchFileContent(path + sep + "transcript.srt"),
-        fetchFileContent(path + sep + "transcript_polished.md"),
+        fetchFileContent(path + sep + "mindmap.md"),
       ])
+
+      // Use polished SRT if available, fallback to raw
+      const srt = polishedSrt || rawSrt
+
+      // Mindmap: prefer separate file, fallback to embedded in summary (old archives)
+      let mindmapContent = mindmap
+      if (!mindmapContent && summary) {
+        const parsed = parseSummaryMarkdown(summary)
+        mindmapContent = parsed.markmapBlock ?? ""
+      }
+
       setContent({
         summary,
-        srt,
-        polished,
+        mindmap: mindmapContent,
         analysis: archive?.analysis ?? {},
       })
       setSubtitles(srt ? parseSRT(srt) : [])
     } catch {
-      setContent({ summary: "加载失败", srt: "", polished: "", analysis: {} })
+      setContent({ summary: "加载失败", mindmap: "", analysis: {} })
       setSubtitles([])
     } finally {
       setLoading(false)
@@ -139,7 +151,7 @@ export function ResultPageComplete({ archivePath }: { archivePath: string }) {
                   <TabsList className="shrink-0">
                     <TabsTrigger value="summary">摘要</TabsTrigger>
                     <TabsTrigger value="transcript">字幕</TabsTrigger>
-                    <TabsTrigger value="polished">润色</TabsTrigger>
+                    {content.mindmap && <TabsTrigger value="mindmap">导图</TabsTrigger>}
                   </TabsList>
 
                   <TabsContent value="summary" className="mt-3 flex-1 min-h-0">
@@ -160,11 +172,13 @@ export function ResultPageComplete({ archivePath }: { archivePath: string }) {
                     </div>
                   </TabsContent>
 
-                  <TabsContent value="polished" className="mt-3 flex-1 min-h-0">
-                    <div className="rounded-md border h-full">
-                      <SummaryTab content={content.polished} />
-                    </div>
-                  </TabsContent>
+                  {content.mindmap && (
+                    <TabsContent value="mindmap" className="mt-3 flex-1 min-h-0">
+                      <div className="rounded-md border h-full p-4">
+                        <MindmapViewer markdown={content.mindmap} />
+                      </div>
+                    </TabsContent>
+                  )}
                 </Tabs>
               </div>
             </ResizablePanel>
