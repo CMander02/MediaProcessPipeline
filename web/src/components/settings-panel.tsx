@@ -1,66 +1,78 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, useCallback } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
+import { Switch } from "@/components/ui/switch"
 import { api, type Settings } from "@/lib/api"
-import { Save, Check } from "lucide-react"
+import { Save, Check, Moon, Sun } from "lucide-react"
 
 export function SettingsPanel() {
   const [settings, setSettings] = useState<Settings | null>(null)
-  const [editKey, setEditKey] = useState("")
-  const [editValue, setEditValue] = useState("")
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
+  const [saving, setSaving] = useState<Record<string, boolean>>({})
+  const [saved, setSaved] = useState<Record<string, boolean>>({})
+  const [darkMode, setDarkMode] = useState(
+    () => document.documentElement.classList.contains("dark"),
+  )
 
   useEffect(() => {
     api.settings.get().then(setSettings).catch(() => {})
   }, [])
 
-  const switchAsr = async (backend: string) => {
-    const updated = await api.settings.patch({ asr_backend: backend })
-    setSettings(updated)
+  const updateSetting = useCallback(
+    async (key: string, value: unknown) => {
+      setSaving((s) => ({ ...s, [key]: true }))
+      try {
+        const updated = await api.settings.patch({ [key]: value })
+        setSettings(updated)
+        setSaved((s) => ({ ...s, [key]: true }))
+        setTimeout(() => setSaved((s) => ({ ...s, [key]: false })), 1500)
+      } catch {}
+      setSaving((s) => ({ ...s, [key]: false }))
+    },
+    [],
+  )
+
+  const toggleDark = () => {
+    const next = !darkMode
+    setDarkMode(next)
+    document.documentElement.classList.toggle("dark", next)
+    localStorage.setItem("theme", next ? "dark" : "light")
   }
 
-  const saveSetting = async () => {
-    if (!editKey) return
-    setSaving(true)
-    try {
-      let value: unknown = editValue
-      if (editValue === "true") value = true
-      else if (editValue === "false") value = false
-      else if (!isNaN(Number(editValue)) && editValue !== "") value = Number(editValue)
-
-      const updated = await api.settings.patch({ [editKey]: value })
-      setSettings(updated)
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
-    } catch {}
-    setSaving(false)
+  if (!settings) {
+    return <p className="text-sm text-muted-foreground">加载中...</p>
   }
-
-  if (!settings) return <p className="text-sm text-muted-foreground">Loading&hellip;</p>
-
-  const commonKeys = [
-    { group: "ASR", keys: ["asr_backend", "qwen3_device", "qwen3_asr_model_path", "whisper_model"] },
-    { group: "LLM", keys: ["llm_provider", "custom_name", "custom_model", "custom_api_base"] },
-    { group: "处理", keys: ["uvr_model", "uvr_device", "enable_diarization"] },
-    { group: "路径", keys: ["data_root", "obsidian_vault_path"] },
-  ]
 
   return (
-    <div className="space-y-6">
-      {/* ASR quick toggle */}
+    <div className="space-y-6 max-w-2xl">
+      {/* Appearance */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">外观</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              {darkMode ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+              <Label>深色模式</Label>
+            </div>
+            <Switch checked={darkMode} onCheckedChange={toggleDark} />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ASR Backend */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base">ASR 后端</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <RadioGroup
             value={settings.asr_backend}
-            onValueChange={switchAsr}
+            onValueChange={(v) => updateSetting("asr_backend", v)}
             className="flex gap-4"
           >
             <div className="flex items-center gap-2">
@@ -72,68 +84,265 @@ export function SettingsPanel() {
               <Label htmlFor="asr-whisperx">WhisperX</Label>
             </div>
           </RadioGroup>
+
+          <Separator />
+
+          {settings.asr_backend === "qwen3" ? (
+            <div className="space-y-3">
+              <SettingRow
+                label="模型路径"
+                settingKey="qwen3_asr_model_path"
+                value={String(settings.qwen3_asr_model_path ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+              />
+              <SettingRow
+                label="设备"
+                settingKey="qwen3_device"
+                value={String(settings.qwen3_device ?? "cuda")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+              />
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <SettingRow
+                label="Whisper 模型"
+                settingKey="whisper_model"
+                value={String(settings.whisper_model ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+              />
+              <SettingRow
+                label="模型路径"
+                settingKey="whisper_model_path"
+                value={String(settings.whisper_model_path ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+              />
+            </div>
+          )}
         </CardContent>
       </Card>
 
-      {/* Settings table */}
+      {/* LLM Provider */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">常用设置</CardTitle>
+          <CardTitle className="text-base">LLM 提供商</CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            {commonKeys.map(({ group, keys }) => (
-              <div key={group}>
-                <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">{group}</h3>
-                <div className="grid gap-1.5">
-                  {keys.map((k) => {
-                    const v = settings[k]
-                    const display = typeof v === "string" && k.includes("api_key") && v
-                      ? `${v.slice(0, 8)}\u2026`
-                      : String(v ?? "")
-                    return (
-                      <div key={k} className="flex items-center gap-3 py-1 text-sm">
-                        <code className="text-xs text-muted-foreground w-48 shrink-0 truncate">{k}</code>
-                        <span className="truncate flex-1">{display || <span className="text-muted-foreground italic">empty</span>}</span>
-                      </div>
-                    )
-                  })}
-                </div>
-                <Separator className="mt-3" />
-              </div>
-            ))}
-          </div>
+        <CardContent className="space-y-4">
+          <RadioGroup
+            value={settings.llm_provider}
+            onValueChange={(v) => updateSetting("llm_provider", v)}
+            className="flex gap-4"
+          >
+            <div className="flex items-center gap-2">
+              <RadioGroupItem value="anthropic" id="llm-anthropic" />
+              <Label htmlFor="llm-anthropic">Anthropic</Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <RadioGroupItem value="openai" id="llm-openai" />
+              <Label htmlFor="llm-openai">OpenAI</Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <RadioGroupItem value="custom" id="llm-custom" />
+              <Label htmlFor="llm-custom">Custom</Label>
+            </div>
+          </RadioGroup>
+
+          <Separator />
+
+          {settings.llm_provider === "custom" ? (
+            <div className="space-y-3">
+              <SettingRow
+                label="名称"
+                settingKey="custom_name"
+                value={String(settings.custom_name ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+              />
+              <SettingRow
+                label="API Base"
+                settingKey="custom_api_base"
+                value={String(settings.custom_api_base ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+              />
+              <SettingRow
+                label="模型"
+                settingKey="custom_model"
+                value={String(settings.custom_model ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+              />
+              <SettingRow
+                label="API Key"
+                settingKey="custom_api_key"
+                value={String(settings.custom_api_key ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+                masked
+              />
+            </div>
+          ) : settings.llm_provider === "anthropic" ? (
+            <div className="space-y-3">
+              <SettingRow
+                label="模型"
+                settingKey="anthropic_model"
+                value={String(settings.anthropic_model ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+              />
+              <SettingRow
+                label="API Key"
+                settingKey="anthropic_api_key"
+                value={String(settings.anthropic_api_key ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+                masked
+              />
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <SettingRow
+                label="模型"
+                settingKey="openai_model"
+                value={String(settings.openai_model ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+              />
+              <SettingRow
+                label="API Key"
+                settingKey="openai_api_key"
+                value={String(settings.openai_api_key ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+                masked
+              />
+            </div>
+          )}
         </CardContent>
       </Card>
 
-      {/* Edit setting */}
+      {/* Data Paths */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">修改设置</CardTitle>
+          <CardTitle className="text-base">数据路径</CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="flex gap-2">
-            <Input
-              placeholder="key"
-              value={editKey}
-              onChange={(e) => setEditKey(e.target.value)}
-              className="w-48"
-              autoComplete="off"
-            />
-            <Input
-              placeholder="value"
-              value={editValue}
-              onChange={(e) => setEditValue(e.target.value)}
-              className="flex-1"
-              autoComplete="off"
-            />
-            <Button onClick={saveSetting} disabled={!editKey || saving}>
-              {saved ? <Check className="h-4 w-4" /> : <Save className="h-4 w-4" />}
-              <span className="ml-1.5">{saved ? "已保存" : "保存"}</span>
-            </Button>
-          </div>
+        <CardContent className="space-y-3">
+          <SettingRow
+            label="数据根目录"
+            settingKey="data_root"
+            value={String(settings.data_root ?? "")}
+            onSave={updateSetting}
+            saving={saving}
+            saved={saved}
+          />
+          <SettingRow
+            label="Obsidian 库路径"
+            settingKey="obsidian_vault_path"
+            value={String(settings.obsidian_vault_path ?? "")}
+            onSave={updateSetting}
+            saving={saving}
+            saved={saved}
+          />
         </CardContent>
       </Card>
+
+      {/* UVR */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">UVR 人声分离</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <SettingRow
+            label="模型"
+            settingKey="uvr_model"
+            value={String(settings.uvr_model ?? "")}
+            onSave={updateSetting}
+            saving={saving}
+            saved={saved}
+          />
+          <SettingRow
+            label="设备"
+            settingKey="uvr_device"
+            value={String(settings.uvr_device ?? "cuda")}
+            onSave={updateSetting}
+            saving={saving}
+            saved={saved}
+          />
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// --- Reusable setting row ---
+
+interface SettingRowProps {
+  label: string
+  settingKey: string
+  value: string
+  onSave: (key: string, value: unknown) => Promise<void>
+  saving: Record<string, boolean>
+  saved: Record<string, boolean>
+  masked?: boolean
+}
+
+function SettingRow({ label, settingKey, value, onSave, saving, saved, masked }: SettingRowProps) {
+  const [editValue, setEditValue] = useState(value)
+
+  // Sync with external value
+  useEffect(() => {
+    setEditValue(value)
+  }, [value])
+
+  const isDirty = editValue !== value
+  const isSaving = saving[settingKey]
+  const isSaved = saved[settingKey]
+
+  const handleSave = () => {
+    if (!isDirty) return
+    onSave(settingKey, editValue)
+  }
+
+  return (
+    <div className="flex items-center gap-3">
+      <Label className="w-24 shrink-0 text-sm text-muted-foreground">{label}</Label>
+      <Input
+        type={masked ? "password" : "text"}
+        value={editValue}
+        onChange={(e) => setEditValue(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && handleSave()}
+        className="flex-1 h-8 text-sm"
+        autoComplete="off"
+      />
+      {isDirty && (
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={handleSave}
+          disabled={isSaving}
+          className="h-8 px-2"
+        >
+          {isSaved ? <Check className="h-3.5 w-3.5" /> : <Save className="h-3.5 w-3.5" />}
+        </Button>
+      )}
+      {!isDirty && isSaved && (
+        <Check className="h-3.5 w-3.5 text-emerald-500" />
+      )}
     </div>
   )
 }

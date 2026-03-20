@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+@import "highlight.js/styles/github.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -151,3 +152,54 @@
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
 }
+
+/* Prose styles for markdown rendering */
+.prose {
+  line-height: 1.75;
+}
+.prose h1 { font-size: 1.5em; font-weight: 700; margin: 1em 0 0.5em; }
+.prose h2 { font-size: 1.25em; font-weight: 600; margin: 1em 0 0.5em; }
+.prose h3 { font-size: 1.1em; font-weight: 600; margin: 0.8em 0 0.4em; }
+.prose p { margin: 0.5em 0; }
+.prose ul, .prose ol { margin: 0.5em 0; padding-left: 1.5em; }
+.prose li { margin: 0.2em 0; }
+.prose blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 1em;
+  margin: 0.5em 0;
+  color: var(--muted-foreground);
+}
+.prose pre {
+  background: var(--muted);
+  border-radius: var(--radius);
+  padding: 0.75em 1em;
+  overflow-x: auto;
+  font-size: 0.85em;
+}
+.prose code {
+  font-size: 0.85em;
+  background: var(--muted);
+  padding: 0.15em 0.35em;
+  border-radius: 0.25em;
+}
+.prose pre code {
+  background: transparent;
+  padding: 0;
+}
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.prose th, .prose td {
+  border: 1px solid var(--border);
+  padding: 0.4em 0.8em;
+  text-align: left;
+}
+.prose th { background: var(--muted); font-weight: 600; }
+.prose a { color: var(--primary); text-decoration: underline; }
+.prose img { max-width: 100%; border-radius: var(--radius); }
+.prose hr { border: none; border-top: 1px solid var(--border); margin: 1.5em 0; }
+
+.dark .prose { color: var(--foreground); }
+.dark .prose h1, .dark .prose h2, .dark .prose h3 { color: var(--foreground); }
+.dark .prose a { color: var(--primary); }
