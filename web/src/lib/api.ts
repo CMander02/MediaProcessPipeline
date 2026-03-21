@@ -64,6 +64,16 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
   return res.json()
 }
 
+async function httpDelete<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json()
+}
+
 // ---- Tasks ----
 
 export const api = {
@@ -79,6 +89,7 @@ export const api = {
     },
     get: (id: string) => get<Task>(`/api/tasks/${id}`),
     cancel: (id: string) => post<{ message: string }>(`/api/tasks/${id}/cancel`),
+    delete: (id: string) => httpDelete<{ message: string }>(`/api/tasks/${id}`),
     stats: () => get<TaskStats>("/api/tasks/stats"),
   },
 
@@ -86,6 +97,11 @@ export const api = {
     get: () => get<Settings>("/api/settings"),
     patch: (updates: Record<string, unknown>) =>
       patch<Settings>("/api/settings", updates),
+  },
+
+  archives: {
+    delete: (path: string) =>
+      httpDelete<{ message: string; path: string }>("/api/pipeline/archives", { path }),
   },
 
   pipeline: {

@@ -111,6 +111,69 @@ async def archives(limit: int = 50):
     return {"archives": await list_archives(limit)}
 
 
+class ArchiveDeleteRequest(BaseModel):
+    path: str
+
+
+@router.delete("/archives")
+async def delete_archive(req: ArchiveDeleteRequest):
+    """Delete an archive directory and its associated task record."""
+    archive_dir = Path(req.path)
+    if not archive_dir.is_dir():
+        raise HTTPException(404, "Archive directory not found")
+
+    # Safety: only allow deleting within data_root
+    rt = get_runtime_settings()
+    data_root = Path(rt.data_root).resolve()
+    try:
+        archive_dir.resolve().relative_to(data_root)
+    except ValueError:
+        raise HTTPException(403, "Cannot delete paths outside data directory")
+
+    # Try to find and delete the associated task record
+    task_deleted = False
+    dir_name = archive_dir.name
+    # Archive dirs are named like "{task_id_short}_{title}"
+    task_id_short = dir_name.split("_")[0] if "_" in dir_name else None
+    if task_id_short:
+        from uuid import UUID
+        from app.core.database import get_task_store, _get_conn
+        store = get_task_store()
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE id LIKE ?", (f"{task_id_short}%",)
+        ).fetchone()
+        if row:
+            store.delete(UUID(row["id"]))
+            task_deleted = True
+
+    # Also try to delete the uploaded source file
+    source_deleted = False
+    metadata_file = archive_dir / "metadata.json"
+    if metadata_file.exists():
+        try:
+            meta = json.loads(metadata_file.read_text(encoding="utf-8"))
+            source_url = meta.get("source_url", "")
+            uploads_dir = data_root / "uploads"
+            source_path = Path(source_url)
+            if source_path.exists() and uploads_dir.resolve() in source_path.resolve().parents:
+                source_path.unlink()
+                source_deleted = True
+        except Exception:
+            pass
+
+    # Delete the archive directory
+    shutil.rmtree(archive_dir)
+    logger.info(f"Deleted archive: {archive_dir} (task={task_deleted}, source={source_deleted})")
+
+    return {
+        "message": "Deleted",
+        "path": str(archive_dir),
+        "task_deleted": task_deleted,
+        "source_deleted": source_deleted,
+    }
+
+
 @router.get("/archives/thumbnail")
 async def archive_thumbnail(path: str):
     """Get or generate a thumbnail for an archive directory.

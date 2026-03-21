@@ -10,6 +10,14 @@ import {
   ResizablePanel,
   ResizableHandle,
 } from "@/components/ui/resizable"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
 import { useArchives, type ArchiveItem } from "@/hooks/use-archives"
 import { useMediaSync } from "@/hooks/use-media-sync"
 import { parseSRT, type Subtitle } from "@/lib/srt"
@@ -21,7 +29,7 @@ import { TranscriptTab } from "@/components/result/transcript-tab"
 import { SummaryTab } from "@/components/result/summary-tab"
 import { MindmapViewer } from "@/components/result/mindmap-viewer"
 import { AnalysisBadges } from "@/components/result/analysis-badges"
-import { ArrowLeft, Loader2 } from "lucide-react"
+import { ArrowLeft, Loader2, MoreHorizontal, Trash2 } from "lucide-react"
 
 interface ArchiveContent {
   summary: string
@@ -35,6 +43,7 @@ export function ResultPageComplete({ archivePath }: { archivePath: string }) {
   const [content, setContent] = useState<ArchiveContent | null>(null)
   const [subtitles, setSubtitles] = useState<Subtitle[]>([])
   const [loading, setLoading] = useState(true)
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
 
   const { bindMedia, currentTime, duration, currentSegmentIndex, autoScroll, seekTo, onManualScroll } =
     useMediaSync({ subtitles })
@@ -88,6 +97,7 @@ export function ResultPageComplete({ archivePath }: { archivePath: string }) {
     ? `/api/filesystem/media?path=${encodeURIComponent(archive.media_file)}`
     : null
   const mediaType = archive?.has_video ? "video" : "audio"
+  const displayTitle = archive?.title ?? archivePath.split(/[/\\]/).pop()
 
   return (
     <div className="flex h-full flex-col">
@@ -98,8 +108,24 @@ export function ResultPageComplete({ archivePath }: { archivePath: string }) {
           返回
         </Button>
         <h2 className="text-sm font-medium truncate flex-1">
-          {archive?.title ?? archivePath.split(/[/\\]/).pop()}
+          {displayTitle}
         </h2>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={<Button variant="ghost" size="icon-sm" />}
+          >
+            <MoreHorizontal className="h-4 w-4" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              variant="destructive"
+              onClick={() => setShowDeleteDialog(true)}
+            >
+              <Trash2 className="h-4 w-4" />
+              删除
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {loading && (
@@ -146,14 +172,14 @@ export function ResultPageComplete({ archivePath }: { archivePath: string }) {
                     {content.mindmap && <TabsTrigger value="mindmap">导图</TabsTrigger>}
                   </TabsList>
 
-                  <TabsContent value="summary" className="mt-3 flex-1 min-h-0">
-                    <div className="rounded-md border h-full">
+                  <TabsContent value="summary" className="mt-3 relative flex-1">
+                    <div className="absolute inset-0 rounded-md border">
                       <SummaryTab content={content.summary} />
                     </div>
                   </TabsContent>
 
-                  <TabsContent value="transcript" className="mt-3 flex-1 min-h-0">
-                    <div className="rounded-md border h-full">
+                  <TabsContent value="transcript" className="mt-3 relative flex-1">
+                    <div className="absolute inset-0 rounded-md border flex flex-col">
                       <TranscriptTab
                         subtitles={subtitles}
                         currentSegmentIndex={currentSegmentIndex}
@@ -165,7 +191,7 @@ export function ResultPageComplete({ archivePath }: { archivePath: string }) {
                   </TabsContent>
 
                   {content.mindmap && (
-                    <TabsContent value="mindmap" className="mt-3 flex-1 min-h-0">
+                    <TabsContent value="mindmap" className="mt-3 relative flex-1">
                       <MindmapViewer markdown={content.mindmap} fillContainer />
                     </TabsContent>
                   )}
@@ -175,6 +201,15 @@ export function ResultPageComplete({ archivePath }: { archivePath: string }) {
           </ResizablePanelGroup>
         </div>
       )}
+
+      {/* Delete confirmation dialog */}
+      <DeleteConfirmDialog
+        open={showDeleteDialog}
+        onOpenChange={setShowDeleteDialog}
+        title={displayTitle ?? ""}
+        archivePath={archivePath}
+        onDeleted={() => navigate("#/files")}
+      />
     </div>
   )
 }

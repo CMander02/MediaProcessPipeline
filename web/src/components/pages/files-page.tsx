@@ -3,14 +3,16 @@ import { useArchives } from "@/hooks/use-archives"
 import { usePreferences } from "@/hooks/use-preferences"
 import { navigate } from "@/lib/router"
 import { ArchiveCard } from "@/components/archive-card"
+import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
 import { Input } from "@/components/ui/input"
 import { Loader2, Search, FolderOpen } from "lucide-react"
 
 export function FilesPage() {
-  const { archives, loading } = useArchives()
+  const { archives, loading, refresh } = useArchives()
   const { update: updatePrefs } = usePreferences()
   const [search, setSearch] = useState("")
   const [mediaFilter, setMediaFilter] = useState<"all" | "video" | "audio">("all")
+  const [deleteTarget, setDeleteTarget] = useState<{ title: string; path: string } | null>(null)
 
   const filtered = useMemo(() => {
     let list = archives
@@ -77,7 +79,12 @@ export function FilesPage() {
       {filtered.length > 0 ? (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4 overflow-y-auto flex-1">
           {filtered.map((a) => (
-            <ArchiveCard key={a.path} archive={a} onClick={() => handleOpen(a.path)} />
+            <ArchiveCard
+              key={a.path}
+              archive={a}
+              onClick={() => handleOpen(a.path)}
+              onDelete={() => setDeleteTarget({ title: a.title, path: a.path })}
+            />
           ))}
         </div>
       ) : (
@@ -89,6 +96,17 @@ export function FilesPage() {
             <p>没有匹配的结果</p>
           )}
         </div>
+      )}
+
+      {/* Delete confirmation dialog */}
+      {deleteTarget && (
+        <DeleteConfirmDialog
+          open={!!deleteTarget}
+          onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}
+          title={deleteTarget.title}
+          archivePath={deleteTarget.path}
+          onDeleted={refresh}
+        />
       )}
     </div>
   )
