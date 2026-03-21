@@ -62,3 +62,12 @@ nul
 # doc/
 
 .claude/
+
+# Experiment outputs (frames, crops, results)
+experiment/*/out/
+
+# Agent workspace (dev screenshots, temp analysis)
+agentspace/*.png
+agentspace/*.txt
+
+.agents/

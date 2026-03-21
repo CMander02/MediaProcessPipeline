@@ -17,8 +17,7 @@ dependencies = [
     # CLI
     "typer>=0.15.0",
     "rich>=13.0.0",
-    # UI
-    "gradio>=5.0.0",
+
 ]
 
 [project.scripts]

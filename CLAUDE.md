@@ -61,4 +61,4 @@ CLI (mpp) / Gradio (/ui) / HTTP
 - UVR 模型路径：用户可能本地已安装 UVR，可以自动扫描常见安装路径
 - ffmpeg 必须在 PATH 中
 - CUDA 显存管理：切换 ASR 后端时需要释放旧模型显存
-- `ccworkspace/` 目录存放开发过程中的分析和规划文档
+- `agentspace/` 目录存放开发过程中的分析和规划文档
