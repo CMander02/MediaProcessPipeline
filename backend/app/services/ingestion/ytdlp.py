@@ -165,7 +165,8 @@ def get_ytdlp_service() -> YtdlpService:
 
 
 async def download_media(url: str, output_dir: Path | None = None) -> dict[str, Any]:
+    import asyncio
     service = get_ytdlp_service()
-    result = service.download(url, output_dir=output_dir)
+    result = await asyncio.to_thread(service.download, url, output_dir=output_dir)
     metadata = service.extract_metadata(result["info"], result.get("file_path"))
     return {"file_path": result.get("file_path"), "metadata": metadata.model_dump(mode="json")}

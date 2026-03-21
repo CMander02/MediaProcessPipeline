@@ -222,4 +222,5 @@ def get_uvr_service() -> UVRService:
 
 
 async def separate_vocals(audio_path: str, output_dir: Path | None = None) -> dict[str, Any]:
-    return get_uvr_service().separate(audio_path, output_dir=output_dir)
+    import asyncio
+    return await asyncio.to_thread(get_uvr_service().separate, audio_path, output_dir=output_dir)

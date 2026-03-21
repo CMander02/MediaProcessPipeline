@@ -1,5 +1,6 @@
 """Recognition service - ASR transcription with backend selection."""
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
@@ -65,7 +66,7 @@ async def transcribe_audio(
 
     if rt.asr_backend == "qwen3":
         # Qwen3-ASR handles long audio natively - no external VAD splitting needed
-        result = service.transcribe(audio_path, language)
+        result = await asyncio.to_thread(service.transcribe, audio_path, language)
         segments = service.to_segments(result)
         srt_content = service.to_srt(segments)
         detected_language = result.get("language", language or "unknown")
@@ -77,7 +78,7 @@ async def transcribe_audio(
 
         if len(audio_segments) == 1 and audio_segments[0].get('is_original', True):
             # Short audio, process normally
-            result = service.transcribe(audio_path, language)
+            result = await asyncio.to_thread(service.transcribe, audio_path, language)
             segments = service.to_segments(result)
             srt_content = service.to_srt(segments)
             detected_language = result.get("language", language or "unknown")
@@ -90,7 +91,7 @@ async def transcribe_audio(
 
             for i, seg in enumerate(audio_segments):
                 logger.info(f"Transcribing segment {i+1}/{len(audio_segments)}: {seg['path']}")
-                result = service.transcribe(seg['path'], language)
+                result = await asyncio.to_thread(service.transcribe, seg['path'], language)
                 segments = service.to_segments(result)
                 srt_content = service.to_srt(segments)
 

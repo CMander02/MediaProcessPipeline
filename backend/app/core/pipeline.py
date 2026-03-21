@@ -248,7 +248,7 @@ async def run_pipeline(task: Task) -> None:
 
         if source_path.suffix.lower() in video_exts:
             audio_path = task_dir / f"{title}.wav"
-            _extract_audio_from_video(dest_source, audio_path)
+            await asyncio.to_thread(_extract_audio_from_video, dest_source, audio_path)
             audio_path = str(audio_path)
             metadata = MediaMetadata(
                 title=title,

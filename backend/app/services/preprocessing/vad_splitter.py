@@ -233,7 +233,10 @@ async def split_long_audio(
     target_segment_duration: float = SPLIT_THRESHOLD_SECONDS
 ) -> list[dict[str, Any]]:
     """Split long audio file at VAD silence points."""
-    return get_vad_splitter().split_audio(audio_path, output_dir, target_segment_duration)
+    import asyncio
+    return await asyncio.to_thread(
+        get_vad_splitter().split_audio, audio_path, output_dir, target_segment_duration
+    )
 
 
 def merge_srt_segments(
