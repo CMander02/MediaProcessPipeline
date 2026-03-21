@@ -20,16 +20,18 @@ export const TranscriptSegment = memo(function TranscriptSegment({
 
   return (
     <div
-      className={`group flex gap-3 px-3 py-2 rounded-md cursor-pointer transition-colors ${
+      className={`group flex gap-3 px-3 py-2.5 rounded-md cursor-pointer transition-colors ${
         isActive
-          ? "bg-primary/10 border-l-2 border-primary"
-          : "hover:bg-muted/50 border-l-2 border-transparent"
+          ? "bg-primary/15 border-l-3 border-primary shadow-sm"
+          : "hover:bg-muted/50 border-l-3 border-transparent"
       }`}
       onClick={onClick}
     >
       {/* Timestamp */}
       <button
-        className="text-xs text-muted-foreground font-mono shrink-0 pt-0.5 hover:text-primary transition-colors"
+        className={`text-xs font-mono shrink-0 pt-0.5 transition-colors ${
+          isActive ? "text-primary font-semibold" : "text-muted-foreground hover:text-primary"
+        }`}
         onClick={(e) => {
           e.stopPropagation()
           onClick()
@@ -53,7 +55,7 @@ export const TranscriptSegment = memo(function TranscriptSegment({
         )}
 
         {/* Text */}
-        <span className="text-sm leading-relaxed">
+        <span className={`text-sm leading-relaxed ${isActive ? "text-foreground font-medium" : ""}`}>
           {searchQuery ? highlightText(subtitle.text, searchQuery) : subtitle.text}
         </span>
       </div>
