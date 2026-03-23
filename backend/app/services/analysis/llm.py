@@ -562,11 +562,20 @@ class LLMService:
 
     @staticmethod
     def _filter_mindmap_lines(resp: str) -> str:
-        """Filter response to only keep markdown list lines."""
+        """Filter response to plain text list lines, strip any markdown formatting."""
         lines = [l for l in resp.strip().split("\n") if l.strip().startswith("-") or l.strip().startswith("*")]
         # Normalize * to -
         lines = [l.replace("* ", "- ", 1) if l.lstrip().startswith("* ") else l for l in lines]
-        return "\n".join(lines) if lines else resp
+        # Strip markdown formatting: bold, italic, code, links
+        cleaned = []
+        for l in lines:
+            l = l.replace("**", "").replace("__", "")  # bold
+            l = l.replace("*", "").replace("_", "")  # italic (careful: only standalone)
+            l = re.sub(r'`([^`]*)`', r'\1', l)  # inline code
+            l = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', l)  # links
+            l = re.sub(r'^(\s*- )#+\s*', r'\1', l)  # heading markers after bullet
+            cleaned.append(l)
+        return "\n".join(cleaned) if cleaned else resp
 
 
 _service: LLMService | None = None
