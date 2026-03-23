@@ -493,10 +493,17 @@ async def run_pipeline(task: Task) -> None:
         "tags": metadata.tags,
         "chapters": [{"title": ch.title, "start_time": ch.start_time} for ch in metadata.chapters] if metadata.chapters else None,
     }
+    # Build mindmap metadata with title, chapters, description for map-reduce
+    mindmap_metadata = {
+        "title": metadata.title,
+        "uploader": metadata.uploader,
+        "description": metadata.description,
+        "chapters": [{"title": ch.title, "start_time": ch.start_time} for ch in metadata.chapters] if metadata.chapters else None,
+    }
     analysis, summary, mindmap = await asyncio.gather(
         analyze_content(transcript, metadata.title, metadata=video_metadata),
         summarize_text(transcript),
-        generate_mindmap(transcript),
+        generate_mindmap(srt or transcript, metadata=mindmap_metadata),
     )
     # Write analysis + summary + mindmap immediately
     import json as _json

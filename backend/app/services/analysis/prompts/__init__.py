@@ -3,7 +3,11 @@
 from app.services.analysis.prompts.analyze import get_analyze_prompt
 from app.services.analysis.prompts.polish import get_polish_prompt, get_simple_polish_prompt
 from app.services.analysis.prompts.summarize import get_summarize_prompt
-from app.services.analysis.prompts.mindmap import get_mindmap_prompt
+from app.services.analysis.prompts.mindmap import (
+    get_mindmap_prompt,
+    get_mindmap_map_prompt,
+    get_mindmap_reduce_prompt,
+)
 
 __all__ = [
     "get_analyze_prompt",
@@ -11,4 +15,6 @@ __all__ = [
     "get_simple_polish_prompt",
     "get_summarize_prompt",
     "get_mindmap_prompt",
+    "get_mindmap_map_prompt",
+    "get_mindmap_reduce_prompt",
 ]

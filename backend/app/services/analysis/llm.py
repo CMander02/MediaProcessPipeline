@@ -14,6 +14,8 @@ from app.services.analysis.prompts import (
     get_simple_polish_prompt,
     get_summarize_prompt,
     get_mindmap_prompt,
+    get_mindmap_map_prompt,
+    get_mindmap_reduce_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -354,10 +356,216 @@ class LLMService:
             pass
         return {"tldr": resp, "key_facts": [], "action_items": [], "topics": []}
 
-    async def mindmap(self, text: str) -> str:
+    async def mindmap(
+        self,
+        text: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Generate mindmap, auto-selecting single-pass or map-reduce based on length."""
+        # Rough threshold: ~15k chars ≈ 30min of Chinese transcript
+        if len(text) > 15000 and metadata:
+            chapters = metadata.get("chapters")
+            if chapters:
+                return await self._mindmap_map_reduce(text, metadata, chapters)
+            # No chapters but long text — auto-split by segment count
+            return await self._mindmap_map_reduce_auto(text, metadata)
+
+        # Short content: single-pass
         prompt = get_mindmap_prompt(text)
         resp = await self._call(prompt)
-        lines = [l for l in resp.strip().split("\n") if l.strip().startswith("-")]
+        return self._filter_mindmap_lines(resp)
+
+    async def _mindmap_map_reduce(
+        self,
+        text: str,
+        metadata: dict[str, Any],
+        chapters: list[dict],
+    ) -> str:
+        """Map-reduce mindmap using chapter markers to split transcript."""
+        segments = self._parse_srt(text) if "\n-->" in text else None
+
+        # Build chapter text blocks
+        if segments:
+            chapter_texts = self._split_segments_by_chapters(segments, chapters)
+        else:
+            # Plain text — split by rough char position proportional to chapter times
+            chapter_texts = self._split_plain_by_chapters(text, chapters)
+
+        global_context = self._build_global_context(metadata, chapters)
+
+        # --- Map phase: parallel ---
+        logger.info(f"Mindmap map-reduce: {len(chapter_texts)} chapters")
+        semaphore = asyncio.Semaphore(8)
+
+        async def map_one(title: str, content: str) -> tuple[str, str]:
+            async with semaphore:
+                prompt = get_mindmap_map_prompt(title, content, global_context)
+                resp = await self._call(prompt)
+                return title, resp
+
+        map_results = await asyncio.gather(*[
+            map_one(title, content)
+            for title, content in chapter_texts.items()
+            if content.strip()
+        ])
+        chapter_summaries = dict(map_results)
+        logger.info(
+            f"Mindmap map done: {len(chapter_summaries)} chapters, "
+            f"total {sum(len(v) for v in chapter_summaries.values())} chars"
+        )
+
+        # --- Reduce phase: group into batches to stay within output limits ---
+        return await self._mindmap_reduce(chapter_summaries)
+
+    async def _mindmap_map_reduce_auto(
+        self,
+        text: str,
+        metadata: dict[str, Any],
+    ) -> str:
+        """Map-reduce for long text without chapter markers — auto-split."""
+        segments = self._parse_srt(text) if "\n-->" in text else None
+
+        if segments:
+            # Split into groups of ~120 segments
+            chunk_size = min(120, max(80, len(segments) // 8))
+            chapter_texts = {}
+            for i in range(0, len(segments), chunk_size):
+                batch = segments[i:i + chunk_size]
+                label = f"Part {i // chunk_size + 1} ({batch[0]['timestamp'].split('-->')[0].strip()})"
+                chapter_texts[label] = "\n".join(seg["text"] for seg in batch)
+        else:
+            # Plain text — split by char count
+            chunk_chars = max(10000, len(text) // 10)
+            chapter_texts = {}
+            for i in range(0, len(text), chunk_chars):
+                chapter_texts[f"Part {i // chunk_chars + 1}"] = text[i:i + chunk_chars]
+
+        global_context = self._build_global_context(metadata, [])
+
+        logger.info(f"Mindmap auto map-reduce: {len(chapter_texts)} chunks")
+        semaphore = asyncio.Semaphore(8)
+
+        async def map_one(title: str, content: str) -> tuple[str, str]:
+            async with semaphore:
+                prompt = get_mindmap_map_prompt(title, content, global_context)
+                resp = await self._call(prompt)
+                return title, resp
+
+        map_results = await asyncio.gather(*[
+            map_one(t, c) for t, c in chapter_texts.items() if c.strip()
+        ])
+        chapter_summaries = dict(map_results)
+
+        return await self._mindmap_reduce(chapter_summaries)
+
+    async def _mindmap_reduce(self, chapter_summaries: dict[str, str]) -> str:
+        """Reduce chapter summaries into final mindmap, batching to fit output limits."""
+        names = list(chapter_summaries.keys())
+
+        # Group chapters into batches of 3-4 to keep each reduce output under 8k tokens
+        batch_size = max(2, min(4, len(names) // 4 + 1))
+        groups: list[tuple[str, list[str]]] = []
+        for i in range(0, len(names), batch_size):
+            batch_names = names[i:i + batch_size]
+            label = f"{batch_names[0]} ~ {batch_names[-1]}"
+            groups.append((label, batch_names))
+
+        logger.info(f"Mindmap reduce: {len(groups)} groups from {len(names)} chapters")
+
+        # Reduce each group (can be parallel for small groups)
+        semaphore = asyncio.Semaphore(4)
+
+        async def reduce_one(label: str, batch_names: list[str]) -> str:
+            async with semaphore:
+                summaries = ""
+                for name in batch_names:
+                    summaries += f"\n### {name}\n{chapter_summaries[name]}\n"
+                prompt = get_mindmap_reduce_prompt(label, summaries)
+                resp = await self._call(prompt)
+                return self._filter_mindmap_lines(resp)
+
+        results = await asyncio.gather(*[
+            reduce_one(label, batch_names)
+            for label, batch_names in groups
+        ])
+
+        final = "\n".join(results)
+        logger.info(f"Mindmap reduce done: {len(final)} chars")
+        return final
+
+    def _split_segments_by_chapters(
+        self,
+        segments: list[dict],
+        chapters: list[dict],
+    ) -> dict[str, str]:
+        """Split SRT segments into chapter-keyed text blocks."""
+        def ts_to_seconds(ts_str: str) -> float:
+            """Parse HH:MM:SS or MM:SS or seconds to float."""
+            ts_str = str(ts_str).strip()
+            parts = ts_str.replace(",", ".").split(":")
+            if len(parts) == 3:
+                return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+            elif len(parts) == 2:
+                return int(parts[0]) * 60 + float(parts[1])
+            return float(ts_str)
+
+        def seg_start_seconds(seg: dict) -> float:
+            ts_line = seg["timestamp"]
+            start = ts_line.split("-->")[0].strip()
+            return ts_to_seconds(start)
+
+        seg_starts = [(seg_start_seconds(seg), seg["text"]) for seg in segments]
+
+        chapter_texts: dict[str, str] = {}
+        for i, ch in enumerate(chapters):
+            start_s = ts_to_seconds(ch.get("start_time", 0))
+            end_s = ts_to_seconds(chapters[i + 1]["start_time"]) if i + 1 < len(chapters) else 1e9
+            texts = [text for s, text in seg_starts if start_s <= s < end_s]
+            chapter_texts[ch["title"]] = "\n".join(texts)
+
+        return chapter_texts
+
+    def _split_plain_by_chapters(
+        self,
+        text: str,
+        chapters: list[dict],
+    ) -> dict[str, str]:
+        """Rough split of plain text by chapter proportion."""
+        total_len = len(text)
+        n = len(chapters)
+        chunk = total_len // max(n, 1)
+        result: dict[str, str] = {}
+        for i, ch in enumerate(chapters):
+            start = i * chunk
+            end = (i + 1) * chunk if i + 1 < n else total_len
+            result[ch["title"]] = text[start:end]
+        return result
+
+    def _build_global_context(
+        self,
+        metadata: dict[str, Any],
+        chapters: list[dict],
+    ) -> str:
+        """Build a concise global context string from metadata."""
+        parts = []
+        if metadata.get("title"):
+            parts.append(f"标题: {metadata['title']}")
+        if metadata.get("uploader"):
+            parts.append(f"作者: {metadata['uploader']}")
+        if chapters:
+            ch_list = " / ".join(ch.get("title", "") for ch in chapters)
+            parts.append(f"章节: {ch_list}")
+        desc = metadata.get("description", "")
+        if desc:
+            parts.append(f"简介: {desc[:300]}")
+        return "\n".join(parts)
+
+    @staticmethod
+    def _filter_mindmap_lines(resp: str) -> str:
+        """Filter response to only keep markdown list lines."""
+        lines = [l for l in resp.strip().split("\n") if l.strip().startswith("-") or l.strip().startswith("*")]
+        # Normalize * to -
+        lines = [l.replace("* ", "- ", 1) if l.lstrip().startswith("* ") else l for l in lines]
         return "\n".join(lines) if lines else resp
 
 
@@ -394,5 +602,8 @@ async def summarize_text(text: str) -> dict[str, Any]:
     return await get_llm_service().summarize(text)
 
 
-async def generate_mindmap(text: str) -> str:
-    return await get_llm_service().mindmap(text)
+async def generate_mindmap(
+    text: str,
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    return await get_llm_service().mindmap(text, metadata=metadata)
