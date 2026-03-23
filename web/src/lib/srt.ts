@@ -62,6 +62,19 @@ export function parseSRT(content: string): Subtitle[] {
 }
 
 /**
+ * Convert SRT content to WebVTT format for use with <track> elements.
+ * Strips speaker tags [Name] since VTT renders them as visible text.
+ */
+export function srtToVTT(srt: string): string {
+  // Replace SRT comma timestamps with VTT period timestamps
+  const body = srt
+    .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, "$1.$2")
+    // Remove speaker tags like [张小琦] from subtitle text
+    .replace(/^\[([^\]]+)\]\s*/gm, "")
+  return "WEBVTT\n\n" + body
+}
+
+/**
  * Format milliseconds to SRT timestamp: HH:MM:SS,mmm
  */
 export function formatSRTTime(ms: number): string {

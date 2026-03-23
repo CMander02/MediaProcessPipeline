@@ -162,8 +162,41 @@ async def delete_archive(req: ArchiveDeleteRequest):
         except Exception:
             pass
 
-    # Delete the archive directory
-    shutil.rmtree(archive_dir)
+    # Delete the archive directory (with Windows file-lock retry)
+    import time
+
+    def _onerror_retry(func, path, exc_info):
+        """Retry handler for shutil.rmtree on Windows PermissionError."""
+        import stat
+        if isinstance(exc_info[1], PermissionError):
+            os.chmod(path, stat.S_IWRITE)
+            try:
+                func(path)
+            except Exception:
+                pass  # Will be caught by outer retry
+        else:
+            raise exc_info[1]
+
+    import os
+    last_err = None
+    for attempt in range(3):
+        try:
+            shutil.rmtree(archive_dir, onerror=_onerror_retry)
+            break
+        except Exception as e:
+            last_err = e
+            if attempt < 2:
+                time.sleep(0.5)
+    else:
+        # If folder still exists but is now empty, that's ok
+        if archive_dir.exists() and any(archive_dir.iterdir()):
+            raise HTTPException(500, f"Failed to delete archive: {last_err}")
+        # Empty dir or gone — try final rmdir
+        try:
+            archive_dir.rmdir()
+        except Exception:
+            pass
+
     logger.info(f"Deleted archive: {archive_dir} (task={task_deleted}, source={source_deleted})")
 
     return {
@@ -193,13 +226,28 @@ async def archive_thumbnail(path: str):
             return FileResponse(thumb, media_type=media_type)
 
     # Try to generate from video in source/
+    video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov"}
     source_dir = archive_dir / "source"
     video_file = None
     if source_dir.exists():
         for f in source_dir.iterdir():
-            if f.suffix.lower() in [".mp4", ".mkv", ".avi", ".webm", ".mov"]:
+            if f.suffix.lower() in video_exts:
                 video_file = f
                 break
+
+    # Fallback: source/ deleted, try original source_url from metadata
+    if not video_file:
+        meta_path = archive_dir / "metadata.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                source_url = meta.get("source_url", "")
+                if source_url:
+                    original = Path(source_url)
+                    if original.exists() and original.suffix.lower() in video_exts:
+                        video_file = original
+            except Exception:
+                pass
 
     if not video_file:
         raise HTTPException(404, "No thumbnail or video found")

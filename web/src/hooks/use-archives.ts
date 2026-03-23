@@ -10,6 +10,9 @@ export interface ArchiveItem {
   has_video: boolean
   has_audio: boolean
   media_file: string | null
+  media_is_external?: boolean
+  processing?: boolean
+  task_id?: string
   metadata: Record<string, unknown>
   duration_seconds: number | null
   analysis: {

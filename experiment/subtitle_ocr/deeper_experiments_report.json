@@ -1,0 +1,314 @@
+{
+  "rapidocr_vs_qwen_sovits": {
+    "samples": 25,
+    "usable_samples": 23,
+    "mean_similarity": 0.8548904771629374,
+    "median_similarity": 1.0,
+    "high_quality_matches": 17,
+    "hallucination_checks": [
+      {
+        "idx": 12,
+        "rapidocr_text": "",
+        "rapidocr_conf": 0.0,
+        "rapidocr_boxes": 0
+      },
+      {
+        "idx": 16,
+        "rapidocr_text": "",
+        "rapidocr_conf": 0.0,
+        "rapidocr_boxes": 0
+      }
+    ],
+    "examples": [
+      {
+        "idx": 0,
+        "qwen_hallucination": false,
+        "qwen_text": "大家好我是东奶雪龙",
+        "rapidocr_text": "大家好我是东奶雪龙",
+        "rapidocr_conf": 0.996238993273841,
+        "rapidocr_boxes": 1,
+        "similarity": 1.0
+      },
+      {
+        "idx": 1,
+        "qwen_hallucination": false,
+        "qwen_text": "今天来点大家想看的东西啊",
+        "rapidocr_text": "今天来点大家想看的东西啊",
+        "rapidocr_conf": 0.9966523249944051,
+        "rapidocr_boxes": 1,
+        "similarity": 1.0
+      },
+      {
+        "idx": 2,
+        "qwen_hallucination": false,
+        "qwen_text": "这是一个GPT SoVITS的轻量级推理引擎",
+        "rapidocr_text": "这是一个GPTSOVITS的轻量级推理引擎",
+        "rapidocr_conf": 0.9809162900561378,
+        "rapidocr_boxes": 1,
+        "similarity": 0.9302325581395349
+      },
+      {
+        "idx": 3,
+        "qwen_hallucination": false,
+        "qwen_text": "以后就叫它GENIE了",
+        "rapidocr_text": "以后就叫它GENIE了",
+        "rapidocr_conf": 0.9892465309663252,
+        "rapidocr_boxes": 1,
+        "similarity": 1.0
+      },
+      {
+        "idx": 4,
+        "qwen_hallucination": false,
+        "qwen_text": "200MB的大小",
+        "rapidocr_text": "200MB的大小",
+        "rapidocr_conf": 0.9967789947986603,
+        "rapidocr_boxes": 1,
+        "similarity": 1.0
+      },
+      {
+        "idx": 5,
+        "qwen_hallucination": false,
+        "qwen_text": "下载下来就能跑",
+        "rapidocr_text": "下载下来就能跑",
+        "rapidocr_conf": 0.9986655456679208,
+        "rapidocr_boxes": 1,
+        "similarity": 1.0
+      },
+      {
+        "idx": 6,
+        "qwen_hallucination": false,
+        "qwen_text": "感谢High_Logic的SC",
+        "rapidocr_text": "感谢High Logic的SC",
+        "rapidocr_conf": 0.9493453900019327,
+        "rapidocr_boxes": 1,
+        "similarity": 0.9333333333333333
+      },
+      {
+        "idx": 7,
+        "qwen_hallucination": false,
+        "qwen_text": "直接上表格",
+        "rapidocr_text": "直接上表格",
+        "rapidocr_conf": 0.9980550885200501,
+        "rapidocr_boxes": 1,
+        "similarity": 1.0
+      }
+    ]
+  },
+  "rapidocr_on_cs336": {
+    "samples": 37,
+    "usable_samples": 36,
+    "english_only_outputs": 35,
+    "bilingual_outputs": 1,
+    "examples": [
+      {
+        "idx": 0,
+        "qwen_hallucination": false,
+        "rapidocr_text": "So the question is, inference is a very simple one.",
+        "rapidocr_conf": 0.9942796592618904,
+        "rapidocr_boxes": 1,
+        "rapid_has_cn": false,
+        "rapid_has_en": true
+      },
+      {
+        "idx": 1,
+        "qwen_hallucination": false,
+        "rapidocr_text": "So the question is, inference is a very simple one.\nchArFriFc",
+        "rapidocr_conf": 0.8240548626464956,
+        "rapidocr_boxes": 2,
+        "rapid_has_cn": false,
+        "rapid_has_en": true
+      },
+      {
+        "idx": 2,
+        "qwen_hallucination": false,
+        "rapidocr_text": "a fixed model that we've trained, generate responses\ngiven pro\ncharFruFclncc",
+        "rapidocr_conf": 0.8795830484235158,
+        "rapidocr_boxes": 3,
+        "rapid_has_cn": false,
+        "rapid_has_en": true
+      },
+      {
+        "idx": 3,
+        "qwen_hallucination": false,
+        "rapidocr_text": "Okay, first, we're going to start by understanding\nsharFeiiFe",
+        "rapidocr_conf": 0.8089269167184829,
+        "rapidocr_boxes": 2,
+        "rapid_has_cn": false,
+        "rapid_has_en": true
+      },
+      {
+        "idx": 4,
+        "qwen_hallucination": false,
+        "rapidocr_text": "what the implications of inference are,\ncharFcmFc (lace",
+        "rapidocr_conf": 0.8214457249030089,
+        "rapidocr_boxes": 2,
+        "rapid_has_cn": false,
+        "rapid_has_en": true
+      },
+      {
+        "idx": 5,
+        "qwen_hallucination": false,
+        "rapidocr_text": "and the workload that it entails.\ncharFciFc/loccd",
+        "rapidocr_conf": 0.790516253583359,
+        "rapidocr_boxes": 2,
+        "rapid_has_cn": false,
+        "rapid_has_en": true
+      },
+      {
+        "idx": 6,
+        "qwen_hallucination": false,
+        "rapidocr_text": "Ind then we're gonna talk about ways of making\ninference fastel\nchartcnFc (lacc",
+        "rapidocr_conf": 0.865171312843112,
+        "rapidocr_boxes": 3,
+        "rapid_has_cn": false,
+        "rapid_has_en": true
+      },
+      {
+        "idx": 7,
+        "qwen_hallucination": false,
+        "rapidocr_text": "And throughout this lecture, you're gonna see\ncharFcuFcilaccy",
+        "rapidocr_conf": 0.8313491948776774,
+        "rapidocr_boxes": 2,
+        "rapid_has_cn": false,
+        "rapid_has_en": true
+      }
+    ],
+    "hard_failure_examples": [
+      {
+        "idx": 31,
+        "qwen_hallucination": true,
+        "rapidocr_text": "So inference isn't just I want to put up a chatbot demo.\nma",
+        "rapidocr_conf": 0.9743614367076329,
+        "rapidocr_boxes": 2,
+        "rapid_has_cn": false,
+        "rapid_has_en": true
+      }
+    ]
+  },
+  "presence_classifier": {
+    "samples": 50,
+    "positive": 23,
+    "negative": 27,
+    "accuracy": 0.72,
+    "f1": 0.7083333333333334,
+    "roc_auc": 0.7777777777777778,
+    "mistakes": [
+      {
+        "path": "experiment\\subtitle_ocr\\out\\sovits\\strip_000_0.5-2.0s.png",
+        "source": "segment",
+        "label": 1,
+        "pred": 0,
+        "prob_subtitle": 0.2371,
+        "ocr_conf": 0.9963,
+        "ocr_chars": 9.0
+      },
+      {
+        "path": "experiment\\subtitle_ocr\\out\\sovits\\strip_005_14.5-15.8s.png",
+        "source": "segment",
+        "label": 1,
+        "pred": 0,
+        "prob_subtitle": 0.432,
+        "ocr_conf": 0.999,
+        "ocr_chars": 7.0
+      },
+      {
+        "path": "experiment\\subtitle_ocr\\out\\sovits\\strip_007_21.0-21.8s.png",
+        "source": "segment",
+        "label": 1,
+        "pred": 0,
+        "prob_subtitle": 0.2805,
+        "ocr_conf": 0.9977,
+        "ocr_chars": 5.0
+      },
+      {
+        "path": "experiment\\subtitle_ocr\\out\\sovits\\strip_015_51.8-53.5s.png",
+        "source": "segment",
+        "label": 1,
+        "pred": 0,
+        "prob_subtitle": 0.1795,
+        "ocr_conf": 0.9918,
+        "ocr_chars": 13.0
+      },
+      {
+        "path": "experiment\\subtitle_ocr\\out\\sovits\\strip_019_62.0-63.5s.png",
+        "source": "segment",
+        "label": 1,
+        "pred": 0,
+        "prob_subtitle": 0.0167,
+        "ocr_conf": 0.0,
+        "ocr_chars": 0.0
+      },
+      {
+        "path": "experiment\\subtitle_ocr\\out\\sovits\\strip_024_72.0-72.8s.png",
+        "source": "segment",
+        "label": 1,
+        "pred": 0,
+        "prob_subtitle": 0.4583,
+        "ocr_conf": 0.9889,
+        "ocr_chars": 7.0
+      },
+      {
+        "path": "gap@13.75s",
+        "source": "gap",
+        "label": 0,
+        "pred": 1,
+        "prob_subtitle": 0.5517,
+        "ocr_conf": 0.9918,
+        "ocr_chars": 7.0
+      },
+      {
+        "path": "gap@19.25s",
+        "source": "gap",
+        "label": 0,
+        "pred": 1,
+        "prob_subtitle": 0.5131,
+        "ocr_conf": 0.9993,
+        "ocr_chars": 5.0
+      },
+      {
+        "path": "gap@30.50s",
+        "source": "gap",
+        "label": 0,
+        "pred": 1,
+        "prob_subtitle": 0.7462,
+        "ocr_conf": 0.9935,
+        "ocr_chars": 12.0
+      },
+      {
+        "path": "gap@33.62s",
+        "source": "gap",
+        "label": 0,
+        "pred": 1,
+        "prob_subtitle": 0.5269,
+        "ocr_conf": 0.9987,
+        "ocr_chars": 7.0
+      }
+    ],
+    "top_features": [
+      {
+        "feature": "ocr_chars",
+        "coef": 0.8606896977035666
+      },
+      {
+        "feature": "gray_mean",
+        "coef": 0.49249204449664086
+      },
+      {
+        "feature": "largest_component_ratio",
+        "coef": -0.4479981130959396
+      },
+      {
+        "feature": "connected_components",
+        "coef": 0.35026927815327
+      },
+      {
+        "feature": "row_energy_std",
+        "coef": 0.3088582249582456
+      },
+      {
+        "feature": "row_energy_peak",
+        "coef": -0.2263949821378054
+      }
+    ]
+  }
+}

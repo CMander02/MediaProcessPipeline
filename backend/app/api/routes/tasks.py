@@ -16,7 +16,10 @@ from fastapi.responses import StreamingResponse
 
 from app.core.database import get_task_store
 from app.core.events import get_event_bus
-from app.core.pipeline import PIPELINE_STEPS, PipelineStep, _detect_source_type
+from app.core.pipeline import (
+    PIPELINE_STEPS, PipelineStep, _detect_source_type, _looks_like_local_path,
+    _clean_source_path, create_task_dir, write_metadata_json,
+)
 from app.core.queue import get_task_queue
 from app.models import Task, TaskCreate, TaskStatus
 
@@ -31,6 +34,8 @@ logger = logging.getLogger(__name__)
 @router.post("", response_model=Task)
 async def create_task(task_create: TaskCreate):
     """Create a new processing task and submit it to the queue."""
+    from pathlib import Path
+
     task = Task(
         task_type=task_create.task_type,
         source=task_create.source,
@@ -42,6 +47,24 @@ async def create_task(task_create: TaskCreate):
         steps=[s["id"] for s in PIPELINE_STEPS],
         completed_steps=[],
     )
+
+    # Create task directory immediately so frontend can navigate to result page
+    source = _clean_source_path(task_create.source)
+    if _looks_like_local_path(source):
+        title = Path(source).stem
+        media_type = "video" if Path(source).suffix.lower() in {".mp4", ".mkv", ".avi", ".webm", ".mov"} else "audio"
+    else:
+        title = "download"
+        media_type = "unknown"
+
+    task_dir = create_task_dir(task.id, title)
+    write_metadata_json(task_dir, {
+        "title": title,
+        "source_url": source,
+        "media_type": media_type,
+    }, status="queued")
+
+    task.result = {"output_dir": str(task_dir)}
 
     store = get_task_store()
     store.save(task)

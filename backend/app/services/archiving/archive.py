@@ -151,20 +151,45 @@ class ArchiveService:
                 except Exception:
                     pass
 
-            # Check for media files in source directory
+            # Check for media files in source directory, fallback to original path
+            video_exts = {'.mp4', '.mkv', '.avi', '.webm', '.mov'}
+            audio_exts = {'.mp3', '.wav', '.flac', '.m4a', '.ogg'}
             source_dir = task_dir / "source"
             has_video = False
             has_audio = False
             media_file = None
+            media_is_external = False
             if source_dir.exists():
                 for f in source_dir.iterdir():
-                    if f.suffix.lower() in ['.mp4', '.mkv', '.avi', '.webm', '.mov']:
+                    if f.suffix.lower() in video_exts:
                         has_video = True
                         media_file = str(f)
                         break
-                    elif f.suffix.lower() in ['.mp3', '.wav', '.flac', '.m4a', '.ogg']:
+                    elif f.suffix.lower() in audio_exts:
                         has_audio = True
                         media_file = str(f)
+
+            # Fallback: source/ deleted, try original source_url from metadata
+            if not media_file and metadata.get("source_url"):
+                original = Path(metadata["source_url"])
+                if original.exists() and original.is_file():
+                    ext = original.suffix.lower()
+                    if ext in video_exts:
+                        has_video = True
+                        media_file = str(original)
+                        media_is_external = True
+                    elif ext in audio_exts:
+                        has_audio = True
+                        media_file = str(original)
+                        media_is_external = True
+
+            # Determine processing status
+            meta_status = metadata.get("status", "completed")  # backward compat
+            processing = meta_status in ("queued", "processing")
+
+            # Extract task_id from directory name prefix
+            dir_name = task_dir.name
+            task_id = dir_name.split("_")[0] if "_" in dir_name else dir_name
 
             # Extract duration from metadata
             duration_seconds = metadata.get("duration_seconds") or metadata.get("duration")
@@ -175,10 +200,13 @@ class ArchiveService:
                 "title": metadata.get("title", task_dir.name),
                 "has_transcript": (task_dir / "transcript_polished.srt").exists() or (task_dir / "transcript.srt").exists(),
                 "has_summary": (task_dir / "summary.md").exists(),
-                "has_mindmap": (task_dir / "summary.md").exists(),
+                "has_mindmap": (task_dir / "mindmap.md").exists(),
                 "has_video": has_video,
                 "has_audio": has_audio,
                 "media_file": media_file,
+                "media_is_external": media_is_external,
+                "processing": processing,
+                "task_id": task_id,
                 "metadata": metadata,
                 "analysis": analysis,
                 "duration_seconds": duration_seconds,

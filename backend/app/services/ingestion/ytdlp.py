@@ -146,6 +146,93 @@ class YtdlpService:
             chapters=chapters,
         )
 
+    def download_subtitles(
+        self,
+        url: str,
+        output_dir: Path,
+        langs: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Download platform subtitles without downloading the video.
+
+        Args:
+            url: Video URL
+            output_dir: Directory to save subtitle files
+            langs: Language priority list, e.g. ["zh", "en"]
+
+        Returns:
+            {"subtitle_path": str|None, "subtitle_lang": str|None,
+             "subtitle_format": "json3"|"srt"|None}
+        """
+        import yt_dlp
+
+        if langs is None:
+            from app.core.settings import get_runtime_settings
+            rt = get_runtime_settings()
+            langs = [l.strip() for l in rt.subtitle_languages.split(",") if l.strip()]
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Try manual subtitles first, then auto-generated
+        for write_auto in [False, True]:
+            ydl_opts = {
+                "skip_download": True,
+                "writesubtitles": True,
+                "writeautomaticsub": write_auto,
+                "subtitleslangs": langs,
+                "subtitlesformat": "json3/srt/best",
+                "outtmpl": str(output_dir / "%(id)s"),
+                "quiet": True,
+            }
+
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([url])
+            except Exception as e:
+                logger.warning(f"Subtitle download failed (auto={write_auto}): {e}")
+                continue
+
+            # Search for downloaded subtitle files
+            result = self._find_best_subtitle(output_dir, langs)
+            if result:
+                kind = "auto" if write_auto else "manual"
+                logger.info(f"Downloaded {kind} subtitle: {result['subtitle_path']}")
+                return result
+
+        logger.info(f"No subtitles found for {url}")
+        return {"subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
+
+    def _find_best_subtitle(self, output_dir: Path, langs: list[str]) -> dict | None:
+        """Find the best subtitle file in output_dir by language and format priority."""
+        # Language priority from langs list, format priority: json3 > srt
+        for lang in langs:
+            for ext in ["json3", "srt", "vtt"]:
+                for f in output_dir.glob(f"*.{lang}.{ext}"):
+                    return {
+                        "subtitle_path": str(f),
+                        "subtitle_lang": lang,
+                        "subtitle_format": ext,
+                    }
+            # Also check zh-Hans etc.
+            for variant in [f"{lang}-Hans", f"{lang}-CN", f"{lang}-Hant"]:
+                for ext in ["json3", "srt", "vtt"]:
+                    for f in output_dir.glob(f"*.{variant}.{ext}"):
+                        return {
+                            "subtitle_path": str(f),
+                            "subtitle_lang": lang,
+                            "subtitle_format": ext,
+                        }
+        # Fallback: any subtitle file
+        for ext in ["json3", "srt", "vtt"]:
+            files = list(output_dir.glob(f"*.{ext}"))
+            if files:
+                return {
+                    "subtitle_path": str(files[0]),
+                    "subtitle_lang": "unknown",
+                    "subtitle_format": ext,
+                }
+        return None
+
     def _compute_hash(self, file_path: str) -> str:
         sha256 = hashlib.sha256()
         with open(file_path, "rb") as f:
@@ -170,3 +257,11 @@ async def download_media(url: str, output_dir: Path | None = None) -> dict[str, 
     result = await asyncio.to_thread(service.download, url, output_dir=output_dir)
     metadata = service.extract_metadata(result["info"], result.get("file_path"))
     return {"file_path": result.get("file_path"), "metadata": metadata.model_dump(mode="json")}
+
+
+async def download_subtitles(
+    url: str, output_dir: Path, langs: list[str] | None = None
+) -> dict[str, Any]:
+    import asyncio
+    service = get_ytdlp_service()
+    return await asyncio.to_thread(service.download_subtitles, url, output_dir, langs)

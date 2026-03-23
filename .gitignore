@@ -70,4 +70,7 @@ experiment/*/out/
 agentspace/*.png
 agentspace/*.txt
 
+# Test output (experiment results, generated PDFs)
+test_output/
+
 .agents/

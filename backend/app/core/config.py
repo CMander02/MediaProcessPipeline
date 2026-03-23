@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
     # Data paths - simplified flat structure
-    data_root: Path = Path("../data")  # All task outputs go to data/{task_id}/
+    data_root: Path = Path("D:/Video/MediaProcessPipeline")  # All task outputs go here
 
     # =========================================================================
     # LLM Configuration (使用 LiteLLM 统一处理)

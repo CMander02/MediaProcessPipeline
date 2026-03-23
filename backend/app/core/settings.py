@@ -63,6 +63,10 @@ class RuntimeSettings(BaseModel):
     alignment_model_en: str = ""
     diarization_batch_size: int = 16
 
+    # Platform Subtitles
+    prefer_platform_subtitles: bool = True  # Use platform subtitles when available
+    subtitle_languages: str = "zh,en"  # Comma-separated language priority
+
     # UVR
     uvr_model: str = "UVR-MDX-NET-Inst_HQ_3"
     uvr_device: str = "cuda"
@@ -75,7 +79,7 @@ class RuntimeSettings(BaseModel):
     uvr_htdemucs_path: str = ""
 
     # Paths
-    data_root: str = "../data"
+    data_root: str = "D:/Video/MediaProcessPipeline"
 
 
 # Global runtime settings storage

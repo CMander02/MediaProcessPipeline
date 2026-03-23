@@ -149,6 +149,52 @@ async def serve_media(
     )
 
 
+@router.get("/source-media")
+async def serve_source_media(
+    archive_path: str = Query(..., description="Archive directory path"),
+):
+    """Serve the original source media file referenced by an archive's metadata.
+
+    Used when source/ copy has been deleted and the original is outside data_root.
+    Security: archive_path must be under data_root, and we only serve the source_url from its metadata.
+    """
+    import json
+    from app.core.settings import get_runtime_settings
+
+    data_root = Path(get_runtime_settings().data_root).resolve()
+    archive_dir = Path(archive_path).resolve()
+
+    if not str(archive_dir).startswith(str(data_root)):
+        raise HTTPException(status_code=403, detail="Access denied: path outside data directory")
+
+    meta_path = archive_dir / "metadata.json"
+    if not meta_path.exists():
+        raise HTTPException(status_code=404, detail="metadata.json not found")
+
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to read metadata.json")
+
+    source_url = meta.get("source_url", "")
+    if not source_url:
+        raise HTTPException(status_code=404, detail="No source_url in metadata")
+
+    file_path = Path(source_url).resolve()
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Source file not found: {source_url}")
+
+    content_type, _ = mimetypes.guess_type(str(file_path))
+    if content_type is None:
+        content_type = "application/octet-stream"
+
+    return FileResponse(
+        path=str(file_path),
+        media_type=content_type,
+        filename=file_path.name,
+    )
+
+
 @router.get("/drives")
 async def list_drives():
     """

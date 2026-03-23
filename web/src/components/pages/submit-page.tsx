@@ -16,13 +16,22 @@ export function SubmitPage() {
   const [error, setError] = useState("")
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  const navigateToResult = (task: { id: string; result?: Record<string, unknown> | null }) => {
+    const outputDir = task.result?.output_dir as string | undefined
+    if (outputDir) {
+      navigate(`#/result/archive?path=${encodeURIComponent(outputDir)}&taskId=${encodeURIComponent(task.id)}`)
+    } else {
+      navigate(`#/result/task/${task.id}`)
+    }
+  }
+
   const submitSource = async (src: string) => {
     setSubmitting(true)
     setError("")
     try {
       const opts = skipSep ? { skip_separation: true } : {}
       const task = await api.tasks.create(src, opts)
-      navigate(`#/result/task/${task.id}`)
+      navigateToResult(task)
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交失败")
       setSubmitting(false)
@@ -37,7 +46,7 @@ export function SubmitPage() {
       const { file_path } = await api.pipeline.upload(files[0])
       const opts = skipSep ? { skip_separation: true } : {}
       const task = await api.tasks.create(file_path, opts)
-      navigate(`#/result/task/${task.id}`)
+      navigateToResult(task)
     } catch (err) {
       setError(err instanceof Error ? err.message : "上传失败")
       setSubmitting(false)

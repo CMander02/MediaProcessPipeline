@@ -1,12 +1,15 @@
-import { useEffect, useRef, type RefCallback } from "react"
+import { useEffect, useMemo, useRef, type RefCallback } from "react"
+import { srtToVTT } from "@/lib/srt"
 
 interface MediaPlayerProps {
   src: string
   type: "video" | "audio"
   bindMedia: RefCallback<HTMLMediaElement>
+  /** SRT content for subtitle track (shown in fullscreen) */
+  subtitleSrt?: string
 }
 
-export function MediaPlayer({ src, type, bindMedia }: MediaPlayerProps) {
+export function MediaPlayer({ src, type, bindMedia, subtitleSrt }: MediaPlayerProps) {
   const mediaRef = useRef<HTMLMediaElement | null>(null)
 
   // Bind/unbind media element
@@ -32,16 +35,41 @@ export function MediaPlayer({ src, type, bindMedia }: MediaPlayerProps) {
     }
   }, [])
 
+  // Create VTT blob URL from SRT content
+  const vttUrl = useMemo(() => {
+    if (!subtitleSrt) return null
+    const vtt = srtToVTT(subtitleSrt)
+    const blob = new Blob([vtt], { type: "text/vtt" })
+    return URL.createObjectURL(blob)
+  }, [subtitleSrt])
+
+  // Clean up blob URL
+  useEffect(() => {
+    return () => {
+      if (vttUrl) URL.revokeObjectURL(vttUrl)
+    }
+  }, [vttUrl])
+
   if (type === "video") {
     return (
       <div className="w-full rounded-lg overflow-hidden bg-black">
         <video
           ref={(el) => { mediaRef.current = el }}
           src={src}
-          className="w-full max-h-[300px] object-contain"
+          className="w-full object-contain"
           preload="metadata"
           controls
-        />
+        >
+          {vttUrl && (
+            <track
+              kind="subtitles"
+              src={vttUrl}
+              srcLang="zh"
+              label="字幕"
+              default
+            />
+          )}
+        </video>
       </div>
     )
   }

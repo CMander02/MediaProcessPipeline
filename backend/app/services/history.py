@@ -205,8 +205,8 @@ def get_history_service(data_root: Path | None = None) -> HistoryService:
     global _service
     if _service is None:
         if data_root is None:
-            # Default to ../data relative to backend
-            data_root = Path(__file__).parent.parent.parent.parent / "data"
+            from app.core.settings import get_runtime_settings
+            data_root = Path(get_runtime_settings().data_root).resolve()
         _service = HistoryService(data_root)
     return _service
 

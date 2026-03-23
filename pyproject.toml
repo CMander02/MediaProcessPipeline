@@ -17,7 +17,7 @@ dependencies = [
     # CLI
     "typer>=0.15.0",
     "rich>=13.0.0",
-
+    "youtube-transcript-api>=1.2.4",
 ]
 
 [project.scripts]

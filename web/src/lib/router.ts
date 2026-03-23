@@ -10,6 +10,8 @@ export interface Route {
   resultType?: "archive" | "task"
   /** archive path or task id */
   resultId?: string
+  /** task id for SSE subscription (available on archive routes too) */
+  taskId?: string
 }
 
 function parseHash(hash: string): Route {
@@ -19,7 +21,12 @@ function parseHash(hash: string): Route {
 
   if (raw.startsWith("result/archive")) {
     const params = new URLSearchParams(raw.split("?")[1] ?? "")
-    return { page: "result", resultType: "archive", resultId: params.get("path") ?? undefined }
+    return {
+      page: "result",
+      resultType: "archive",
+      resultId: params.get("path") ?? undefined,
+      taskId: params.get("taskId") ?? undefined,
+    }
   }
 
   if (raw.startsWith("result/task/")) {

@@ -142,6 +142,17 @@ npm run dev
 - **AI**: WhisperX, UVR5 (audio-separator), LiteLLM
 - **下载**: yt-dlp, FFmpeg
 
+## TODO
+
+1. 所有模型做两套加载方式：CUDA (GPU) 和纯 CPU+内存，支持无显卡环境运行
+2. 实验 VLM + FFmpeg 直接识别视频硬字幕的可行性
+3. B站、YouTube 直接下载已有字幕的可行性（yt-dlp 可能不够，需要调研替代方案）
+4. 拓展更多媒体文件类型，最终将这套系统发展为完整的多媒体信息库
+5. ~~数据目录迁移到其他磁盘~~ — 已迁移到 `D:/Video/MediaProcessPipeline`
+6. 超长视频的处理方案
+7. 超长音频并行切分多片段进行说话人分离，后续合并结果
+8. 调研 llama.cpp 加载模型的可行性（优点：免装 CUDA，编译即用；缺点：新模型可能需要重新编译 llama.cpp）
+
 ## License
 
 MIT

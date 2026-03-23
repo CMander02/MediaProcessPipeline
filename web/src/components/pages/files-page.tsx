@@ -1,17 +1,21 @@
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect } from "react"
 import { useArchives } from "@/hooks/use-archives"
 import { usePreferences } from "@/hooks/use-preferences"
 import { navigate } from "@/lib/router"
 import { ArchiveCard } from "@/components/archive-card"
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
+import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Loader2, Search, FolderOpen } from "lucide-react"
+import { Loader2, Search, FolderOpen, ChevronLeft, ChevronRight } from "lucide-react"
+
+const PAGE_SIZE = 18
 
 export function FilesPage() {
   const { archives, loading, refresh } = useArchives()
   const { update: updatePrefs } = usePreferences()
   const [search, setSearch] = useState("")
   const [mediaFilter, setMediaFilter] = useState<"all" | "video" | "audio">("all")
+  const [page, setPage] = useState(1)
   const [deleteTarget, setDeleteTarget] = useState<{ title: string; path: string } | null>(null)
 
   const filtered = useMemo(() => {
@@ -30,6 +34,13 @@ export function FilesPage() {
     }
     return list
   }, [archives, search, mediaFilter])
+
+  // Reset page when filters change
+  useEffect(() => { setPage(1) }, [search, mediaFilter])
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const safePage = Math.min(page, totalPages)
+  const paged = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
 
   const handleOpen = (path: string) => {
     updatePrefs({ lastArchivePath: path })
@@ -77,8 +88,8 @@ export function FilesPage() {
 
       {/* Grid */}
       {filtered.length > 0 ? (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4 overflow-y-auto flex-1">
-          {filtered.map((a) => (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4 overflow-y-auto flex-1 content-start">
+          {paged.map((a) => (
             <ArchiveCard
               key={a.path}
               archive={a}
@@ -95,6 +106,39 @@ export function FilesPage() {
           ) : (
             <p>没有匹配的结果</p>
           )}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="shrink-0 flex items-center justify-center gap-1 py-1">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            disabled={safePage <= 1}
+            onClick={() => setPage(safePage - 1)}
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
+            <Button
+              key={p}
+              variant={p === safePage ? "default" : "ghost"}
+              size="sm"
+              className="min-w-8 h-8"
+              onClick={() => setPage(p)}
+            >
+              {p}
+            </Button>
+          ))}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            disabled={safePage >= totalPages}
+            onClick={() => setPage(safePage + 1)}
+          >
+            <ChevronRight className="h-4 w-4" />
+          </Button>
         </div>
       )}
 
