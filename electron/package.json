@@ -1,0 +1,33 @@
+{
+  "name": "media-process-pipeline",
+  "version": "0.2.0",
+  "description": "媒体处理管线 - 将音视频转化为结构化知识",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build-web": "cd ../web && npm run build",
+    "dist": "npm run build-web && electron-builder",
+    "dist-only": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.mpp.app",
+    "productName": "MediaProcessPipeline",
+    "directories": {
+      "output": "../release"
+    },
+    "files": [
+      "main.js"
+    ],
+    "win": {
+      "target": "portable",
+      "icon": null
+    },
+    "portable": {
+      "artifactName": "MPP.exe"
+    }
+  }
+}

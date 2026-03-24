@@ -130,22 +130,24 @@ async def delete_archive(req: ArchiveDeleteRequest):
     except ValueError:
         raise HTTPException(403, "Cannot delete paths outside data directory")
 
-    # Try to find and delete the associated task record
+    # Try to find and delete the associated task record by matching output_dir
     task_deleted = False
-    dir_name = archive_dir.name
-    # Archive dirs are named like "{task_id_short}_{title}"
-    task_id_short = dir_name.split("_")[0] if "_" in dir_name else None
-    if task_id_short:
-        from uuid import UUID
-        from app.core.database import get_task_store, _get_conn
-        store = get_task_store()
-        conn = _get_conn()
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE id LIKE ?", (f"{task_id_short}%",)
-        ).fetchone()
-        if row:
-            store.delete(UUID(row["id"]))
-            task_deleted = True
+    from uuid import UUID
+    from app.core.database import get_task_store, _get_conn
+    store = get_task_store()
+    conn = _get_conn()
+    archive_dir_str = str(archive_dir.resolve())
+    # Search for task whose result JSON contains this output_dir path
+    rows = conn.execute("SELECT id, result FROM tasks WHERE result IS NOT NULL").fetchall()
+    for row in rows:
+        try:
+            result = json.loads(row["result"]) if isinstance(row["result"], str) else row["result"]
+            if result and str(Path(result.get("output_dir", "")).resolve()) == archive_dir_str:
+                store.delete(UUID(row["id"]))
+                task_deleted = True
+                break
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
 
     # Also try to delete the uploaded source file
     source_deleted = False

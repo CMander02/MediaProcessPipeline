@@ -5,13 +5,16 @@
 ## 架构
 
 ```
-CLI (mpp) / Gradio (/ui) / HTTP
+Electron (MPP.exe) / CLI (mpp) / HTTP
         ↓
-  FastAPI Daemon (:18000)
+  FastAPI Daemon (:18000)  ← 同时 serve 前端静态文件
   ├─ TaskQueue    asyncio.Queue, 单 worker (GPU 瓶颈)
   ├─ TaskStore    SQLite (data/tasks.db)
   ├─ EventBus    in-process pub/sub → SSE
   └─ Services    ASR, UVR, LLM (不变)
+
+  Frontend: Vite + React 19 + shadcn/ui (web/)
+  Desktop:  Electron portable exe (electron/)
 ```
 
 ## 开发规范
@@ -36,13 +39,6 @@ CLI (mpp) / Gradio (/ui) / HTTP
 - 命令: `serve`, `run <source>`, `status`, `list`, `show <id>`, `cancel <id>`, `config [key] [value]`
 - daemon 未运行时 `list` 和 `config` 可离线读 SQLite / settings.json
 
-### 前端 (Gradio)
-
-- Gradio UI 在 `app/ui/app.py`，mount 在 `/ui`
-- `mpp serve` 时通过 `mount_gradio_ui(app)` 挂载，`--reload` 模式下不加载 Gradio
-- 4 个 Tab: 处理（提交+活跃队列）、历史、结果查看、设置
-- Gradio 直接调用 core 层（不走 HTTP），共享 TaskStore / EventBus / Queue
-- 旧 Vue 前端在 `frontend/` 目录，已弃用
 
 ### 通信协议
 
@@ -53,7 +49,14 @@ CLI (mpp) / Gradio (/ui) / HTTP
 
 - 任务存 SQLite `data/tasks.db`（active + history 统一存储）
 - Settings 存 `data/settings.json`
-- 任务产出存 `data/{task_id_short}_{title}/`
+- 任务产出存 `data/{title}/`（同名加 `(2)` 后缀）
+
+## Git 提交规范
+
+- **提交前询问用户是否需要变更版本号**
+- 版本号位置: `pyproject.toml` + `electron/package.json`
+- SemVer: PATCH=bug fix, MINOR=新功能, MAJOR=破坏性变更 / 产品 ready
+- 当前阶段 0.x，到知识库 + Agent API 完成后考虑 1.0
 
 ## 注意事项
 

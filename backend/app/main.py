@@ -1,9 +1,12 @@
 import logging
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from app.api.routes import tasks, pipeline, filesystem
 from app.api.routes import settings as settings_router
@@ -80,4 +83,23 @@ app.include_router(filesystem.router, prefix="/api")
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": config.api_title, "version": config.api_version}
+
+
+# Serve frontend static files (built Vite output)
+_web_dist = Path(__file__).resolve().parent.parent.parent / "web" / "dist"
+if _web_dist.is_dir():
+    app.mount("/assets", StaticFiles(directory=str(_web_dist / "assets")), name="static")
+
+    # Serve static files in root (favicon, etc.)
+    @app.get("/favicon.svg")
+    async def favicon():
+        return FileResponse(_web_dist / "favicon.svg")
+
+    # SPA fallback: serve index.html for all non-API routes
+    @app.get("/{path:path}")
+    async def spa_fallback(path: str):
+        file_path = _web_dist / path
+        if file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(_web_dist / "index.html")
 

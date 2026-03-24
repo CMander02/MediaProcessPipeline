@@ -74,3 +74,12 @@ agentspace/*.txt
 test_output/
 
 .agents/
+.experiment/
+.agentspace/
+
+# Electron build outputs
+release/
+MPP.exe
+
+# Experiment binaries and cookies
+experiment/bilibili_login/

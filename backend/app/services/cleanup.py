@@ -25,27 +25,28 @@ class CleanupService:
         Clean up files from a failed task.
 
         Args:
-            task_id: The task ID (can be full UUID or short form)
+            task_id: The task ID (full UUID)
 
         Returns:
             Dict with cleanup results
         """
-        data_root = self.get_data_root()
         cleaned = []
         errors = []
 
-        # Find directories starting with the task_id
-        task_id_short = task_id[:8] if len(task_id) >= 8 else task_id
-
-        for item in data_root.iterdir():
-            if item.is_dir() and item.name.startswith(task_id_short):
+        # Find output_dir from task record
+        from uuid import UUID
+        store = get_task_store()
+        task = store.get(UUID(task_id))
+        if task and task.result and task.result.get("output_dir"):
+            task_dir = Path(task.result["output_dir"])
+            if task_dir.is_dir():
                 try:
-                    shutil.rmtree(item)
-                    cleaned.append(str(item))
-                    logger.info(f"Cleaned up task directory: {item}")
+                    shutil.rmtree(task_dir)
+                    cleaned.append(str(task_dir))
+                    logger.info(f"Cleaned up task directory: {task_dir}")
                 except Exception as e:
-                    errors.append({"path": str(item), "error": str(e)})
-                    logger.error(f"Failed to clean up {item}: {e}")
+                    errors.append({"path": str(task_dir), "error": str(e)})
+                    logger.error(f"Failed to clean up {task_dir}: {e}")
 
         return {
             "task_id": task_id,
@@ -76,9 +77,12 @@ class CleanupService:
         errors = []
         skipped = []
 
-        # Get all task IDs from the task store
+        # Collect all known output_dir paths from task records
         all_tasks = store.list(limit=1000)
-        history_ids = {str(t.id)[:8] for t in all_tasks}
+        known_dirs = set()
+        for t in all_tasks:
+            if t.result and t.result.get("output_dir"):
+                known_dirs.add(str(Path(t.result["output_dir"]).resolve()))
 
         for item in data_root.iterdir():
             # Skip non-directories and system files
@@ -87,9 +91,8 @@ class CleanupService:
             if item.name in ('settings.json', 'history.json') or item.name.startswith('.'):
                 continue
 
-            # Check if directory is in history
-            task_id_prefix = item.name.split('_')[0]
-            if task_id_prefix in history_ids:
+            # Check if directory belongs to a known task
+            if str(item.resolve()) in known_dirs:
                 skipped.append(str(item))
                 continue
 

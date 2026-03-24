@@ -77,31 +77,29 @@ def _sanitize_filename(name: str) -> str:
 
 
 def create_task_dir(task_id: UUID, title: str | None = None) -> Path:
-    """Create a dedicated directory for this task under data/{task_id}/."""
+    """Create a dedicated directory for this task under data/{title}/."""
     settings = get_runtime_settings()
     data_root = Path(settings.data_root).resolve()
 
-    task_id_short = str(task_id)[:8]
     if title:
-        dir_name = f"{task_id_short}_{_sanitize_filename(title)}"
+        dir_name = _sanitize_filename(title)
     else:
-        dir_name = task_id_short
+        dir_name = str(task_id)[:8]
 
     task_dir = data_root / dir_name
+    # Handle duplicate names by appending (2), (3), etc.
+    if task_dir.exists():
+        counter = 2
+        while True:
+            candidate = data_root / f"{dir_name} ({counter})"
+            if not candidate.exists():
+                task_dir = candidate
+                break
+            counter += 1
+
     task_dir.mkdir(parents=True, exist_ok=True)
     (task_dir / "source").mkdir(exist_ok=True)
     return task_dir
-
-
-def find_task_dir(task_id: UUID) -> Path | None:
-    """Find an existing task directory by task_id prefix."""
-    settings = get_runtime_settings()
-    data_root = Path(settings.data_root).resolve()
-    task_id_short = str(task_id)[:8]
-    for d in data_root.iterdir():
-        if d.is_dir() and d.name.startswith(task_id_short):
-            return d
-    return None
 
 
 def write_metadata_json(task_dir: Path, metadata: MediaMetadata | dict, status: str = "processing") -> Path:
