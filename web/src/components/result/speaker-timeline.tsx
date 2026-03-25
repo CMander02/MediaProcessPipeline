@@ -1,6 +1,6 @@
 import { useMemo } from "react"
 import type { Subtitle } from "@/lib/srt"
-import { getSpeakerColor, extractSpeakers } from "@/lib/srt"
+import { getSpeakerColor, extractSpeakers, formatSpeakerLabel } from "@/lib/srt"
 
 interface SpeakerTimelineProps {
   subtitles: Subtitle[]
@@ -70,7 +70,7 @@ export function SpeakerTimeline({
               className="w-2.5 h-2.5 rounded-sm"
               style={{ backgroundColor: getSpeakerColor(name) }}
             />
-            <span>{name}</span>
+            <span>{formatSpeakerLabel(name)}</span>
           </div>
         ))}
       </div>

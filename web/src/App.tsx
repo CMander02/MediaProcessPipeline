@@ -4,13 +4,15 @@ import { getPreferences } from "@/hooks/use-preferences"
 import { FilesPage } from "@/components/pages/files-page"
 import { SubmitPage } from "@/components/pages/submit-page"
 import { ResultPageWrapper } from "@/components/pages/result-page-wrapper"
-import { SettingsModal } from "@/components/settings-modal"
-import { AudioLines, FolderOpen, Plus, Settings } from "lucide-react"
+import { SettingsPage } from "@/components/pages/settings-page"
+import { Input } from "@/components/ui/input"
+import { AudioLines, FolderOpen, Plus, Settings, Search } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 export default function App() {
   const route = useRoute()
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [search, setSearch] = useState("")
+  const [mediaFilter, setMediaFilter] = useState<"all" | "video" | "audio">("all")
 
   // Startup page routing
   useEffect(() => {
@@ -55,12 +57,48 @@ export default function App() {
             ))}
           </nav>
 
-          <div className="flex-1" />
+          {/* Search + filter — always visible */}
+          <div className="flex items-center gap-2 ml-6 flex-1">
+            <div className="relative max-w-xs flex-1">
+              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="搜索标题、话题、关键词..."
+                className="pl-8 h-8 text-sm"
+                autoComplete="off"
+                onFocus={() => { if (route.page !== "files") navigate("#/files") }}
+              />
+            </div>
+            <div className="flex rounded-md border text-xs">
+              {(["all", "video", "audio"] as const).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => { setMediaFilter(f); if (route.page !== "files") navigate("#/files") }}
+                  className={cn(
+                    "px-2.5 py-1 transition-colors",
+                    mediaFilter === f
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                    f === "all" && "rounded-l-md",
+                    f === "audio" && "rounded-r-md",
+                  )}
+                >
+                  {f === "all" ? "全部" : f === "video" ? "视频" : "音频"}
+                </button>
+              ))}
+            </div>
+          </div>
 
-          {/* Settings gear */}
+          {/* Settings nav button */}
           <button
-            onClick={() => setSettingsOpen(true)}
-            className="rounded-md p-2 text-muted-foreground transition-colors hover:text-foreground hover:bg-muted"
+            onClick={() => navigate("#/settings")}
+            className={cn(
+              "rounded-md p-2 transition-colors",
+              route.page === "settings"
+                ? "text-primary bg-primary/10"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted",
+            )}
             title="设置"
           >
             <Settings className="h-4 w-4" />
@@ -70,13 +108,11 @@ export default function App() {
 
       {/* Page content */}
       <main className="flex-1 min-h-0">
-        {route.page === "files" && <FilesPage />}
+        {route.page === "files" && <FilesPage search={search} mediaFilter={mediaFilter} />}
         {route.page === "submit" && <SubmitPage />}
         {route.page === "result" && <ResultPageWrapper />}
+        {route.page === "settings" && <SettingsPage />}
       </main>
-
-      {/* Settings modal */}
-      <SettingsModal open={settingsOpen} onOpenChange={setSettingsOpen} />
     </div>
   )
 }

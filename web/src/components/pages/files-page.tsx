@@ -5,16 +5,18 @@ import { navigate } from "@/lib/router"
 import { ArchiveCard } from "@/components/archive-card"
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Loader2, Search, FolderOpen, ChevronLeft, ChevronRight } from "lucide-react"
+import { Loader2, FolderOpen, ChevronLeft, ChevronRight } from "lucide-react"
 
 const PAGE_SIZE = 18
 
-export function FilesPage() {
+interface FilesPageProps {
+  search: string
+  mediaFilter: "all" | "video" | "audio"
+}
+
+export function FilesPage({ search, mediaFilter }: FilesPageProps) {
   const { archives, loading, refresh } = useArchives()
   const { update: updatePrefs } = usePreferences()
-  const [search, setSearch] = useState("")
-  const [mediaFilter, setMediaFilter] = useState<"all" | "video" | "audio">("all")
   const [page, setPage] = useState(1)
   const [deleteTarget, setDeleteTarget] = useState<{ title: string; path: string } | null>(null)
 
@@ -56,39 +58,10 @@ export function FilesPage() {
   }
 
   return (
-    <div className="flex h-full flex-col gap-4 p-6">
-      {/* Toolbar */}
-      <div className="flex items-center gap-3">
-        <div className="relative flex-1 max-w-sm">
-          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索标题、话题、关键词..."
-            className="pl-9 h-9"
-            autoComplete="off"
-          />
-        </div>
-        <div className="flex rounded-md border text-sm">
-          {(["all", "video", "audio"] as const).map((f) => (
-            <button
-              key={f}
-              onClick={() => setMediaFilter(f)}
-              className={`px-3 py-1.5 text-xs transition-colors ${
-                mediaFilter === f
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              } ${f === "all" ? "rounded-l-md" : f === "audio" ? "rounded-r-md" : ""}`}
-            >
-              {f === "all" ? "全部" : f === "video" ? "视频" : "音频"}
-            </button>
-          ))}
-        </div>
-      </div>
-
+    <div className="flex h-full min-h-0 flex-col gap-3 p-4 pb-2">
       {/* Grid */}
       {filtered.length > 0 ? (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4 overflow-y-auto flex-1 content-start">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4 overflow-y-auto flex-1 min-h-0 content-start">
           {paged.map((a) => (
             <ArchiveCard
               key={a.path}

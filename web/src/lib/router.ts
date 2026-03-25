@@ -5,7 +5,7 @@
 import { useSyncExternalStore } from "react"
 
 export interface Route {
-  page: "files" | "submit" | "result"
+  page: "files" | "submit" | "result" | "settings"
   /** For result page: "archive" or "task" */
   resultType?: "archive" | "task"
   /** archive path or task id */
@@ -18,6 +18,7 @@ function parseHash(hash: string): Route {
   const raw = hash.replace(/^#\/?/, "")
 
   if (raw.startsWith("submit")) return { page: "submit" }
+  if (raw.startsWith("settings")) return { page: "settings" }
 
   if (raw.startsWith("result/archive")) {
     const params = new URLSearchParams(raw.split("?")[1] ?? "")

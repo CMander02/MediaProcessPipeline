@@ -1,6 +1,6 @@
 import { useMemo } from "react"
 import type { Subtitle } from "@/lib/srt"
-import { getSpeakerColor, extractSpeakers } from "@/lib/srt"
+import { getSpeakerColor, extractSpeakers, formatSpeakerLabel } from "@/lib/srt"
 import { formatDuration } from "@/lib/format"
 
 interface SpeakerPanelProps {
@@ -61,12 +61,11 @@ export function SpeakerPanel({ subtitles, duration, currentTime, onSeek }: Speak
       <div className="space-y-3">
         {speakers.map((s) => (
           <div key={s.name} className="flex items-center gap-2.5">
-            {/* 4 CJK chars wide: 4em at text-xs (12px) = 48px */}
             <span
-              className="text-xs font-medium shrink-0 truncate"
-              style={{ color: s.color, width: "4em" }}
+              className="text-xs font-medium shrink-0"
+              style={{ color: s.color, minWidth: "2em" }}
             >
-              {s.name}
+              {formatSpeakerLabel(s.name)}
             </span>
             <div
               className="relative flex-1 h-4 bg-muted rounded-sm cursor-pointer overflow-hidden"

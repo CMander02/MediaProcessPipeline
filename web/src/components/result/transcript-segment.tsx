@@ -1,6 +1,6 @@
 import { memo } from "react"
 import type { Subtitle } from "@/lib/srt"
-import { getSpeakerColor } from "@/lib/srt"
+import { getSpeakerColor, formatSpeakerLabel } from "@/lib/srt"
 import { formatTimeShort } from "@/lib/format"
 
 interface TranscriptSegmentProps {
@@ -50,7 +50,7 @@ export const TranscriptSegment = memo(function TranscriptSegment({
               backgroundColor: speakerColor ? `${speakerColor}15` : undefined,
             }}
           >
-            {subtitle.speaker}
+            {formatSpeakerLabel(subtitle.speaker)}
           </span>
         )}
 

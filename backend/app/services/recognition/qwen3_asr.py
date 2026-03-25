@@ -221,6 +221,7 @@ class Qwen3ASRService:
         audio_path: str,
         language: str | None = None,
         diarize: bool = True,
+        num_speakers: int | None = None,
     ) -> dict[str, Any]:
         """Transcribe audio using Qwen3-ASR.
 
@@ -231,6 +232,7 @@ class Qwen3ASRService:
             audio_path: Path to audio file
             language: Language hint (None = auto-detect)
             diarize: Whether to perform speaker diarization
+            num_speakers: Expected number of speakers (None = auto-detect)
 
         Returns:
             dict with "language" and "segments" keys
@@ -266,7 +268,7 @@ class Qwen3ASRService:
 
         # Speaker diarization using Pyannote (if enabled)
         if diarize and rt.enable_diarization and rt.pyannote_model_path:
-            segments = self._apply_diarization(audio_path, segments, rt)
+            segments = self._apply_diarization(audio_path, segments, rt, num_speakers=num_speakers)
 
         return {"language": detected_lang, "segments": segments}
 
@@ -649,6 +651,7 @@ class Qwen3ASRService:
         audio_path: str,
         segments: list[dict[str, Any]],
         rt: Any,
+        num_speakers: int | None = None,
     ) -> list[dict[str, Any]]:
         """Apply speaker diarization to segments using Pyannote."""
         import numpy as np
@@ -681,7 +684,11 @@ class Qwen3ASRService:
         duration_sec = len(audio_data) / 16000
         logger.info(f"Running diarization on {duration_sec:.1f}s audio...")
         # Run diarization
-        diarize_df = self._diarize_model(audio_data.astype(np.float32))
+        diarize_kwargs = {}
+        if num_speakers is not None:
+            diarize_kwargs["num_speakers"] = num_speakers
+            logger.info(f"Using fixed num_speakers={num_speakers}")
+        diarize_df = self._diarize_model(audio_data.astype(np.float32), **diarize_kwargs)
         logger.info(f"Diarization complete: found {len(diarize_df)} speaker segments")
 
         # Assign speakers to segments based on overlap

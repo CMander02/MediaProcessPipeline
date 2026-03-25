@@ -36,6 +36,8 @@ def serve(
 def run(
     source: str = typer.Argument(..., help="媒体文件路径或 URL"),
     skip_separation: bool = typer.Option(False, "--no-sep", help="跳过人声分离"),
+    num_speakers: int = typer.Option(None, "--speakers", "-s", help="说话人数量（留空自动检测）"),
+    hotwords: str = typer.Option(None, "--hotwords", "-w", help="热词，逗号分隔，用于润色修正"),
 ):
     """提交任务并实时显示进度。"""
     from rich.console import Console
@@ -52,6 +54,10 @@ def run(
     options = {}
     if skip_separation:
         options["skip_separation"] = True
+    if num_speakers is not None:
+        options["num_speakers"] = num_speakers
+    if hotwords:
+        options["hotwords"] = [w.strip() for w in hotwords.split(",") if w.strip()]
 
     task = client.create_task(source, options=options)
     task_id = task["id"]

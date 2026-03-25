@@ -47,6 +47,7 @@ async def transcribe_audio(
     audio_path: str,
     language: str | None = None,
     output_dir: Path | None = None,
+    num_speakers: int | None = None,
 ) -> dict[str, Any]:
     """Transcribe audio file using the configured ASR backend.
 
@@ -57,6 +58,7 @@ async def transcribe_audio(
         audio_path: Path to audio file
         language: Language hint (None = auto-detect)
         output_dir: Directory to save SRT file
+        num_speakers: Expected number of speakers for diarization (None = auto-detect)
 
     Returns:
         dict with keys: language, segments, srt, srt_path
@@ -66,7 +68,7 @@ async def transcribe_audio(
 
     if rt.asr_backend == "qwen3":
         # Qwen3-ASR handles long audio natively - no external VAD splitting needed
-        result = await asyncio.to_thread(service.transcribe, audio_path, language)
+        result = await asyncio.to_thread(service.transcribe, audio_path, language, num_speakers=num_speakers)
         segments = service.to_segments(result)
         srt_content = service.to_srt(segments)
         detected_language = result.get("language", language or "unknown")
@@ -78,7 +80,7 @@ async def transcribe_audio(
 
         if len(audio_segments) == 1 and audio_segments[0].get('is_original', True):
             # Short audio, process normally
-            result = await asyncio.to_thread(service.transcribe, audio_path, language)
+            result = await asyncio.to_thread(service.transcribe, audio_path, language, num_speakers=num_speakers)
             segments = service.to_segments(result)
             srt_content = service.to_srt(segments)
             detected_language = result.get("language", language or "unknown")
@@ -91,7 +93,7 @@ async def transcribe_audio(
 
             for i, seg in enumerate(audio_segments):
                 logger.info(f"Transcribing segment {i+1}/{len(audio_segments)}: {seg['path']}")
-                result = await asyncio.to_thread(service.transcribe, seg['path'], language)
+                result = await asyncio.to_thread(service.transcribe, seg['path'], language, num_speakers=num_speakers)
                 segments = service.to_segments(result)
                 srt_content = service.to_srt(segments)
 

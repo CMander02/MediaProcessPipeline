@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,10 @@ class YtdlpService:
         self._settings = get_settings()
 
     def download(self, url: str, output_dir: Path | None = None) -> dict[str, Any]:
+        """Download video (1080p preferred) + audio separately.
+
+        Returns video file for playback and audio file for pipeline processing.
+        """
         import yt_dlp
 
         if output_dir is None:
@@ -25,10 +30,76 @@ class YtdlpService:
             output_dir = Path(rt.data_root).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        outtmpl = str(output_dir / "%(title)s.%(ext)s")
+
+        # Step 1: Download video (1080p preferred, degrade gracefully)
+        video_opts = {
+            "format": (
+                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/"
+                "bestvideo[height<=1080]+bestaudio/"
+                "best[height<=1080]/"
+                "bestvideo+bestaudio/"
+                "best"
+            ),
+            "merge_output_format": "mp4",
+            "outtmpl": outtmpl,
+            "writeinfojson": False,
+            "quiet": not self._settings.debug,
+        }
+
+        logger.info(f"Downloading video: {url}")
+        with yt_dlp.YoutubeDL(video_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+
+        if info is None:
+            raise RuntimeError(f"Failed to download: {url}")
+
+        title = info.get("title", "unknown")
+
+        # Find the downloaded video file
+        video_file = self._find_file(output_dir, title, {".mp4", ".mkv", ".webm"})
+
+        # Step 2: Extract audio from video using ffmpeg
+        audio_file = output_dir / f"{title}.wav"
+        if video_file and video_file.exists():
+            logger.info(f"Extracting audio: {video_file.name} -> {audio_file.name}")
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-i", str(video_file), "-vn",
+                     "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                     str(audio_file), "-y"],
+                    capture_output=True, check=True,
+                )
+            except subprocess.CalledProcessError as e:
+                logger.error(f"ffmpeg audio extraction failed: {e.stderr.decode()[:500]}")
+                # Fallback: download audio-only
+                audio_file = self._download_audio_only(url, output_dir, title)
+        else:
+            # No video downloaded — fallback to audio-only
+            logger.warning("Video file not found, falling back to audio-only download")
+            audio_file = self._download_audio_only(url, output_dir, title)
+            video_file = None
+
+        # Clean up intermediate files (m4a, webm parts, etc.) but keep video + audio
+        keep = {audio_file, video_file} if video_file else {audio_file}
+        self._cleanup_temp_files(output_dir, title, keep_files=keep)
+
+        return {
+            "url": url,
+            "title": title,
+            "file_path": str(audio_file) if audio_file and audio_file.exists() else None,
+            "video_path": str(video_file) if video_file and video_file.exists() else None,
+            "info": info,
+        }
+
+    def _download_audio_only(self, url: str, output_dir: Path, title: str) -> Path:
+        """Fallback: download audio only using yt-dlp."""
+        import yt_dlp
+
         ydl_opts = {
             "format": "bestaudio/best",
             "outtmpl": str(output_dir / "%(title)s.%(ext)s"),
-            "writeinfojson": False,  # Don't write info.json
+            "writeinfojson": False,
             "quiet": not self._settings.debug,
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
@@ -37,46 +108,43 @@ class YtdlpService:
             }],
         }
 
-        logger.info(f"Downloading: {url}")
+        logger.info(f"Downloading audio-only: {url}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+            ydl.extract_info(url, download=True)
 
-        if info is None:
-            raise RuntimeError(f"Failed to download: {url}")
-
-        title = info.get("title", "unknown")
-        output_file = output_dir / f"{title}.wav"
-
-        if not output_file.exists():
+        audio_file = output_dir / f"{title}.wav"
+        if not audio_file.exists():
             matching = list(output_dir.glob("*.wav"))
             if matching:
-                output_file = max(matching, key=lambda p: p.stat().st_mtime)
+                audio_file = max(matching, key=lambda p: p.stat().st_mtime)
+        return audio_file
 
-        # Clean up any leftover temporary files (original video, info.json, etc.)
-        self._cleanup_temp_files(output_dir, title, keep_file=output_file)
+    def _find_file(self, directory: Path, title: str, extensions: set[str]) -> Path | None:
+        """Find a file matching title with given extensions."""
+        for ext in extensions:
+            candidate = directory / f"{title}{ext}"
+            if candidate.exists():
+                return candidate
+        # Fallback: most recent file with matching extension
+        candidates = []
+        for ext in extensions:
+            candidates.extend(directory.glob(f"*{ext}"))
+        if candidates:
+            return max(candidates, key=lambda p: p.stat().st_mtime)
+        return None
 
-        return {
-            "url": url,
-            "title": title,
-            "file_path": str(output_file) if output_file.exists() else None,
-            "info": info,
-        }
-
-    def _cleanup_temp_files(self, output_dir: Path, title: str, keep_file: Path | None = None):
-        """Clean up temporary files after download (original video, info.json, etc.)."""
-        # Extensions to clean up
-        temp_extensions = {'.webm', '.mp4', '.mkv', '.m4a', '.info.json', '.json', '.part', '.ytdl'}
+    def _cleanup_temp_files(self, output_dir: Path, title: str, keep_files: set[Path | None] | None = None):
+        """Clean up temporary files after download."""
+        keep = {f for f in (keep_files or set()) if f is not None}
+        temp_extensions = {'.m4a', '.webm', '.part', '.ytdl', '.info.json', '.json'}
 
         for file in output_dir.iterdir():
             if not file.is_file():
                 continue
-            # Skip the file we want to keep
-            if keep_file and file == keep_file:
+            if file in keep:
                 continue
-            # Skip files that don't match the title pattern
             if title not in file.stem and not file.name.endswith('.info.json'):
                 continue
-            # Delete temp files
             if file.suffix in temp_extensions or file.name.endswith('.info.json'):
                 try:
                     file.unlink()
@@ -87,10 +155,6 @@ class YtdlpService:
     def extract_metadata(self, info: dict[str, Any], file_path: str | None = None) -> MediaMetadata:
         """
         Extract comprehensive metadata from yt-dlp info dict.
-
-        Extracts:
-        - Basic info: title, uploader, upload_date, duration
-        - Extended info: description, tags, chapters
         """
         upload_date = None
         if info.get("upload_date"):
@@ -103,13 +167,11 @@ class YtdlpService:
         if file_path and Path(file_path).exists():
             file_hash = self._compute_hash(file_path)
 
-        # Extract tags (handle both 'tags' and 'categories')
         tags = []
         if info.get("tags"):
             tags.extend(info["tags"])
         if info.get("categories"):
             tags.extend(info["categories"])
-        # Remove duplicates while preserving order
         seen = set()
         unique_tags = []
         for tag in tags:
@@ -117,7 +179,6 @@ class YtdlpService:
                 seen.add(tag)
                 unique_tags.append(tag)
 
-        # Extract chapters
         chapters = []
         if info.get("chapters"):
             for ch in info["chapters"]:
@@ -127,7 +188,6 @@ class YtdlpService:
                         start_time=float(ch["start_time"])
                     ))
 
-        # Extract description (limit length)
         description = info.get("description")
         if description and len(description) > 5000:
             description = description[:5000] + "..."
@@ -192,7 +252,6 @@ class YtdlpService:
                 logger.warning(f"Subtitle download failed (auto={write_auto}): {e}")
                 continue
 
-            # Search for downloaded subtitle files
             result = self._find_best_subtitle(output_dir, langs)
             if result:
                 kind = "auto" if write_auto else "manual"
@@ -204,7 +263,6 @@ class YtdlpService:
 
     def _find_best_subtitle(self, output_dir: Path, langs: list[str]) -> dict | None:
         """Find the best subtitle file in output_dir by language and format priority."""
-        # Language priority from langs list, format priority: json3 > srt
         for lang in langs:
             for ext in ["json3", "srt", "vtt"]:
                 for f in output_dir.glob(f"*.{lang}.{ext}"):
@@ -213,7 +271,6 @@ class YtdlpService:
                         "subtitle_lang": lang,
                         "subtitle_format": ext,
                     }
-            # Also check zh-Hans etc.
             for variant in [f"{lang}-Hans", f"{lang}-CN", f"{lang}-Hant"]:
                 for ext in ["json3", "srt", "vtt"]:
                     for f in output_dir.glob(f"*.{variant}.{ext}"):
@@ -222,7 +279,6 @@ class YtdlpService:
                             "subtitle_lang": lang,
                             "subtitle_format": ext,
                         }
-        # Fallback: any subtitle file
         for ext in ["json3", "srt", "vtt"]:
             files = list(output_dir.glob(f"*.{ext}"))
             if files:
@@ -256,7 +312,11 @@ async def download_media(url: str, output_dir: Path | None = None) -> dict[str, 
     service = get_ytdlp_service()
     result = await asyncio.to_thread(service.download, url, output_dir=output_dir)
     metadata = service.extract_metadata(result["info"], result.get("file_path"))
-    return {"file_path": result.get("file_path"), "metadata": metadata.model_dump(mode="json")}
+    return {
+        "file_path": result.get("file_path"),
+        "video_path": result.get("video_path"),
+        "metadata": metadata.model_dump(mode="json"),
+    }
 
 
 async def download_subtitles(

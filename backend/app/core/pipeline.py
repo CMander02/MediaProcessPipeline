@@ -374,6 +374,9 @@ async def run_pipeline(task: Task) -> None:
         ingest = await download_media(source, output_dir=source_dir)
         audio_path = ingest.get("file_path")
         metadata = MediaMetadata(**ingest.get("metadata", {"title": source}))
+        # Store video path for frontend playback
+        if ingest.get("video_path"):
+            metadata.file_path = ingest["video_path"]
 
         # Try to download platform subtitles
         if use_platform_subtitles:
@@ -425,7 +428,8 @@ async def run_pipeline(task: Task) -> None:
         recognition_segments = sub_result.get("segments", [])
     else:
         # ASR path: transcribe audio
-        recognition = await transcribe_audio(vocals_path, output_dir=task_dir)
+        num_speakers = task.options.get("num_speakers")
+        recognition = await transcribe_audio(vocals_path, output_dir=task_dir, num_speakers=num_speakers)
         transcript = " ".join(s["text"] for s in recognition.get("segments", []))
         srt = recognition.get("srt", "")
         polished = None  # Will be filled in POLISH step
@@ -536,6 +540,11 @@ async def run_pipeline(task: Task) -> None:
         logger.info("Skipping POLISH step (platform subtitle already polished)")
     else:
         # ASR path: polish with LLM
+        # Merge user-provided hotwords into proper_nouns for correction
+        hotwords = task.options.get("hotwords")
+        if hotwords and analysis:
+            existing = analysis.get("proper_nouns", []) or []
+            analysis["proper_nouns"] = list(set(existing + hotwords))
         polished = await polish_text(srt, context=analysis)
     # Write polished transcript immediately (ASR path)
     if not has_subtitle and polished:

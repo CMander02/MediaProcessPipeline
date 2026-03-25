@@ -181,6 +181,7 @@ class WhisperXService:
         audio_path: str,
         language: str | None = None,
         diarize: bool = True,
+        num_speakers: int | None = None,
     ) -> dict[str, Any]:
         self._ensure_init()
         rt = get_runtime_settings()
@@ -267,7 +268,11 @@ class WhisperXService:
                     self._diarize_model = DiarizationPipeline(
                         use_auth_token=rt.hf_token, device=rt.whisper_device
                     )
-            diarize_segments = self._diarize_model(audio)
+            diarize_kwargs = {}
+            if num_speakers is not None:
+                diarize_kwargs["num_speakers"] = num_speakers
+                logger.info(f"Using fixed num_speakers={num_speakers}")
+            diarize_segments = self._diarize_model(audio, **diarize_kwargs)
             result = assign_word_speakers(diarize_segments, result)
 
         return {"language": detected_lang, "segments": result.get("segments", [])}

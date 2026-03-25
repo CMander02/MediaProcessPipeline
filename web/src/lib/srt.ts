@@ -155,13 +155,25 @@ const SPEAKER_COLORS = [
   "#f97316", // orange
 ]
 
+// Global speaker → index mapping (assigned in order of first appearance)
+const _speakerIndex = new Map<string, number>()
+let _nextIndex = 0
+
 /**
- * Get a deterministic color for a speaker name
+ * Get a deterministic color for a speaker name (assigned by order of appearance)
  */
 export function getSpeakerColor(speaker: string): string {
-  let hash = 0
-  for (let i = 0; i < speaker.length; i++) {
-    hash = ((hash << 5) - hash + speaker.charCodeAt(i)) | 0
+  if (!_speakerIndex.has(speaker)) {
+    _speakerIndex.set(speaker, _nextIndex++)
   }
-  return SPEAKER_COLORS[Math.abs(hash) % SPEAKER_COLORS.length]
+  return SPEAKER_COLORS[_speakerIndex.get(speaker)! % SPEAKER_COLORS.length]
+}
+
+/**
+ * Format speaker label for display: SPEAKER_00 → S0, SPEAKER_02 → S2
+ */
+export function formatSpeakerLabel(speaker: string): string {
+  const m = speaker.match(/^SPEAKER_0*(\d+)$/)
+  if (m) return `S${m[1]}`
+  return speaker
 }

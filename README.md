@@ -6,81 +6,104 @@
 
 - **媒体下载**: 支持 YouTube、Bilibili 等平台视频下载 (yt-dlp)
 - **本地文件处理**: 支持直接处理本地音视频文件
+- **平台字幕优先**: 自动下载平台字幕，LLM 补充说话人标注和标点
 - **人声分离**: UVR5 (audio-separator) 分离人声和背景音乐
-- **语音转录**: WhisperX 高精度转录，支持说话人分离
+- **语音转录**: WhisperX / Qwen3-ASR，支持说话人分离
 - **智能润色**: LLM 滑动窗口润色，修正错字、添加标点
-- **内容分析**: 自动提取关键信息、生成摘要和思维导图
-- **Obsidian 导出**: 生成 Markdown 格式文稿，支持 Obsidian 同步
+- **内容分析**: 自动提取关键信息、生成摘要和思维导图（支持 map-reduce 长文本）
+- **桌面应用**: Electron 打包，双击即用
 
 ## 项目结构
 
 ```
 MediaProcessPipeline/
-├── backend/                    # Python 后端 (FastAPI)
+├── backend/                    # Python 后端 (FastAPI :18000)
 │   ├── app/
-│   │   ├── main.py             # 入口
-│   │   ├── core/config.py      # 配置
+│   │   ├── main.py             # 入口，同时 serve 前端静态文件
+│   │   ├── core/               # settings, database, events, queue, pipeline
 │   │   ├── models/             # 数据模型
-│   │   ├── api/routes/         # API 路由
+│   │   ├── api/routes/         # API 路由（薄 wrapper）
 │   │   └── services/           # 业务逻辑
 │   │       ├── ingestion/      # yt-dlp 下载
-│   │       ├── preprocessing/  # UVR5 人声分离
-│   │       ├── recognition/    # WhisperX 转录
-│   │       ├── analysis/       # LLM 润色/摘要
-│   │       └── archiving/      # Obsidian 导出
-│   └── .env.example
-├── frontend/                   # Vue 3 + UnoCSS + Element Plus
+│   │       ├── preprocessing/  # UVR5 人声分离, VAD 切分
+│   │       ├── recognition/    # WhisperX / Qwen3-ASR 转录
+│   │       ├── analysis/       # LLM 润色/摘要/思维导图
+│   │       └── archiving/      # 结果归档
+│   └── run.py
+├── web/                        # Vite + React 19 + shadcn/ui
 │   └── src/
-│       ├── App.vue
-│       ├── views/              # 页面组件
-│       └── components/         # UI 组件
-├── data/                       # 数据目录 (处理输出)
-└── scripts/                    # 开发脚本
+├── electron/                   # Electron 桌面壳
+│   └── main.js
+├── scripts/                    # CLI 快捷脚本
+│   ├── mpp.ps1                 # PowerShell
+│   └── mpp                     # bash
+└── data/                       # 数据目录（settings.json, tasks.db）
 ```
 
 ## 快速开始
 
 ### 环境要求
 
-- Python 3.13+
+- Python 3.11 ~ 3.12
+- [uv](https://docs.astral.sh/uv/) (Python 包管理)
 - Node.js 18+
-- FFmpeg
-- CUDA (可选，GPU 加速)
+- FFmpeg (必须在 PATH 中)
+- CUDA (可选，GPU 加速 ASR/UVR)
 
 ### 安装
 
 ```bash
-# 克隆项目
-git clone https://github.com/your-repo/MediaProcessPipeline.git
+git clone <repo-url>
 cd MediaProcessPipeline
 
-# 后端
-cd backend
-uv sync
-cp .env.example .env  # 配置环境变量
+# 后端依赖
+cd backend && uv sync && cd ..
 
-# 前端
-cd ../frontend
-npm install
+# 前端依赖 + 构建
+cd web && npm install && npm run build && cd ..
 ```
 
-### 启动开发服务器
+### 启动
+
+**方式 1: Electron 桌面应用**
 
 ```bash
-# 后端 (端口 8000)
-cd backend
-uv run uvicorn app.main:app --reload --port 8000
-
-# 前端 (端口 5173)
-cd frontend
-npm run dev
+cd electron && npm install && npm start
 ```
 
-或使用脚本：
+或打包后双击 `MPP.exe`（放在项目根目录）。
+
+**方式 2: 后端 + 浏览器**
 
 ```bash
-./scripts/dev.sh      # 启动开发服务器
-./scripts/setup.sh    # 安装依赖
+cd backend
+uv run python -m app.cli serve     # 启动 daemon :18000
+```
+
+浏览器打开 http://127.0.0.1:18000
+
+**方式 3: CLI**
+
+```bash
+# PowerShell
+.\scripts\mpp.ps1 serve            # 启动 daemon
+.\scripts\mpp.ps1 run <url>        # 提交任务
+.\scripts\mpp.ps1 list             # 查看任务列表
+.\scripts\mpp.ps1 status           # daemon 状态
+
+# bash
+./scripts/mpp serve
+./scripts/mpp run <url>
+```
+
+### 开发模式
+
+```bash
+# 后端 (热重载)
+cd backend && uv run python run.py --reload
+
+# 前端 (Vite dev server, 代理 API 到 :18000)
+cd web && npm run dev              # :5173
 ```
 
 ## API 端点
@@ -89,34 +112,34 @@ npm run dev
 - `POST /api/tasks` - 创建处理任务
 - `GET /api/tasks` - 列出任务
 - `GET /api/tasks/{id}` - 获取任务详情
+- `GET /api/tasks/{id}/events` - SSE 实时进度
+- `GET /api/tasks/events` - 全局 SSE 事件流
 - `POST /api/tasks/{id}/cancel` - 取消任务
 
 ### 管道操作
 - `POST /api/pipeline/upload` - 上传本地文件
-- `POST /api/pipeline/download` - 下载媒体
-- `POST /api/pipeline/separate` - 人声分离
-- `POST /api/pipeline/transcribe` - 转录音频
 - `POST /api/pipeline/polish` - 润色文本
 - `POST /api/pipeline/summarize` - 生成摘要
+- `POST /api/pipeline/mindmap` - 生成思维导图
 - `GET /api/pipeline/archives` - 列出归档
+- `DELETE /api/pipeline/archives` - 删除归档
 
 ### 设置
-- `GET /api/settings` - 获取设置
+- `GET /api/settings` - 获取运行时设置
 - `PUT /api/settings` - 更新设置
 
 ## 处理流程
 
-1. **下载/导入** - 从 URL 下载或导入本地文件
-2. **人声分离** - UVR5 分离人声，删除背景音乐
-3. **语音转录** - WhisperX 转录，支持多语言和说话人分离
-4. **内容分析** - LLM 提取标题、主题、关键词等元数据
-5. **文本润色** - LLM 滑动窗口处理，修正转录错误
-6. **生成摘要** - 生成 TL;DR 和关键要点
-7. **归档输出** - 保存 SRT、Markdown、摘要等文件
+1. **下载/导入** - 从 URL 下载或导入本地文件，自动尝试下载平台字幕
+2. **人声分离** - UVR5 分离人声（有平台字幕时跳过）
+3. **语音转录** - WhisperX / Qwen3-ASR 转录（有平台字幕时由 LLM 处理）
+4. **内容分析** - LLM 提取元数据、关键词、主题
+5. **文本润色** - LLM 滑动窗口修正转录错误、生成摘要和思维导图
+6. **归档输出** - 保存结构化文件到 `data/{title}/`
 
 ## 输出文件
 
-每个任务在 `data/{task_id}/` 下生成：
+每个任务在 `data/{title}/` 下生成：
 
 - `source/` - 原始媒体文件
 - `metadata.json` - 媒体元数据
@@ -130,29 +153,18 @@ npm run dev
 
 在前端 Settings 页面或 `data/settings.json` 中配置：
 
-- **LLM**: API 密钥、模型选择 (OpenAI/Anthropic/本地)
-- **WhisperX**: 模型大小、语言、设备
-- **UVR**: 模型选择、模型目录
-- **路径**: 数据目录、Obsidian Vault 路径
+- **LLM**: Provider (OpenAI / Anthropic / DeepSeek 等 OpenAI 兼容), 模型, API 密钥
+- **ASR**: 后端选择 (WhisperX / Qwen3-ASR), 模型大小, 语言, 设备
+- **UVR**: 模型选择, 模型目录
+- **路径**: 数据目录
 
 ## 技术栈
 
-- **Backend**: Python 3.13, FastAPI, uv
-- **Frontend**: Vue 3.5, UnoCSS, Element Plus, TypeScript
-- **AI**: WhisperX, UVR5 (audio-separator), LiteLLM
+- **Backend**: Python 3.11+, FastAPI, SQLite, uv
+- **Frontend**: React 19, Vite, shadcn/ui, Tailwind CSS 4
+- **Desktop**: Electron
+- **AI**: WhisperX, Qwen3-ASR, UVR5 (audio-separator), LiteLLM
 - **下载**: yt-dlp, FFmpeg
-
-## TODO
-
-1. 所有模型做两套加载方式：CUDA (GPU) 和纯 CPU+内存，支持无显卡环境运行
-2. 实验 VLM + FFmpeg 直接识别视频硬字幕的可行性
-3. B站、YouTube 直接下载已有字幕的可行性（yt-dlp 可能不够，需要调研替代方案）
-4. 拓展更多媒体文件类型，最终将这套系统发展为完整的多媒体信息库
-5. ~~数据目录迁移到其他磁盘~~ — 已迁移到 `D:/Video/MediaProcessPipeline`
-6. ~~超长视频的处理方案~~ — 已实现 map-reduce 思维导图生成（按 nfo 章节切分）
-7. 超长音频并行切分多片段进行说话人分离，后续合并结果
-8. 调研 llama.cpp 加载模型的可行性（优点：免装 CUDA，编译即用；缺点：新模型可能需要重新编译 llama.cpp）
-9. 完善视频 metadata：从 nfo 提取时长（duration）并显示在卡片上；tags 暂不需要额外处理，后续可从 nfo 标签和 LLM 分析中提取更丰富的结构化 metadata（如嘉宾、话题分类、系列归属等）
 
 ## License
 

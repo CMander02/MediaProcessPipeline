@@ -4,13 +4,29 @@ import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { api } from "@/lib/api"
-import { Play, Upload, Loader2 } from "lucide-react"
+import { Play, Upload, Loader2, ChevronDown, ChevronUp } from "lucide-react"
 
 export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
   const [source, setSource] = useState("")
   const [skipSep, setSkipSep] = useState(false)
+  const [numSpeakers, setNumSpeakers] = useState("")
+  const [hotwords, setHotwords] = useState("")
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [msg, setMsg] = useState("")
+
+  const buildOptions = () => {
+    const opts: Record<string, unknown> = {}
+    if (skipSep) opts.skip_separation = true
+    const ns = parseInt(numSpeakers, 10)
+    if (ns > 0) opts.num_speakers = ns
+    const hw = hotwords
+      .split(/[,，、\n]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (hw.length > 0) opts.hotwords = hw
+    return opts
+  }
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -20,7 +36,7 @@ export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
     setSubmitting(true)
     setMsg("")
     try {
-      const task = await api.tasks.create(val, skipSep ? { skip_separation: true } : {})
+      const task = await api.tasks.create(val, buildOptions())
       setMsg(`\u2713 已提交 ${task.id.slice(0, 8)}`)
       setSource("")
       onSubmitted?.()
@@ -36,7 +52,7 @@ export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
     setMsg("")
     try {
       const { file_path } = await api.pipeline.upload(file)
-      const task = await api.tasks.create(file_path, skipSep ? { skip_separation: true } : {})
+      const task = await api.tasks.create(file_path, buildOptions())
       setMsg(`\u2713 已上传并提交 ${task.id.slice(0, 8)}`)
       onSubmitted?.()
     } catch (err) {
@@ -81,11 +97,21 @@ export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
       </form>
 
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Switch id="skip-sep" checked={skipSep} onCheckedChange={setSkipSep} />
-          <Label htmlFor="skip-sep" className="text-sm text-muted-foreground">
-            跳过人声分离
-          </Label>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <Switch id="skip-sep" checked={skipSep} onCheckedChange={setSkipSep} />
+            <Label htmlFor="skip-sep" className="text-sm text-muted-foreground">
+              跳过人声分离
+            </Label>
+          </div>
+          <button
+            type="button"
+            className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => setShowAdvanced(!showAdvanced)}
+          >
+            {showAdvanced ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            高级选项
+          </button>
         </div>
         {msg && (
           <p className={`text-sm ${msg.startsWith("\u2713") ? "text-emerald-600" : "text-destructive"}`}>
@@ -93,6 +119,38 @@ export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
           </p>
         )}
       </div>
+
+      {showAdvanced && (
+        <div className="grid grid-cols-2 gap-3 p-3 rounded-md border bg-muted/30">
+          <div className="space-y-1.5">
+            <Label htmlFor="num-speakers" className="text-xs text-muted-foreground">
+              说话人数量（留空自动检测）
+            </Label>
+            <Input
+              id="num-speakers"
+              type="number"
+              min="1"
+              max="20"
+              value={numSpeakers}
+              onChange={(e) => setNumSpeakers(e.target.value)}
+              placeholder="自动"
+              className="h-8"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="hotwords" className="text-xs text-muted-foreground">
+              热词（逗号分隔，用于润色修正）
+            </Label>
+            <Input
+              id="hotwords"
+              value={hotwords}
+              onChange={(e) => setHotwords(e.target.value)}
+              placeholder="如: DeepSeek, GPT-4, 张三"
+              className="h-8"
+            />
+          </div>
+        </div>
+      )}
     </div>
   )
 }
