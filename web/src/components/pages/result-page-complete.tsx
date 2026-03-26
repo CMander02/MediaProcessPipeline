@@ -31,7 +31,7 @@ import { TranscriptTab } from "@/components/result/transcript-tab"
 import { SummaryTab } from "@/components/result/summary-tab"
 import { MindmapViewer } from "@/components/result/mindmap-viewer"
 import { AnalysisBadges } from "@/components/result/analysis-badges"
-import { ArrowLeft, Check, Loader2, MoreHorizontal, Trash2, X } from "lucide-react"
+import { ArrowLeft, Check, Copy, Download, Loader2, MoreHorizontal, Trash2, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 interface Props {
@@ -223,6 +223,37 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
   const isProcessing = taskStatus === "processing" || taskStatus === "queued"
   const hasContent = summary || transcript || mindmap
 
+  const [copied, setCopied] = useState(false)
+
+  const getTabContent = () => {
+    if (activeTab === "summary") return { content: summary, suffix: "摘要", ext: "md" }
+    if (activeTab === "transcript") return { content: transcript, suffix: "字幕", ext: "srt" }
+    if (activeTab === "mindmap") return { content: mindmap, suffix: "导图", ext: "md" }
+    return null
+  }
+
+  const handleCopy = async () => {
+    const tab = getTabContent()
+    if (!tab?.content) return
+    await navigator.clipboard.writeText(tab.content)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  const handleDownload = () => {
+    const tab = getTabContent()
+    if (!tab?.content) return
+    const baseName = (displayTitle ?? "output").replace(/[/\\:*?"<>|]/g, "_")
+    const filename = `${baseName}-${tab.suffix}.${tab.ext}`
+    const blob = new Blob([tab.content], { type: "text/plain;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <div className="flex h-full flex-col">
       {/* Top bar */}
@@ -360,16 +391,37 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
           <ResizablePanel defaultSize="50%" minSize="25%">
             <div className="h-full flex flex-col p-4">
               <Tabs value={activeTab} onValueChange={(v: any) => { setActiveTab(String(v)); updateActiveTab(String(v)) }} className="flex flex-col flex-1 min-h-0">
-                <TabsList className="shrink-0">
-                  <TabsTrigger value="summary">摘要</TabsTrigger>
-                  <TabsTrigger value="transcript">
-                    字幕
-                    {transcript && !isPolished && isProcessing && (
-                      <span className="ml-1 text-[10px] text-amber-600">(原始)</span>
-                    )}
-                  </TabsTrigger>
-                  {(mindmap || isProcessing) && <TabsTrigger value="mindmap">导图</TabsTrigger>}
-                </TabsList>
+                <div className="shrink-0 flex items-center gap-2">
+                  <TabsList>
+                    <TabsTrigger value="summary">摘要</TabsTrigger>
+                    <TabsTrigger value="transcript">
+                      字幕
+                      {transcript && !isPolished && isProcessing && (
+                        <span className="ml-1 text-[10px] text-amber-600">(原始)</span>
+                      )}
+                    </TabsTrigger>
+                    {(mindmap || isProcessing) && <TabsTrigger value="mindmap">导图</TabsTrigger>}
+                  </TabsList>
+                  <div className="flex-1" />
+                  {getTabContent()?.content && (
+                    <>
+                      <button
+                        onClick={handleCopy}
+                        className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        title="复制全部内容"
+                      >
+                        {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+                      </button>
+                      <button
+                        onClick={handleDownload}
+                        className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        title="下载为文件"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                      </button>
+                    </>
+                  )}
+                </div>
 
                 <TabsContent value="summary" className="mt-3 relative flex-1">
                   <div className="absolute inset-0 rounded-md border">
