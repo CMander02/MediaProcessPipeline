@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import {
-  Dialog,
-  DialogContent,
-} from "@/components/ui/dialog"
-import { Maximize2, LocateFixed } from "lucide-react"
+import type { IPureNode } from "markmap-common"
+import { Dialog, DialogContent } from "@/components/ui/dialog"
+import { LocateFixed, Maximize2 } from "lucide-react"
 
 interface MindmapViewerProps {
   markdown: string
@@ -12,131 +10,375 @@ interface MindmapViewerProps {
   fillContainer?: boolean
 }
 
+interface NodeRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+interface RenderState {
+  id: number
+  path: string
+  rect: NodeRect
+}
+
+interface MindmapNode extends IPureNode {
+  children: MindmapNode[]
+  payload?: Record<string, unknown>
+  state?: RenderState
+}
+
+interface MarkmapInstance {
+  destroy?: () => void
+  fit?: () => Promise<void> | void
+  toggleNode?: (node: MindmapNode, recursive?: boolean) => Promise<void>
+  rescale?: (scale: number) => Promise<void>
+  handleClick?: (event: MouseEvent, node: MindmapNode) => void
+  state?: { data?: MindmapNode }
+  svg?: unknown
+  zoom?: unknown
+}
+
+function cloneMindmapNode(node: MindmapNode): MindmapNode {
+  return {
+    content: node.content,
+    payload: node.payload ? { ...node.payload } : undefined,
+    children: node.children.map(cloneMindmapNode),
+  }
+}
+
+function getNodeFocusPoint(node: MindmapNode) {
+  const rect = node.state?.rect
+  if (!rect) return null
+  return {
+    x: rect.x + rect.width,
+    y: rect.y + rect.height / 2,
+  }
+}
+
+function walkNodes(node: MindmapNode, visit: (current: MindmapNode) => void) {
+  visit(node)
+  node.children.forEach((child) => walkNodes(child, visit))
+}
+
+function findNodeByPath(root: MindmapNode, path: string): MindmapNode | null {
+  let found: MindmapNode | null = null
+  walkNodes(root, (node) => {
+    if (node.state?.path === path) {
+      found = node
+    }
+  })
+  return found
+}
+
+function collectFocusNodes(root: MindmapNode, target: MindmapNode): MindmapNode[] {
+  const nodes = new Map<string, MindmapNode>()
+
+  if (target.state?.path) {
+    nodes.set(target.state.path, target)
+  }
+
+  target.children.forEach((child: MindmapNode) => {
+    if (child.state?.path) {
+      nodes.set(child.state.path, child)
+    }
+  })
+
+  return Array.from(nodes.values())
+}
+
+
+async function focusBranch(mm: MarkmapInstance, target: MindmapNode) {
+  const root = mm.state?.data
+  const svgSelection = mm.svg as
+    | {
+        node: () => SVGSVGElement | null
+        call: (fn: unknown, arg: unknown) => unknown
+      }
+    | undefined
+  const zoomBehavior = mm.zoom as { transform?: unknown } | undefined
+
+  if (!root || !svgSelection || !zoomBehavior?.transform) return
+
+  const liveTarget = target.state?.path ? findNodeByPath(root, target.state.path) : null
+  const focusTarget = liveTarget ?? target
+  if (!focusTarget.state?.rect) return
+
+  const focusNodes = collectFocusNodes(root, focusTarget).filter((node) => node.state?.rect)
+  if (!focusNodes.length) return
+
+  const center = getNodeFocusPoint(focusTarget)
+  const svgNode = svgSelection.node()
+  if (!center || !svgNode) return
+
+  // Only use target node + its direct children to compute the frame (no parent influence)
+  const hasChildren = focusNodes.length > 1
+  let leftSpan = 40
+  let rightSpan = 60
+  let topSpan = 40
+  let bottomSpan = 40
+
+  focusNodes.forEach((node) => {
+    const rect = node.state?.rect
+    if (!rect) return
+
+    leftSpan = Math.max(leftSpan, center.x - rect.x)
+    // Add extra right padding for child text nodes
+    const extraRight = node.state?.path !== focusTarget.state?.path ? 40 : 0
+    rightSpan = Math.max(rightSpan, rect.x + rect.width - center.x + extraRight)
+    topSpan = Math.max(topSpan, center.y - rect.y)
+    bottomSpan = Math.max(bottomSpan, rect.y + rect.height - center.y)
+  })
+
+  const frameWidth = leftSpan + rightSpan
+  const frameHeight = topSpan + bottomSpan
+  const { width, height } = svgNode.getBoundingClientRect()
+  if (!width || !height) return
+
+  // Place focus point (connection dot) at 38% from left, leaving 62% for child nodes
+  const anchorRatioX = hasChildren ? 0.38 : 0.5
+  const ratio = 0.85
+  const targetScale = Math.min(
+    (width * anchorRatioX * 2) / frameWidth * ratio,
+    height / frameHeight * ratio,
+    2.2,
+  )
+  const currentScale = Math.max(((svgNode as SVGSVGElement & { __zoom?: { k?: number } }).__zoom?.k ?? 1), 0.01)
+  const scaleFactor = targetScale / currentScale
+
+  if (Math.abs(scaleFactor - 1) > 0.01) {
+    await mm.rescale?.(scaleFactor)
+  }
+
+  const updatedTransform = (svgNode as SVGSVGElement & {
+    __zoom?: { k: number; x: number; y: number; translate: (dx: number, dy: number) => unknown }
+  }).__zoom
+  if (!updatedTransform) return
+
+  const currentScreenX = center.x * updatedTransform.k + updatedTransform.x
+  const currentScreenY = center.y * updatedTransform.k + updatedTransform.y
+  // Place the connection point at anchorRatioX horizontally, centered vertically
+  const desiredScreenX = width * anchorRatioX
+  const desiredScreenY = height / 2
+  const deltaX = (desiredScreenX - currentScreenX) / updatedTransform.k
+  const deltaY = (desiredScreenY - currentScreenY) / updatedTransform.k
+  const translated = updatedTransform.translate(deltaX, deltaY)
+
+  await Promise.resolve(svgSelection.call(zoomBehavior.transform, translated))
+}
+
 export function MindmapViewer({ markdown, fillContainer }: MindmapViewerProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const dialogSvgRef = useRef<SVGSVGElement>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const mmRef = useRef<{ destroy?: () => void; fit?: () => void } | null>(null)
-  const dialogMMRef = useRef<{ destroy?: () => void; fit?: () => void } | null>(null)
+  const [rootNode, setRootNode] = useState<MindmapNode | null>(null)
+  const mmRef = useRef<MarkmapInstance | null>(null)
+  const dialogMMRef = useRef<MarkmapInstance | null>(null)
 
-  const renderMarkmap = useCallback(
-    async (svgEl: SVGSVGElement, ref: React.MutableRefObject<{ destroy?: () => void; fit?: () => void } | null>) => {
+  useEffect(() => {
+    let cancelled = false
+
+    ;(async () => {
       try {
         const { Transformer } = await import("markmap-lib")
-        const { Markmap } = await import("markmap-view")
-
         const transformer = new Transformer()
         const { root } = transformer.transform(markdown)
 
-        svgEl.innerHTML = ""
-        if (ref.current?.destroy) ref.current.destroy()
+        if (cancelled) return
 
-        ref.current = Markmap.create(svgEl, {
-          autoFit: true,
-          duration: 300,
-          initialExpandLevel: 2,
-        }, root) as unknown as { destroy?: () => void; fit?: () => void }
+        setRootNode(cloneMindmapNode(root as MindmapNode))
+        setError(null)
+      } catch (e) {
+        if (cancelled) return
+        setRootNode(null)
+        setError(String(e))
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [markdown])
+
+  const renderMarkmap = useCallback(
+    async (
+      svgEl: SVGSVGElement,
+      ref: React.MutableRefObject<MarkmapInstance | null>,
+      data: MindmapNode,
+    ) => {
+      try {
+        const { Markmap } = await import("markmap-view")
+
+        svgEl.innerHTML = ""
+        ref.current?.destroy?.()
+
+        ref.current = Markmap.create(
+          svgEl,
+          {
+            autoFit: true,
+            duration: 300,
+            initialExpandLevel: 2,
+          },
+          cloneMindmapNode(data),
+        ) as unknown as MarkmapInstance
+
+        ref.current.handleClick = (event: MouseEvent, node: MindmapNode) => {
+          event.preventDefault()
+          event.stopPropagation()
+
+          const recursive = navigator.platform.includes("Mac")
+            ? event.metaKey
+            : event.ctrlKey
+
+          void ref.current?.toggleNode?.(node, recursive).then(() => {
+            if (ref.current) {
+              void focusBranch(ref.current, node)
+            }
+          })
+        }
+
+        const handleLabelClick = (event: MouseEvent) => {
+          const target = event.target as Element | null
+          if (!target || target.closest("circle")) return
+
+          const group = target.closest("g.markmap-node") as
+            | (SVGGElement & { __data__?: MindmapNode })
+            | null
+          const node = group?.__data__
+          if (!node) return
+
+          event.preventDefault()
+          event.stopPropagation()
+
+          const recursive = navigator.platform.includes("Mac")
+            ? event.metaKey
+            : event.ctrlKey
+
+          void ref.current?.toggleNode?.(node, recursive).then(() => {
+            if (ref.current) {
+              void focusBranch(ref.current, node)
+            }
+          })
+        }
+
+        svgEl.addEventListener("click", handleLabelClick)
+
+        const destroy = ref.current.destroy?.bind(ref.current)
+        ref.current.destroy = () => {
+          svgEl.removeEventListener("click", handleLabelClick)
+          destroy?.()
+        }
 
         setError(null)
       } catch (e) {
         setError(String(e))
       }
     },
-    [markdown],
+    [],
   )
 
-  // Render main SVG
   useEffect(() => {
-    if (!svgRef.current || !markdown) return
+    if (!svgRef.current || !rootNode) return
     let cancelled = false
     const el = svgRef.current
-    ;(async () => {
-      if (!cancelled) await renderMarkmap(el, mmRef)
-    })()
-    return () => { cancelled = true }
-  }, [markdown, renderMarkmap])
 
-  // Render dialog SVG
+    ;(async () => {
+      if (!cancelled) await renderMarkmap(el, mmRef, rootNode)
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [rootNode, renderMarkmap])
+
   useEffect(() => {
-    if (!dialogOpen || !dialogSvgRef.current || !markdown) return
+    if (!dialogOpen || !dialogSvgRef.current || !rootNode) return
     const timer = setTimeout(() => {
-      if (dialogSvgRef.current) renderMarkmap(dialogSvgRef.current, dialogMMRef)
+      if (dialogSvgRef.current) {
+        renderMarkmap(dialogSvgRef.current, dialogMMRef, rootNode)
+      }
     }, 100)
+
     return () => clearTimeout(timer)
-  }, [dialogOpen, markdown, renderMarkmap])
+  }, [dialogOpen, rootNode, renderMarkmap])
+
+  useEffect(() => () => {
+    mmRef.current?.destroy?.()
+    dialogMMRef.current?.destroy?.()
+  }, [])
 
   if (!markdown) return null
 
   if (error) {
-    return <p className="text-sm text-destructive p-4">{error}</p>
+    return <p className="p-4 text-sm text-destructive">{error}</p>
   }
 
-  // Full container mode — fill parent, no wrapper chrome
   if (fillContainer) {
     return (
-      <div className="h-full w-full flex flex-col">
-        <div className="shrink-0 flex items-center justify-between px-1 pb-2">
-          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-            思维导图
-          </h3>
-          <button
-            onClick={() => mmRef.current?.fit?.()}
-            className="rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-            title="适应窗口"
-          >
-            <LocateFixed className="h-3.5 w-3.5" />
-          </button>
+      <div className="flex h-full w-full flex-col">
+        <div className="shrink-0 px-1 pb-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Mindmap
+            </h3>
+            <button
+              onClick={() => mmRef.current?.fit?.()}
+              className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              title="Fit to viewport"
+            >
+              <LocateFixed className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
-        <div className="flex-1 min-h-0 rounded-lg border bg-card overflow-hidden">
-          <svg ref={svgRef} className="w-full h-full" />
+        <div className="min-h-0 flex-1 overflow-hidden rounded-lg border bg-card">
+          <svg ref={svgRef} className="h-full w-full" />
         </div>
       </div>
     )
   }
 
-  // Compact preview mode — fixed height, click to open dialog
   return (
     <>
       <div className="space-y-2">
         <div className="flex items-center justify-between">
-          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-            思维导图
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Mindmap
           </h3>
           <button
             onClick={() => setDialogOpen(true)}
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-            title="全屏查看"
+            className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            title="Open expanded view"
           >
-            <Maximize2 className="w-3.5 h-3.5" />
-            <span>展开</span>
+            <Maximize2 className="h-3.5 w-3.5" />
+            <span>Open</span>
           </button>
         </div>
-        <div
-          className="rounded-lg border bg-card overflow-hidden h-[280px] cursor-pointer hover:border-primary/30 transition-colors"
-          onClick={() => setDialogOpen(true)}
-        >
-          <svg ref={svgRef} className="w-full h-full" />
+        <div className="h-[280px] overflow-hidden rounded-lg border bg-card transition-colors hover:border-primary/30">
+          <svg ref={svgRef} className="h-full w-full" />
         </div>
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent
-          className="sm:max-w-[95vw] h-[90vh] flex flex-col gap-0 p-0"
+          className="flex h-[90vh] flex-col gap-0 p-0 sm:max-w-[95vw]"
           showCloseButton
         >
-          <div className="shrink-0 flex items-center justify-between px-4 py-2 border-b">
-            <h3 className="text-sm font-medium">思维导图</h3>
-            <button
-              onClick={() => dialogMMRef.current?.fit?.()}
-              className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-              title="适应窗口"
-            >
-              <LocateFixed className="h-4 w-4" />
-            </button>
+          <div className="shrink-0 border-b px-4 py-2">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-medium">Mindmap</h3>
+              <button
+                onClick={() => dialogMMRef.current?.fit?.()}
+                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                title="Fit to viewport"
+              >
+                <LocateFixed className="h-4 w-4" />
+              </button>
+            </div>
           </div>
-          <div className="flex-1 min-h-0 bg-card">
-            <svg ref={dialogSvgRef} className="w-full h-full" />
+          <div className="min-h-0 flex-1 bg-card">
+            <svg ref={dialogSvgRef} className="h-full w-full" />
           </div>
         </DialogContent>
       </Dialog>
