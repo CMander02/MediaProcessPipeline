@@ -5,6 +5,9 @@ export function useTasks() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [stats, setStats] = useState<TaskStats>({ total: 0 })
   const [loading, setLoading] = useState(true)
+  const hasActiveTasks = tasks.some((task) =>
+    task.status === "pending" || task.status === "queued" || task.status === "processing",
+  )
 
   const refresh = useCallback(async () => {
     try {
@@ -28,13 +31,18 @@ export function useTasks() {
       // On any event, refresh the task list
       refresh()
     })
-    // Fallback polling every 5s (SSE may drop)
-    const interval = setInterval(refresh, 5000)
+
+    let interval: ReturnType<typeof setInterval> | null = null
+    if (hasActiveTasks) {
+      // Fallback polling only while work is active; idle state should stay event-driven.
+      interval = setInterval(refresh, 5000)
+    }
+
     return () => {
       unsub()
-      clearInterval(interval)
+      if (interval) clearInterval(interval)
     }
-  }, [refresh])
+  }, [hasActiveTasks, refresh])
 
   return { tasks, stats, loading, refresh }
 }

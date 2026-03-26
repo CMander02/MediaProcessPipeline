@@ -191,8 +191,10 @@ class ArchiveService:
             dir_name = task_dir.name
             task_id = dir_name.split("_")[0] if "_" in dir_name else dir_name
 
-            # Extract duration from metadata
+            # Extract duration from metadata, fallback to SRT last timestamp
             duration_seconds = metadata.get("duration_seconds") or metadata.get("duration")
+            if not duration_seconds:
+                duration_seconds = self._duration_from_srt(task_dir)
 
             archives.append({
                 "path": str(task_dir),
@@ -215,6 +217,30 @@ class ArchiveService:
                 break
 
         return archives
+
+    @staticmethod
+    def _duration_from_srt(task_dir: Path) -> float | None:
+        """Derive duration from the max end-time across all subtitle entries."""
+        import re
+        for name in ("transcript_polished.srt", "transcript.srt"):
+            srt_path = task_dir / name
+            if srt_path.exists():
+                try:
+                    content = srt_path.read_text(encoding="utf-8")
+                    timestamps = re.findall(
+                        r"(\d{2}):(\d{2}):(\d{2}),(\d{3})",
+                        content,
+                    )
+                    if timestamps:
+                        max_sec = 0.0
+                        for h, m, s, ms in timestamps:
+                            t = int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
+                            if t > max_sec:
+                                max_sec = t
+                        return max_sec if max_sec > 0 else None
+                except Exception:
+                    pass
+        return None
 
     def _safe_name(self, name: str) -> str:
         for c in '<>:"/\\|?*':

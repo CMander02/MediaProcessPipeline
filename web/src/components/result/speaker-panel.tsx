@@ -1,4 +1,4 @@
-import { useMemo } from "react"
+import { useMemo, useState, useRef, useEffect, type KeyboardEvent } from "react"
 import type { Subtitle } from "@/lib/srt"
 import { getSpeakerColor, extractSpeakers, formatSpeakerLabel } from "@/lib/srt"
 import { formatDuration } from "@/lib/format"
@@ -8,6 +8,7 @@ interface SpeakerPanelProps {
   duration: number // seconds
   currentTime: number // seconds
   onSeek: (timeMs: number) => void
+  onRenameSpeaker?: (oldName: string, newName: string) => void
 }
 
 interface SpeakerInfo {
@@ -18,8 +19,21 @@ interface SpeakerInfo {
   segments: { startTime: number; endTime: number }[]
 }
 
-export function SpeakerPanel({ subtitles, duration, currentTime, onSeek }: SpeakerPanelProps) {
+export function SpeakerPanel({ subtitles, duration, currentTime, onSeek, onRenameSpeaker }: SpeakerPanelProps) {
   const durationMs = duration * 1000
+  const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null)
+  const [editValue, setEditValue] = useState("")
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (editingSpeaker) {
+      setEditValue(editingSpeaker)
+      setTimeout(() => {
+        inputRef.current?.focus()
+        inputRef.current?.select()
+      }, 30)
+    }
+  }, [editingSpeaker])
 
   const speakers = useMemo(() => {
     const names = extractSpeakers(subtitles)
@@ -51,6 +65,23 @@ export function SpeakerPanel({ subtitles, duration, currentTime, onSeek }: Speak
     onSeek(fraction * durationMs)
   }
 
+  const handleSaveRename = () => {
+    const newName = editValue.trim()
+    if (newName && editingSpeaker && newName !== editingSpeaker) {
+      onRenameSpeaker?.(editingSpeaker, newName)
+    }
+    setEditingSpeaker(null)
+  }
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault()
+      handleSaveRename()
+    } else if (e.key === "Escape") {
+      setEditingSpeaker(null)
+    }
+  }
+
   const playheadPct = durationMs > 0 ? ((currentTime * 1000) / durationMs) * 100 : 0
 
   return (
@@ -61,12 +92,26 @@ export function SpeakerPanel({ subtitles, duration, currentTime, onSeek }: Speak
       <div className="space-y-3">
         {speakers.map((s) => (
           <div key={s.name} className="flex items-center gap-2.5">
-            <span
-              className="text-xs font-medium shrink-0"
-              style={{ color: s.color, minWidth: "2em" }}
-            >
-              {formatSpeakerLabel(s.name)}
-            </span>
+            {editingSpeaker === s.name ? (
+              <input
+                ref={inputRef}
+                value={editValue}
+                onChange={(e) => setEditValue(e.target.value)}
+                onKeyDown={handleKeyDown}
+                onBlur={handleSaveRename}
+                className="text-xs font-medium shrink-0 w-16 rounded border bg-background px-1 py-0.5 outline-none focus:ring-1 focus:ring-primary"
+                style={{ color: s.color }}
+              />
+            ) : (
+              <button
+                className="text-xs font-medium shrink-0 hover:underline cursor-pointer"
+                style={{ color: s.color, minWidth: "2em" }}
+                onClick={() => setEditingSpeaker(s.name)}
+                title="点击编辑说话人名称"
+              >
+                {formatSpeakerLabel(s.name)}
+              </button>
+            )}
             <div
               className="relative flex-1 h-4 bg-muted rounded-sm cursor-pointer overflow-hidden"
               onClick={handleBarClick}
@@ -92,7 +137,7 @@ export function SpeakerPanel({ subtitles, duration, currentTime, onSeek }: Speak
                 style={{ left: `${playheadPct}%` }}
               />
             </div>
-            {/* Fixed width for "H:MM:SS (NN%)" — ~11ch at tabular-nums */}
+            {/* Fixed width for "H:MM:SS (NN%)" */}
             <span className="text-xs text-muted-foreground shrink-0 tabular-nums text-right" style={{ width: "11ch" }}>
               {formatDuration(s.totalMs / 1000)} ({s.percentage.toFixed(0)}%)
             </span>

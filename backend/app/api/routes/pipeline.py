@@ -62,6 +62,35 @@ async def upload_file(file: UploadFile = File(...)):
     return {"file_path": str(dest_path), "filename": safe_name}
 
 
+@router.get("/probe")
+async def probe_url(url: str):
+    """Extract metadata from a URL without downloading (for hotword suggestions)."""
+    import asyncio
+
+    def _probe(url: str) -> dict[str, Any]:
+        import yt_dlp
+        try:
+            with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    return {}
+                return {
+                    "title": info.get("title"),
+                    "description": info.get("description"),
+                    "tags": info.get("tags") or [],
+                    "uploader": info.get("uploader"),
+                    "duration": info.get("duration"),
+                }
+        except Exception as e:
+            logger.warning(f"Probe failed for {url}: {e}")
+            return {}
+
+    result = await asyncio.to_thread(_probe, url)
+    if not result:
+        raise HTTPException(status_code=404, detail="无法获取视频信息")
+    return result
+
+
 @router.post("/download")
 async def download(req: DownloadRequest):
     """Download media from URL."""

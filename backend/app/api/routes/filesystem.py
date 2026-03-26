@@ -7,8 +7,14 @@ from typing import Literal
 
 from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/filesystem", tags=["filesystem"])
+
+
+class WriteFileRequest(BaseModel):
+    path: str
+    content: str
 
 
 @router.get("/browse")
@@ -116,6 +122,24 @@ async def read_file(
         return {"success": True, "content": content, "path": str(file_path)}
     except UnicodeDecodeError:
         return {"success": False, "error": "File is not valid UTF-8 text"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/write")
+async def write_file(req: WriteFileRequest):
+    """Write text content to a file. Only allows files under data_root."""
+    try:
+        file_path = Path(req.path).resolve()
+
+        from app.core.settings import get_runtime_settings
+        data_root = Path(get_runtime_settings().data_root).resolve()
+        if not str(file_path).startswith(str(data_root)):
+            return {"success": False, "error": "Access denied: path outside data directory"}
+
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(req.content, encoding="utf-8")
+        return {"success": True, "path": str(file_path)}
     except Exception as e:
         return {"success": False, "error": str(e)}
 

@@ -4,9 +4,13 @@ import { findSubtitleIndexAtTime } from "@/lib/srt"
 
 interface UseMediaSyncOptions {
   subtitles: Subtitle[]
+  /** Seek to this time (seconds) once media is ready */
+  initialTime?: number
+  /** Called on every timeupdate with the current time in seconds */
+  onTimeUpdate?: (time: number) => void
 }
 
-export function useMediaSync({ subtitles }: UseMediaSyncOptions) {
+export function useMediaSync({ subtitles, initialTime, onTimeUpdate }: UseMediaSyncOptions) {
   const mediaRef = useRef<HTMLMediaElement | null>(null)
   const [currentTime, setCurrentTime] = useState(0) // seconds
   const [duration, setDuration] = useState(0)
@@ -14,6 +18,7 @@ export function useMediaSync({ subtitles }: UseMediaSyncOptions) {
   const [currentSegmentIndex, setCurrentSegmentIndex] = useState(-1)
   const [autoScroll, setAutoScroll] = useState(true)
   const autoScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const initialTimeApplied = useRef(false)
 
   // Update current segment on time change
   useEffect(() => {
@@ -28,29 +33,51 @@ export function useMediaSync({ subtitles }: UseMediaSyncOptions) {
     }
   }, [currentTime, subtitles])
 
+  // Stable refs for callbacks so bindMedia doesn't re-create on every render
+  const onTimeUpdateCbRef = useRef(onTimeUpdate)
+  onTimeUpdateCbRef.current = onTimeUpdate
+  const initialTimeRef = useRef(initialTime)
+  initialTimeRef.current = initialTime
+
   // Bind media element events
   const bindMedia = useCallback((el: HTMLMediaElement | null) => {
     mediaRef.current = el
     if (!el) return
 
-    const onTimeUpdate = () => setCurrentTime(el.currentTime)
-    const onDurationChange = () => setDuration(el.duration || 0)
+    const handleTimeUpdate = () => {
+      setCurrentTime(el.currentTime)
+      onTimeUpdateCbRef.current?.(el.currentTime)
+    }
+    const handleDurationChange = () => {
+      setDuration(el.duration || 0)
+      // Apply initial time once media is ready
+      if (!initialTimeApplied.current && initialTimeRef.current && initialTimeRef.current > 0 && el.duration > 0) {
+        initialTimeApplied.current = true
+        el.currentTime = Math.min(initialTimeRef.current, el.duration - 1)
+      }
+    }
     const onPlay = () => setIsPlaying(true)
     const onPause = () => setIsPlaying(false)
     const onEnded = () => setIsPlaying(false)
 
-    el.addEventListener("timeupdate", onTimeUpdate)
-    el.addEventListener("durationchange", onDurationChange)
+    el.addEventListener("timeupdate", handleTimeUpdate)
+    el.addEventListener("durationchange", handleDurationChange)
     el.addEventListener("play", onPlay)
     el.addEventListener("pause", onPause)
     el.addEventListener("ended", onEnded)
 
     // Initialize
-    if (el.duration) setDuration(el.duration)
+    if (el.duration) {
+      setDuration(el.duration)
+      if (!initialTimeApplied.current && initialTimeRef.current && initialTimeRef.current > 0) {
+        initialTimeApplied.current = true
+        el.currentTime = Math.min(initialTimeRef.current, el.duration - 1)
+      }
+    }
 
     return () => {
-      el.removeEventListener("timeupdate", onTimeUpdate)
-      el.removeEventListener("durationchange", onDurationChange)
+      el.removeEventListener("timeupdate", handleTimeUpdate)
+      el.removeEventListener("durationchange", handleDurationChange)
       el.removeEventListener("play", onPlay)
       el.removeEventListener("pause", onPause)
       el.removeEventListener("ended", onEnded)

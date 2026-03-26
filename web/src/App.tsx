@@ -5,6 +5,7 @@ import { FilesPage } from "@/components/pages/files-page"
 import { SubmitPage } from "@/components/pages/submit-page"
 import { ResultPageWrapper } from "@/components/pages/result-page-wrapper"
 import { SettingsPage } from "@/components/pages/settings-page"
+import { TaskQueueDropdown } from "@/components/task-queue-dropdown"
 import { Input } from "@/components/ui/input"
 import { AudioLines, FolderOpen, Plus, Settings, Search } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -89,6 +90,9 @@ export default function App() {
               ))}
             </div>
           </div>
+
+          {/* Task queue dropdown */}
+          <TaskQueueDropdown />
 
           {/* Settings nav button */}
           <button

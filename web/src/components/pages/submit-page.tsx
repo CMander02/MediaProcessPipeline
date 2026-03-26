@@ -1,4 +1,4 @@
-import { useState, useRef, type FormEvent } from "react"
+import { useState, useRef, useCallback, type FormEvent, type KeyboardEvent } from "react"
 import { useDropZone } from "@/hooks/use-drop-zone"
 import { navigate } from "@/lib/router"
 import { api } from "@/lib/api"
@@ -50,22 +50,44 @@ export function SubmitPage() {
   const [uploading, setUploading] = useState(false)
   const [skipSep, setSkipSep] = useState(false)
   const [numSpeakers, setNumSpeakers] = useState("")
-  const [hotwords, setHotwords] = useState("")
+  const [hotwordTags, setHotwordTags] = useState<string[]>([])
+  const [hotwordInput, setHotwordInput] = useState("")
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState("")
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const hotwordInputRef = useRef<HTMLInputElement>(null)
+
+  const addHotword = useCallback((word: string) => {
+    const w = word.trim()
+    if (w && !hotwordTags.includes(w)) {
+      setHotwordTags((prev) => [...prev, w])
+    }
+  }, [hotwordTags])
+
+  const removeHotword = useCallback((word: string) => {
+    setHotwordTags((prev) => prev.filter((t) => t !== word))
+  }, [])
+
+  const handleHotwordKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" || e.key === "," || e.key === "、") {
+      e.preventDefault()
+      const val = hotwordInput.replace(/[,，、]/g, "").trim()
+      if (val) {
+        addHotword(val)
+        setHotwordInput("")
+      }
+    } else if (e.key === "Backspace" && !hotwordInput && hotwordTags.length > 0) {
+      setHotwordTags((prev) => prev.slice(0, -1))
+    }
+  }
 
   const buildOptions = () => {
     const opts: Record<string, unknown> = {}
     if (skipSep) opts.skip_separation = true
     const ns = parseInt(numSpeakers, 10)
     if (ns > 0) opts.num_speakers = ns
-    const hw = hotwords
-      .split(/[,，、\n]+/)
-      .map((s) => s.trim())
-      .filter(Boolean)
-    if (hw.length > 0) opts.hotwords = hw
+    if (hotwordTags.length > 0) opts.hotwords = hotwordTags
     return opts
   }
 
@@ -289,33 +311,58 @@ export function SubmitPage() {
               <span className="text-xs text-muted-foreground ml-1">（纯人声内容无需分离）</span>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <Label htmlFor="num-speakers" className="text-sm">
-                  说话人数量
-                </Label>
-                <Input
-                  id="num-speakers"
-                  type="number"
-                  min="1"
-                  max="20"
-                  value={numSpeakers}
-                  onChange={(e) => setNumSpeakers(e.target.value)}
-                  placeholder="留空自动检测"
+            <div className="space-y-1.5">
+              <Label htmlFor="num-speakers" className="text-sm">
+                说话人数量
+              </Label>
+              <Input
+                id="num-speakers"
+                type="number"
+                min="1"
+                max="20"
+                value={numSpeakers}
+                onChange={(e) => setNumSpeakers(e.target.value)}
+                placeholder="留空自动检测"
+                className="max-w-40"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-sm">热词</Label>
+              {/* Tag display + input */}
+              <div
+                className="flex flex-wrap gap-1.5 min-h-[2.5rem] rounded-md border bg-background px-2 py-1.5 cursor-text"
+                onClick={() => hotwordInputRef.current?.focus()}
+              >
+                {hotwordTags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="inline-flex items-center gap-0.5 rounded-md bg-primary/10 text-primary px-2 py-0.5 text-xs font-medium"
+                  >
+                    {tag}
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); removeHotword(tag) }}
+                      className="ml-0.5 rounded-full hover:bg-primary/20 p-0.5 transition-colors"
+                    >
+                      <X className="h-2.5 w-2.5" />
+                    </button>
+                  </span>
+                ))}
+                <input
+                  ref={hotwordInputRef}
+                  value={hotwordInput}
+                  onChange={(e) => setHotwordInput(e.target.value)}
+                  onKeyDown={handleHotwordKeyDown}
+                  onBlur={() => {
+                    const val = hotwordInput.replace(/[,，、]/g, "").trim()
+                    if (val) { addHotword(val); setHotwordInput("") }
+                  }}
+                  placeholder={hotwordTags.length === 0 ? "输入热词后按回车确认..." : ""}
+                  className="flex-1 min-w-[8rem] bg-transparent text-xs outline-none placeholder:text-muted-foreground/60 py-0.5"
                 />
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="hotwords" className="text-sm">
-                  热词
-                </Label>
-                <Input
-                  id="hotwords"
-                  value={hotwords}
-                  onChange={(e) => setHotwords(e.target.value)}
-                  placeholder="逗号分隔，如 DeepSeek, GPT-4"
-                />
-                <p className="text-xs text-muted-foreground">用于 LLM 润色时修正专有名词</p>
-              </div>
+              <p className="text-xs text-muted-foreground">用于 LLM 润色时修正专有名词，按回车逐个添加</p>
             </div>
           </div>
         )}

@@ -19,9 +19,11 @@ import {
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
 import { useArchives, type ArchiveItem } from "@/hooks/use-archives"
 import { useMediaSync } from "@/hooks/use-media-sync"
+import { useViewPosition } from "@/hooks/use-view-position"
 import { useTaskSSE, type FileReadyEvent, type StepEvent } from "@/hooks/use-task-sse"
-import { parseSRT, type Subtitle } from "@/lib/srt"
+import { parseSRT, subtitlesToSRT, type Subtitle } from "@/lib/srt"
 import { navigate } from "@/lib/router"
+import { api } from "@/lib/api"
 import { PIPELINE_STEPS } from "@/lib/constants"
 import { MediaPlayer } from "@/components/result/media-player"
 import { SpeakerPanel } from "@/components/result/speaker-panel"
@@ -59,10 +61,32 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
   // Media URL state — may change when source/ is deleted after completion
   const [mediaUrl, setMediaUrl] = useState<string | null>(null)
 
+  // Persist and restore viewing position
+  const { updateMediaTime, updateActiveTab, getSavedPosition } = useViewPosition(archivePath)
+  const savedPos = useRef(getSavedPosition())
+  const [activeTab, setActiveTab] = useState(savedPos.current.activeTab || "summary")
+
   const { bindMedia, currentTime, duration, currentSegmentIndex, autoScroll, seekTo, onManualScroll } =
-    useMediaSync({ subtitles })
+    useMediaSync({
+      subtitles,
+      initialTime: savedPos.current.mediaTime,
+      onTimeUpdate: updateMediaTime,
+    })
 
   const sep = archivePath.includes("\\") ? "\\" : "/"
+
+  const handleRenameSpeaker = async (oldName: string, newName: string) => {
+    const updated = subtitles.map((sub) =>
+      sub.speaker === oldName ? { ...sub, speaker: newName } : sub,
+    )
+    setSubtitles(updated)
+    const srtPath = archivePath + sep + (isPolished ? "transcript_polished.srt" : "transcript.srt")
+    try {
+      await api.filesystem.write(srtPath, subtitlesToSRT(updated))
+    } catch (err) {
+      console.warn("Failed to save SRT after speaker rename:", err)
+    }
+  }
 
   // Find archive from list
   useEffect(() => {
@@ -323,6 +347,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
                   duration={duration}
                   currentTime={currentTime}
                   onSeek={seekTo}
+                  onRenameSpeaker={handleRenameSpeaker}
                 />
               )}
               <AnalysisBadges analysis={analysis} />
@@ -334,7 +359,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
           {/* Right panel — tabbed content */}
           <ResizablePanel defaultSize="50%" minSize="25%">
             <div className="h-full flex flex-col p-4">
-              <Tabs defaultValue="summary" className="flex flex-col flex-1 min-h-0">
+              <Tabs value={activeTab} onValueChange={(v: any) => { setActiveTab(String(v)); updateActiveTab(String(v)) }} className="flex flex-col flex-1 min-h-0">
                 <TabsList className="shrink-0">
                   <TabsTrigger value="summary">摘要</TabsTrigger>
                   <TabsTrigger value="transcript">
@@ -372,6 +397,8 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
                         autoScroll={autoScroll}
                         onSegmentClick={(sub) => seekTo(sub.startTime)}
                         onManualScroll={onManualScroll}
+                        srtPath={archivePath + sep + (isPolished ? "transcript_polished.srt" : "transcript.srt")}
+                        onSubtitlesChange={setSubtitles}
                       />
                     ) : isProcessing ? (
                       <div className="flex items-center justify-center h-full text-muted-foreground">

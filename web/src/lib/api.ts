@@ -104,6 +104,11 @@ export const api = {
       httpDelete<{ message: string; path: string }>("/api/pipeline/archives", { path }),
   },
 
+  filesystem: {
+    write: (path: string, content: string) =>
+      post<{ success: boolean; error?: string }>("/api/filesystem/write", { path, content }),
+  },
+
   pipeline: {
     upload: async (file: File) => {
       const form = new FormData()
@@ -112,6 +117,10 @@ export const api = {
       if (!res.ok) throw new Error("Upload failed")
       return res.json() as Promise<{ file_path: string }>
     },
+    probe: (url: string) =>
+      get<{ title?: string; description?: string; tags?: string[]; uploader?: string; duration?: number }>(
+        `/api/pipeline/probe?url=${encodeURIComponent(url)}`,
+      ),
   },
 }
 

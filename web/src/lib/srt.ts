@@ -86,6 +86,18 @@ export function formatSRTTime(ms: number): string {
 }
 
 /**
+ * Serialize Subtitle array back to SRT string
+ */
+export function subtitlesToSRT(subtitles: Subtitle[]): string {
+  return subtitles
+    .map((sub, i) => {
+      const speakerTag = sub.speaker ? `[${sub.speaker}] ` : ""
+      return `${i + 1}\n${formatSRTTime(sub.startTime)} --> ${formatSRTTime(sub.endTime)}\n${speakerTag}${sub.text}`
+    })
+    .join("\n\n")
+}
+
+/**
  * Find subtitle at given time using binary search (ms)
  */
 export function findSubtitleAtTime(
