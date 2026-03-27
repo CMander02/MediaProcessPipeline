@@ -83,3 +83,6 @@ MPP.exe
 
 # Experiment binaries and cookies
 experiment/bilibili_login/
+
+# BBDown (binary + login cookie, not committed)
+backend/tools/bbdown/

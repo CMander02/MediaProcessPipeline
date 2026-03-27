@@ -135,9 +135,9 @@ async def mindmap(req: AnalyzeRequest):
 
 
 @router.get("/archives")
-async def archives(limit: int = 50):
-    """List archived content."""
-    return {"archives": await list_archives(limit)}
+async def archives():
+    """List archived content (all, sorted by mtime desc)."""
+    return {"archives": await list_archives()}
 
 
 class ArchiveDeleteRequest(BaseModel):
@@ -238,6 +238,43 @@ async def delete_archive(req: ArchiveDeleteRequest):
     }
 
 
+class ArchiveRenameRequest(BaseModel):
+    path: str
+    title: str
+
+
+@router.post("/archives/rename")
+async def rename_archive(req: ArchiveRenameRequest):
+    """Update the title in an archive's metadata.json."""
+    archive_dir = Path(req.path)
+    if not archive_dir.is_dir():
+        raise HTTPException(404, "Archive directory not found")
+
+    rt = get_runtime_settings()
+    data_root = Path(rt.data_root).resolve()
+    try:
+        archive_dir.resolve().relative_to(data_root)
+    except ValueError:
+        raise HTTPException(403, "Cannot modify paths outside data directory")
+
+    new_title = req.title.strip()
+    if not new_title:
+        raise HTTPException(400, "Title cannot be empty")
+
+    meta_path = archive_dir / "metadata.json"
+    meta = {}
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    meta["title"] = new_title
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return {"success": True, "title": new_title}
+
+
 @router.get("/archives/thumbnail")
 async def archive_thumbnail(path: str):
     """Get or generate a thumbnail for an archive directory.
@@ -256,17 +293,14 @@ async def archive_thumbnail(path: str):
             media_type = "image/png" if candidate.endswith(".png") else "image/jpeg"
             return FileResponse(thumb, media_type=media_type)
 
-    # Try to generate from video in source/
+    # Try to find video in archive directory
     video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov"}
-    source_dir = archive_dir / "source"
     video_file = None
-    if source_dir.exists():
-        for f in source_dir.iterdir():
-            if f.suffix.lower() in video_exts:
-                video_file = f
-                break
+    for f in archive_dir.iterdir():
+        if f.is_file() and f.suffix.lower() in video_exts:
+            video_file = f
+            break
 
-    # Fallback: source/ deleted, try original source_url from metadata
     if not video_file:
         meta_path = archive_dir / "metadata.json"
         if meta_path.exists():
@@ -321,3 +355,41 @@ async def cleanup_all(max_age_hours: int = 24):
 async def disk_usage():
     """Get disk usage statistics for data directory."""
     return await get_disk_usage()
+
+
+@router.get("/bilibili/status")
+async def bilibili_login_status():
+    """Check BBDown login status by reading BBDown.data cookie expiry."""
+    bbdown_data = Path(__file__).resolve().parent.parent.parent.parent / "tools" / "bbdown" / "BBDown.data"
+    if not bbdown_data.exists():
+        return {"logged_in": False, "message": "BBDown.data 不存在"}
+
+    try:
+        text = bbdown_data.read_text(encoding="utf-8")
+        # Parse Expires from cookie string
+        import re
+        m = re.search(r'Expires=(\d+)', text)
+        if not m:
+            return {"logged_in": False, "message": "无法解析 cookie"}
+
+        from datetime import datetime, timezone
+        expires = int(m.group(1))
+        expires_dt = datetime.fromtimestamp(expires, tz=timezone.utc)
+        now = datetime.now(tz=timezone.utc)
+
+        if now >= expires_dt:
+            return {"logged_in": False, "expires": expires_dt.isoformat(), "message": "Cookie 已过期"}
+
+        days_left = (expires_dt - now).days
+        # Extract DedeUserID
+        uid_m = re.search(r'DedeUserID=(\d+)', text)
+        uid = uid_m.group(1) if uid_m else "unknown"
+
+        return {
+            "logged_in": True,
+            "uid": uid,
+            "expires": expires_dt.isoformat(),
+            "days_left": days_left,
+        }
+    except Exception as e:
+        return {"logged_in": False, "message": str(e)}
