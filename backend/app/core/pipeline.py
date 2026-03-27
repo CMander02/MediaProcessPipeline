@@ -185,8 +185,7 @@ def _cleanup_intermediate_files(task_dir: Path, audio_path: str, vocals_path: st
         cleaned_size += size
 
     for wav_file in task_dir.glob("*.wav"):
-        if "source" in str(wav_file.parent):
-            continue
+        # Keep UVR vocals output (the file ASR actually uses)
         if "_Vocals_" in wav_file.name or "(Vocals)" in wav_file.name:
             continue
         if wav_file.name.startswith("segment_"):
@@ -201,22 +200,6 @@ def _cleanup_intermediate_files(task_dir: Path, audio_path: str, vocals_path: st
         logger.info(f"Cleaned up {len(cleaned_files)} intermediate files ({size_mb:.1f} MB): {cleaned_files}")
 
 
-def _cleanup_source_copy(task_dir: Path, metadata: MediaMetadata) -> None:
-    """Delete source/ copy for local files when the original still exists."""
-    source_url = metadata.source_url or ""
-    if not _looks_like_local_path(source_url):
-        return  # Downloaded content — source/ is the only copy
-    original = Path(source_url)
-    if not original.exists():
-        return  # Original is gone, keep the copy
-    source_dir = task_dir / "source"
-    if not source_dir.exists():
-        return
-    try:
-        shutil.rmtree(source_dir)
-        logger.info(f"Deleted source copy: {source_dir} (original at {original})")
-    except Exception as e:
-        logger.warning(f"Failed to delete source copy {source_dir}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -267,8 +250,18 @@ async def _update_step(
 # Pipeline runner
 # ---------------------------------------------------------------------------
 
-async def run_pipeline(task: Task) -> None:
-    """Run full pipeline: ingest → preprocess → recognize → analyze → archive."""
+async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
+    """Run full pipeline: ingest → preprocess → recognize → analyze → archive.
+
+    Supports:
+    - Checkpoint resume: skips steps already in task.completed_steps and
+      reconstructs needed variables from files already written to disk.
+    - Two-stage execution: when _download_worker_call=True, runs only the
+      DOWNLOAD step then calls advance_to_gpu() and returns. The GPU worker
+      calls this again with _download_worker_call=False to run the rest.
+    - GPU semaphore: UVR + ASR are protected by gpu_semaphore so concurrent
+      workers never fight over VRAM.
+    """
     from app.services.ingestion import download_media
     from app.services.ingestion.ytdlp import download_subtitles
     from app.services.ingestion.local import find_local_subtitle, parse_nfo, find_original_file
@@ -277,21 +270,147 @@ async def run_pipeline(task: Task) -> None:
     from app.services.recognition.subtitle_processor import process_subtitles
     from app.services.analysis import polish_text, summarize_text, generate_mindmap, analyze_content
     from app.services.archiving import archive_result
+    from app.core.queue import get_task_queue
 
     rt = get_runtime_settings()
     source = _clean_source_path(task.source)
-    platform_subtitle = None  # {"subtitle_path", "subtitle_lang", "subtitle_format"}
+    platform_subtitle = None
     use_platform_subtitles = rt.prefer_platform_subtitles and not task.options.get("force_asr", False)
 
-    # Resolve pre-created task dir (from create_task) or create one
+    # Resolve pre-created task dir
     task_dir = None
     if task.result and task.result.get("output_dir"):
         candidate = Path(task.result["output_dir"])
         if candidate.exists():
             task_dir = candidate
 
-    # Step 1: Download or copy local file
-    await _update_step(task, PipelineStep.DOWNLOAD)
+    done = set(task.completed_steps or [])
+    logger.info(f"Task {task.id}: starting pipeline, already done: {done}")
+
+    # Variables that later steps depend on — populated either by running the
+    # step or by reading back files written in a previous run.
+    audio_path: str | None = None
+    vocals_path: str | None = None
+    metadata: "MediaMetadata | None" = None
+    has_subtitle: bool = False
+    srt: str = ""
+    transcript: str = ""
+    polished: str | None = None
+    polished_md: str | None = None
+    subtitle_source: str = "asr"
+    recognition_segments: list = []
+    analysis: dict = {}
+    summary: dict = {}
+    mindmap: str = ""
+
+    # ── Checkpoint restore helpers ─────────────────────────────────────────
+    def _restore_metadata() -> bool:
+        """Read metadata.json back from disk into `metadata`. Returns True on success."""
+        nonlocal metadata
+        if task_dir is None:
+            return False
+        meta_path = task_dir / "metadata.json"
+        if not meta_path.exists():
+            return False
+        try:
+            import json as _json
+            raw = _json.loads(meta_path.read_text(encoding="utf-8"))
+            metadata = MediaMetadata(
+                title=raw.get("title", task_dir.name),
+                source_url=raw.get("source_url", ""),
+                media_type=raw.get("media_type", "audio"),
+                file_path=raw.get("file_path"),
+                uploader=raw.get("uploader"),
+                description=raw.get("description"),
+                duration=raw.get("duration"),
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to restore metadata: {e}")
+            return False
+
+    def _restore_audio_paths() -> bool:
+        """Find audio/vocals files on disk. Returns True if usable paths found."""
+        nonlocal audio_path, vocals_path
+        if task_dir is None:
+            return False
+        # Vocals (post-UVR)
+        for candidate in task_dir.glob("vocals*.wav"):
+            vocals_path = str(candidate)
+            audio_path = vocals_path
+            return True
+        # Raw extracted audio
+        for candidate in task_dir.glob("*.wav"):
+            audio_path = str(candidate)
+            vocals_path = audio_path
+            return True
+        # Original audio (mp3/m4a/etc.)
+        for f in task_dir.iterdir():
+            if f.is_file() and f.suffix.lower() in {".mp3", ".flac", ".m4a", ".ogg"}:
+                audio_path = str(f)
+                vocals_path = audio_path
+                return True
+        return False
+
+    def _restore_transcript() -> bool:
+        """Read transcript SRT back from disk. Returns True if found."""
+        nonlocal srt, transcript, polished, polished_md, subtitle_source
+        if task_dir is None:
+            return False
+        polished_path = task_dir / "transcript_polished.srt"
+        raw_path = task_dir / "transcript.srt"
+        if polished_path.exists():
+            polished = polished_path.read_text(encoding="utf-8")
+            subtitle_source = "asr"
+        if raw_path.exists():
+            srt = raw_path.read_text(encoding="utf-8")
+            transcript = " ".join(
+                line.strip() for line in srt.splitlines()
+                if line.strip() and not line.strip().isdigit()
+                and "-->" not in line
+            )
+            return True
+        return bool(polished)
+
+    def _restore_analysis() -> bool:
+        nonlocal analysis
+        if task_dir is None:
+            return False
+        path = task_dir / "analysis.json"
+        if path.exists():
+            try:
+                import json as _j
+                analysis = _j.loads(path.read_text(encoding="utf-8"))
+                return True
+            except Exception:
+                pass
+        return False
+
+    def _restore_summary() -> bool:
+        nonlocal summary
+        if task_dir is None:
+            return False
+        # summary is stored as formatted markdown; we can't fully restore the dict
+        # but returning True lets us skip re-running summarize_text
+        return (task_dir / "summary.md").exists()
+
+    def _restore_mindmap() -> bool:
+        nonlocal mindmap
+        if task_dir is None:
+            return False
+        path = task_dir / "mindmap.md"
+        if path.exists():
+            mindmap = path.read_text(encoding="utf-8")
+            return True
+        return False
+
+    # ── Step 1: DOWNLOAD ───────────────────────────────────────────────────
+    if PipelineStep.DOWNLOAD in done:
+        logger.info(f"Task {task.id}: skipping DOWNLOAD (already done), restoring from disk")
+        _restore_metadata()
+        _restore_audio_paths()
+    else:
+        await _update_step(task, PipelineStep.DOWNLOAD)
 
     if _looks_like_local_path(task.source):
         source_path = Path(source)
@@ -303,8 +422,7 @@ async def run_pipeline(task: Task) -> None:
         title = source_path.stem
         if not task_dir:
             task_dir = create_task_dir(task.id, title)
-        (task_dir / "source").mkdir(exist_ok=True)
-        dest_source = task_dir / "source" / source_path.name
+        dest_source = task_dir / source_path.name
         shutil.copy2(source_path, dest_source)
 
         video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov"}
@@ -368,10 +486,8 @@ async def run_pipeline(task: Task) -> None:
 
         if not task_dir:
             task_dir = create_task_dir(task.id, title)
-        source_dir = task_dir / "source"
-        source_dir.mkdir(exist_ok=True)
 
-        ingest = await download_media(source, output_dir=source_dir)
+        ingest = await download_media(source, output_dir=task_dir)
         audio_path = ingest.get("file_path")
         metadata = MediaMetadata(**ingest.get("metadata", {"title": source}))
         # Store video path for frontend playback
@@ -391,67 +507,97 @@ async def run_pipeline(task: Task) -> None:
                 logger.warning(f"Subtitle download failed: {e}")
                 platform_subtitle = None
 
-    has_subtitle = platform_subtitle is not None
+        has_subtitle = platform_subtitle is not None
 
-    # Write metadata.json immediately after download
-    meta_path = write_metadata_json(task_dir, metadata, status="processing")
-    await _emit_file_ready(task, "metadata.json", str(meta_path))
+        # Write metadata.json immediately after download
+        meta_path = write_metadata_json(task_dir, metadata, status="processing")
+        await _emit_file_ready(task, "metadata.json", str(meta_path))
 
-    await _update_step(task, PipelineStep.DOWNLOAD, completed=True)
+        await _update_step(task, PipelineStep.DOWNLOAD, completed=True)
+    # end if DOWNLOAD not in done
 
-    # Step 2: Separate vocals (skip if using platform subtitles)
-    await _update_step(task, PipelineStep.SEPARATE)
-    skip_separation = task.options.get("skip_separation", False) or has_subtitle
-    if skip_separation:
-        vocals_path = audio_path
+    # Sanity: we must have a task_dir by now
+    if task_dir is None or metadata is None:
+        raise RuntimeError("task_dir or metadata missing after DOWNLOAD step — cannot continue")
+
+    # Hand off to GPU queue if we were called from a download worker.
+    # The GPU worker will call process_task again; at that point DOWNLOAD is
+    # in completed_steps so this block is skipped and we continue below.
+    if _download_worker_call:
+        await get_task_queue().advance_to_gpu(task.id)
+        return
+
+    # ── Steps 2+3: SEPARATE + TRANSCRIBE — GPU-bound, serialised by semaphore ──
+    gpu_sem = get_task_queue().gpu_semaphore
+
+    if PipelineStep.SEPARATE in done and PipelineStep.TRANSCRIBE in done:
+        logger.info(f"Task {task.id}: skipping SEPARATE+TRANSCRIBE (already done), restoring transcript")
+        _restore_transcript()
+        _restore_audio_paths()
     else:
-        preprocess = await separate_vocals(audio_path, output_dir=task_dir)
-        vocals_path = preprocess.get("vocals_path", audio_path)
-    await _update_step(task, PipelineStep.SEPARATE, completed=True)
+        async with gpu_sem:
+            logger.info(f"Task {task.id}: acquired GPU semaphore")
 
-    # Step 3: Transcribe
-    await _update_step(task, PipelineStep.TRANSCRIBE)
+            # Step 2: Separate vocals
+            if PipelineStep.SEPARATE in done:
+                logger.info(f"Task {task.id}: skipping SEPARATE, restoring audio paths")
+                _restore_audio_paths()
+            else:
+                await _update_step(task, PipelineStep.SEPARATE)
+                skip_separation = task.options.get("skip_separation", False) or has_subtitle
+                if skip_separation:
+                    vocals_path = audio_path
+                else:
+                    preprocess = await separate_vocals(audio_path, output_dir=task_dir)
+                    vocals_path = preprocess.get("vocals_path", audio_path)
+                await _update_step(task, PipelineStep.SEPARATE, completed=True)
 
-    if has_subtitle:
-        # Platform subtitle path: LLM processes subtitles for speaker ID + punctuation
-        logger.info("Using platform subtitle path (skipping ASR)")
-        sub_result = await process_subtitles(
-            subtitle_path=platform_subtitle["subtitle_path"],
-            subtitle_format=platform_subtitle["subtitle_format"],
-            metadata=metadata,
-        )
-        transcript = " ".join(s["text"] for s in sub_result.get("segments", []))
-        srt = sub_result.get("srt", "")
-        polished = sub_result.get("polished_srt", "")
-        polished_md = sub_result.get("polished_md", "")
-        subtitle_source = "platform"
-        recognition_segments = sub_result.get("segments", [])
-    else:
-        # ASR path: transcribe audio
-        num_speakers = task.options.get("num_speakers")
-        recognition = await transcribe_audio(vocals_path, output_dir=task_dir, num_speakers=num_speakers)
-        transcript = " ".join(s["text"] for s in recognition.get("segments", []))
-        srt = recognition.get("srt", "")
-        polished = None  # Will be filled in POLISH step
-        polished_md = None
-        subtitle_source = "asr"
-        recognition_segments = recognition.get("segments", [])
+            # Step 3: Transcribe
+            if PipelineStep.TRANSCRIBE in done:
+                logger.info(f"Task {task.id}: skipping TRANSCRIBE, restoring transcript")
+                _restore_transcript()
+            else:
+                await _update_step(task, PipelineStep.TRANSCRIBE)
+                if has_subtitle:
+                    logger.info("Using platform subtitle path (skipping ASR)")
+                    sub_result = await process_subtitles(
+                        subtitle_path=platform_subtitle["subtitle_path"],
+                        subtitle_format=platform_subtitle["subtitle_format"],
+                        metadata=metadata,
+                    )
+                    transcript = " ".join(s["text"] for s in sub_result.get("segments", []))
+                    srt = sub_result.get("srt", "")
+                    polished = sub_result.get("polished_srt", "")
+                    polished_md = sub_result.get("polished_md", "")
+                    subtitle_source = "platform"
+                    recognition_segments = sub_result.get("segments", [])
+                else:
+                    num_speakers = task.options.get("num_speakers")
+                    recognition = await transcribe_audio(vocals_path, output_dir=task_dir, num_speakers=num_speakers)
+                    transcript = " ".join(s["text"] for s in recognition.get("segments", []))
+                    srt = recognition.get("srt", "")
+                    polished = None
+                    polished_md = None
+                    subtitle_source = "asr"
+                    recognition_segments = recognition.get("segments", [])
 
-    # Write transcript.srt immediately (raw or platform-polished)
-    if srt:
-        srt_path = task_dir / "transcript.srt"
-        srt_path.write_text(srt, encoding="utf-8")
-        await _emit_file_ready(task, "transcript.srt", str(srt_path))
-    # For platform subtitles, also write polished immediately
-    if has_subtitle and polished:
-        polished_srt_path = task_dir / "transcript_polished.srt"
-        polished_srt_path.write_text(polished, encoding="utf-8")
-        await _emit_file_ready(task, "transcript_polished.srt", str(polished_srt_path))
-        if polished_md:
-            polished_md_path = task_dir / "transcript_polished.md"
-            polished_md_path.write_text(polished_md, encoding="utf-8")
+                # Write transcript.srt immediately
+                if srt:
+                    srt_path = task_dir / "transcript.srt"
+                    srt_path.write_text(srt, encoding="utf-8")
+                    await _emit_file_ready(task, "transcript.srt", str(srt_path))
+                if has_subtitle and polished:
+                    polished_srt_path = task_dir / "transcript_polished.srt"
+                    polished_srt_path.write_text(polished, encoding="utf-8")
+                    await _emit_file_ready(task, "transcript_polished.srt", str(polished_srt_path))
+                    if polished_md:
+                        polished_md_path = task_dir / "transcript_polished.md"
+                        polished_md_path.write_text(polished_md, encoding="utf-8")
 
-    await _update_step(task, PipelineStep.TRANSCRIBE, completed=True)
+                await _update_step(task, PipelineStep.TRANSCRIBE, completed=True)
+            # end if TRANSCRIBE not in done
+        # end async with gpu_sem
+    # end if SEPARATE+TRANSCRIBE not both done
 
     # Guard: skip LLM if transcript is empty or trivially short
     if not transcript or len(transcript.strip()) < 10:
@@ -474,7 +620,6 @@ async def run_pipeline(task: Task) -> None:
         )
         write_metadata_json(task_dir, metadata, status="completed")
         _cleanup_intermediate_files(task_dir, audio_path, vocals_path)
-        _cleanup_source_copy(task_dir, metadata)
         await _update_step(task, PipelineStep.ARCHIVE, completed=True)
 
         task.result = {
@@ -487,9 +632,15 @@ async def run_pipeline(task: Task) -> None:
         }
         return
 
-    # Step 4: Analyze + Summarize + Mindmap (parallel)
-    await _update_step(task, PipelineStep.ANALYZE)
-    video_metadata = {
+    # ── Step 4: Analyze + Summarize + Mindmap (parallel, CPU/network) ────────
+    if PipelineStep.ANALYZE in done:
+        logger.info(f"Task {task.id}: skipping ANALYZE, restoring from disk")
+        _restore_analysis()
+        _restore_summary()
+        _restore_mindmap()
+    else:
+        await _update_step(task, PipelineStep.ANALYZE)
+        video_metadata = {
         "uploader": metadata.uploader,
         "description": metadata.description,
         "tags": metadata.tags,
@@ -531,32 +682,33 @@ async def run_pipeline(task: Task) -> None:
         mm_path.write_text(mindmap, encoding="utf-8")
         await _emit_file_ready(task, "mindmap.md", str(mm_path))
 
-    await _update_step(task, PipelineStep.ANALYZE, completed=True)
+        await _update_step(task, PipelineStep.ANALYZE, completed=True)
+    # end if ANALYZE not in done
 
-    # Step 5: Polish transcript
-    await _update_step(task, PipelineStep.POLISH)
-    if has_subtitle:
-        # Platform subtitle path already produced polished output in TRANSCRIBE step
-        logger.info("Skipping POLISH step (platform subtitle already polished)")
+    # ── Step 5: Polish transcript (CPU/network) ────────────────────────────
+    if PipelineStep.POLISH in done:
+        logger.info(f"Task {task.id}: skipping POLISH, restoring from disk")
+        _restore_transcript()  # picks up polished if present
     else:
-        # ASR path: polish with LLM
-        # Merge user-provided hotwords into proper_nouns for correction
-        hotwords = task.options.get("hotwords")
-        if hotwords and analysis:
-            existing = analysis.get("proper_nouns", []) or []
-            analysis["proper_nouns"] = list(set(existing + hotwords))
-        polished = await polish_text(srt, context=analysis)
-    # Write polished transcript immediately (ASR path)
-    if not has_subtitle and polished:
-        from app.services.analysis import srt_to_markdown
-        polished_srt_path = task_dir / "transcript_polished.srt"
-        polished_srt_path.write_text(polished, encoding="utf-8")
-        await _emit_file_ready(task, "transcript_polished.srt", str(polished_srt_path))
-        polished_md_content = srt_to_markdown(polished, metadata.title)
-        polished_md_path = task_dir / "transcript_polished.md"
-        polished_md_path.write_text(polished_md_content, encoding="utf-8")
-
-    await _update_step(task, PipelineStep.POLISH, completed=True)
+        await _update_step(task, PipelineStep.POLISH)
+        if has_subtitle:
+            logger.info("Skipping POLISH step (platform subtitle already polished)")
+        else:
+            hotwords = task.options.get("hotwords")
+            if hotwords and analysis:
+                existing = analysis.get("proper_nouns", []) or []
+                analysis["proper_nouns"] = list(set(existing + hotwords))
+            polished = await polish_text(srt, context=analysis)
+        if not has_subtitle and polished:
+            from app.services.analysis import srt_to_markdown
+            polished_srt_path = task_dir / "transcript_polished.srt"
+            polished_srt_path.write_text(polished, encoding="utf-8")
+            await _emit_file_ready(task, "transcript_polished.srt", str(polished_srt_path))
+            polished_md_content = srt_to_markdown(polished, metadata.title)
+            polished_md_path = task_dir / "transcript_polished.md"
+            polished_md_path.write_text(polished_md_content, encoding="utf-8")
+        await _update_step(task, PipelineStep.POLISH, completed=True)
+    # end if POLISH not in done
 
     # Step 6: Archive (finalize — writes any missing files, sets status to completed)
     await _update_step(task, PipelineStep.ARCHIVE)
@@ -576,8 +728,6 @@ async def run_pipeline(task: Task) -> None:
 
     _cleanup_intermediate_files(task_dir, audio_path, vocals_path)
 
-    # Delete source/ copy for local files (original still exists)
-    _cleanup_source_copy(task_dir, metadata)
 
     await _update_step(task, PipelineStep.ARCHIVE, completed=True)
 
@@ -595,8 +745,15 @@ async def run_pipeline(task: Task) -> None:
 # Task processor — called by queue worker
 # ---------------------------------------------------------------------------
 
-async def process_task(task_id: UUID) -> None:
-    """Process a single task (called by TaskQueue worker)."""
+async def process_task(task_id: UUID, _download_worker_call: bool = False) -> None:
+    """Process a single task — called by both download workers and GPU worker.
+
+    download worker  → process_task(id, _download_worker_call=True)
+                         runs DOWNLOAD, then advance_to_gpu(), returns
+    GPU worker       → process_task(id, _download_worker_call=False)
+                         DOWNLOAD already in completed_steps, skips it,
+                         runs SEPARATE → TRANSCRIBE → ANALYZE → POLISH → ARCHIVE
+    """
     from app.services.ingestion import download_media
     from app.services.preprocessing import separate_vocals
     from app.services.recognition import transcribe_audio
@@ -609,14 +766,18 @@ async def process_task(task_id: UUID) -> None:
     if not task:
         return
 
-    task.status = TaskStatus.PROCESSING
-    task.updated_at = datetime.now()
-    store.update_status(task_id, TaskStatus.PROCESSING)
-    await bus.publish(TaskEvent(task_id, "processing"))
+    # Only set PROCESSING status on first entry (download worker call).
+    # On GPU worker re-entry the task is already PROCESSING.
+    if task.status != TaskStatus.PROCESSING:
+        store.update_status(task_id, TaskStatus.PROCESSING)
+        await bus.publish(TaskEvent(task_id, "processing"))
+
+    # Re-read from DB to get latest completed_steps
+    task = store.get(task_id)
 
     try:
         if task.task_type == TaskType.PIPELINE:
-            await run_pipeline(task)
+            await run_pipeline(task, _download_worker_call=_download_worker_call)
         elif task.task_type == TaskType.INGESTION:
             task.result = await download_media(task.source)
         elif task.task_type == TaskType.PREPROCESSING:
@@ -628,6 +789,11 @@ async def process_task(task_id: UUID) -> None:
             summary = await summarize_text(task.source)
             mindmap = await generate_mindmap(task.source)
             task.result = {"polished": polished, "summary": summary, "mindmap": mindmap}
+
+        # If this was the download-worker call, run_pipeline already returned
+        # early after advance_to_gpu() — don't mark COMPLETED yet.
+        if _download_worker_call and task.task_type == TaskType.PIPELINE:
+            return
 
         task.status = TaskStatus.COMPLETED
         task.progress = 1.0

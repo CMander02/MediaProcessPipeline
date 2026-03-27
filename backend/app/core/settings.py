@@ -78,6 +78,14 @@ class RuntimeSettings(BaseModel):
     uvr_deecho_dereverb_path: str = ""
     uvr_htdemucs_path: str = ""
 
+    # Concurrency
+    max_download_concurrency: int = 2  # max parallel downloads (I/O bound, set 1-4)
+
+    # Bilibili
+    bilibili_sessdata: str = ""
+    bilibili_bili_jct: str = ""
+    bilibili_dede_user_id: str = ""
+
     # Paths
     data_root: str = "D:/Video/MediaProcessPipeline"
 

@@ -1,5 +1,6 @@
 import logging
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -22,13 +23,22 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-logging.basicConfig(level=logging.INFO, encoding="utf-8")
+# Unified log format with UTC timestamps
+_log_fmt = "%(asctime)s %(levelname)-8s [%(name)s] %(message)s"
+_log_datefmt = "%Y-%m-%dT%H:%M:%SZ"
+logging.Formatter.converter = time.gmtime
+
+_handler = logging.StreamHandler(sys.stderr)
+_handler.setFormatter(logging.Formatter(_log_fmt, datefmt=_log_datefmt))
+logging.root.setLevel(logging.INFO)
+logging.root.handlers.clear()
+logging.root.addHandler(_handler)
+
 logger = logging.getLogger(__name__)
 
 # Suppress noisy third-party loggers
-logging.getLogger("LiteLLM").setLevel(logging.WARNING)
-logging.getLogger("litellm").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
+for _noisy in ("httpx", "httpcore", "openai", "uvicorn.access"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 config = get_settings()
 
