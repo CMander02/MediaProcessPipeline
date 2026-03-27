@@ -144,6 +144,39 @@ async def write_file(req: WriteFileRequest):
         return {"success": False, "error": str(e)}
 
 
+def _ensure_browser_playable(file_path: Path) -> tuple[Path, str]:
+    """If the file is an m4a/ogg/etc. that Chrome may choke on, return a
+    transcoded mp3 copy (cached next to the original).  Otherwise return the
+    file as-is.
+    """
+    needs_transcode = file_path.suffix.lower() in {".m4a", ".ogg", ".opus", ".wma", ".aac"}
+    if not needs_transcode:
+        ct, _ = mimetypes.guess_type(str(file_path))
+        return file_path, ct or "application/octet-stream"
+
+    mp3_path = file_path.with_suffix(".browser.mp3")
+    if mp3_path.exists() and mp3_path.stat().st_size > 0:
+        return mp3_path, "audio/mpeg"
+
+    # Transcode once, cache the result
+    import subprocess, logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"Transcoding for browser playback: {file_path.name} → .browser.mp3")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(file_path),
+             "-c:a", "libmp3lame", "-q:a", "2",
+             str(mp3_path)],
+            capture_output=True, check=True, timeout=300,
+        )
+    except Exception as e:
+        logger.warning(f"Transcode failed: {e}")
+        ct, _ = mimetypes.guess_type(str(file_path))
+        return file_path, ct or "application/octet-stream"
+
+    return mp3_path, "audio/mpeg"
+
+
 @router.get("/media")
 async def serve_media(
     path: str = Query(..., description="Media file path to serve"),
@@ -162,61 +195,50 @@ async def serve_media(
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
 
-    content_type, _ = mimetypes.guess_type(str(file_path))
-    if content_type is None:
-        content_type = "application/octet-stream"
+    serve_path, content_type = _ensure_browser_playable(file_path)
 
     return FileResponse(
-        path=str(file_path),
+        path=str(serve_path),
         media_type=content_type,
-        filename=file_path.name,
+        filename=file_path.stem + serve_path.suffix,
     )
 
 
-@router.get("/source-media")
-async def serve_source_media(
-    archive_path: str = Query(..., description="Archive directory path"),
+
+MEDIA_EXTENSIONS = {
+    ".mp4", ".mkv", ".avi", ".webm", ".mov", ".flv", ".wmv",
+    ".mp3", ".wav", ".aac", ".flac", ".ogg", ".m4a", ".wma",
+}
+
+
+@router.get("/scan-folder")
+async def scan_folder(
+    path: str = Query(..., description="Root folder path to scan"),
+    recursive: bool = Query(True, description="Scan subdirectories"),
 ):
-    """Serve the original source media file referenced by an archive's metadata.
-
-    Used when source/ copy has been deleted and the original is outside data_root.
-    Security: archive_path must be under data_root, and we only serve the source_url from its metadata.
-    """
-    import json
-    from app.core.settings import get_runtime_settings
-
-    data_root = Path(get_runtime_settings().data_root).resolve()
-    archive_dir = Path(archive_path).resolve()
-
-    if not str(archive_dir).startswith(str(data_root)):
-        raise HTTPException(status_code=403, detail="Access denied: path outside data directory")
-
-    meta_path = archive_dir / "metadata.json"
-    if not meta_path.exists():
-        raise HTTPException(status_code=404, detail="metadata.json not found")
-
+    """List all media files in a directory (optionally recursive)."""
     try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    except Exception:
-        raise HTTPException(status_code=500, detail="Failed to read metadata.json")
+        folder = Path(path).expanduser().resolve()
+        if not folder.exists() or not folder.is_dir():
+            return {"success": False, "error": "Directory not found", "files": []}
 
-    source_url = meta.get("source_url", "")
-    if not source_url:
-        raise HTTPException(status_code=404, detail="No source_url in metadata")
+        files = []
+        iterator = folder.rglob("*") if recursive else folder.iterdir()
+        for entry in iterator:
+            try:
+                if entry.is_file() and entry.suffix.lower() in MEDIA_EXTENSIONS:
+                    files.append({
+                        "path": str(entry),
+                        "name": entry.name,
+                        "size": entry.stat().st_size,
+                    })
+            except (PermissionError, OSError):
+                continue
 
-    file_path = Path(source_url).resolve()
-    if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=404, detail=f"Source file not found: {source_url}")
-
-    content_type, _ = mimetypes.guess_type(str(file_path))
-    if content_type is None:
-        content_type = "application/octet-stream"
-
-    return FileResponse(
-        path=str(file_path),
-        media_type=content_type,
-        filename=file_path.name,
-    )
+        files.sort(key=lambda f: f["name"].lower())
+        return {"success": True, "path": str(folder), "files": files, "count": len(files)}
+    except Exception as e:
+        return {"success": False, "error": str(e), "files": []}
 
 
 @router.get("/drives")

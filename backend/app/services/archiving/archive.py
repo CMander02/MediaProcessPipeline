@@ -105,7 +105,7 @@ class ArchiveService:
         logger.info(f"Archived to: {output_dir}")
         return {"output_dir": str(output_dir), "files": files}
 
-    def list_archives(self, limit: int = 50) -> list[dict[str, Any]]:
+    def list_archives(self, limit: int = 0) -> list[dict[str, Any]]:
         """List archives from flat data directory structure."""
         rt = get_runtime_settings()
         data_root = Path(rt.data_root).resolve()
@@ -151,37 +151,25 @@ class ArchiveService:
                 except Exception:
                     pass
 
-            # Check for media files in source directory, fallback to original path
+            # Check for media files in archive directory
             video_exts = {'.mp4', '.mkv', '.avi', '.webm', '.mov'}
             audio_exts = {'.mp3', '.wav', '.flac', '.m4a', '.ogg'}
-            source_dir = task_dir / "source"
             has_video = False
             has_audio = False
             media_file = None
             media_is_external = False
-            if source_dir.exists():
-                for f in source_dir.iterdir():
-                    if f.suffix.lower() in video_exts:
-                        has_video = True
-                        media_file = str(f)
-                        break
-                    elif f.suffix.lower() in audio_exts:
-                        has_audio = True
-                        media_file = str(f)
 
-            # Fallback: source/ deleted, try original source_url from metadata
-            if not media_file and metadata.get("source_url"):
-                original = Path(metadata["source_url"])
-                if original.exists() and original.is_file():
-                    ext = original.suffix.lower()
-                    if ext in video_exts:
-                        has_video = True
-                        media_file = str(original)
-                        media_is_external = True
-                    elif ext in audio_exts:
-                        has_audio = True
-                        media_file = str(original)
-                        media_is_external = True
+            for f in task_dir.iterdir():
+                if not f.is_file():
+                    continue
+                ext = f.suffix.lower()
+                if ext in video_exts:
+                    has_video = True
+                    media_file = str(f)
+                    break
+                elif ext in audio_exts:
+                    has_audio = True
+                    media_file = str(f)
 
             # Determine processing status
             meta_status = metadata.get("status", "completed")  # backward compat
@@ -213,8 +201,6 @@ class ArchiveService:
                 "analysis": analysis,
                 "duration_seconds": duration_seconds,
             })
-            if len(archives) >= limit:
-                break
 
         return archives
 
@@ -281,5 +267,5 @@ async def archive_result(
     )
 
 
-async def list_archives(limit: int = 50) -> list[dict[str, Any]]:
-    return get_archive_service().list_archives(limit)
+async def list_archives() -> list[dict[str, Any]]:
+    return get_archive_service().list_archives()
