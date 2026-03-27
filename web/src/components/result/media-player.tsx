@@ -47,7 +47,7 @@ function VideoPlayer({
   useEffect(() => {
     if (!containerRef.current) return
 
-    const art = new Artplayer({
+    const options: Record<string, any> = {
       container: containerRef.current,
       url: src,
       volume: 1,
@@ -69,26 +69,25 @@ function VideoPlayer({
         crossOrigin: "anonymous",
         preload: "metadata",
       },
-      subtitle: vttUrl
-        ? { url: vttUrl, type: "vtt", style: { "font-size": "18px" }, encoding: "utf-8" }
-        : undefined,
-      settings: [
-        ...(vttUrl
-          ? [{
-              html: "字幕",
-              icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="13" x2="23" y2="13"/><line x1="8" y1="4" x2="8" y2="20"/></svg>',
-              tooltip: "开",
-              switch: true,
-              onSwitch(item: any) {
-                const nextState = !item.switch
-                art.subtitle.show = nextState
-                item.tooltip = nextState ? "开" : "关"
-                return nextState
-              },
-            }]
-          : []),
-      ],
-    })
+      settings: [],
+    }
+
+    if (vttUrl) {
+      options.subtitle = { url: vttUrl, type: "vtt", style: { "font-size": "18px" }, encoding: "utf-8" }
+      options.settings = [{
+        html: "字幕",
+        tooltip: "开",
+        switch: true,
+        onSwitch(item: any) {
+          const nextState = !item.switch
+          art.subtitle.show = nextState
+          item.tooltip = nextState ? "开" : "关"
+          return nextState
+        },
+      }]
+    }
+
+    const art = new Artplayer(options)
 
     artRef.current = art
 
