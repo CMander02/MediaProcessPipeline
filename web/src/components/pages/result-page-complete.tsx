@@ -31,7 +31,7 @@ import { TranscriptTab } from "@/components/result/transcript-tab"
 import { SummaryTab } from "@/components/result/summary-tab"
 import { MindmapViewer } from "@/components/result/mindmap-viewer"
 import { AnalysisBadges } from "@/components/result/analysis-badges"
-import { ArrowLeft, Check, Copy, Download, Loader2, MoreHorizontal, Trash2, X } from "lucide-react"
+import { ArrowLeft, Check, Copy, Download, Loader2, MoreHorizontal, Pencil, Trash2, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 interface Props {
@@ -109,11 +109,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
       setMediaUrl(null)
       return
     }
-    if (arch.media_is_external) {
-      setMediaUrl(`/api/filesystem/source-media?archive_path=${encodeURIComponent(arch.path)}`)
-    } else {
-      setMediaUrl(`/api/filesystem/media?path=${encodeURIComponent(arch.media_file)}`)
-    }
+    setMediaUrl(`/api/filesystem/media?path=${encodeURIComponent(arch.media_file)}`)
   }, [])
 
   useEffect(() => {
@@ -219,9 +215,38 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
   })
 
   const mediaType = archive?.has_video ? "video" : "audio"
-  const displayTitle = archive?.title ?? archivePath.split(/[/\\]/).pop()
+  const [displayTitle, setDisplayTitle] = useState<string>("")
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [titleDraft, setTitleDraft] = useState("")
   const isProcessing = taskStatus === "processing" || taskStatus === "queued"
   const hasContent = summary || transcript || mindmap
+
+  // Sync title from archive
+  useEffect(() => {
+    const t = archive?.title ?? archivePath.split(/[/\\]/).pop() ?? ""
+    setDisplayTitle(t)
+  }, [archive, archivePath])
+
+  const startEditTitle = () => {
+    setTitleDraft(displayTitle)
+    setEditingTitle(true)
+  }
+
+  const commitTitle = async () => {
+    const trimmed = titleDraft.trim()
+    if (!trimmed || trimmed === displayTitle) {
+      setEditingTitle(false)
+      return
+    }
+    try {
+      await api.archives.rename(archivePath, trimmed)
+      setDisplayTitle(trimmed)
+      refreshArchives()
+    } catch {
+      // ignore, revert
+    }
+    setEditingTitle(false)
+  }
 
   const [copied, setCopied] = useState(false)
 
@@ -262,9 +287,28 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
           <ArrowLeft className="h-4 w-4 mr-1" />
           返回
         </Button>
-        <h2 className="text-sm font-medium truncate flex-1">
-          {displayTitle}
-        </h2>
+        {editingTitle ? (
+          <input
+            className="flex-1 text-sm font-medium bg-transparent border-b border-primary outline-none truncate"
+            value={titleDraft}
+            autoFocus
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onBlur={commitTitle}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitTitle()
+              if (e.key === "Escape") setEditingTitle(false)
+            }}
+          />
+        ) : (
+          <button
+            className="flex-1 text-sm font-medium truncate text-left hover:text-primary transition-colors group flex items-center gap-1 min-w-0"
+            onClick={startEditTitle}
+            title="点击编辑标题"
+          >
+            <span className="truncate">{displayTitle}</span>
+            <Pencil className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-50 transition-opacity" />
+          </button>
+        )}
         {isProcessing && (
           <span className="text-xs text-blue-600 flex items-center gap-1">
             <Loader2 className="h-3 w-3 animate-spin" />

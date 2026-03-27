@@ -68,6 +68,7 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
               archive={a}
               onClick={() => handleOpen(a.path)}
               onDelete={() => setDeleteTarget({ title: a.title, path: a.path })}
+              onRenamed={refresh}
             />
           ))}
         </div>

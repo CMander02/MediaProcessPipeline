@@ -10,7 +10,6 @@ export interface ArchiveItem {
   has_video: boolean
   has_audio: boolean
   media_file: string | null
-  media_is_external?: boolean
   processing?: boolean
   task_id?: string
   metadata: Record<string, unknown>
@@ -34,7 +33,7 @@ export function useArchives() {
   const refresh = useCallback(async () => {
     try {
       setLoading(true)
-      const res = await fetch("/api/pipeline/archives?limit=100")
+      const res = await fetch("/api/pipeline/archives")
       if (!res.ok) throw new Error(`${res.status}`)
       const data = await res.json()
       setArchives(data.archives ?? [])

@@ -8,16 +8,19 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
-import { Video, Music, FileText, FolderOpen, Trash2, Loader2 } from "lucide-react"
+import { RenameDialog } from "@/components/rename-dialog"
+import { Video, Music, FileText, FolderOpen, Pencil, Trash2, Loader2 } from "lucide-react"
 
 interface ArchiveCardProps {
   archive: ArchiveItem
   onClick: () => void
   onDelete?: () => void
+  onRenamed?: (newTitle: string) => void
 }
 
-export function ArchiveCard({ archive, onClick, onDelete }: ArchiveCardProps) {
+export function ArchiveCard({ archive, onClick, onDelete, onRenamed }: ArchiveCardProps) {
   const [imgError, setImgError] = useState(false)
+  const [showRename, setShowRename] = useState(false)
 
   const showThumbnail = archive.has_video && !imgError
   const thumbnailUrl = archive.has_video
@@ -25,6 +28,7 @@ export function ArchiveCard({ archive, onClick, onDelete }: ArchiveCardProps) {
     : null
 
   return (
+    <>
     <ContextMenu>
       <ContextMenuTrigger>
         <button
@@ -96,6 +100,10 @@ export function ArchiveCard({ archive, onClick, onDelete }: ArchiveCardProps) {
           <FolderOpen className="h-4 w-4" />
           打开
         </ContextMenuItem>
+        <ContextMenuItem onClick={() => setShowRename(true)}>
+          <Pencil className="h-4 w-4" />
+          重命名
+        </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem variant="destructive" onClick={() => onDelete?.()}>
           <Trash2 className="h-4 w-4" />
@@ -103,5 +111,14 @@ export function ArchiveCard({ archive, onClick, onDelete }: ArchiveCardProps) {
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
+
+    <RenameDialog
+      open={showRename}
+      onOpenChange={setShowRename}
+      archivePath={archive.path}
+      currentTitle={archive.title}
+      onRenamed={(newTitle) => onRenamed?.(newTitle)}
+    />
+    </>
   )
 }

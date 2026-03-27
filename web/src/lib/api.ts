@@ -102,11 +102,17 @@ export const api = {
   archives: {
     delete: (path: string) =>
       httpDelete<{ message: string; path: string }>("/api/pipeline/archives", { path }),
+    rename: (path: string, title: string) =>
+      post<{ success: boolean; title: string }>("/api/pipeline/archives/rename", { path, title }),
   },
 
   filesystem: {
     write: (path: string, content: string) =>
       post<{ success: boolean; error?: string }>("/api/filesystem/write", { path, content }),
+    scanFolder: (path: string, recursive = true) =>
+      get<{ success: boolean; files: { path: string; name: string; size: number }[]; count: number }>(
+        `/api/filesystem/scan-folder?path=${encodeURIComponent(path)}&recursive=${recursive}`,
+      ),
   },
 
   pipeline: {
@@ -120,6 +126,13 @@ export const api = {
     probe: (url: string) =>
       get<{ title?: string; description?: string; tags?: string[]; uploader?: string; duration?: number }>(
         `/api/pipeline/probe?url=${encodeURIComponent(url)}`,
+      ),
+  },
+
+  bilibili: {
+    status: () =>
+      get<{ logged_in: boolean; uid?: string; expires?: string; days_left?: number; message?: string }>(
+        "/api/pipeline/bilibili/status",
       ),
   },
 }

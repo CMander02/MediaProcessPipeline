@@ -4,7 +4,8 @@ import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { api } from "@/lib/api"
-import { Play, Upload, Loader2, ChevronDown, ChevronUp } from "lucide-react"
+import { FolderQueueDialog } from "@/components/folder-queue-dialog"
+import { Play, Upload, Folder, Loader2, ChevronDown, ChevronUp } from "lucide-react"
 
 export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
   const [source, setSource] = useState("")
@@ -14,6 +15,7 @@ export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [msg, setMsg] = useState("")
+  const [showFolderDialog, setShowFolderDialog] = useState(false)
 
   const buildOptions = () => {
     const opts: Record<string, unknown> = {}
@@ -64,6 +66,15 @@ export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
 
   return (
     <div className="space-y-3">
+      <FolderQueueDialog
+        open={showFolderDialog}
+        onOpenChange={setShowFolderDialog}
+        options={buildOptions()}
+        onSubmitted={() => {
+          setMsg("✓ 文件夹任务已全部提交")
+          onSubmitted?.()
+        }}
+      />
       <form onSubmit={handleSubmit} className="flex gap-2">
         <Input
           value={source}
@@ -93,6 +104,16 @@ export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
         >
           <Upload className="h-4 w-4" />
           <span className="ml-1.5 hidden sm:inline">上传</span>
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={submitting}
+          onClick={() => setShowFolderDialog(true)}
+          title="批量处理文件夹"
+        >
+          <Folder className="h-4 w-4" />
+          <span className="ml-1.5 hidden sm:inline">文件夹</span>
         </Button>
       </form>
 

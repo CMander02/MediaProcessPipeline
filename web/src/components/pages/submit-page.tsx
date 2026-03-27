@@ -6,20 +6,26 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
-import { Upload, Link, Loader2, Play, ChevronDown, ChevronUp, FileVideo, FileAudio, X } from "lucide-react"
+import { FolderQueueDialog } from "@/components/folder-queue-dialog"
+import {
+  Upload, Link, Loader2, Play, ChevronDown, ChevronUp,
+  FileVideo, FileAudio, FolderOpen, Folder, X, CheckCircle2,
+} from "lucide-react"
 import { cn } from "@/lib/utils"
 import { formatDuration } from "@/lib/format"
 
-interface SelectedFile {
+interface QueuedFile {
+  id: string
   name: string
   size: number
   duration: number | null
-  serverPath: string // path returned by upload API
+  serverPath: string
+  uploading: boolean
+  error: string
 }
 
 function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
@@ -27,27 +33,21 @@ function formatFileSize(bytes: number): string {
 function getMediaDuration(file: File): Promise<number | null> {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file)
-    const el = file.type.startsWith("video/")
-      ? document.createElement("video")
-      : document.createElement("audio")
+    const el = file.type.startsWith("video/") ? document.createElement("video") : document.createElement("audio")
     el.preload = "metadata"
-    el.onloadedmetadata = () => {
-      const dur = isFinite(el.duration) ? el.duration : null
-      URL.revokeObjectURL(url)
-      resolve(dur)
-    }
-    el.onerror = () => {
-      URL.revokeObjectURL(url)
-      resolve(null)
-    }
+    el.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve(isFinite(el.duration) ? el.duration : null) }
+    el.onerror = () => { URL.revokeObjectURL(url); resolve(null) }
     el.src = url
   })
 }
 
+function isVideoFile(name: string) {
+  return /\.(mp4|mkv|avi|webm|mov|flv|wmv)$/i.test(name)
+}
+
 export function SubmitPage() {
   const [source, setSource] = useState("")
-  const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null)
-  const [uploading, setUploading] = useState(false)
+  const [queuedFiles, setQueuedFiles] = useState<QueuedFile[]>([])
   const [skipSep, setSkipSep] = useState(false)
   const [numSpeakers, setNumSpeakers] = useState("")
   const [hotwordTags, setHotwordTags] = useState<string[]>([])
@@ -55,32 +55,9 @@ export function SubmitPage() {
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState("")
+  const [showFolderDialog, setShowFolderDialog] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const hotwordInputRef = useRef<HTMLInputElement>(null)
-
-  const addHotword = useCallback((word: string) => {
-    const w = word.trim()
-    if (w && !hotwordTags.includes(w)) {
-      setHotwordTags((prev) => [...prev, w])
-    }
-  }, [hotwordTags])
-
-  const removeHotword = useCallback((word: string) => {
-    setHotwordTags((prev) => prev.filter((t) => t !== word))
-  }, [])
-
-  const handleHotwordKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" || e.key === "," || e.key === "、") {
-      e.preventDefault()
-      const val = hotwordInput.replace(/[,，、]/g, "").trim()
-      if (val) {
-        addHotword(val)
-        setHotwordInput("")
-      }
-    } else if (e.key === "Backspace" && !hotwordInput && hotwordTags.length > 0) {
-      setHotwordTags((prev) => prev.slice(0, -1))
-    }
-  }
 
   const buildOptions = () => {
     const opts: Record<string, unknown> = {}
@@ -91,282 +68,339 @@ export function SubmitPage() {
     return opts
   }
 
-  const navigateToResult = (task: { id: string; result?: Record<string, unknown> | null }) => {
-    const outputDir = task.result?.output_dir as string | undefined
-    if (outputDir) {
-      navigate(`#/result/archive?path=${encodeURIComponent(outputDir)}&taskId=${encodeURIComponent(task.id)}`)
-    } else {
-      navigate(`#/result/task/${task.id}`)
-    }
-  }
-
-  const handleFileSelect = async (files: File[]) => {
-    if (files.length === 0 || uploading) return
-    const file = files[0]
-    setUploading(true)
-    setError("")
+  const uploadAndQueue = useCallback(async (file: File) => {
+    const id = `${file.name}-${Date.now()}-${Math.random()}`
+    setQueuedFiles((prev) => [...prev, {
+      id, name: file.name, size: file.size, duration: null,
+      serverPath: "", uploading: true, error: "",
+    }])
     try {
-      const [duration, { file_path }] = await Promise.all([
-        getMediaDuration(file),
-        api.pipeline.upload(file),
-      ])
-      setSelectedFile({
-        name: file.name,
-        size: file.size,
-        duration,
-        serverPath: file_path,
-      })
-      setSource("") // clear URL input when file is selected
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "上传失败")
-    } finally {
-      setUploading(false)
+      const [duration, { file_path }] = await Promise.all([getMediaDuration(file), api.pipeline.upload(file)])
+      setQueuedFiles((prev) => prev.map((f) =>
+        f.id === id ? { ...f, duration, serverPath: file_path, uploading: false } : f
+      ))
+    } catch {
+      setQueuedFiles((prev) => prev.map((f) =>
+        f.id === id ? { ...f, uploading: false, error: "上传失败" } : f
+      ))
     }
-  }
+  }, [])
 
-  const clearFile = () => {
-    setSelectedFile(null)
-    if (fileInputRef.current) fileInputRef.current.value = ""
-  }
+  const handleFileSelect = useCallback((files: File[]) => {
+    for (const f of files) uploadAndQueue(f)
+  }, [uploadAndQueue])
 
-  const handleSubmit = async () => {
-    const src = selectedFile ? selectedFile.serverPath : source.trim()
-    if (!src || submitting) return
+  const removeQueued = (id: string) => setQueuedFiles((prev) => prev.filter((f) => f.id !== id))
+  const clearAll = () => setQueuedFiles([])
+
+  const handleSubmitAll = async () => {
+    const sources: string[] = []
+    if (source.trim()) sources.push(source.trim())
+    sources.push(...queuedFiles.filter((f) => f.serverPath && !f.uploading && !f.error).map((f) => f.serverPath))
+    if (!sources.length || submitting) return
+
     setSubmitting(true)
     setError("")
     try {
-      const task = await api.tasks.create(src, buildOptions())
-      navigateToResult(task)
+      const opts = buildOptions()
+      if (sources.length === 1) {
+        const task = await api.tasks.create(sources[0], opts)
+        const outputDir = task.result?.output_dir as string | undefined
+        if (outputDir) {
+          navigate(`#/result/archive?path=${encodeURIComponent(outputDir)}&taskId=${encodeURIComponent(task.id)}`)
+        } else {
+          navigate(`#/result/task/${task.id}`)
+        }
+      } else {
+        for (const src of sources) await api.tasks.create(src, opts)
+        navigate("#/files")
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交失败")
       setSubmitting(false)
     }
   }
 
-  const handleURLSubmit = (e: FormEvent) => {
-    e.preventDefault()
-    handleSubmit()
+  const handleURLSubmit = (e: FormEvent) => { e.preventDefault(); handleSubmitAll() }
+
+  const addHotword = useCallback((word: string) => {
+    const w = word.trim()
+    if (w && !hotwordTags.includes(w)) setHotwordTags((prev) => [...prev, w])
+  }, [hotwordTags])
+
+  const removeHotword = useCallback((word: string) => {
+    setHotwordTags((prev) => prev.filter((t) => t !== word))
+  }, [])
+
+  const handleHotwordKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" || e.key === "," || e.key === "、") {
+      e.preventDefault()
+      const val = hotwordInput.replace(/[,，、]/g, "").trim()
+      if (val) { addHotword(val); setHotwordInput("") }
+    } else if (e.key === "Backspace" && !hotwordInput && hotwordTags.length > 0) {
+      setHotwordTags((prev) => prev.slice(0, -1))
+    }
   }
 
-  const isVideo = selectedFile?.name.match(/\.(mp4|mkv|avi|webm|mov)$/i)
+  const { isDragging, dropZoneProps } = useDropZone({ accept: ["video/*", "audio/*"], onDrop: handleFileSelect })
 
-  const { isDragging, dropZoneProps } = useDropZone({
-    accept: ["video/*", "audio/*"],
-    onDrop: handleFileSelect,
-  })
-
-  const canSubmit = !!(selectedFile || source.trim()) && !submitting && !uploading
+  const anyUploading = queuedFiles.some((f) => f.uploading)
+  const readyCount = queuedFiles.filter((f) => f.serverPath && !f.error).length
+  const uploadingCount = queuedFiles.filter((f) => f.uploading).length
+  const totalCount = (source.trim() ? 1 : 0) + readyCount
+  const canSubmit = totalCount > 0 && !submitting && !anyUploading
+  const hasFiles = queuedFiles.length > 0
+  const activeOptions = [skipSep, !!numSpeakers, hotwordTags.length > 0].filter(Boolean).length
 
   return (
-    <div className="flex h-full items-center justify-center p-6">
-      <div className="w-full max-w-xl space-y-6">
-        {/* Drop zone */}
-        <div
-          {...dropZoneProps}
-          className={cn(
-            "relative flex flex-col items-center justify-center gap-4 rounded-xl border-2 border-dashed p-10 transition-colors",
-            isDragging
-              ? "border-primary bg-primary/5"
-              : selectedFile
-                ? "border-primary/40 bg-primary/5"
-                : "border-muted-foreground/25 hover:border-muted-foreground/50",
-            (submitting || uploading) && "pointer-events-none opacity-60",
-          )}
-        >
-          {uploading ? (
-            <>
-              <Loader2 className="h-8 w-8 animate-spin text-primary" />
-              <p className="text-sm text-muted-foreground">上传中...</p>
-            </>
-          ) : selectedFile ? (
-            <>
-              {/* File preview */}
-              <div className="flex items-center gap-3 w-full">
-                {isVideo ? (
-                  <FileVideo className="h-10 w-10 text-primary shrink-0" />
-                ) : (
-                  <FileAudio className="h-10 w-10 text-primary shrink-0" />
-                )}
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate">{selectedFile.name}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {formatFileSize(selectedFile.size)}
-                    {selectedFile.duration != null && (
-                      <span className="ml-2">{formatDuration(selectedFile.duration)}</span>
-                    )}
-                  </p>
-                </div>
-                <button
-                  onClick={(e) => { e.stopPropagation(); clearFile() }}
-                  className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                  title="移除文件"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <Upload className="h-10 w-10 text-muted-foreground/50" />
-              <div className="text-center">
-                <p className="text-sm font-medium">
-                  {isDragging ? "松开鼠标放下文件" : "拖放音视频文件到这里"}
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  支持 MP4、MKV、MP3、WAV、FLAC 等格式
-                </p>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => fileInputRef.current?.click()}
-              >
+    <div className="flex h-full overflow-hidden">
+      <FolderQueueDialog
+        open={showFolderDialog}
+        onOpenChange={setShowFolderDialog}
+        options={buildOptions()}
+        onSubmitted={() => navigate("#/files")}
+      />
+
+      {/* ── Left panel: controls ── */}
+      <div className={cn(
+        "flex flex-col gap-4 p-6 overflow-y-auto shrink-0 transition-all duration-200",
+        hasFiles ? "w-72 border-r" : "w-full items-center justify-center",
+      )}>
+        <div className={cn("flex flex-col gap-4", !hasFiles && "w-full max-w-md")}>
+
+          {/* Drop zone */}
+          <div
+            {...dropZoneProps}
+            className={cn(
+              "flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed transition-colors cursor-pointer",
+              hasFiles ? "py-5 px-4" : "py-12 px-4",
+              isDragging ? "border-primary bg-primary/5" : "border-muted-foreground/25 hover:border-muted-foreground/40 hover:bg-muted/20",
+              submitting && "pointer-events-none opacity-60",
+            )}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <Upload className={cn("text-muted-foreground/40", hasFiles ? "h-6 w-6" : "h-9 w-9")} />
+            <div className="text-center pointer-events-none">
+              <p className="text-sm font-medium text-muted-foreground">
+                {isDragging ? "松开鼠标放下文件" : hasFiles ? "继续拖入或点击添加" : "拖放音视频文件到这里"}
+              </p>
+              {!hasFiles && (
+                <p className="mt-0.5 text-xs text-muted-foreground/60">支持 MP4、MKV、MP3、WAV、FLAC 等，可多选</p>
+              )}
+            </div>
+            <div className="flex items-center gap-2 pointer-events-auto" onClick={(e) => e.stopPropagation()}>
+              <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
+                <Upload className="h-3.5 w-3.5 mr-1.5" />
                 选择文件
               </Button>
-            </>
-          )}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="video/*,audio/*"
-            className="hidden"
-            onChange={(e) => {
-              if (e.target.files?.[0]) handleFileSelect([e.target.files[0]])
-            }}
-          />
-        </div>
-
-        {/* Divider */}
-        {!selectedFile && (
-          <>
-            <div className="flex items-center gap-3">
-              <div className="h-px flex-1 bg-border" />
-              <span className="text-xs text-muted-foreground">或</span>
-              <div className="h-px flex-1 bg-border" />
-            </div>
-
-            {/* URL input */}
-            <form onSubmit={handleURLSubmit} className="flex gap-2">
-              <div className="relative flex-1">
-                <Link className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={source}
-                  onChange={(e) => setSource(e.target.value)}
-                  placeholder="粘贴视频链接或本地文件路径..."
-                  className="pl-9"
-                  disabled={submitting}
-                  autoComplete="off"
-                />
-              </div>
-              <Button type="submit" disabled={!canSubmit}>
-                {submitting ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Play className="h-4 w-4" />
-                )}
-                <span className="ml-1.5">处理</span>
+              <Button variant="outline" size="sm" onClick={() => setShowFolderDialog(true)}>
+                <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
+                选择文件夹
               </Button>
-            </form>
-          </>
-        )}
-
-        {/* Submit button for file mode */}
-        {selectedFile && (
-          <Button
-            className="w-full"
-            size="lg"
-            disabled={!canSubmit}
-            onClick={handleSubmit}
-          >
-            {submitting ? (
-              <Loader2 className="h-4 w-4 animate-spin mr-2" />
-            ) : (
-              <Play className="h-4 w-4 mr-2" />
-            )}
-            开始处理
-          </Button>
-        )}
-
-        {/* Advanced options toggle */}
-        <div className="flex items-center justify-between">
-          <button
-            type="button"
-            className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-            onClick={() => setShowAdvanced(!showAdvanced)}
-          >
-            {showAdvanced ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-            高级选项
-          </button>
-          {error && <p className="text-sm text-destructive">{error}</p>}
-        </div>
-
-        {/* Advanced options panel */}
-        {showAdvanced && (
-          <div className="space-y-4 rounded-lg border p-4 bg-muted/30">
-            <div className="flex items-center gap-2">
-              <Switch id="skip-sep" checked={skipSep} onCheckedChange={setSkipSep} />
-              <Label htmlFor="skip-sep" className="text-sm">
-                跳过人声分离
-              </Label>
-              <span className="text-xs text-muted-foreground ml-1">（纯人声内容无需分离）</span>
             </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="video/*,audio/*"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files) { handleFileSelect(Array.from(e.target.files)); e.target.value = "" }
+              }}
+            />
+          </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="num-speakers" className="text-sm">
-                说话人数量
-              </Label>
+          {/* Divider */}
+          <div className="flex items-center gap-3">
+            <div className="h-px flex-1 bg-border" />
+            <span className="text-xs text-muted-foreground">或输入链接</span>
+            <div className="h-px flex-1 bg-border" />
+          </div>
+
+          {/* URL input */}
+          <form onSubmit={handleURLSubmit} className="flex gap-2">
+            <div className="relative flex-1">
+              <Link className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
               <Input
-                id="num-speakers"
-                type="number"
-                min="1"
-                max="20"
-                value={numSpeakers}
-                onChange={(e) => setNumSpeakers(e.target.value)}
-                placeholder="留空自动检测"
-                className="max-w-40"
+                value={source}
+                onChange={(e) => setSource(e.target.value)}
+                placeholder="粘贴视频链接或本地路径..."
+                className="pl-9"
+                disabled={submitting}
+                autoComplete="off"
               />
             </div>
+          </form>
 
-            <div className="space-y-1.5">
-              <Label className="text-sm">热词</Label>
-              {/* Tag display + input */}
-              <div
-                className="flex flex-wrap gap-1.5 min-h-[2.5rem] rounded-md border bg-background px-2 py-1.5 cursor-text"
-                onClick={() => hotwordInputRef.current?.focus()}
-              >
-                {hotwordTags.map((tag) => (
-                  <span
-                    key={tag}
-                    className="inline-flex items-center gap-0.5 rounded-md bg-primary/10 text-primary px-2 py-0.5 text-xs font-medium"
+          {/* Submit */}
+          <Button size="lg" disabled={!canSubmit} onClick={handleSubmitAll} className="w-full">
+            {submitting
+              ? <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              : <Play className="h-4 w-4 mr-2" />
+            }
+            {submitting
+              ? "提交中..."
+              : totalCount > 1
+                ? `开始处理（${totalCount} 个）`
+                : "开始处理"
+            }
+          </Button>
+
+          {error && <p className="text-sm text-destructive text-center">{error}</p>}
+
+          {/* Advanced options */}
+          <div>
+            <button
+              type="button"
+              className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+            >
+              {showAdvanced ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+              高级选项
+              {activeOptions > 0 && (
+                <span className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] text-primary-foreground font-medium">
+                  {activeOptions}
+                </span>
+              )}
+            </button>
+
+            {showAdvanced && (
+              <div className="mt-3 space-y-4 rounded-lg border p-4 bg-muted/30">
+                <div className="flex items-center gap-2">
+                  <Switch id="skip-sep" checked={skipSep} onCheckedChange={setSkipSep} />
+                  <Label htmlFor="skip-sep" className="text-sm cursor-pointer">跳过人声分离</Label>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="num-speakers" className="text-sm">说话人数量</Label>
+                  <Input
+                    id="num-speakers"
+                    type="number" min="1" max="20"
+                    value={numSpeakers}
+                    onChange={(e) => setNumSpeakers(e.target.value)}
+                    placeholder="留空自动检测"
+                    className="max-w-36 h-8"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-sm">热词</Label>
+                  <div
+                    className="flex flex-wrap gap-1.5 min-h-[2.25rem] rounded-md border bg-background px-2 py-1.5 cursor-text"
+                    onClick={() => hotwordInputRef.current?.focus()}
                   >
-                    {tag}
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); removeHotword(tag) }}
-                      className="ml-0.5 rounded-full hover:bg-primary/20 p-0.5 transition-colors"
-                    >
-                      <X className="h-2.5 w-2.5" />
-                    </button>
-                  </span>
-                ))}
-                <input
-                  ref={hotwordInputRef}
-                  value={hotwordInput}
-                  onChange={(e) => setHotwordInput(e.target.value)}
-                  onKeyDown={handleHotwordKeyDown}
-                  onBlur={() => {
-                    const val = hotwordInput.replace(/[,，、]/g, "").trim()
-                    if (val) { addHotword(val); setHotwordInput("") }
-                  }}
-                  placeholder={hotwordTags.length === 0 ? "输入热词后按回车确认..." : ""}
-                  className="flex-1 min-w-[8rem] bg-transparent text-xs outline-none placeholder:text-muted-foreground/60 py-0.5"
-                />
+                    {hotwordTags.map((tag) => (
+                      <span key={tag} className="inline-flex items-center gap-0.5 rounded-md bg-primary/10 text-primary px-2 py-0.5 text-xs font-medium">
+                        {tag}
+                        <button type="button" onClick={(e) => { e.stopPropagation(); removeHotword(tag) }} className="ml-0.5 rounded-full hover:bg-primary/20 p-0.5">
+                          <X className="h-2.5 w-2.5" />
+                        </button>
+                      </span>
+                    ))}
+                    <input
+                      ref={hotwordInputRef}
+                      value={hotwordInput}
+                      onChange={(e) => setHotwordInput(e.target.value)}
+                      onKeyDown={handleHotwordKeyDown}
+                      onBlur={() => { const v = hotwordInput.replace(/[,，、]/g, "").trim(); if (v) { addHotword(v); setHotwordInput("") } }}
+                      placeholder={hotwordTags.length === 0 ? "按回车添加..." : ""}
+                      className="flex-1 min-w-[6rem] bg-transparent text-xs outline-none placeholder:text-muted-foreground/60 py-0.5"
+                    />
+                  </div>
+                </div>
+
+                {totalCount > 1 && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400">以上选项将应用于全部 {totalCount} 个文件</p>
+                )}
               </div>
-              <p className="text-xs text-muted-foreground">用于 LLM 润色时修正专有名词，按回车逐个添加</p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Right panel: file list ── */}
+      {hasFiles && (
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+          {/* Header */}
+          <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="font-medium">{queuedFiles.length} 个文件</span>
+              {uploadingCount > 0 && (
+                <span className="text-muted-foreground flex items-center gap-1">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  {uploadingCount} 个上传中
+                </span>
+              )}
+              {uploadingCount === 0 && readyCount > 0 && (
+                <span className="text-emerald-600 flex items-center gap-1">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  全部就绪
+                </span>
+              )}
+            </div>
+            <button
+              className="text-xs text-muted-foreground hover:text-destructive transition-colors"
+              onClick={clearAll}
+            >
+              清空列表
+            </button>
+          </div>
+
+          {/* Scrollable list */}
+          <div className="flex-1 overflow-y-auto px-4 py-2">
+            <div className="space-y-1">
+              {queuedFiles.map((f) => (
+                <div
+                  key={f.id}
+                  className={cn(
+                    "flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm group",
+                    f.error ? "bg-destructive/10 text-destructive" : "hover:bg-muted/60",
+                  )}
+                >
+                  {f.uploading ? (
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground shrink-0" />
+                  ) : f.error ? (
+                    <X className="h-4 w-4 shrink-0" />
+                  ) : isVideoFile(f.name) ? (
+                    <FileVideo className="h-4 w-4 text-muted-foreground shrink-0" />
+                  ) : (
+                    <FileAudio className="h-4 w-4 text-muted-foreground shrink-0" />
+                  )}
+
+                  <span className="flex-1 truncate">{f.name}</span>
+
+                  <span className="text-xs text-muted-foreground shrink-0 tabular-nums">
+                    {f.error ? f.error : f.uploading ? "上传中..." : (
+                      <>
+                        {formatFileSize(f.size)}
+                        {f.duration != null && <span className="ml-1.5">{formatDuration(f.duration)}</span>}
+                      </>
+                    )}
+                  </span>
+
+                  <button
+                    onClick={() => removeQueued(f.id)}
+                    className="p-0.5 rounded text-muted-foreground/40 hover:text-muted-foreground opacity-0 group-hover:opacity-100 transition-all shrink-0"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
-        )}
-      </div>
+
+          {/* Footer hint */}
+          <div className="shrink-0 px-4 py-2 border-t">
+            <button
+              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              onClick={() => setShowFolderDialog(true)}
+            >
+              <Folder className="h-3.5 w-3.5" />
+              从文件夹继续添加
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

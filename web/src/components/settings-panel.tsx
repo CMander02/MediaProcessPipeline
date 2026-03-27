@@ -279,6 +279,30 @@ export function SettingsPanel() {
         </CardContent>
       </Card>
 
+      {/* Queue */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">队列</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center gap-3">
+            <Label className="w-24 shrink-0 text-sm text-muted-foreground">并行下载数</Label>
+            <select
+              value={String(settings.max_download_concurrency ?? 2)}
+              onChange={(e) => updateSetting("max_download_concurrency", Number(e.target.value))}
+              className="h-8 rounded-md border border-input bg-background px-3 text-sm"
+            >
+              {[1, 2, 3, 4].map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+            {saved.max_download_concurrency && (
+              <Check className="h-3.5 w-3.5 text-emerald-500" />
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
       {/* UVR */}
       <Card>
         <CardHeader className="pb-3">
@@ -304,7 +328,56 @@ export function SettingsPanel() {
           />
         </CardContent>
       </Card>
+
+      {/* Bilibili */}
+      <BilibiliCard />
     </div>
+  )
+}
+
+function BilibiliCard() {
+  const [status, setStatus] = useState<{
+    logged_in: boolean; uid?: string; expires?: string; days_left?: number; message?: string
+  } | null>(null)
+
+  useEffect(() => {
+    api.bilibili.status().then(setStatus).catch(() => setStatus({ logged_in: false, message: "无法连接后端" }))
+  }, [])
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">Bilibili</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {status === null ? (
+          <p className="text-sm text-muted-foreground">加载中...</p>
+        ) : status.logged_in ? (
+          <div className="space-y-1 text-sm">
+            <div className="flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-emerald-500" />
+              <span>已登录 (UID: {status.uid})</span>
+            </div>
+            <p className="text-muted-foreground">
+              Cookie 有效期至 {status.expires?.split("T")[0]}（剩余 {status.days_left} 天）
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2 text-sm">
+            <div className="flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-red-500" />
+              <span>未登录</span>
+            </div>
+            <p className="text-muted-foreground">
+              {status.message ?? "请在终端运行 BBDown.exe login 扫码登录"}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              路径: backend/tools/bbdown/BBDown.exe login
+            </p>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
