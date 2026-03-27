@@ -93,39 +93,32 @@ class Settings(BaseSettings):
     bilibili_sessdata: str = ""
 
     def get_llm_config(self, provider: str | None = None) -> dict:
-        """
-        获取指定 provider 的 LiteLLM 配置
-
-        返回可直接传给 litellm.completion() 的参数
-        """
+        """获取指定 provider 的 LLM 配置（OpenAI-compatible 格式）。"""
         provider = provider or self.llm_provider
 
         if provider == "anthropic":
             config = {
-                "model": f"anthropic/{self.anthropic_model}",
+                "model": self.anthropic_model,
                 "api_key": self.anthropic_api_key,
+                "base_url": self.anthropic_api_base or "https://api.anthropic.com/v1",
             }
-            if self.anthropic_api_base:
-                config["api_base"] = self.anthropic_api_base
         elif provider == "openai":
             config = {
-                "model": self.openai_model,  # OpenAI 不需要前缀
+                "model": self.openai_model,
                 "api_key": self.openai_api_key,
             }
             if self.openai_api_base:
-                config["api_base"] = self.openai_api_base
+                config["base_url"] = self.openai_api_base
         elif provider == "custom":
-            # OpenAI Compatible API
             config = {
-                "model": f"openai/{self.custom_model}",  # 使用 openai/ 前缀
-                "api_key": self.custom_api_key,
-                "api_base": self.custom_api_base,
+                "model": self.custom_model,
+                "api_key": self.custom_api_key or "not-needed",
+                "base_url": self.custom_api_base,
             }
         else:
             raise ValueError(f"Unknown LLM provider: {provider}")
 
         config["temperature"] = self.temperature
-
         return config
 
 

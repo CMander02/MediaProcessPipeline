@@ -1,10 +1,12 @@
-"""LLM service for text analysis using LiteLLM with two-phase polishing."""
+"""LLM service for text analysis via OpenAI-compatible API."""
 
 import asyncio
 import json
 import logging
 import re
 from typing import Any
+
+from openai import AsyncOpenAI
 
 from app.core.config import get_settings
 from app.core.settings import get_runtime_settings
@@ -25,59 +27,58 @@ class LLMService:
     def __init__(self):
         self._static_settings = get_settings()
 
-    def _get_llm_config(self) -> dict | None:
-        """Get LLM configuration from runtime settings."""
+    def _get_client_and_model(self) -> tuple[AsyncOpenAI, str, float] | None:
+        """Build an AsyncOpenAI client from runtime settings.
+
+        Returns (client, model_name, temperature) or None if not configured.
+        All three providers (anthropic, openai, custom) are called through the
+        OpenAI-compatible chat completions endpoint.
+        """
         rt = get_runtime_settings()
         provider = rt.llm_provider
 
         if provider == "anthropic":
             if not rt.anthropic_api_key:
                 return None
-            config = {
-                "model": f"anthropic/{rt.anthropic_model}",
-                "api_key": rt.anthropic_api_key,
-            }
-            if rt.anthropic_api_base:
-                config["api_base"] = rt.anthropic_api_base
+            client = AsyncOpenAI(
+                api_key=rt.anthropic_api_key,
+                base_url=rt.anthropic_api_base or "https://api.anthropic.com/v1",
+            )
+            model = rt.anthropic_model
         elif provider == "openai":
             if not rt.openai_api_key:
                 return None
-            config = {
-                "model": rt.openai_model,  # OpenAI doesn't need prefix
-                "api_key": rt.openai_api_key,
-            }
+            kwargs: dict[str, Any] = {"api_key": rt.openai_api_key}
             if rt.openai_api_base:
-                config["api_base"] = rt.openai_api_base
+                kwargs["base_url"] = rt.openai_api_base
+            client = AsyncOpenAI(**kwargs)
+            model = rt.openai_model
         elif provider == "custom":
             if not rt.custom_api_base or not rt.custom_model:
                 return None
-            config = {
-                "model": f"openai/{rt.custom_model}",  # Use openai/ prefix for compatible APIs
-                "api_key": rt.custom_api_key or "not-needed",
-                "api_base": rt.custom_api_base,
-            }
+            client = AsyncOpenAI(
+                api_key=rt.custom_api_key or "not-needed",
+                base_url=rt.custom_api_base,
+            )
+            model = rt.custom_model
         else:
             return None
 
-        config["temperature"] = self._static_settings.temperature
-        return config
+        return client, model, self._static_settings.temperature
 
     async def _call(self, prompt: str) -> str:
-        config = self._get_llm_config()
-        if not config:
+        result = self._get_client_and_model()
+        if not result:
             logger.warning("LLM not configured - check API key and settings")
             return "[LLM not configured]"
 
+        client, model, temperature = result
         try:
-            import litellm
-
-            logger.info(f"Calling LLM: {config.get('model')}")
-            response = await litellm.acompletion(
-                model=config["model"],
+            logger.info(f"Calling LLM: {model}")
+            response = await client.chat.completions.create(
+                model=model,
                 messages=[{"role": "user", "content": prompt}],
-                api_key=config.get("api_key"),
-                api_base=config.get("api_base"),
-                temperature=config.get("temperature", 0.1),
+                temperature=temperature,
             )
             return response.choices[0].message.content or ""
         except Exception as e:

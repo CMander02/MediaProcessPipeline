@@ -11,8 +11,8 @@ dependencies = [
     "pydantic-settings>=2.6.0",
     "python-dotenv>=1.0.0",
     "httpx>=0.28.0",
-    # AI - 使用 litellm 统一处理各种 LLM API
-    "litellm>=1.40.0",
+    # AI - OpenAI-compatible API (直连各 provider)
+    "openai>=1.50.0",
     "python-multipart>=0.0.21",
     # CLI
     "typer>=0.15.0",
