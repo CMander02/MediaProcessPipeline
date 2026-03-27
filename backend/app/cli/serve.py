@@ -1,7 +1,8 @@
-"""mpp serve — start the daemon with a Rich Live dashboard."""
+"""mpp serve — start the daemon."""
 
 from __future__ import annotations
 
+import signal
 import socket
 import sys
 import uvicorn
@@ -38,6 +39,24 @@ def run_server(host: str = "127.0.0.1", port: int = 18000, reload: bool = False)
     console.print(f"  API   http://{host}:{port}/docs")
     console.print(f"  SSE   http://{host}:{port}/api/tasks/events")
     console.print()
+
+    # On Windows, Ctrl+C can leave child threads hanging. Force immediate exit
+    # on the second SIGINT (or SIGBREAK) so the process never gets stuck.
+    if sys.platform == "win32":
+        _first_sigint = [True]
+
+        def _force_exit(signum, frame):
+            if _first_sigint[0]:
+                _first_sigint[0] = False
+                console.print("\n[yellow]Shutting down… (press Ctrl+C again to force)[/yellow]")
+                raise KeyboardInterrupt
+            else:
+                console.print("\n[red]Force exit[/red]")
+                import os
+                os._exit(1)
+
+        signal.signal(signal.SIGINT, _force_exit)
+        signal.signal(signal.SIGBREAK, _force_exit)
 
     uvicorn.run(
         "app.main:app",

@@ -1,5 +1,6 @@
 """Start uvicorn server on fixed port 18000."""
 
+import signal
 import sys
 import uvicorn
 
@@ -12,6 +13,20 @@ if sys.platform == "win32":
 def main():
     port = 18000
     print(f"\n>>> Starting server on http://127.0.0.1:{port}\n")
+
+    # Windows Ctrl+C fix: force exit on second press
+    if sys.platform == "win32":
+        _first = [True]
+
+        def _handler(signum, frame):
+            if _first[0]:
+                _first[0] = False
+                raise KeyboardInterrupt
+            import os
+            os._exit(1)
+
+        signal.signal(signal.SIGINT, _handler)
+        signal.signal(signal.SIGBREAK, _handler)
 
     uvicorn.run(
         "app.main:app",
