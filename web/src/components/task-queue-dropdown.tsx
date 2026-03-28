@@ -3,7 +3,8 @@ import { api, subscribeAllEvents, type Task } from "@/lib/api"
 import { navigate } from "@/lib/router"
 import { STEP_NAME, STATUS_CONFIG } from "@/lib/constants"
 import { cn } from "@/lib/utils"
-import { Loader2, ListTodo } from "lucide-react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { Loading03Icon, Task01Icon } from "@hugeicons/core-free-icons"
 
 function formatSource(source: string): string {
   const parts = source.replace(/\\/g, "/").split("/")
@@ -30,7 +31,7 @@ function TaskRow({ task, onClick }: { task: Task; onClick: () => void }) {
     >
       {/* Status indicator */}
       {task.status === "processing" ? (
-        <Loader2 className="h-3 w-3 animate-spin text-blue-500 shrink-0" />
+        <HugeiconsIcon icon={Loading03Icon} className="h-3 w-3 animate-spin text-blue-500 shrink-0" />
       ) : (
         <span className={cn("h-2 w-2 rounded-full shrink-0", cfg.dot)} />
       )}
@@ -127,7 +128,7 @@ export function TaskQueueDropdown() {
         )}
         title="处理队列"
       >
-        <ListTodo className="h-3.5 w-3.5" />
+        <HugeiconsIcon icon={Task01Icon} className="h-3.5 w-3.5" />
         <span className="inline-flex items-center justify-center rounded-full bg-blue-500 text-white text-[10px] font-medium min-w-[1.1rem] h-[1.1rem] px-1 leading-none">
           {count}
         </span>

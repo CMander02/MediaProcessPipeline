@@ -14,17 +14,18 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { api } from "@/lib/api"
+import { HugeiconsIcon } from "@hugeicons/react"
 import {
-  ChevronRight,
-  Folder,
-  FolderOpen,
-  HardDrive,
-  Loader2,
-  Play,
-  Music,
-  Video,
-  X,
-} from "lucide-react"
+  ArrowRight01Icon,
+  Folder01Icon,
+  FolderOpenIcon,
+  HardDriveIcon,
+  Loading03Icon,
+  PlayIcon,
+  MusicNote01Icon,
+  Video01Icon,
+  Cancel01Icon,
+} from "@hugeicons/core-free-icons"
 
 interface BrowseItem {
   name: string
@@ -196,7 +197,7 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
                     className="flex items-center gap-1.5 px-2 py-1.5 rounded text-xs hover:bg-muted transition-colors text-left"
                     onClick={() => browse(d.path)}
                   >
-                    <HardDrive className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <HugeiconsIcon icon={HardDriveIcon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                     {d.name}
                   </button>
                 ))}
@@ -208,7 +209,7 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
               <div className="flex-1 overflow-y-auto rounded border bg-muted/20">
                 {loading ? (
                   <div className="flex items-center justify-center h-full py-8">
-                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                    <HugeiconsIcon icon={Loading03Icon} className="h-5 w-5 animate-spin text-muted-foreground" />
                   </div>
                 ) : (
                   <div className="divide-y divide-border/40">
@@ -230,18 +231,20 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
                         }}
                       >
                         {item.name === ".." ? (
-                          <ChevronRight className="h-4 w-4 text-muted-foreground rotate-180 shrink-0" />
+                          <HugeiconsIcon icon={ArrowRight01Icon} className="h-4 w-4 text-muted-foreground rotate-180 shrink-0" />
                         ) : selectedFolder === item.path ? (
-                          <FolderOpen className="h-4 w-4 text-primary shrink-0" />
+                          <HugeiconsIcon icon={FolderOpenIcon} className="h-4 w-4 text-primary shrink-0" />
                         ) : (
-                          <Folder className="h-4 w-4 text-muted-foreground shrink-0" />
+                          <HugeiconsIcon icon={Folder01Icon} className="h-4 w-4 text-muted-foreground shrink-0" />
                         )}
                         <span className="truncate">{item.name}</span>
-                        <ChevronRight
-                          className="h-3.5 w-3.5 ml-auto text-muted-foreground/50 shrink-0 hover:text-foreground cursor-pointer"
+                        <span
+                          className="ml-auto shrink-0 hover:text-foreground cursor-pointer text-muted-foreground/50"
                           onClick={(e) => { e.stopPropagation(); browse(item.path) }}
                           title="进入文件夹"
-                        />
+                        >
+                          <HugeiconsIcon icon={ArrowRight01Icon} className="h-3.5 w-3.5" />
+                        </span>
                       </button>
                     ))}
                     {items.length === 0 && (
@@ -259,7 +262,7 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
                   </p>
                   {scanning ? (
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin" />
                       扫描中...
                     </div>
                   ) : done ? (
@@ -283,9 +286,9 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
                       {mediaFiles.map((f) => (
                         <div key={f.path} className="flex items-center gap-2 text-xs">
                           {isVideo(f.name) ? (
-                            <Video className="h-3 w-3 shrink-0 text-muted-foreground" />
+                            <HugeiconsIcon icon={Video01Icon} className="h-3 w-3 shrink-0 text-muted-foreground" />
                           ) : (
-                            <Music className="h-3 w-3 shrink-0 text-muted-foreground" />
+                            <HugeiconsIcon icon={MusicNote01Icon} className="h-3 w-3 shrink-0 text-muted-foreground" />
                           )}
                           <span className="truncate flex-1">{f.name}</span>
                           <span className="text-muted-foreground shrink-0">{formatSize(f.size)}</span>
@@ -305,7 +308,7 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
           </Button>
           {submitting ? (
             <Button variant="destructive" onClick={handleCancelSubmit}>
-              <X className="h-4 w-4 mr-1.5" />
+              <HugeiconsIcon icon={Cancel01Icon} className="h-4 w-4 mr-1.5" />
               停止 ({submitProgress}/{mediaFiles.length})
             </Button>
           ) : (
@@ -313,7 +316,7 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
               onClick={handleSubmitAll}
               disabled={!selectedFolder || mediaFiles.length === 0 || done || scanning}
             >
-              <Play className="h-4 w-4 mr-1.5" />
+              <HugeiconsIcon icon={PlayIcon} className="h-4 w-4 mr-1.5" />
               {mediaFiles.length > 0 ? `提交全部 ${mediaFiles.length} 个文件` : "提交"}
             </Button>
           )}

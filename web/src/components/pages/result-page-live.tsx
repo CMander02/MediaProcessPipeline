@@ -4,7 +4,8 @@ import { navigate } from "@/lib/router"
 import { PIPELINE_STEPS, STEP_NAME } from "@/lib/constants"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import { Check, Loader2, X, ArrowLeft, Ban } from "lucide-react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { Tick02Icon, Loading03Icon, Cancel01Icon, ArrowLeft01Icon, CancelCircleIcon } from "@hugeicons/core-free-icons"
 
 interface LogEntry {
   ts: string
@@ -95,7 +96,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
         {/* Header */}
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="sm" onClick={() => navigate("#/files")}>
-            <ArrowLeft className="h-4 w-4 mr-1" />
+            <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4 mr-1" />
             返回
           </Button>
           <div className="flex-1 min-w-0">
@@ -118,7 +119,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
           </div>
           {task && !isTerminal && (
             <Button variant="outline" size="sm" onClick={handleCancel}>
-              <Ban className="h-3.5 w-3.5 mr-1" />
+              <HugeiconsIcon icon={CancelCircleIcon} className="h-3.5 w-3.5 mr-1" />
               取消
             </Button>
           )}
@@ -143,11 +144,11 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
                     )}
                   >
                     {isCompleted ? (
-                      <Check className="h-3 w-3" />
+                      <HugeiconsIcon icon={Tick02Icon} className="h-3 w-3" />
                     ) : isCurrent && !isFailed ? (
-                      <Loader2 className="h-3 w-3 animate-spin text-blue-600" />
+                      <HugeiconsIcon icon={Loading03Icon} className="h-3 w-3 animate-spin text-blue-600" />
                     ) : isFailed ? (
-                      <X className="h-3 w-3 text-destructive" />
+                      <HugeiconsIcon icon={Cancel01Icon} className="h-3 w-3 text-destructive" />
                     ) : (
                       <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/20" />
                     )}

@@ -5,7 +5,8 @@ import { navigate } from "@/lib/router"
 import { ArchiveCard } from "@/components/archive-card"
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
 import { Button } from "@/components/ui/button"
-import { Loader2, FolderOpen, ChevronLeft, ChevronRight } from "lucide-react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { Loading03Icon, FolderOpenIcon, ArrowLeft01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons"
 
 const PAGE_SIZE = 18
 
@@ -52,7 +53,7 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        <HugeiconsIcon icon={Loading03Icon} className="h-5 w-5 animate-spin text-muted-foreground" />
       </div>
     )
   }
@@ -74,7 +75,7 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
         </div>
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
-          <FolderOpen className="h-12 w-12 opacity-20" />
+          <HugeiconsIcon icon={FolderOpenIcon} className="h-12 w-12 opacity-20" />
           {archives.length === 0 ? (
             <p>还没有归档结果。处理完成后这里会显示文件。</p>
           ) : (
@@ -92,7 +93,7 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
             disabled={safePage <= 1}
             onClick={() => setPage(safePage - 1)}
           >
-            <ChevronLeft className="h-4 w-4" />
+            <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4" />
           </Button>
           {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
             <Button
@@ -111,7 +112,7 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
             disabled={safePage >= totalPages}
             onClick={() => setPage(safePage + 1)}
           >
-            <ChevronRight className="h-4 w-4" />
+            <HugeiconsIcon icon={ArrowRight01Icon} className="h-4 w-4" />
           </Button>
         </div>
       )}

@@ -8,7 +8,8 @@ import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { api, type Settings } from "@/lib/api"
 import { usePreferences } from "@/hooks/use-preferences"
-import { Save, Check, Moon, Sun } from "lucide-react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { FloppyDiskIcon, Tick02Icon, Moon02Icon, Sun01Icon } from "@hugeicons/core-free-icons"
 
 export function SettingsPanel() {
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -58,7 +59,7 @@ export function SettingsPanel() {
         <CardContent>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              {darkMode ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+              {darkMode ? <HugeiconsIcon icon={Moon02Icon} className="h-4 w-4" /> : <HugeiconsIcon icon={Sun01Icon} className="h-4 w-4" />}
               <Label>深色模式</Label>
             </div>
             <Switch checked={darkMode} onCheckedChange={toggleDark} />
@@ -297,7 +298,7 @@ export function SettingsPanel() {
               ))}
             </select>
             {saved.max_download_concurrency && (
-              <Check className="h-3.5 w-3.5 text-emerald-500" />
+              <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
             )}
           </div>
         </CardContent>
@@ -431,11 +432,11 @@ function SettingRow({ label, settingKey, value, onSave, saving, saved, masked, p
           disabled={isSaving}
           className="h-8 px-2"
         >
-          {isSaved ? <Check className="h-3.5 w-3.5" /> : <Save className="h-3.5 w-3.5" />}
+          {isSaved ? <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5" /> : <HugeiconsIcon icon={FloppyDiskIcon} className="h-3.5 w-3.5" />}
         </Button>
       )}
       {!isDirty && isSaved && (
-        <Check className="h-3.5 w-3.5 text-emerald-500" />
+        <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
       )}
     </div>
   )

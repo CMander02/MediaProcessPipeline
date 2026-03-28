@@ -15,7 +15,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Pencil, Trash2, ArrowUp, ArrowDown, Copy, Check, X } from "lucide-react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { PencilEdit01Icon, Delete01Icon, ArrowUp01Icon, ArrowDown01Icon, Copy01Icon, Tick02Icon, Cancel01Icon } from "@hugeicons/core-free-icons"
 
 interface TranscriptSegmentProps {
   subtitle: Subtitle
@@ -131,7 +132,7 @@ export const TranscriptSegment = memo(function TranscriptSegment({
                     <span style={{ color: getSpeakerColor(spk) }} className="font-medium">
                       {formatSpeakerLabel(spk)}
                     </span>
-                    {spk === subtitle.speaker && <Check className="h-3 w-3 ml-auto" />}
+                    {spk === subtitle.speaker && <HugeiconsIcon icon={Tick02Icon} className="h-3 w-3 ml-auto" />}
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuContent>
@@ -139,10 +140,10 @@ export const TranscriptSegment = memo(function TranscriptSegment({
           )}
           <div className="flex-1" />
           <button onClick={handleSave} className="p-1 rounded hover:bg-emerald-100 text-emerald-600" title="保存">
-            <Check className="h-3.5 w-3.5" />
+            <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5" />
           </button>
           <button onClick={onEditCancel} className="p-1 rounded hover:bg-muted text-muted-foreground" title="取消">
-            <X className="h-3.5 w-3.5" />
+            <HugeiconsIcon icon={Cancel01Icon} className="h-3.5 w-3.5" />
           </button>
         </div>
         {/* Text edit */}
@@ -213,7 +214,7 @@ export const TranscriptSegment = memo(function TranscriptSegment({
                       <span style={{ color: getSpeakerColor(spk) }} className="font-medium">
                         {formatSpeakerLabel(spk)}
                       </span>
-                      {spk === subtitle.speaker && <Check className="h-3 w-3 ml-auto" />}
+                      {spk === subtitle.speaker && <HugeiconsIcon icon={Tick02Icon} className="h-3 w-3 ml-auto" />}
                     </DropdownMenuItem>
                   ))}
                 </DropdownMenuContent>
@@ -230,25 +231,25 @@ export const TranscriptSegment = memo(function TranscriptSegment({
 
       <ContextMenuContent>
         <ContextMenuItem onClick={onEditStart}>
-          <Pencil className="h-4 w-4" />
+          <HugeiconsIcon icon={PencilEdit01Icon} className="h-4 w-4" />
           编辑
         </ContextMenuItem>
         <ContextMenuItem onClick={handleCopy}>
-          <Copy className="h-4 w-4" />
+          <HugeiconsIcon icon={Copy01Icon} className="h-4 w-4" />
           复制
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem onClick={() => onInsert("above")}>
-          <ArrowUp className="h-4 w-4" />
+          <HugeiconsIcon icon={ArrowUp01Icon} className="h-4 w-4" />
           在上方插入
         </ContextMenuItem>
         <ContextMenuItem onClick={() => onInsert("below")}>
-          <ArrowDown className="h-4 w-4" />
+          <HugeiconsIcon icon={ArrowDown01Icon} className="h-4 w-4" />
           在下方插入
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem variant="destructive" onClick={onDelete}>
-          <Trash2 className="h-4 w-4" />
+          <HugeiconsIcon icon={Delete01Icon} className="h-4 w-4" />
           删除
         </ContextMenuItem>
       </ContextMenuContent>

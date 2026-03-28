@@ -1,4 +1,5 @@
-import { Search, X } from "lucide-react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { Search01Icon, Cancel01Icon } from "@hugeicons/core-free-icons"
 import { Input } from "@/components/ui/input"
 
 interface TranscriptSearchProps {
@@ -10,7 +11,7 @@ interface TranscriptSearchProps {
 export function TranscriptSearch({ value, onChange, matchCount }: TranscriptSearchProps) {
   return (
     <div className="relative">
-      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+      <HugeiconsIcon icon={Search01Icon} className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
       <Input
         placeholder="搜索字幕..."
         value={value}
@@ -26,7 +27,7 @@ export function TranscriptSearch({ value, onChange, matchCount }: TranscriptSear
             onClick={() => onChange("")}
             className="text-muted-foreground hover:text-foreground"
           >
-            <X className="h-3 w-3" />
+            <HugeiconsIcon icon={Cancel01Icon} className="h-3 w-3" />
           </button>
         </div>
       )}

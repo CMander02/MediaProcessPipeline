@@ -7,10 +7,11 @@ import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { FolderQueueDialog } from "@/components/folder-queue-dialog"
+import { HugeiconsIcon } from "@hugeicons/react"
 import {
-  Upload, Link, Loader2, Play, ChevronDown, ChevronUp,
-  FileVideo, FileAudio, FolderOpen, Folder, X, CheckCircle2,
-} from "lucide-react"
+  Upload01Icon, Link01Icon, Loading03Icon, PlayIcon, ArrowDown01Icon, ArrowUp01Icon,
+  FileVideoIcon, FileAudioIcon, FolderOpenIcon, Folder01Icon, Cancel01Icon, CheckmarkCircle02Icon,
+} from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
 import { formatDuration } from "@/lib/format"
 
@@ -200,7 +201,7 @@ export function SubmitPage() {
             )}
             onClick={() => fileInputRef.current?.click()}
           >
-            <Upload className={cn("text-muted-foreground/40", hasFiles ? "h-6 w-6" : "h-9 w-9")} />
+            <HugeiconsIcon icon={Upload01Icon} className={cn("text-muted-foreground/40", hasFiles ? "h-6 w-6" : "h-9 w-9")} />
             <div className="text-center pointer-events-none">
               <p className="text-sm font-medium text-muted-foreground">
                 {isDragging ? "松开鼠标放下文件" : hasFiles ? "继续拖入或点击添加" : "拖放音视频文件到这里"}
@@ -211,11 +212,11 @@ export function SubmitPage() {
             </div>
             <div className="flex items-center gap-2 pointer-events-auto" onClick={(e) => e.stopPropagation()}>
               <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
-                <Upload className="h-3.5 w-3.5 mr-1.5" />
+                <HugeiconsIcon icon={Upload01Icon} className="h-3.5 w-3.5 mr-1.5" />
                 选择文件
               </Button>
               <Button variant="outline" size="sm" onClick={() => setShowFolderDialog(true)}>
-                <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
+                <HugeiconsIcon icon={FolderOpenIcon} className="h-3.5 w-3.5 mr-1.5" />
                 选择文件夹
               </Button>
             </div>
@@ -241,7 +242,7 @@ export function SubmitPage() {
           {/* URL input */}
           <form onSubmit={handleURLSubmit} className="flex gap-2">
             <div className="relative flex-1">
-              <Link className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+              <HugeiconsIcon icon={Link01Icon} className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
               <Input
                 value={source}
                 onChange={(e) => setSource(e.target.value)}
@@ -256,8 +257,8 @@ export function SubmitPage() {
           {/* Submit */}
           <Button size="lg" disabled={!canSubmit} onClick={handleSubmitAll} className="w-full">
             {submitting
-              ? <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              : <Play className="h-4 w-4 mr-2" />
+              ? <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
+              : <HugeiconsIcon icon={PlayIcon} className="h-4 w-4 mr-2" />
             }
             {submitting
               ? "提交中..."
@@ -276,7 +277,7 @@ export function SubmitPage() {
               className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
               onClick={() => setShowAdvanced(!showAdvanced)}
             >
-              {showAdvanced ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+              {showAdvanced ? <HugeiconsIcon icon={ArrowUp01Icon} className="h-3.5 w-3.5" /> : <HugeiconsIcon icon={ArrowDown01Icon} className="h-3.5 w-3.5" />}
               高级选项
               {activeOptions > 0 && (
                 <span className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] text-primary-foreground font-medium">
@@ -314,7 +315,7 @@ export function SubmitPage() {
                       <span key={tag} className="inline-flex items-center gap-0.5 rounded-md bg-primary/10 text-primary px-2 py-0.5 text-xs font-medium">
                         {tag}
                         <button type="button" onClick={(e) => { e.stopPropagation(); removeHotword(tag) }} className="ml-0.5 rounded-full hover:bg-primary/20 p-0.5">
-                          <X className="h-2.5 w-2.5" />
+                          <HugeiconsIcon icon={Cancel01Icon} className="h-2.5 w-2.5" />
                         </button>
                       </span>
                     ))}
@@ -348,13 +349,13 @@ export function SubmitPage() {
               <span className="font-medium">{queuedFiles.length} 个文件</span>
               {uploadingCount > 0 && (
                 <span className="text-muted-foreground flex items-center gap-1">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <HugeiconsIcon icon={Loading03Icon} className="h-3.5 w-3.5 animate-spin" />
                   {uploadingCount} 个上传中
                 </span>
               )}
               {uploadingCount === 0 && readyCount > 0 && (
                 <span className="text-emerald-600 flex items-center gap-1">
-                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  <HugeiconsIcon icon={CheckmarkCircle02Icon} className="h-3.5 w-3.5" />
                   全部就绪
                 </span>
               )}
@@ -379,13 +380,13 @@ export function SubmitPage() {
                   )}
                 >
                   {f.uploading ? (
-                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground shrink-0" />
+                    <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin text-muted-foreground shrink-0" />
                   ) : f.error ? (
-                    <X className="h-4 w-4 shrink-0" />
+                    <HugeiconsIcon icon={Cancel01Icon} className="h-4 w-4 shrink-0" />
                   ) : isVideoFile(f.name) ? (
-                    <FileVideo className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <HugeiconsIcon icon={FileVideoIcon} className="h-4 w-4 text-muted-foreground shrink-0" />
                   ) : (
-                    <FileAudio className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <HugeiconsIcon icon={FileAudioIcon} className="h-4 w-4 text-muted-foreground shrink-0" />
                   )}
 
                   <span className="flex-1 truncate">{f.name}</span>
@@ -403,7 +404,7 @@ export function SubmitPage() {
                     onClick={() => removeQueued(f.id)}
                     className="p-0.5 rounded text-muted-foreground/40 hover:text-muted-foreground opacity-0 group-hover:opacity-100 transition-all shrink-0"
                   >
-                    <X className="h-3.5 w-3.5" />
+                    <HugeiconsIcon icon={Cancel01Icon} className="h-3.5 w-3.5" />
                   </button>
                 </div>
               ))}
@@ -416,7 +417,7 @@ export function SubmitPage() {
               className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
               onClick={() => setShowFolderDialog(true)}
             >
-              <Folder className="h-3.5 w-3.5" />
+              <HugeiconsIcon icon={Folder01Icon} className="h-3.5 w-3.5" />
               从文件夹继续添加
             </button>
           </div>

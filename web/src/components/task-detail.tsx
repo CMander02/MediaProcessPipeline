@@ -7,7 +7,8 @@ import { StepProgress } from "@/components/step-progress"
 import { Progress } from "@/components/ui/progress"
 import { STATUS_CONFIG } from "@/lib/constants"
 import { api, subscribeTaskEvents, type Task } from "@/lib/api"
-import { X, Ban } from "lucide-react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { Cancel01Icon, CancelCircleIcon } from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
 
 export function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }) {
@@ -45,7 +46,7 @@ export function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () =>
         <CardHeader className="flex-row items-center justify-between gap-2 space-y-0 pb-3">
           <CardTitle className="text-base truncate flex-1">{task.source.split(/[/\\]/).pop()}</CardTitle>
           <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close">
-            <X className="h-4 w-4" />
+            <HugeiconsIcon icon={Cancel01Icon} className="h-4 w-4" />
           </Button>
         </CardHeader>
 
@@ -133,7 +134,7 @@ export function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () =>
             <>
               <Separator />
               <Button variant="destructive" size="sm" onClick={handleCancel}>
-                <Ban className="h-4 w-4 mr-1.5" />
+                <HugeiconsIcon icon={CancelCircleIcon} className="h-4 w-4 mr-1.5" />
                 取消任务
               </Button>
             </>

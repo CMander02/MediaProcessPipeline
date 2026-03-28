@@ -8,7 +8,8 @@ import { navigate } from "@/lib/router"
 import { api } from "@/lib/api"
 import { ResultPageLive } from "./result-page-live"
 import { ResultPageComplete } from "./result-page-complete"
-import { Loader2 } from "lucide-react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { Loading03Icon } from "@hugeicons/core-free-icons"
 
 export function ResultPageWrapper() {
   const route = useRoute()
@@ -58,7 +59,7 @@ function TaskResolver({ taskId }: { taskId: string }) {
   if (resolved === "loading") {
     return (
       <div className="flex h-full items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        <HugeiconsIcon icon={Loading03Icon} className="h-5 w-5 animate-spin text-muted-foreground" />
       </div>
     )
   }

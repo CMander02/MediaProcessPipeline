@@ -9,7 +9,8 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { RenameDialog } from "@/components/rename-dialog"
-import { Video, Music, FileText, FolderOpen, Pencil, Trash2, Loader2 } from "lucide-react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { Video01Icon, MusicNote01Icon, Note01Icon, FolderOpenIcon, PencilEdit01Icon, Delete01Icon, Loading03Icon } from "@hugeicons/core-free-icons"
 
 interface ArchiveCardProps {
   archive: ArchiveItem
@@ -47,12 +48,12 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed }: ArchiveCa
               />
             ) : archive.has_video ? (
               <div className="flex h-full w-full items-center justify-center">
-                <Video className="h-8 w-8 text-muted-foreground/30" />
+                <HugeiconsIcon icon={Video01Icon} className="h-8 w-8 text-muted-foreground/30" />
               </div>
             ) : (
               <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-primary/5 to-primary/15">
                 <div className="rounded-full bg-primary/10 p-3">
-                  <Music className="h-6 w-6 text-primary/40" />
+                  <HugeiconsIcon icon={MusicNote01Icon} className="h-6 w-6 text-primary/40" />
                 </div>
               </div>
             )}
@@ -61,7 +62,7 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed }: ArchiveCa
             {archive.processing && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/20">
                 <div className="rounded-full bg-background/90 p-1.5">
-                  <Loader2 className="h-5 w-5 animate-spin text-blue-500" />
+                  <HugeiconsIcon icon={Loading03Icon} className="h-5 w-5 animate-spin text-blue-500" />
                 </div>
               </div>
             )}
@@ -82,12 +83,12 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed }: ArchiveCa
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <span>{archive.date}</span>
               <span className="flex items-center gap-0.5">
-                {archive.has_video ? <Video className="h-3 w-3" /> : <Music className="h-3 w-3" />}
+                {archive.has_video ? <HugeiconsIcon icon={Video01Icon} className="h-3 w-3" /> : <HugeiconsIcon icon={MusicNote01Icon} className="h-3 w-3" />}
                 {archive.has_video ? "视频" : "音频"}
               </span>
               {archive.has_summary && (
                 <span className="flex items-center gap-0.5">
-                  <FileText className="h-3 w-3" />摘要
+                  <HugeiconsIcon icon={Note01Icon} className="h-3 w-3" />摘要
                 </span>
               )}
             </div>
@@ -97,16 +98,16 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed }: ArchiveCa
 
       <ContextMenuContent>
         <ContextMenuItem onClick={onClick}>
-          <FolderOpen className="h-4 w-4" />
+          <HugeiconsIcon icon={FolderOpenIcon} className="h-4 w-4" />
           打开
         </ContextMenuItem>
         <ContextMenuItem onClick={() => setShowRename(true)}>
-          <Pencil className="h-4 w-4" />
+          <HugeiconsIcon icon={PencilEdit01Icon} className="h-4 w-4" />
           重命名
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem variant="destructive" onClick={() => onDelete?.()}>
-          <Trash2 className="h-4 w-4" />
+          <HugeiconsIcon icon={Delete01Icon} className="h-4 w-4" />
           删除
         </ContextMenuItem>
       </ContextMenuContent>

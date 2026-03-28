@@ -55,6 +55,7 @@ settings.json
 
 # Reference files and images (not code)
 reference/
+shadcn-reference/
 image.png
 nul
 

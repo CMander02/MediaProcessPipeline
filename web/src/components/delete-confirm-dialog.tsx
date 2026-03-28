@@ -10,7 +10,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { api } from "@/lib/api"
-import { Loader2 } from "lucide-react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { Loading03Icon } from "@hugeicons/core-free-icons"
 
 interface DeleteConfirmDialogProps {
   open: boolean
@@ -58,7 +59,7 @@ export function DeleteConfirmDialog({
             onClick={handleDelete}
             disabled={deleting}
           >
-            {deleting && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+            {deleting && <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-1" />}
             删除
           </AlertDialogAction>
         </AlertDialogFooter>

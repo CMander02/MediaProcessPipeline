@@ -5,7 +5,8 @@ import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { api } from "@/lib/api"
 import { FolderQueueDialog } from "@/components/folder-queue-dialog"
-import { Play, Upload, Folder, Loader2, ChevronDown, ChevronUp } from "lucide-react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { PlayIcon, Upload01Icon, Folder01Icon, Loading03Icon, ArrowDown01Icon, ArrowUp01Icon } from "@hugeicons/core-free-icons"
 
 export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
   const [source, setSource] = useState("")
@@ -85,7 +86,7 @@ export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
           autoComplete="off"
         />
         <Button type="submit" disabled={!source.trim() || submitting}>
-          {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+          {submitting ? <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin" /> : <HugeiconsIcon icon={PlayIcon} className="h-4 w-4" />}
           <span className="ml-1.5">处理</span>
         </Button>
         <Button
@@ -102,7 +103,7 @@ export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
             input.click()
           }}
         >
-          <Upload className="h-4 w-4" />
+          <HugeiconsIcon icon={Upload01Icon} className="h-4 w-4" />
           <span className="ml-1.5 hidden sm:inline">上传</span>
         </Button>
         <Button
@@ -112,7 +113,7 @@ export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
           onClick={() => setShowFolderDialog(true)}
           title="批量处理文件夹"
         >
-          <Folder className="h-4 w-4" />
+          <HugeiconsIcon icon={Folder01Icon} className="h-4 w-4" />
           <span className="ml-1.5 hidden sm:inline">文件夹</span>
         </Button>
       </form>
@@ -130,7 +131,7 @@ export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
             className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
             onClick={() => setShowAdvanced(!showAdvanced)}
           >
-            {showAdvanced ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            {showAdvanced ? <HugeiconsIcon icon={ArrowUp01Icon} className="h-3.5 w-3.5" /> : <HugeiconsIcon icon={ArrowDown01Icon} className="h-3.5 w-3.5" />}
             高级选项
           </button>
         </div>

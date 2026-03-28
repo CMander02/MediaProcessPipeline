@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge"
-import { Globe, MessageSquare, Hash, Tag } from "lucide-react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { GlobeIcon, Comment01Icon, HashtagIcon, Tag01Icon } from "@hugeicons/core-free-icons"
 
 interface AnalysisBadgesProps {
   analysis: {
@@ -23,13 +24,13 @@ export function AnalysisBadges({ analysis }: AnalysisBadgesProps) {
       <div className="flex flex-wrap gap-1.5">
         {analysis.language && (
           <Badge variant="secondary" className="gap-1">
-            <Globe className="w-3 h-3" />
+            <HugeiconsIcon icon={GlobeIcon} className="w-3 h-3" />
             {analysis.language}
           </Badge>
         )}
         {analysis.content_type && (
           <Badge variant="secondary" className="gap-1">
-            <MessageSquare className="w-3 h-3" />
+            <HugeiconsIcon icon={Comment01Icon} className="w-3 h-3" />
             {analysis.content_type}
           </Badge>
         )}
@@ -45,13 +46,13 @@ export function AnalysisBadges({ analysis }: AnalysisBadgesProps) {
         )}
         {analysis.main_topics?.map((topic) => (
           <Badge key={topic} variant="outline" className="gap-1">
-            <Tag className="w-3 h-3" />
+            <HugeiconsIcon icon={Tag01Icon} className="w-3 h-3" />
             {topic}
           </Badge>
         ))}
         {analysis.keywords?.map((kw) => (
           <Badge key={kw} variant="outline" className="gap-1 text-xs">
-            <Hash className="w-2.5 h-2.5" />
+            <HugeiconsIcon icon={HashtagIcon} className="w-2.5 h-2.5" />
             {kw}
           </Badge>
         ))}

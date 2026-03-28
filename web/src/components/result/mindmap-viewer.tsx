@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { IPureNode } from "markmap-common"
 import { Dialog, DialogContent } from "@/components/ui/dialog"
-import { LocateFixed, Maximize2 } from "lucide-react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { Gps01Icon, Maximize01Icon } from "@hugeicons/core-free-icons"
 
 interface MindmapViewerProps {
   markdown: string
@@ -328,7 +329,7 @@ export function MindmapViewer({ markdown, fillContainer }: MindmapViewerProps) {
               className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               title="Fit to viewport"
             >
-              <LocateFixed className="h-3.5 w-3.5" />
+              <HugeiconsIcon icon={Gps01Icon} className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>
@@ -351,7 +352,7 @@ export function MindmapViewer({ markdown, fillContainer }: MindmapViewerProps) {
             className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
             title="Open expanded view"
           >
-            <Maximize2 className="h-3.5 w-3.5" />
+            <HugeiconsIcon icon={Maximize01Icon} className="h-3.5 w-3.5" />
             <span>Open</span>
           </button>
         </div>
@@ -373,7 +374,7 @@ export function MindmapViewer({ markdown, fillContainer }: MindmapViewerProps) {
                 className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 title="Fit to viewport"
               >
-                <LocateFixed className="h-4 w-4" />
+                <HugeiconsIcon icon={Gps01Icon} className="h-4 w-4" />
               </button>
             </div>
           </div>

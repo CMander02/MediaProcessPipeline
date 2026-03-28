@@ -1,4 +1,5 @@
-import { Lightbulb } from "lucide-react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { BulbIcon } from "@hugeicons/core-free-icons"
 
 interface KeyFactsCardsProps {
   facts: string[]
@@ -10,7 +11,7 @@ export function KeyFactsCards({ facts }: KeyFactsCardsProps) {
   return (
     <div className="space-y-2">
       <h3 className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-        <Lightbulb className="w-3.5 h-3.5" />
+        <HugeiconsIcon icon={BulbIcon} className="w-3.5 h-3.5" />
         核心要点
       </h3>
       <div className="grid gap-2 sm:grid-cols-2">

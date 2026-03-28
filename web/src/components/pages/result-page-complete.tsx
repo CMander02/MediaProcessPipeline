@@ -31,7 +31,8 @@ import { TranscriptTab } from "@/components/result/transcript-tab"
 import { SummaryTab } from "@/components/result/summary-tab"
 import { MindmapViewer } from "@/components/result/mindmap-viewer"
 import { AnalysisBadges } from "@/components/result/analysis-badges"
-import { ArrowLeft, Check, Copy, Download, Loader2, MoreHorizontal, Pencil, Trash2, X } from "lucide-react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { ArrowLeft01Icon, Tick02Icon, Copy01Icon, Download01Icon, Loading03Icon, MoreHorizontalIcon, PencilEdit01Icon, Delete01Icon, Cancel01Icon } from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
 
 interface Props {
@@ -284,7 +285,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
       {/* Top bar */}
       <div className="shrink-0 flex items-center gap-3 px-4 py-2 border-b">
         <Button variant="ghost" size="sm" onClick={() => navigate("#/files")}>
-          <ArrowLeft className="h-4 w-4 mr-1" />
+          <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4 mr-1" />
           返回
         </Button>
         {editingTitle ? (
@@ -306,27 +307,27 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
             title="点击编辑标题"
           >
             <span className="truncate">{displayTitle}</span>
-            <Pencil className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-50 transition-opacity" />
+            <HugeiconsIcon icon={PencilEdit01Icon} className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-50 transition-opacity" />
           </button>
         )}
         {isProcessing && (
           <span className="text-xs text-blue-600 flex items-center gap-1">
-            <Loader2 className="h-3 w-3 animate-spin" />
+            <HugeiconsIcon icon={Loading03Icon} className="h-3 w-3 animate-spin" />
             处理中
           </span>
         )}
         <DropdownMenu>
-          <DropdownMenuTrigger
-            render={<Button variant="ghost" size="icon-sm" />}
-          >
-            <MoreHorizontal className="h-4 w-4" />
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon-sm">
+              <HugeiconsIcon icon={MoreHorizontalIcon} className="h-4 w-4" />
+            </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem
               variant="destructive"
               onClick={() => setShowDeleteDialog(true)}
             >
-              <Trash2 className="h-4 w-4" />
+              <HugeiconsIcon icon={Delete01Icon} className="h-4 w-4" />
               删除
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -351,9 +352,9 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
                     )}
                   >
                     {isDone ? (
-                      <Check className="h-2.5 w-2.5" />
+                      <HugeiconsIcon icon={Tick02Icon} className="h-2.5 w-2.5" />
                     ) : isCurrent ? (
-                      <Loader2 className="h-2.5 w-2.5 animate-spin text-blue-600" />
+                      <HugeiconsIcon icon={Loading03Icon} className="h-2.5 w-2.5 animate-spin text-blue-600" />
                     ) : (
                       <span className="h-1 w-1 rounded-full bg-muted-foreground/20" />
                     )}
@@ -411,7 +412,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
               ) : isProcessing ? (
                 <div className="flex items-center justify-center h-40 rounded-lg bg-muted/50">
                   <div className="text-center text-muted-foreground">
-                    <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2" />
+                    <HugeiconsIcon icon={Loading03Icon} className="h-6 w-6 animate-spin mx-auto mb-2" />
                     <p className="text-xs">正在下载媒体...</p>
                   </div>
                 </div>
@@ -454,14 +455,14 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
                         className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                         title="复制全部内容"
                       >
-                        {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+                        {copied ? <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" /> : <HugeiconsIcon icon={Copy01Icon} className="h-3.5 w-3.5" />}
                       </button>
                       <button
                         onClick={handleDownload}
                         className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                         title="下载为文件"
                       >
-                        <Download className="h-3.5 w-3.5" />
+                        <HugeiconsIcon icon={Download01Icon} className="h-3.5 w-3.5" />
                       </button>
                     </>
                   )}
@@ -473,7 +474,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
                       <SummaryTab content={summary} />
                     ) : isProcessing ? (
                       <div className="flex items-center justify-center h-full text-muted-foreground">
-                        <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                        <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
                         <span className="text-sm">等待分析完成...</span>
                       </div>
                     ) : (
@@ -498,7 +499,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
                       />
                     ) : isProcessing ? (
                       <div className="flex items-center justify-center h-full text-muted-foreground">
-                        <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                        <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
                         <span className="text-sm">等待转录完成...</span>
                       </div>
                     ) : (
@@ -515,7 +516,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
                       <MindmapViewer markdown={mindmap} fillContainer />
                     ) : isProcessing ? (
                       <div className="flex items-center justify-center h-full text-muted-foreground">
-                        <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                        <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
                         <span className="text-sm">等待分析完成...</span>
                       </div>
                     ) : null}

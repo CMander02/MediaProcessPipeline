@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils"
 import { PIPELINE_STEPS } from "@/lib/constants"
-import { Check, Loader2 } from "lucide-react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { Tick02Icon, Loading03Icon } from "@hugeicons/core-free-icons"
 import type { Task } from "@/lib/api"
 
 export function StepProgress({ task }: { task: Task }) {
@@ -23,9 +24,9 @@ export function StepProgress({ task }: { task: Task }) {
               )}
             >
               {isCompleted ? (
-                <Check className="h-3 w-3" />
+                <HugeiconsIcon icon={Tick02Icon} className="h-3 w-3" />
               ) : isCurrent ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
+                <HugeiconsIcon icon={Loading03Icon} className="h-3 w-3 animate-spin" />
               ) : (
                 <span className="h-3 w-3 inline-flex items-center justify-center">
                   <span className="h-1.5 w-1.5 rounded-full bg-current opacity-30" />

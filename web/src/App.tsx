@@ -7,7 +7,8 @@ import { ResultPageWrapper } from "@/components/pages/result-page-wrapper"
 import { SettingsPage } from "@/components/pages/settings-page"
 import { TaskQueueDropdown } from "@/components/task-queue-dropdown"
 import { Input } from "@/components/ui/input"
-import { AudioLines, FolderOpen, Plus, Settings, Search } from "lucide-react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { AudioWave01Icon, FolderOpenIcon, PlusSignIcon, Settings01Icon, Search01Icon } from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
 
 export default function App() {
@@ -27,8 +28,8 @@ export default function App() {
   }, [])
 
   const navItems = [
-    { page: "files" as const, icon: FolderOpen, label: "文件" },
-    { page: "submit" as const, icon: Plus, label: "处理" },
+    { page: "files" as const, icon: FolderOpenIcon, label: "文件" },
+    { page: "submit" as const, icon: PlusSignIcon, label: "处理" },
   ]
 
   return (
@@ -36,7 +37,7 @@ export default function App() {
       {/* Header */}
       <header className="shrink-0 border-b bg-card">
         <div className="flex items-center h-12 px-4 gap-1">
-          <AudioLines className="h-4.5 w-4.5 text-primary mr-2" aria-hidden="true" />
+          <HugeiconsIcon icon={AudioWave01Icon} className="h-4.5 w-4.5 text-primary mr-2" aria-hidden="true" />
           <span className="text-sm font-semibold mr-4">MPP</span>
 
           {/* Nav links */}
@@ -52,7 +53,7 @@ export default function App() {
                     : "text-muted-foreground hover:text-foreground hover:bg-muted",
                 )}
               >
-                <item.icon className="h-4 w-4" />
+                <HugeiconsIcon icon={item.icon} className="h-4 w-4" />
                 {item.label}
               </button>
             ))}
@@ -61,7 +62,7 @@ export default function App() {
           {/* Search + filter — always visible */}
           <div className="flex items-center gap-2 ml-6 flex-1">
             <div className="relative max-w-xs flex-1">
-              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <HugeiconsIcon icon={Search01Icon} className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -105,7 +106,7 @@ export default function App() {
             )}
             title="设置"
           >
-            <Settings className="h-4 w-4" />
+            <HugeiconsIcon icon={Settings01Icon} className="h-4 w-4" />
           </button>
         </div>
       </header>
