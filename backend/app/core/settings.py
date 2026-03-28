@@ -86,6 +86,9 @@ class RuntimeSettings(BaseModel):
     bilibili_bili_jct: str = ""
     bilibili_dede_user_id: str = ""
 
+    # Security
+    api_token: str = ""  # Bearer token for API auth; empty = auth disabled
+
     # Paths
     data_root: str = "D:/Video/MediaProcessPipeline"
 
@@ -127,9 +130,20 @@ def get_runtime_settings() -> RuntimeSettings:
     return _runtime_settings
 
 
+def _validate_data_root(path_str: str) -> None:
+    """Reject obviously dangerous data_root values (e.g. filesystem root)."""
+    p = Path(path_str).resolve()
+    # Must be at least 2 levels deep (e.g. D:/Something, not D:/ or C:/)
+    if len(p.parts) < 3:
+        raise ValueError(
+            f"data_root is too broad: {p} — must be at least two directory levels deep"
+        )
+
+
 def update_runtime_settings(new_settings: RuntimeSettings) -> RuntimeSettings:
     """Replace all runtime settings and persist."""
     global _runtime_settings
+    _validate_data_root(new_settings.data_root)
     _runtime_settings = new_settings
     _save_settings_to_file(_runtime_settings)
     return _runtime_settings
@@ -142,6 +156,8 @@ def patch_runtime_settings(updates: dict[str, Any]) -> RuntimeSettings:
         _runtime_settings = _load_settings_from_file()
     current = _runtime_settings.model_dump()
     current.update(updates)
-    _runtime_settings = RuntimeSettings(**current)
+    candidate = RuntimeSettings(**current)
+    _validate_data_root(candidate.data_root)
+    _runtime_settings = candidate
     _save_settings_to_file(_runtime_settings)
     return _runtime_settings

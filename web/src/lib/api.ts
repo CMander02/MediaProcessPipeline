@@ -47,7 +47,7 @@ async function get<T>(path: string): Promise<T> {
 async function post<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
@@ -57,7 +57,7 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
 async function patch<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
     body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
@@ -67,7 +67,7 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
 async function httpDelete<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method: "DELETE",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
@@ -119,7 +119,11 @@ export const api = {
     upload: async (file: File) => {
       const form = new FormData()
       form.append("file", file)
-      const res = await fetch("/api/pipeline/upload", { method: "POST", body: form })
+      const res = await fetch("/api/pipeline/upload", {
+        method: "POST",
+        headers: { "X-Requested-With": "fetch" },
+        body: form,
+      })
       if (!res.ok) throw new Error("Upload failed")
       return res.json() as Promise<{ file_path: string }>
     },

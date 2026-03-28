@@ -19,7 +19,12 @@ class MppClient:
     def __init__(self, base_url: str = DEFAULT_BASE_URL, timeout: float = 10.0):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self._client = httpx.Client(base_url=self.base_url, proxy=None, timeout=timeout)
+        self._client = httpx.Client(
+            base_url=self.base_url,
+            proxy=None,
+            timeout=timeout,
+            headers={"X-Requested-With": "mpp-cli"},
+        )
 
     def _url(self, path: str) -> str:
         return path

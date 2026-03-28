@@ -152,14 +152,16 @@ def _looks_like_local_path(source: str) -> bool:
 
 def _extract_audio_from_video(video_path: Path, output_path: Path) -> Path:
     """Extract audio from video file using ffmpeg."""
+    # Resolve to absolute paths so filenames starting with '-' can't be
+    # misinterpreted as ffmpeg options.
     cmd = [
         "ffmpeg", "-y",
-        "-i", str(video_path),
+        "-i", str(video_path.resolve()),
         "-vn",
         "-acodec", "pcm_s16le",
         "-ar", "16000",
         "-ac", "1",
-        str(output_path),
+        str(output_path.resolve()),
     ]
     subprocess.run(cmd, check=True, capture_output=True)
     return output_path

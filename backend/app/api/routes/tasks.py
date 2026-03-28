@@ -8,6 +8,7 @@ the /{task_id} catch-all, otherwise FastAPI tries to parse "events" as a UUID.
 """
 
 import asyncio
+import json
 import logging
 from uuid import UUID
 
@@ -197,7 +198,16 @@ async def stream_task_events(task_id: UUID):
 
     async def event_generator():
         try:
-            yield f"data: {{\"task_id\": \"{task_id}\", \"type\": \"snapshot\", \"data\": {{\"status\": \"{task.status}\", \"progress\": {task.progress}, \"message\": \"{task.message or ''}\"}}}}\n\n"
+            snapshot = json.dumps({
+                "task_id": str(task_id),
+                "type": "snapshot",
+                "data": {
+                    "status": task.status,
+                    "progress": task.progress,
+                    "message": task.message or "",
+                },
+            }, ensure_ascii=False)
+            yield f"data: {snapshot}\n\n"
 
             while True:
                 try:

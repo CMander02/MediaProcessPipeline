@@ -4,10 +4,10 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.api.routes import tasks, pipeline, filesystem
 from app.api.routes import settings as settings_router
@@ -82,6 +82,45 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# API token authentication middleware
+# ---------------------------------------------------------------------------
+# When api_token is set in runtime settings, all /api/* requests must carry
+# a matching Bearer token. Static assets, /health, and frontend routes are
+# exempt so the SPA still loads.
+
+_AUTH_EXEMPT_PREFIXES = ("/health", "/assets", "/favicon")
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    # Only gate /api/* endpoints
+    if path.startswith("/api"):
+        # Bearer token auth (optional — only when api_token is configured)
+        rt = get_runtime_settings()
+        token = rt.api_token
+        if token:
+            auth_header = request.headers.get("authorization", "")
+            if auth_header != f"Bearer {token}":
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Unauthorized — invalid or missing Bearer token"},
+                )
+
+        # CSRF protection: non-GET requests must carry X-Requested-With header.
+        # Browsers block custom headers on cross-origin "simple" requests,
+        # so a malicious page cannot forge POST/PUT/DELETE/PATCH to our API.
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            if not request.headers.get("x-requested-with"):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Missing X-Requested-With header"},
+                )
+
+    return await call_next(request)
+
 
 # Include routers
 app.include_router(tasks.router, prefix="/api")

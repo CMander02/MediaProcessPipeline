@@ -26,6 +26,9 @@ async def browse_directory(
     Browse filesystem directory.
 
     Returns list of files and directories in the specified path.
+    NOTE: This endpoint intentionally allows browsing outside data_root —
+    it powers the file picker for importing local media. Access control
+    is provided by the API auth layer (see main.py middleware).
     """
     try:
         dir_path = Path(path).expanduser().resolve()
@@ -91,9 +94,11 @@ async def browse_directory(
         }
 
     except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"browse_directory error: {e}")
         return {
             "success": False,
-            "error": str(e),
+            "error": "Failed to browse directory",
             "path": path,
             "items": [],
         }
@@ -110,7 +115,9 @@ async def read_file(
         # Security: only allow reading files under the data root
         from app.core.settings import get_runtime_settings
         data_root = Path(get_runtime_settings().data_root).resolve()
-        if not str(file_path).startswith(str(data_root)):
+        try:
+            file_path.relative_to(data_root)
+        except ValueError:
             return {"success": False, "error": "Access denied: path outside data directory"}
 
         if not file_path.exists():
@@ -123,7 +130,8 @@ async def read_file(
     except UnicodeDecodeError:
         return {"success": False, "error": "File is not valid UTF-8 text"}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        logging.getLogger(__name__).warning(f"read_file error: {e}")
+        return {"success": False, "error": "Failed to read file"}
 
 
 @router.post("/write")
@@ -134,14 +142,17 @@ async def write_file(req: WriteFileRequest):
 
         from app.core.settings import get_runtime_settings
         data_root = Path(get_runtime_settings().data_root).resolve()
-        if not str(file_path).startswith(str(data_root)):
+        try:
+            file_path.relative_to(data_root)
+        except ValueError:
             return {"success": False, "error": "Access denied: path outside data directory"}
 
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(req.content, encoding="utf-8")
         return {"success": True, "path": str(file_path)}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        logging.getLogger(__name__).warning(f"write_file error: {e}")
+        return {"success": False, "error": "Failed to write file"}
 
 
 def _ensure_browser_playable(file_path: Path) -> tuple[Path, str]:
@@ -190,7 +201,9 @@ async def serve_media(
     file_path = Path(path).resolve()
     data_root = Path(get_runtime_settings().data_root).resolve()
 
-    if not str(file_path).startswith(str(data_root)):
+    try:
+        file_path.relative_to(data_root)
+    except ValueError:
         raise HTTPException(status_code=403, detail="Access denied: path outside data directory")
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
@@ -216,7 +229,11 @@ async def scan_folder(
     path: str = Query(..., description="Root folder path to scan"),
     recursive: bool = Query(True, description="Scan subdirectories"),
 ):
-    """List all media files in a directory (optionally recursive)."""
+    """List all media files in a directory (optionally recursive).
+
+    NOTE: Intentionally allows scanning outside data_root — used for
+    batch-importing from user-chosen folders. Protected by API auth layer.
+    """
     try:
         folder = Path(path).expanduser().resolve()
         if not folder.exists() or not folder.is_dir():
@@ -238,7 +255,8 @@ async def scan_folder(
         files.sort(key=lambda f: f["name"].lower())
         return {"success": True, "path": str(folder), "files": files, "count": len(files)}
     except Exception as e:
-        return {"success": False, "error": str(e), "files": []}
+        logging.getLogger(__name__).warning(f"scan_folder error: {e}")
+        return {"success": False, "error": "Failed to scan folder", "files": []}
 
 
 @router.get("/drives")

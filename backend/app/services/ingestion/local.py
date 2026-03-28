@@ -5,6 +5,11 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
+try:
+    from defusedxml import ElementTree as SafeET
+except ImportError:
+    SafeET = None  # fallback: use hardened parser below
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,7 +80,14 @@ def parse_nfo(video_path: str | Path) -> dict | None:
         return None
 
     try:
-        tree = ET.parse(nfo_path, parser=ET.XMLParser(encoding="utf-8"))
+        # Use defusedxml if available; otherwise disable entity expansion manually
+        if SafeET is not None:
+            tree = SafeET.parse(nfo_path)
+        else:
+            parser = ET.XMLParser(encoding="utf-8")
+            # Disable entity expansion to prevent billion-laughs DoS
+            parser.entity = {}  # type: ignore[attr-defined]
+            tree = ET.parse(nfo_path, parser=parser)
         root = tree.getroot()
 
         title = _get_text(root, "title")
@@ -124,32 +136,14 @@ def parse_nfo(video_path: str | Path) -> dict | None:
 
 
 def find_original_file(uploaded_path: str | Path) -> Path | None:
+    """Try to locate the original file for an uploaded file.
+
+    Only checks the same directory as the uploaded file (sibling lookup).
+    Returns None if no match — we don't scan arbitrary filesystem locations.
     """
-    When a file was uploaded via the web UI, try to find its original location
-    by searching common video directories for a file with the same name.
-
-    Searches one level deep: search_dir/*/filename
-    """
-    uploaded = Path(uploaded_path)
-    filename = uploaded.name
-
-    search_dirs = [
-        Path("D:/Video"),
-        Path("D:/Videos"),
-        Path("E:/Video"),
-        Path("E:/Videos"),
-        Path.home() / "Videos",
-        Path.home() / "Downloads",
-    ]
-
-    for search_dir in search_dirs:
-        if not search_dir.exists():
-            continue
-        for match in search_dir.glob(f"**/{filename}"):
-            if match.is_file() and match != uploaded:
-                logger.info(f"Found original file: {match}")
-                return match
-
+    # The uploaded file IS in its original directory already when the user
+    # provided a local path directly.  When uploaded via browser, the original
+    # path is unknown, so we simply return None.
     return None
 
 

@@ -139,7 +139,7 @@ class YtdlpService:
         )
         if proc.returncode != 0:
             logger.error(f"BBDown failed: {proc.stderr[:500]}")
-            raise RuntimeError(f"BBDown download failed: {proc.stderr[:200]}")
+            raise RuntimeError("BBDown download failed — check server logs for details")
 
         logger.info(f"BBDown stdout: {proc.stdout[-300:]}")
 

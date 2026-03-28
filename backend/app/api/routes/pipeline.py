@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,6 +11,14 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Any
+
+# Windows reserved device names (case-insensitive, with or without extension)
+_WIN_RESERVED = re.compile(
+    r'^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(\..+)?$', re.IGNORECASE
+)
+
+import ipaddress
+from urllib.parse import urlparse
 
 from app.services.ingestion import download_media, scan_inbox
 from app.services.preprocessing import separate_vocals
@@ -20,6 +29,33 @@ from app.services.cleanup import cleanup_failed_task, cleanup_orphaned_files, ge
 from app.core.settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_url(url: str) -> None:
+    """Validate URL to prevent SSRF — reject file://, internal IPs, localhost."""
+    parsed = urlparse(url)
+
+    # Only allow http(s)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(400, f"Unsupported URL scheme: {parsed.scheme!r} — only http/https allowed")
+
+    hostname = parsed.hostname or ""
+
+    # Reject localhost variants
+    if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+        raise HTTPException(400, "URL pointing to localhost is not allowed")
+
+    # Reject private/reserved IP ranges
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+            raise HTTPException(400, "URL pointing to private/reserved IP is not allowed")
+    except ValueError:
+        pass  # hostname is a domain name, not an IP — that's fine
+
+    # Reject cloud metadata endpoints
+    if hostname in ("169.254.169.254", "metadata.google.internal"):
+        raise HTTPException(400, "URL pointing to cloud metadata endpoint is not allowed")
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 
@@ -44,8 +80,19 @@ async def upload_file(file: UploadFile = File(...)):
     upload_dir = Path(rt.data_root).resolve() / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    # Sanitize filename
-    safe_name = file.filename.replace("/", "_").replace("\\", "_") if file.filename else "uploaded_file"
+    # Sanitize filename: strip path separators, illegal chars, Windows reserved names
+    raw_name = file.filename or "uploaded_file"
+    # Remove directory components
+    safe_name = raw_name.replace("/", "_").replace("\\", "_")
+    # Remove characters illegal on Windows
+    safe_name = re.sub(r'[<>:"|?*\x00-\x1f]', '_', safe_name)
+    # Strip leading/trailing dots and spaces (Windows silently strips these)
+    safe_name = safe_name.strip('. ')
+    # Reject Windows reserved device names
+    if _WIN_RESERVED.match(safe_name.split('.')[0] if '.' in safe_name else safe_name):
+        safe_name = f"_{safe_name}"
+    if not safe_name:
+        safe_name = "uploaded_file"
     dest_path = upload_dir / safe_name
 
     # Handle duplicate filenames
@@ -55,9 +102,17 @@ async def upload_file(file: UploadFile = File(...)):
         dest_path = upload_dir / f"{original_stem}_{counter}{dest_path.suffix}"
         counter += 1
 
-    # Save uploaded file
+    # Save uploaded file with size limit (10 GB)
+    max_size = 10 * 1024 * 1024 * 1024  # 10 GB
+    written = 0
     with open(dest_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        while chunk := await file.read(8 * 1024 * 1024):  # 8 MB chunks
+            written += len(chunk)
+            if written > max_size:
+                f.close()
+                dest_path.unlink(missing_ok=True)
+                raise HTTPException(413, f"File too large (limit: 10 GB)")
+            f.write(chunk)
 
     return {"file_path": str(dest_path), "filename": safe_name}
 
@@ -65,6 +120,7 @@ async def upload_file(file: UploadFile = File(...)):
 @router.get("/probe")
 async def probe_url(url: str):
     """Extract metadata from a URL without downloading (for hotword suggestions)."""
+    _validate_url(url)
     import asyncio
 
     def _probe(url: str) -> dict[str, Any]:
@@ -94,6 +150,7 @@ async def probe_url(url: str):
 @router.post("/download")
 async def download(req: DownloadRequest):
     """Download media from URL."""
+    _validate_url(req.url)
     return await download_media(req.url)
 
 
@@ -286,6 +343,14 @@ async def archive_thumbnail(path: str):
     if not archive_dir.is_dir():
         raise HTTPException(404, "Archive directory not found")
 
+    # Security: only allow paths under data_root
+    rt = get_runtime_settings()
+    data_root = Path(rt.data_root).resolve()
+    try:
+        archive_dir.resolve().relative_to(data_root)
+    except ValueError:
+        raise HTTPException(403, "Cannot access paths outside data directory")
+
     # Check for existing thumbnail / cover
     for candidate in ["thumbnail.jpg", "cover.jpg", "cover.png"]:
         thumb = archive_dir / candidate
@@ -348,6 +413,8 @@ async def cleanup_task(task_id: str):
 @router.post("/cleanup")
 async def cleanup_all(max_age_hours: int = 24):
     """Clean up orphaned temporary files."""
+    if max_age_hours < 1:
+        raise HTTPException(400, "max_age_hours must be at least 1")
     return await cleanup_orphaned_files(max_age_hours)
 
 

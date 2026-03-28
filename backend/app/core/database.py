@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 # DB path - resolved at init time from settings
 _db_path: Path | None = None
 _connection: sqlite3.Connection | None = None
+_db_lock = threading.Lock()  # Serialize all DB writes
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -126,11 +128,12 @@ class TaskStore:
         row = _task_to_row(task)
         cols = ", ".join(row.keys())
         placeholders = ", ".join(f":{k}" for k in row.keys())
-        conn.execute(
-            f"INSERT OR REPLACE INTO tasks ({cols}) VALUES ({placeholders})",
-            row,
-        )
-        conn.commit()
+        with _db_lock:
+            conn.execute(
+                f"INSERT OR REPLACE INTO tasks ({cols}) VALUES ({placeholders})",
+                row,
+            )
+            conn.commit()
 
     def get(self, task_id: UUID) -> Task | None:
         """Get a single task by ID."""
@@ -195,17 +198,19 @@ class TaskStore:
                 vals.append(json.dumps(value, ensure_ascii=False))
 
         vals.append(str(task_id))
-        conn.execute(
-            f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?",
-            vals,
-        )
-        conn.commit()
+        with _db_lock:
+            conn.execute(
+                f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?",
+                vals,
+            )
+            conn.commit()
 
     def delete(self, task_id: UUID) -> bool:
         """Delete a task."""
         conn = _get_conn()
-        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (str(task_id),))
-        conn.commit()
+        with _db_lock:
+            cur = conn.execute("DELETE FROM tasks WHERE id = ?", (str(task_id),))
+            conn.commit()
         return cur.rowcount > 0
 
     def count(self, status: str | None = None) -> int:
