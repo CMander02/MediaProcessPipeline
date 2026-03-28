@@ -1,4 +1,4 @@
-import { useMemo, useState, useRef, useEffect, type KeyboardEvent } from "react"
+import { Fragment, useMemo, useState, useRef, useEffect, type KeyboardEvent } from "react"
 import type { Subtitle } from "@/lib/srt"
 import { getSpeakerColor, extractSpeakers, formatSpeakerLabel } from "@/lib/srt"
 import { formatDuration } from "@/lib/format"
@@ -84,17 +84,17 @@ export function SpeakerPanel({ subtitles, duration, currentTime, onSeek, onRenam
 
   const playheadPct = durationMs > 0 ? ((currentTime * 1000) / durationMs) * 100 : 0
 
-  const maxLabelLen = Math.max(...speakers.map((s) => formatSpeakerLabel(s.name).length), 2)
-  const labelWidth = `${Math.min(maxLabelLen + 1, 20)}ch`
-
   return (
     <div className="space-y-2">
       <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
         说话人
       </h3>
-      <div className="space-y-3">
+      <div
+        className="grid gap-y-3 gap-x-2.5 items-center"
+        style={{ gridTemplateColumns: "auto 1fr auto" }}
+      >
         {speakers.map((s) => (
-          <div key={s.name} className="flex items-center gap-2.5">
+          <Fragment key={s.name}>
             {editingSpeaker === s.name ? (
               <input
                 ref={inputRef}
@@ -102,13 +102,13 @@ export function SpeakerPanel({ subtitles, duration, currentTime, onSeek, onRenam
                 onChange={(e) => setEditValue(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onBlur={handleSaveRename}
-                className="text-xs font-medium font-mono shrink-0 rounded border bg-background px-1 py-0.5 outline-none focus:ring-1 focus:ring-primary"
-                style={{ color: s.color, width: labelWidth }}
+                className="text-xs font-medium rounded border bg-background px-1 py-0.5 outline-none focus:ring-1 focus:ring-primary"
+                style={{ color: s.color }}
               />
             ) : (
               <button
-                className="text-xs font-medium font-mono shrink-0 hover:underline cursor-pointer text-left truncate"
-                style={{ color: s.color, width: labelWidth }}
+                className="text-xs font-medium hover:underline cursor-pointer text-left truncate max-w-[10rem]"
+                style={{ color: s.color }}
                 onClick={() => setEditingSpeaker(s.name)}
                 title="点击编辑说话人名称"
               >
@@ -116,7 +116,7 @@ export function SpeakerPanel({ subtitles, duration, currentTime, onSeek, onRenam
               </button>
             )}
             <div
-              className="relative flex-1 h-4 bg-muted rounded-sm cursor-pointer overflow-hidden"
+              className="relative h-4 bg-muted rounded-sm cursor-pointer overflow-hidden"
               onClick={handleBarClick}
             >
               {s.segments.map((seg, i) => {
@@ -134,17 +134,15 @@ export function SpeakerPanel({ subtitles, duration, currentTime, onSeek, onRenam
                   />
                 )
               })}
-              {/* Playhead */}
               <div
                 className="absolute top-0 h-full w-px bg-foreground/50 z-10 pointer-events-none"
                 style={{ left: `${playheadPct}%` }}
               />
             </div>
-            {/* Fixed width for "H:MM:SS (NN%)" */}
-            <span className="text-xs text-muted-foreground shrink-0 tabular-nums text-right" style={{ width: "11ch" }}>
+            <span className="text-xs text-muted-foreground tabular-nums text-right whitespace-nowrap">
               {formatDuration(s.totalMs / 1000)} ({s.percentage.toFixed(0)}%)
             </span>
-          </div>
+          </Fragment>
         ))}
       </div>
     </div>
