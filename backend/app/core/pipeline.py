@@ -527,6 +527,20 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             if ingest.get("video_path"):
                 metadata.file_path = ingest["video_path"]
 
+            # Rename task_dir to real title if it was a placeholder (e.g. Bilibili)
+            real_title = metadata.title
+            if real_title and task_dir.name != _sanitize_filename(real_title):
+                new_dir = task_dir.parent / _sanitize_filename(real_title)
+                if not new_dir.exists():
+                    task_dir.rename(new_dir)
+                    task_dir = new_dir
+                    # Update file paths to reflect new directory
+                    if audio_path:
+                        audio_path = str(new_dir / Path(audio_path).name)
+                    if metadata.file_path:
+                        metadata.file_path = str(new_dir / Path(metadata.file_path).name)
+                    logger.info(f"Renamed task dir to: {new_dir}")
+
             # Try to download platform subtitles
             if use_platform_subtitles:
                 try:
