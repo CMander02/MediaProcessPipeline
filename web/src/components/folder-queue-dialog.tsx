@@ -3,7 +3,7 @@
  * Browses filesystem via /api/filesystem/browse, then scans for media files,
  * and submits each as a task.
  */
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import {
   Dialog,
   DialogContent,
@@ -23,6 +23,7 @@ import {
   Play,
   Music,
   Video,
+  X,
 } from "lucide-react"
 
 interface BrowseItem {
@@ -71,8 +72,10 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
   const [scanning, setScanning] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [submitProgress, setSubmitProgress] = useState(0)
+  const [failedFiles, setFailedFiles] = useState<string[]>([])
   const [done, setDone] = useState(false)
   const [pathInput, setPathInput] = useState("")
+  const cancelledRef = useRef(false)
 
   // Load drives on open
   useEffect(() => {
@@ -81,6 +84,8 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
     setMediaFiles([])
     setDone(false)
     setSubmitProgress(0)
+    setFailedFiles([])
+    cancelledRef.current = false
 
     fetch("/api/filesystem/drives")
       .then((r) => r.json())
@@ -130,19 +135,28 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
     if (!mediaFiles.length) return
     setSubmitting(true)
     setSubmitProgress(0)
+    setFailedFiles([])
+    cancelledRef.current = false
     let count = 0
+    const failed: string[] = []
     for (const file of mediaFiles) {
+      if (cancelledRef.current) break
       try {
         await api.tasks.create(file.path, options)
       } catch {
-        // skip failures
+        failed.push(file.name)
       }
       count++
       setSubmitProgress(count)
     }
+    setFailedFiles(failed)
     setSubmitting(false)
     setDone(true)
-    onSubmitted?.()
+    if (!cancelledRef.current) onSubmitted?.()
+  }
+
+  const handleCancelSubmit = () => {
+    cancelledRef.current = true
   }
 
   const handlePathSubmit = (e: React.FormEvent) => {
@@ -249,7 +263,19 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
                       扫描中...
                     </div>
                   ) : done ? (
-                    <p className="text-sm text-emerald-600">✓ 已提交 {mediaFiles.length} 个文件</p>
+                    <div className="space-y-1">
+                      <p className="text-sm text-emerald-600">
+                        {cancelledRef.current
+                          ? `已取消 — 已提交 ${submitProgress} / ${mediaFiles.length} 个文件`
+                          : `✓ 已提交 ${mediaFiles.length} 个文件`
+                        }
+                      </p>
+                      {failedFiles.length > 0 && (
+                        <p className="text-xs text-destructive">
+                          {failedFiles.length} 个失败: {failedFiles.join(", ")}
+                        </p>
+                      )}
+                    </div>
                   ) : mediaFiles.length === 0 ? (
                     <p className="text-sm text-muted-foreground">未找到媒体文件</p>
                   ) : (
@@ -275,24 +301,22 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
 
         <DialogFooter className="px-4 py-3 shrink-0 border-t mt-3">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
-            取消
+            {done ? "关闭" : "取消"}
           </Button>
-          <Button
-            onClick={handleSubmitAll}
-            disabled={!selectedFolder || mediaFiles.length === 0 || submitting || done || scanning}
-          >
-            {submitting ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
-                提交中 {submitProgress}/{mediaFiles.length}
-              </>
-            ) : (
-              <>
-                <Play className="h-4 w-4 mr-1.5" />
-                {mediaFiles.length > 0 ? `提交全部 ${mediaFiles.length} 个文件` : "提交"}
-              </>
-            )}
-          </Button>
+          {submitting ? (
+            <Button variant="destructive" onClick={handleCancelSubmit}>
+              <X className="h-4 w-4 mr-1.5" />
+              停止 ({submitProgress}/{mediaFiles.length})
+            </Button>
+          ) : (
+            <Button
+              onClick={handleSubmitAll}
+              disabled={!selectedFolder || mediaFiles.length === 0 || done || scanning}
+            >
+              <Play className="h-4 w-4 mr-1.5" />
+              {mediaFiles.length > 0 ? `提交全部 ${mediaFiles.length} 个文件` : "提交"}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

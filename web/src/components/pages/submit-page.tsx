@@ -58,6 +58,7 @@ export function SubmitPage() {
   const [showFolderDialog, setShowFolderDialog] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const hotwordInputRef = useRef<HTMLInputElement>(null)
+  const abortControllers = useRef<Map<string, AbortController>>(new Map())
 
   const buildOptions = () => {
     const opts: Record<string, unknown> = {}
@@ -70,19 +71,31 @@ export function SubmitPage() {
 
   const uploadAndQueue = useCallback(async (file: File) => {
     const id = `${file.name}-${Date.now()}-${Math.random()}`
+    const controller = new AbortController()
+    abortControllers.current.set(id, controller)
     setQueuedFiles((prev) => [...prev, {
       id, name: file.name, size: file.size, duration: null,
       serverPath: "", uploading: true, error: "",
     }])
     try {
-      const [duration, { file_path }] = await Promise.all([getMediaDuration(file), api.pipeline.upload(file)])
+      const [duration, { file_path }] = await Promise.all([
+        getMediaDuration(file),
+        api.pipeline.upload(file, controller.signal),
+      ])
       setQueuedFiles((prev) => prev.map((f) =>
         f.id === id ? { ...f, duration, serverPath: file_path, uploading: false } : f
       ))
-    } catch {
-      setQueuedFiles((prev) => prev.map((f) =>
-        f.id === id ? { ...f, uploading: false, error: "上传失败" } : f
-      ))
+    } catch (err) {
+      if (controller.signal.aborted) {
+        // Removed by user — just drop it from the list
+        setQueuedFiles((prev) => prev.filter((f) => f.id !== id))
+      } else {
+        setQueuedFiles((prev) => prev.map((f) =>
+          f.id === id ? { ...f, uploading: false, error: "上传失败" } : f
+        ))
+      }
+    } finally {
+      abortControllers.current.delete(id)
     }
   }, [])
 
@@ -90,8 +103,16 @@ export function SubmitPage() {
     for (const f of files) uploadAndQueue(f)
   }, [uploadAndQueue])
 
-  const removeQueued = (id: string) => setQueuedFiles((prev) => prev.filter((f) => f.id !== id))
-  const clearAll = () => setQueuedFiles([])
+  const removeQueued = (id: string) => {
+    abortControllers.current.get(id)?.abort()
+    abortControllers.current.delete(id)
+    setQueuedFiles((prev) => prev.filter((f) => f.id !== id))
+  }
+  const clearAll = () => {
+    for (const controller of abortControllers.current.values()) controller.abort()
+    abortControllers.current.clear()
+    setQueuedFiles([])
+  }
 
   const handleSubmitAll = async () => {
     const sources: string[] = []

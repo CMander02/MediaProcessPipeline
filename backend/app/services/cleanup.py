@@ -119,6 +119,38 @@ class CleanupService:
                 errors.append({"path": str(item), "error": str(e)})
                 logger.error(f"Failed to clean up {item}: {e}")
 
+        # Clean up orphaned files in uploads/ directory
+        uploads_dir = data_root / "uploads"
+        if uploads_dir.is_dir():
+            # Collect source paths referenced by active (non-terminal) tasks
+            active_sources = set()
+            active_statuses = {"pending", "queued", "processing"}
+            for t in all_tasks:
+                if t.status in active_statuses:
+                    active_sources.add(str(Path(t.source).resolve()))
+
+            for f in uploads_dir.iterdir():
+                if not f.is_file():
+                    continue
+                # Skip files referenced by active tasks
+                if str(f.resolve()) in active_sources:
+                    skipped.append(str(f))
+                    continue
+                try:
+                    mtime = datetime.fromtimestamp(f.stat().st_mtime)
+                    if mtime > cutoff_time:
+                        skipped.append(str(f))
+                        continue
+                except OSError:
+                    continue
+                try:
+                    f.unlink()
+                    cleaned.append(str(f))
+                    logger.info(f"Cleaned up orphaned upload: {f}")
+                except Exception as e:
+                    errors.append({"path": str(f), "error": str(e)})
+                    logger.error(f"Failed to clean up upload {f}: {e}")
+
         return {
             "max_age_hours": max_age_hours,
             "cleaned": cleaned,

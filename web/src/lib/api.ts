@@ -116,13 +116,14 @@ export const api = {
   },
 
   pipeline: {
-    upload: async (file: File) => {
+    upload: async (file: File, signal?: AbortSignal) => {
       const form = new FormData()
       form.append("file", file)
       const res = await fetch("/api/pipeline/upload", {
         method: "POST",
         headers: { "X-Requested-With": "fetch" },
         body: form,
+        signal,
       })
       if (!res.ok) throw new Error("Upload failed")
       return res.json() as Promise<{ file_path: string }>

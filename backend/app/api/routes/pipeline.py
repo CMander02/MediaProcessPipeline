@@ -73,6 +73,12 @@ class AnalyzeRequest(BaseModel):
     text: str
 
 
+_ALLOWED_MEDIA_EXTS = {
+    ".mp4", ".mkv", ".avi", ".webm", ".mov", ".flv", ".wmv",
+    ".mp3", ".wav", ".aac", ".flac", ".ogg", ".m4a", ".wma",
+}
+
+
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     """Upload a local media file for processing."""
@@ -82,6 +88,15 @@ async def upload_file(file: UploadFile = File(...)):
 
     # Sanitize filename: strip path separators, illegal chars, Windows reserved names
     raw_name = file.filename or "uploaded_file"
+
+    # Validate file extension before saving
+    ext = Path(raw_name).suffix.lower()
+    if ext not in _ALLOWED_MEDIA_EXTS:
+        raise HTTPException(
+            400,
+            f"不支持的文件格式: {ext or '(无扩展名)'}。"
+            f"支持的格式: {', '.join(sorted(_ALLOWED_MEDIA_EXTS))}",
+        )
     # Remove directory components
     safe_name = raw_name.replace("/", "_").replace("\\", "_")
     # Remove characters illegal on Windows

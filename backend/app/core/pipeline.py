@@ -411,115 +411,141 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         logger.info(f"Task {task.id}: skipping DOWNLOAD (already done), restoring from disk")
         _restore_metadata()
         _restore_audio_paths()
+        # Restore has_subtitle flag from disk (check for subtitle files)
+        if task_dir:
+            sub_dir = task_dir / "subtitles"
+            if sub_dir.exists() and any(sub_dir.iterdir()):
+                has_subtitle = True
+            elif any(task_dir.glob("transcript_polished.srt")):
+                # Platform subtitle path writes polished immediately
+                has_subtitle = True
     else:
         await _update_step(task, PipelineStep.DOWNLOAD)
 
-    if _looks_like_local_path(task.source):
-        source_path = Path(source)
-        if not source_path.exists():
-            raise FileNotFoundError(f"本地文件不存在: {source}")
-        if not source_path.is_file():
-            raise ValueError(f"路径不是文件: {source}")
+        if _looks_like_local_path(task.source):
+            source_path = Path(source)
+            if not source_path.exists():
+                raise FileNotFoundError(f"本地文件不存在: {source}")
+            if not source_path.is_file():
+                raise ValueError(f"路径不是文件: {source}")
 
-        title = source_path.stem
-        if not task_dir:
-            task_dir = create_task_dir(task.id, title)
-        dest_source = task_dir / source_path.name
-        shutil.copy2(source_path, dest_source)
+            title = source_path.stem
+            if not task_dir:
+                task_dir = create_task_dir(task.id, title)
+            dest_source = task_dir / source_path.name
+            shutil.copy2(source_path, dest_source)
 
-        video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov"}
-        audio_exts = {".mp3", ".wav", ".flac", ".m4a", ".ogg"}
+            video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov"}
+            audio_exts = {".mp3", ".wav", ".flac", ".m4a", ".ogg"}
 
-        if source_path.suffix.lower() in video_exts:
-            audio_path = task_dir / f"{title}.wav"
-            await asyncio.to_thread(_extract_audio_from_video, dest_source, audio_path)
-            audio_path = str(audio_path)
-            metadata = MediaMetadata(
-                title=title,
-                source_url=str(source_path),
-                media_type="video",
-                file_path=str(dest_source),
-            )
+            if source_path.suffix.lower() in video_exts:
+                audio_path = task_dir / f"{title}.wav"
+                await asyncio.to_thread(_extract_audio_from_video, dest_source, audio_path)
+                audio_path = str(audio_path)
+                metadata = MediaMetadata(
+                    title=title,
+                    source_url=str(source_path),
+                    media_type="video",
+                    file_path=str(dest_source),
+                )
 
-            # Search for local subtitle and NFO metadata
-            # If file is in uploads dir, try to find the original location
-            search_path = source_path
+                # Search for local subtitle and NFO metadata
+                # If file is in uploads dir, try to find the original location
+                search_path = source_path
+                if use_platform_subtitles:
+                    platform_subtitle = find_local_subtitle(search_path)
+                    if not platform_subtitle:
+                        # File may have been uploaded — search for original location
+                        original = find_original_file(search_path)
+                        if original:
+                            search_path = original
+                            platform_subtitle = find_local_subtitle(search_path)
+                    if platform_subtitle:
+                        logger.info(f"Found local subtitle: {platform_subtitle['subtitle_path']}")
+
+                nfo_meta = parse_nfo(search_path)
+                if nfo_meta:
+                    if nfo_meta.get("title"):
+                        metadata.title = nfo_meta["title"]
+                    if nfo_meta.get("description"):
+                        metadata.description = nfo_meta["description"]
+                    if nfo_meta.get("tags"):
+                        metadata.tags = nfo_meta["tags"]
+                    if nfo_meta.get("uploader"):
+                        metadata.uploader = nfo_meta["uploader"]
+                    if nfo_meta.get("upload_date"):
+                        metadata.upload_date = nfo_meta["upload_date"]
+                    if nfo_meta.get("source_url"):
+                        metadata.source_url = nfo_meta["source_url"]
+
+            elif source_path.suffix.lower() in audio_exts:
+                audio_path = str(dest_source)
+                metadata = MediaMetadata(
+                    title=title,
+                    source_url=str(source_path),
+                    media_type="audio",
+                    file_path=str(dest_source),
+                )
+            else:
+                raise ValueError(f"Unsupported file format: {source_path.suffix}")
+
+            # Set has_subtitle for local files (was previously only set for URLs)
+            has_subtitle = platform_subtitle is not None
+
+            # Write metadata.json immediately after local file processing
+            meta_path = write_metadata_json(task_dir, metadata, status="processing")
+            await _emit_file_ready(task, "metadata.json", str(meta_path))
+
+            # Clean up uploaded source file from uploads/ dir (avoid double storage)
+            rt_data_root = Path(rt.data_root).resolve()
+            uploads_dir = rt_data_root / "uploads"
+            if uploads_dir.exists() and source_path.resolve().is_relative_to(uploads_dir):
+                try:
+                    source_path.unlink()
+                    logger.info(f"Cleaned up uploaded source: {source_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up uploaded source {source_path}: {e}")
+
+        else:
+            # For Bilibili URLs, skip yt-dlp probe (403 without cookie);
+            # BBDown inside download_media will handle title extraction.
+            source_type = _detect_source_type(source)
+            if source_type != "bilibili":
+                import yt_dlp
+                with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+                    info = ydl.extract_info(source, download=False)
+                    title = info.get("title", "unknown") if info else "unknown"
+            else:
+                title = None
+
+            if not task_dir:
+                task_dir = create_task_dir(task.id, title or "download")
+
+            ingest = await download_media(source, output_dir=task_dir)
+            audio_path = ingest.get("file_path")
+            metadata = MediaMetadata(**ingest.get("metadata", {"title": source}))
+            # Store video path for frontend playback
+            if ingest.get("video_path"):
+                metadata.file_path = ingest["video_path"]
+
+            # Try to download platform subtitles
             if use_platform_subtitles:
-                platform_subtitle = find_local_subtitle(search_path)
-                if not platform_subtitle:
-                    # File may have been uploaded — search for original location
-                    original = find_original_file(search_path)
-                    if original:
-                        search_path = original
-                        platform_subtitle = find_local_subtitle(search_path)
-                if platform_subtitle:
-                    logger.info(f"Found local subtitle: {platform_subtitle['subtitle_path']}")
-
-            nfo_meta = parse_nfo(search_path)
-            if nfo_meta:
-                if nfo_meta.get("title"):
-                    metadata.title = nfo_meta["title"]
-                if nfo_meta.get("description"):
-                    metadata.description = nfo_meta["description"]
-                if nfo_meta.get("tags"):
-                    metadata.tags = nfo_meta["tags"]
-                if nfo_meta.get("uploader"):
-                    metadata.uploader = nfo_meta["uploader"]
-                if nfo_meta.get("upload_date"):
-                    metadata.upload_date = nfo_meta["upload_date"]
-                if nfo_meta.get("source_url"):
-                    metadata.source_url = nfo_meta["source_url"]
-
-        elif source_path.suffix.lower() in audio_exts:
-            audio_path = str(dest_source)
-            metadata = MediaMetadata(
-                title=title,
-                source_url=str(source_path),
-                media_type="audio",
-                file_path=str(dest_source),
-            )
-        else:
-            raise ValueError(f"Unsupported file format: {source_path.suffix}")
-    else:
-        # For Bilibili URLs, skip yt-dlp probe (403 without cookie);
-        # BBDown inside download_media will handle title extraction.
-        source_type = _detect_source_type(source)
-        if source_type != "bilibili":
-            import yt_dlp
-            with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
-                info = ydl.extract_info(source, download=False)
-                title = info.get("title", "unknown") if info else "unknown"
-        else:
-            title = None
-
-        if not task_dir:
-            task_dir = create_task_dir(task.id, title or "download")
-
-        ingest = await download_media(source, output_dir=task_dir)
-        audio_path = ingest.get("file_path")
-        metadata = MediaMetadata(**ingest.get("metadata", {"title": source}))
-        # Store video path for frontend playback
-        if ingest.get("video_path"):
-            metadata.file_path = ingest["video_path"]
-
-        # Try to download platform subtitles
-        if use_platform_subtitles:
-            try:
-                sub_dir = task_dir / "subtitles"
-                platform_subtitle = await download_subtitles(source, sub_dir)
-                if platform_subtitle.get("subtitle_path"):
-                    logger.info(f"Downloaded platform subtitle: {platform_subtitle['subtitle_path']}")
-                else:
+                try:
+                    sub_dir = task_dir / "subtitles"
+                    platform_subtitle = await download_subtitles(source, sub_dir)
+                    if platform_subtitle.get("subtitle_path"):
+                        logger.info(f"Downloaded platform subtitle: {platform_subtitle['subtitle_path']}")
+                    else:
+                        platform_subtitle = None
+                except Exception as e:
+                    logger.warning(f"Subtitle download failed: {e}")
                     platform_subtitle = None
-            except Exception as e:
-                logger.warning(f"Subtitle download failed: {e}")
-                platform_subtitle = None
 
-        has_subtitle = platform_subtitle is not None
+            has_subtitle = platform_subtitle is not None
 
-        # Write metadata.json immediately after download
-        meta_path = write_metadata_json(task_dir, metadata, status="processing")
-        await _emit_file_ready(task, "metadata.json", str(meta_path))
+            # Write metadata.json immediately after download
+            meta_path = write_metadata_json(task_dir, metadata, status="processing")
+            await _emit_file_ready(task, "metadata.json", str(meta_path))
 
         await _update_step(task, PipelineStep.DOWNLOAD, completed=True)
     # end if DOWNLOAD not in done
@@ -649,46 +675,46 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     else:
         await _update_step(task, PipelineStep.ANALYZE)
         video_metadata = {
-        "uploader": metadata.uploader,
-        "description": metadata.description,
-        "tags": metadata.tags,
-        "chapters": [{"title": ch.title, "start_time": ch.start_time} for ch in metadata.chapters] if metadata.chapters else None,
-    }
-    # Build mindmap metadata with title, chapters, description for map-reduce
-    mindmap_metadata = {
-        "title": metadata.title,
-        "uploader": metadata.uploader,
-        "description": metadata.description,
-        "chapters": [{"title": ch.title, "start_time": ch.start_time} for ch in metadata.chapters] if metadata.chapters else None,
-    }
-    analysis, summary, mindmap = await asyncio.gather(
-        analyze_content(transcript, metadata.title, metadata=video_metadata),
-        summarize_text(transcript),
-        generate_mindmap(srt or transcript, metadata=mindmap_metadata),
-    )
-    # Write analysis + summary + mindmap immediately
-    import json as _json
-    if analysis:
-        analysis_path = task_dir / "analysis.json"
-        analysis_path.write_text(_json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
-        await _emit_file_ready(task, "analysis.json", str(analysis_path))
-    if summary:
-        from app.services.archiving.archive import SUMMARY_TEMPLATE, get_archive_service
-        _svc = get_archive_service()
-        sum_path = task_dir / "summary.md"
-        sum_content = SUMMARY_TEMPLATE.format(
-            title=metadata.title,
-            source_url=metadata.source_url or "",
-            date=datetime.now().strftime("%Y-%m-%d"),
-            tldr=summary.get("tldr", ""),
-            key_facts=_svc._fmt_list(summary.get("key_facts", [])),
+            "uploader": metadata.uploader,
+            "description": metadata.description,
+            "tags": metadata.tags,
+            "chapters": [{"title": ch.title, "start_time": ch.start_time} for ch in metadata.chapters] if metadata.chapters else None,
+        }
+        # Build mindmap metadata with title, chapters, description for map-reduce
+        mindmap_metadata = {
+            "title": metadata.title,
+            "uploader": metadata.uploader,
+            "description": metadata.description,
+            "chapters": [{"title": ch.title, "start_time": ch.start_time} for ch in metadata.chapters] if metadata.chapters else None,
+        }
+        analysis, summary, mindmap = await asyncio.gather(
+            analyze_content(transcript, metadata.title, metadata=video_metadata),
+            summarize_text(transcript),
+            generate_mindmap(srt or transcript, metadata=mindmap_metadata),
         )
-        sum_path.write_text(sum_content, encoding="utf-8")
-        await _emit_file_ready(task, "summary.md", str(sum_path))
-    if mindmap:
-        mm_path = task_dir / "mindmap.md"
-        mm_path.write_text(mindmap, encoding="utf-8")
-        await _emit_file_ready(task, "mindmap.md", str(mm_path))
+        # Write analysis + summary + mindmap immediately
+        import json as _json
+        if analysis:
+            analysis_path = task_dir / "analysis.json"
+            analysis_path.write_text(_json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
+            await _emit_file_ready(task, "analysis.json", str(analysis_path))
+        if summary:
+            from app.services.archiving.archive import SUMMARY_TEMPLATE, get_archive_service
+            _svc = get_archive_service()
+            sum_path = task_dir / "summary.md"
+            sum_content = SUMMARY_TEMPLATE.format(
+                title=metadata.title,
+                source_url=metadata.source_url or "",
+                date=datetime.now().strftime("%Y-%m-%d"),
+                tldr=summary.get("tldr", ""),
+                key_facts=_svc._fmt_list(summary.get("key_facts", [])),
+            )
+            sum_path.write_text(sum_content, encoding="utf-8")
+            await _emit_file_ready(task, "summary.md", str(sum_path))
+        if mindmap:
+            mm_path = task_dir / "mindmap.md"
+            mm_path.write_text(mindmap, encoding="utf-8")
+            await _emit_file_ready(task, "mindmap.md", str(mm_path))
 
         await _update_step(task, PipelineStep.ANALYZE, completed=True)
     # end if ANALYZE not in done
