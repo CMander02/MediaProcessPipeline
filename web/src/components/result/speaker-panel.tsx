@@ -84,6 +84,10 @@ export function SpeakerPanel({ subtitles, duration, currentTime, onSeek, onRenam
 
   const playheadPct = durationMs > 0 ? ((currentTime * 1000) / durationMs) * 100 : 0
 
+  // Compute label width from longest speaker name
+  const maxLabelLen = Math.max(...speakers.map((s) => formatSpeakerLabel(s.name).length), 2)
+  const labelWidth = `${Math.min(maxLabelLen + 1, 16)}ch`
+
   return (
     <div className="space-y-2">
       <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
@@ -99,13 +103,13 @@ export function SpeakerPanel({ subtitles, duration, currentTime, onSeek, onRenam
                 onChange={(e) => setEditValue(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onBlur={handleSaveRename}
-                className="text-xs font-medium shrink-0 w-16 rounded border bg-background px-1 py-0.5 outline-none focus:ring-1 focus:ring-primary"
-                style={{ color: s.color }}
+                className="text-xs font-medium shrink-0 rounded border bg-background px-1 py-0.5 outline-none focus:ring-1 focus:ring-primary"
+                style={{ color: s.color, width: labelWidth }}
               />
             ) : (
               <button
-                className="text-xs font-medium shrink-0 hover:underline cursor-pointer"
-                style={{ color: s.color, minWidth: "2em" }}
+                className="text-xs font-medium shrink-0 hover:underline cursor-pointer text-left truncate"
+                style={{ color: s.color, width: labelWidth }}
                 onClick={() => setEditingSpeaker(s.name)}
                 title="点击编辑说话人名称"
               >
