@@ -163,33 +163,32 @@ export const TranscriptSegment = memo(function TranscriptSegment({
     <ContextMenu>
       <ContextMenuTrigger>
         <div
-          className={`group flex gap-3 px-3 py-2.5 rounded-md cursor-pointer transition-colors ${
+          className={`group px-3 py-2.5 rounded-md cursor-pointer transition-colors ${
             isActive
               ? "bg-primary/15 border-l-3 border-primary shadow-sm"
               : "hover:bg-muted/50 border-l-3 border-transparent"
           }`}
           onClick={onClick}
         >
-          {/* Timestamp */}
-          <button
-            className={`text-xs font-mono shrink-0 pt-0.5 transition-colors ${
-              isActive ? "text-primary font-semibold" : "text-muted-foreground hover:text-primary"
-            }`}
-            onClick={(e) => {
-              e.stopPropagation()
-              onClick()
-            }}
-          >
-            {formatTimeShort(subtitle.startTime)}
-          </button>
+          {/* Timestamp + Speaker + Text — inline */}
+          <div className="flex items-start gap-2">
+            <button
+              className={`text-xs font-mono shrink-0 pt-0.5 transition-colors ${
+                isActive ? "text-primary font-semibold" : "text-muted-foreground hover:text-primary"
+              }`}
+              onClick={(e) => {
+                e.stopPropagation()
+                onClick()
+              }}
+            >
+              {formatTimeShort(subtitle.startTime)}
+            </button>
 
-          <div className="flex-1 min-w-0">
-            {/* Speaker tag — click to open dropdown */}
             {subtitle.speaker && (
               <DropdownMenu open={speakerDropdownOpen} onOpenChange={setSpeakerDropdownOpen}>
                 <DropdownMenuTrigger asChild>
                   <button
-                    className="text-xs font-medium mr-2 px-1.5 py-0.5 rounded cursor-pointer hover:ring-1 hover:ring-current transition-all"
+                    className="text-xs font-medium shrink-0 px-1.5 py-0.5 rounded cursor-pointer hover:ring-1 hover:ring-current transition-all"
                     style={{
                       color: speakerColor,
                       backgroundColor: speakerColor ? `${speakerColor}15` : undefined,
@@ -221,7 +220,6 @@ export const TranscriptSegment = memo(function TranscriptSegment({
               </DropdownMenu>
             )}
 
-            {/* Text */}
             <span className={`text-sm leading-relaxed ${isActive ? "text-foreground font-medium" : ""}`}>
               {searchQuery ? highlightText(subtitle.text, searchQuery) : subtitle.text}
             </span>

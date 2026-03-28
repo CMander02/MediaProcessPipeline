@@ -119,9 +119,64 @@ class YtdlpService:
             "info": info,
         }
 
+    @staticmethod
+    def _fetch_bilibili_metadata(url: str) -> dict[str, Any]:
+        """Fetch video metadata from Bilibili public API (no auth needed)."""
+        import json
+        import urllib.request
+
+        # Extract BV id from URL
+        bv_match = re.search(r'(BV[0-9A-Za-z]+)', url)
+        if not bv_match:
+            logger.warning(f"Cannot extract BV id from URL: {url}")
+            return {"webpage_url": url}
+
+        bvid = bv_match.group(1)
+        info: dict[str, Any] = {"webpage_url": url}
+
+        # Fetch video info
+        try:
+            req = urllib.request.Request(
+                f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}",
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read()).get("data", {})
+
+            owner = data.get("owner", {})
+            info.update({
+                "title": data.get("title"),
+                "description": data.get("desc"),
+                "uploader": owner.get("name"),
+                "uploader_id": str(owner.get("mid", "")),
+                "duration": data.get("duration"),
+                "upload_date": datetime.fromtimestamp(data["pubdate"]).strftime("%Y%m%d") if data.get("pubdate") else None,
+                "webpage_url": f"https://www.bilibili.com/video/{bvid}",
+                "thumbnail": data.get("pic"),
+            })
+        except Exception as e:
+            logger.warning(f"Bilibili view API failed: {e}")
+
+        # Fetch tags
+        try:
+            req = urllib.request.Request(
+                f"https://api.bilibili.com/x/tag/archive/tags?bvid={bvid}",
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                tag_data = json.loads(resp.read()).get("data", [])
+            info["tags"] = [t["tag_name"] for t in tag_data if t.get("tag_name")]
+        except Exception as e:
+            logger.warning(f"Bilibili tags API failed: {e}")
+
+        return info
+
     def _download_bilibili(self, url: str, output_dir: Path) -> dict[str, Any]:
         """Download Bilibili video using BBDown (with login cookie)."""
-        import yt_dlp
+
+        # BBDown requires full URL with protocol prefix
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
 
         logger.info(f"Downloading Bilibili video via BBDown: {url}")
 
@@ -138,7 +193,8 @@ class YtdlpService:
             cwd=str(_BBDOWN_DIR),  # so BBDown.data is found
         )
         if proc.returncode != 0:
-            logger.error(f"BBDown failed: {proc.stderr[:500]}")
+            logger.error(f"BBDown stderr: {proc.stderr[:500]}")
+            logger.error(f"BBDown stdout: {proc.stdout[-500:]}")
             raise RuntimeError("BBDown download failed — check server logs for details")
 
         logger.info(f"BBDown stdout: {proc.stdout[-300:]}")
@@ -162,17 +218,8 @@ class YtdlpService:
             capture_output=True, check=True,
         )
 
-        # Get metadata via yt-dlp (skip_download) for chapters, description, etc.
-        meta_opts = {"skip_download": True, "quiet": True}
-        try:
-            with yt_dlp.YoutubeDL(meta_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-        except Exception:
-            info = None
-
-        if not info:
-            info = {"title": title, "webpage_url": url}
-
+        # Fetch metadata via Bilibili public API (yt-dlp gets 403).
+        info = self._fetch_bilibili_metadata(url)
         info["title"] = title
 
         return {
@@ -341,6 +388,11 @@ class YtdlpService:
              "subtitle_format": "json3"|"srt"|None}
         """
         import yt_dlp
+
+        # yt-dlp gets 403 on Bilibili — skip subtitle download
+        if _is_bilibili_url(url):
+            logger.info("Skipping yt-dlp subtitle download for Bilibili (403)")
+            return {"subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
 
         if langs is None:
             from app.core.settings import get_runtime_settings

@@ -98,7 +98,6 @@ def create_task_dir(task_id: UUID, title: str | None = None) -> Path:
             counter += 1
 
     task_dir.mkdir(parents=True, exist_ok=True)
-    (task_dir / "source").mkdir(exist_ok=True)
     return task_dir
 
 
@@ -537,6 +536,9 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         logger.info(f"Downloaded platform subtitle: {platform_subtitle['subtitle_path']}")
                     else:
                         platform_subtitle = None
+                        # Clean up empty subtitles directory
+                        if sub_dir.exists() and not any(sub_dir.iterdir()):
+                            sub_dir.rmdir()
                 except Exception as e:
                     logger.warning(f"Subtitle download failed: {e}")
                     platform_subtitle = None
