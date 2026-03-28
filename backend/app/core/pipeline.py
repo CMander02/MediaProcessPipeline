@@ -479,13 +479,19 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         else:
             raise ValueError(f"Unsupported file format: {source_path.suffix}")
     else:
-        import yt_dlp
-        with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
-            info = ydl.extract_info(source, download=False)
-            title = info.get("title", "unknown") if info else "unknown"
+        # For Bilibili URLs, skip yt-dlp probe (403 without cookie);
+        # BBDown inside download_media will handle title extraction.
+        source_type = _detect_source_type(source)
+        if source_type != "bilibili":
+            import yt_dlp
+            with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+                info = ydl.extract_info(source, download=False)
+                title = info.get("title", "unknown") if info else "unknown"
+        else:
+            title = None
 
         if not task_dir:
-            task_dir = create_task_dir(task.id, title)
+            task_dir = create_task_dir(task.id, title or "download")
 
         ingest = await download_media(source, output_dir=task_dir)
         audio_path = ingest.get("file_path")

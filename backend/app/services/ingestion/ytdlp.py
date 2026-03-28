@@ -168,6 +168,9 @@ class YtdlpService:
             with yt_dlp.YoutubeDL(meta_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception:
+            info = None
+
+        if not info:
             info = {"title": title, "webpage_url": url}
 
         info["title"] = title
