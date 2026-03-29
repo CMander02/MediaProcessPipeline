@@ -339,6 +339,7 @@ class Qwen3ASRService:
         Used when ForcedAligner is not available — provides segment-level
         timestamps from VAD boundaries instead of a single text blob.
         """
+        import torch
         import torchaudio
 
         logger.info("No ForcedAligner — using VAD chunking for segmented output")

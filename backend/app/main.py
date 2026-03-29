@@ -40,6 +40,14 @@ logger = logging.getLogger(__name__)
 for _noisy in ("httpx", "httpcore", "openai", "uvicorn.access"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
+# Suppress Windows ProactorEventLoop ConnectionResetError spam
+# (harmless — triggered when browser closes SSE connections)
+if sys.platform == "win32":
+    _asyncio_logger = logging.getLogger("asyncio")
+    _asyncio_logger.addFilter(
+        lambda r: "ConnectionResetError" not in (r.getMessage() if callable(getattr(r, 'getMessage', None)) else str(r.msg))
+    )
+
 config = get_settings()
 
 

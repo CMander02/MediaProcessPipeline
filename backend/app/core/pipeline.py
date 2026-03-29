@@ -325,10 +325,14 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         try:
             import json as _json
             raw = _json.loads(meta_path.read_text(encoding="utf-8"))
+            _valid_media_types = {"video", "audio", "podcast", "meeting", "other"}
+            _media_type = raw.get("media_type", "video")
+            if _media_type not in _valid_media_types:
+                _media_type = "video"
             metadata = MediaMetadata(
                 title=raw.get("title", task_dir.name),
                 source_url=raw.get("source_url", ""),
-                media_type=raw.get("media_type", "audio"),
+                media_type=_media_type,
                 file_path=raw.get("file_path"),
                 uploader=raw.get("uploader"),
                 description=raw.get("description"),
