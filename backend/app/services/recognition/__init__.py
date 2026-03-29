@@ -1,4 +1,8 @@
-"""Recognition service - ASR transcription with backend selection."""
+"""Recognition service - ASR transcription with backend selection.
+
+Heavy dependencies (torch, whisperx, transformers) are loaded lazily
+when get_asr_service() or transcribe_audio() are first called.
+"""
 
 import asyncio
 import logging
@@ -6,17 +10,14 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from app.core.settings import get_runtime_settings
-from app.services.recognition.whisperx import WhisperXService, get_whisperx_service
 
-# Lazy import for Qwen3ASR to avoid nagisa import issues at module load time
 if TYPE_CHECKING:
+    from app.services.recognition.whisperx import WhisperXService
     from app.services.recognition.qwen3_asr import Qwen3ASRService
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "WhisperXService",
-    "Qwen3ASRService",
     "get_asr_service",
     "transcribe_audio",
 ]
@@ -37,10 +38,10 @@ def get_asr_service() -> "WhisperXService | Qwen3ASRService":
         except Exception as e:
             logger.error(f"Failed to load Qwen3-ASR backend: {e}")
             logger.warning("Falling back to WhisperX backend")
-            return get_whisperx_service()
-    else:
-        logger.debug("Using WhisperX backend")
-        return get_whisperx_service()
+
+    logger.debug("Using WhisperX backend")
+    from app.services.recognition.whisperx import get_whisperx_service
+    return get_whisperx_service()
 
 
 async def transcribe_audio(

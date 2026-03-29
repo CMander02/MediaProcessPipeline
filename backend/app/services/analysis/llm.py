@@ -6,8 +6,6 @@ import logging
 import re
 from typing import Any
 
-from openai import AsyncOpenAI
-
 from app.core.config import get_settings
 from app.core.settings import get_runtime_settings
 from app.services.analysis.prompts import (
@@ -27,13 +25,14 @@ class LLMService:
     def __init__(self):
         self._static_settings = get_settings()
 
-    def _get_client_and_model(self) -> tuple[AsyncOpenAI, str, float] | None:
+    def _get_client_and_model(self):
         """Build an AsyncOpenAI client from runtime settings.
 
         Returns (client, model_name, temperature) or None if not configured.
         All three providers (anthropic, openai, custom) are called through the
         OpenAI-compatible chat completions endpoint.
         """
+        from openai import AsyncOpenAI
         rt = get_runtime_settings()
         provider = rt.llm_provider
 

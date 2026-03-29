@@ -1,16 +1,27 @@
-"""Preprocessing service - UVR5 vocal separation and VAD splitting."""
+"""Preprocessing service - UVR5 vocal separation and VAD splitting.
 
-from app.services.preprocessing.uvr import UVRService, separate_vocals
-from app.services.preprocessing.vad_splitter import (
-    VADSplitter,
-    split_long_audio,
-    merge_srt_segments
-)
+Heavy dependencies (torch, torchaudio, audio_separator) are loaded lazily
+when the service functions are first called — not at import time.
+"""
+
+
+def separate_vocals(*args, **kwargs):
+    from app.services.preprocessing.uvr import separate_vocals as _fn
+    return _fn(*args, **kwargs)
+
+
+def split_long_audio(*args, **kwargs):
+    from app.services.preprocessing.vad_splitter import split_long_audio as _fn
+    return _fn(*args, **kwargs)
+
+
+def merge_srt_segments(*args, **kwargs):
+    from app.services.preprocessing.vad_splitter import merge_srt_segments as _fn
+    return _fn(*args, **kwargs)
+
 
 __all__ = [
-    "UVRService",
     "separate_vocals",
-    "VADSplitter",
     "split_long_audio",
-    "merge_srt_segments"
+    "merge_srt_segments",
 ]

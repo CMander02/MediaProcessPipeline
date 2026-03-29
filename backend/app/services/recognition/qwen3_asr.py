@@ -6,8 +6,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import torch
-
 from app.core.settings import get_runtime_settings
 from app.models import TranscriptSegment
 
@@ -96,6 +94,7 @@ class Qwen3ASRService:
         ForcedAligner is not loaded by default. Qwen3-ASR handles audio
         chunking natively via its internal toolkit.
         """
+        import torch
         rt = get_runtime_settings()
         model_path = self._get_model_path()
 
@@ -148,6 +147,7 @@ class Qwen3ASRService:
         Returns a wrapper that accepts audio format (numpy array).
         Optimized for long audio files (2+ hours) with reduced batch sizes.
         """
+        import torch
         from pyannote.audio import Pipeline
         import pandas as pd
         import numpy as np
@@ -237,6 +237,7 @@ class Qwen3ASRService:
         Returns:
             dict with "language" and "segments" keys
         """
+        import torch
         self._ensure_init()
         rt = get_runtime_settings()
 

@@ -37,10 +37,10 @@ export function useTaskSSE(
       const h = handlersRef.current
       switch (event.type) {
         case "step":
-          h.onStep?.(event.data as StepEvent)
+          h.onStep?.(event.data as unknown as StepEvent)
           break
         case "file_ready":
-          h.onFileReady?.(event.data as FileReadyEvent)
+          h.onFileReady?.(event.data as unknown as FileReadyEvent)
           break
         case "completed":
           h.onCompleted?.(event.data as { output_dir?: string })

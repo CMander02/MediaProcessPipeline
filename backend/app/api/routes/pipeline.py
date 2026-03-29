@@ -20,12 +20,6 @@ _WIN_RESERVED = re.compile(
 import ipaddress
 from urllib.parse import urlparse
 
-from app.services.ingestion import download_media, scan_inbox
-from app.services.preprocessing import separate_vocals
-from app.services.recognition import transcribe_audio
-from app.services.analysis import polish_text, summarize_text, generate_mindmap
-from app.services.archiving import list_archives
-from app.services.cleanup import cleanup_failed_task, cleanup_orphaned_files, get_disk_usage
 from app.core.settings import get_runtime_settings
 from app.core.database import get_task_store
 from app.core.pipeline import (
@@ -217,12 +211,14 @@ async def probe_url(url: str):
 async def download(req: DownloadRequest):
     """Download media from URL."""
     _validate_url(req.url)
+    from app.services.ingestion import download_media
     return await download_media(req.url)
 
 
 @router.post("/scan")
 async def scan():
     """Scan inbox for new files."""
+    from app.services.ingestion import scan_inbox
     files = await scan_inbox()
     return {"new_files": files, "count": len(files)}
 
@@ -230,36 +226,42 @@ async def scan():
 @router.post("/separate")
 async def separate(audio_path: str):
     """Separate vocals from audio."""
+    from app.services.preprocessing import separate_vocals
     return await separate_vocals(audio_path)
 
 
 @router.post("/transcribe")
 async def transcribe(req: TranscribeRequest):
     """Transcribe audio file."""
+    from app.services.recognition import transcribe_audio
     return await transcribe_audio(req.audio_path, req.language)
 
 
 @router.post("/polish")
 async def polish(req: AnalyzeRequest):
     """Polish transcript text."""
+    from app.services.analysis import polish_text
     return {"polished": await polish_text(req.text)}
 
 
 @router.post("/summarize")
 async def summarize(req: AnalyzeRequest):
     """Generate summary."""
+    from app.services.analysis import summarize_text
     return await summarize_text(req.text)
 
 
 @router.post("/mindmap")
 async def mindmap(req: AnalyzeRequest):
     """Generate mindmap."""
+    from app.services.analysis import generate_mindmap
     return {"markdown": await generate_mindmap(req.text)}
 
 
 @router.get("/archives")
 async def archives():
     """List archived content (all, sorted by mtime desc)."""
+    from app.services.archiving import list_archives
     return {"archives": await list_archives()}
 
 
@@ -457,6 +459,7 @@ async def archive_thumbnail(path: str):
 @router.post("/cleanup/{task_id}")
 async def cleanup_task(task_id: str):
     """Clean up files from a specific task."""
+    from app.services.cleanup import cleanup_failed_task
     return await cleanup_failed_task(task_id)
 
 
@@ -465,12 +468,14 @@ async def cleanup_all(max_age_hours: int = 24):
     """Clean up orphaned temporary files."""
     if max_age_hours < 1:
         raise HTTPException(400, "max_age_hours must be at least 1")
+    from app.services.cleanup import cleanup_orphaned_files
     return await cleanup_orphaned_files(max_age_hours)
 
 
 @router.get("/disk-usage")
 async def disk_usage():
     """Get disk usage statistics for data directory."""
+    from app.services.cleanup import get_disk_usage
     return await get_disk_usage()
 
 

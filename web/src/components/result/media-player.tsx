@@ -87,7 +87,7 @@ function VideoPlayer({
       }]
     }
 
-    const art = new Artplayer(options)
+    const art = new Artplayer(options as any)
 
     artRef.current = art
 

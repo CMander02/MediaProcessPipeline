@@ -5,9 +5,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-import torch
-import torchaudio
-
 logger = logging.getLogger(__name__)
 
 # 30 minutes in seconds
@@ -24,6 +21,7 @@ class VADSplitter:
     def _load_model(self):
         """Lazy load Silero VAD model."""
         if self._model is None:
+            import torch
             logger.info("Loading Silero VAD model...")
             model, utils = torch.hub.load(
                 repo_or_dir='snakers4/silero-vad',
@@ -43,6 +41,8 @@ class VADSplitter:
     ) -> list[dict[str, int]]:
         """Get speech timestamps from audio file."""
         self._load_model()
+
+        import torchaudio
 
         # Load audio
         waveform, sr = torchaudio.load(str(audio_path))
@@ -143,6 +143,8 @@ class VADSplitter:
         - duration: Segment duration in seconds
         """
         audio_path = Path(audio_path)
+
+        import torchaudio
 
         # Load audio to get duration
         waveform, sr = torchaudio.load(str(audio_path))

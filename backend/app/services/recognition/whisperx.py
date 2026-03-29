@@ -4,37 +4,49 @@ import logging
 from pathlib import Path
 from typing import Any
 
-# Fix PyTorch 2.6+ weights_only security issue for pyannote/whisperx models
-# Patch lightning_fabric's _load to force weights_only=False
-import torch
-try:
-    import lightning_fabric.utilities.cloud_io as cloud_io
-
-    _original_lightning_load = cloud_io._load
-
-    def _patched_lightning_load(path_or_url, map_location=None, **kwargs):
-        # Force weights_only=False to load pyannote models
-        kwargs['weights_only'] = False
-        return torch.load(path_or_url, map_location=map_location, **kwargs)
-
-    cloud_io._load = _patched_lightning_load
-except (ImportError, AttributeError):
-    pass
-
-# Also add omegaconf classes for whisper model loading (silero VAD etc)
-try:
-    from omegaconf import ListConfig, DictConfig
-    from omegaconf.base import ContainerMetadata, SCMode
-    from omegaconf.nodes import ValueNode
-    torch.serialization.add_safe_globals([
-        ListConfig, DictConfig, ContainerMetadata, SCMode, ValueNode,
-    ])
-except (ImportError, AttributeError):
-    pass
-
 from app.core.config import get_settings
 from app.core.settings import get_runtime_settings
 from app.models import TranscriptSegment
+
+_torch_patched = False
+
+
+def _patch_torch_for_whisperx():
+    """Apply PyTorch 2.6+ compatibility patches for whisperx/pyannote.
+
+    Called lazily before first model load — avoids importing torch at module level.
+    """
+    global _torch_patched
+    if _torch_patched:
+        return
+    _torch_patched = True
+
+    import torch
+
+    # Fix weights_only security issue for pyannote models via lightning_fabric
+    try:
+        import lightning_fabric.utilities.cloud_io as cloud_io
+
+        _original_lightning_load = cloud_io._load
+
+        def _patched_lightning_load(path_or_url, map_location=None, **kwargs):
+            kwargs['weights_only'] = False
+            return torch.load(path_or_url, map_location=map_location, **kwargs)
+
+        cloud_io._load = _patched_lightning_load
+    except (ImportError, AttributeError):
+        pass
+
+    # Add omegaconf classes for whisper model loading (silero VAD etc)
+    try:
+        from omegaconf import ListConfig, DictConfig
+        from omegaconf.base import ContainerMetadata, SCMode
+        from omegaconf.nodes import ValueNode
+        torch.serialization.add_safe_globals([
+            ListConfig, DictConfig, ContainerMetadata, SCMode, ValueNode,
+        ])
+    except (ImportError, AttributeError):
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +86,8 @@ class WhisperXService:
         if self._model is not None and self._current_model_path == model_path:
             return
 
+        _patch_torch_for_whisperx()
+
         try:
             import whisperx
 
@@ -106,6 +120,7 @@ class WhisperXService:
         Returns a wrapper that accepts whisperx audio format (numpy array).
         Optimized for long audio files (2+ hours) with reduced batch sizes.
         """
+        import torch
         from pyannote.audio import Pipeline
         import pandas as pd
         import numpy as np
@@ -183,6 +198,7 @@ class WhisperXService:
         diarize: bool = True,
         num_speakers: int | None = None,
     ) -> dict[str, Any]:
+        import torch
         self._ensure_init()
         rt = get_runtime_settings()
 
