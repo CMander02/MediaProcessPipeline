@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Any
@@ -27,6 +27,13 @@ from app.services.analysis import polish_text, summarize_text, generate_mindmap
 from app.services.archiving import list_archives
 from app.services.cleanup import cleanup_failed_task, cleanup_orphaned_files, get_disk_usage
 from app.core.settings import get_runtime_settings
+from app.core.database import get_task_store
+from app.core.pipeline import (
+    PIPELINE_STEPS, PipelineStep, _sanitize_filename,
+    create_task_dir, write_metadata_json,
+)
+from app.core.queue import get_task_queue
+from app.models import Task, TaskCreate as TaskCreateModel, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -79,17 +86,34 @@ _ALLOWED_MEDIA_EXTS = {
 }
 
 
-@router.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
-    """Upload a local media file for processing."""
-    rt = get_runtime_settings()
-    upload_dir = Path(rt.data_root).resolve() / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
+def _sanitize_upload_name(raw_name: str) -> str:
+    """Sanitize an uploaded filename for safe filesystem use."""
+    # Remove directory components
+    safe = raw_name.replace("/", "_").replace("\\", "_")
+    # Remove characters illegal on Windows
+    safe = re.sub(r'[<>:"|?*\x00-\x1f]', '_', safe)
+    # Strip leading/trailing dots and spaces
+    safe = safe.strip('. ')
+    # Prefix Windows reserved device names
+    stem = safe.split('.')[0] if '.' in safe else safe
+    if _WIN_RESERVED.match(stem):
+        safe = f"_{safe}"
+    return safe or "uploaded_file"
 
-    # Sanitize filename: strip path separators, illegal chars, Windows reserved names
+
+@router.post("/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    options: str = Form("{}"),
+):
+    """Upload a local media file, create task directory & task atomically.
+
+    Saves the file directly into data/{title}/ — no intermediate uploads/ dir.
+    Returns the created Task object so the frontend needs only one request.
+    """
     raw_name = file.filename or "uploaded_file"
 
-    # Validate file extension before saving
+    # Validate extension
     ext = Path(raw_name).suffix.lower()
     if ext not in _ALLOWED_MEDIA_EXTS:
         raise HTTPException(
@@ -97,39 +121,66 @@ async def upload_file(file: UploadFile = File(...)):
             f"不支持的文件格式: {ext or '(无扩展名)'}。"
             f"支持的格式: {', '.join(sorted(_ALLOWED_MEDIA_EXTS))}",
         )
-    # Remove directory components
-    safe_name = raw_name.replace("/", "_").replace("\\", "_")
-    # Remove characters illegal on Windows
-    safe_name = re.sub(r'[<>:"|?*\x00-\x1f]', '_', safe_name)
-    # Strip leading/trailing dots and spaces (Windows silently strips these)
-    safe_name = safe_name.strip('. ')
-    # Reject Windows reserved device names
-    if _WIN_RESERVED.match(safe_name.split('.')[0] if '.' in safe_name else safe_name):
-        safe_name = f"_{safe_name}"
-    if not safe_name:
-        safe_name = "uploaded_file"
-    dest_path = upload_dir / safe_name
 
-    # Handle duplicate filenames
-    counter = 1
-    original_stem = dest_path.stem
-    while dest_path.exists():
-        dest_path = upload_dir / f"{original_stem}_{counter}{dest_path.suffix}"
-        counter += 1
+    safe_name = _sanitize_upload_name(raw_name)
+    title = Path(safe_name).stem
+    video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov", ".flv", ".wmv"}
+    media_type = "video" if ext in video_exts else "audio"
 
-    # Save uploaded file with size limit (10 GB)
-    max_size = 10 * 1024 * 1024 * 1024  # 10 GB
+    # Parse options JSON from form field
+    import json as _json
+    try:
+        task_options = _json.loads(options) if options else {}
+    except (ValueError, TypeError):
+        task_options = {}
+
+    # Create task + directory
+    from uuid import uuid4
+    task = Task(
+        task_type="pipeline",
+        source=f"upload://{safe_name}",
+        options=task_options,
+        status=TaskStatus.QUEUED,
+        current_step=PipelineStep.DOWNLOAD,
+        message="等待处理...",
+        steps=[s["id"] for s in PIPELINE_STEPS],
+        completed_steps=[],
+    )
+
+    task_dir = create_task_dir(task.id, title)
+    dest_path = task_dir / safe_name
+
+    # Stream file to task_dir with size limit (10 GB)
+    max_size = 10 * 1024 * 1024 * 1024
     written = 0
-    with open(dest_path, "wb") as f:
-        while chunk := await file.read(8 * 1024 * 1024):  # 8 MB chunks
-            written += len(chunk)
-            if written > max_size:
-                f.close()
-                dest_path.unlink(missing_ok=True)
-                raise HTTPException(413, f"File too large (limit: 10 GB)")
-            f.write(chunk)
+    try:
+        with open(dest_path, "wb") as f:
+            while chunk := await file.read(8 * 1024 * 1024):
+                written += len(chunk)
+                if written > max_size:
+                    raise HTTPException(413, "File too large (limit: 10 GB)")
+                f.write(chunk)
+    except Exception:
+        # Clean up task_dir on failure
+        shutil.rmtree(task_dir, ignore_errors=True)
+        raise
 
-    return {"file_path": str(dest_path), "filename": safe_name}
+    # Write initial metadata
+    write_metadata_json(task_dir, {
+        "title": title,
+        "source_url": f"upload://{safe_name}",
+        "media_type": media_type,
+    }, status="queued")
+
+    task.result = {"output_dir": str(task_dir)}
+
+    store = get_task_store()
+    store.save(task)
+
+    queue = get_task_queue()
+    await queue.submit(task.id)
+
+    return task
 
 
 @router.get("/probe")
@@ -250,21 +301,6 @@ async def delete_archive(req: ArchiveDeleteRequest):
         except (json.JSONDecodeError, TypeError, ValueError):
             continue
 
-    # Also try to delete the uploaded source file
-    source_deleted = False
-    metadata_file = archive_dir / "metadata.json"
-    if metadata_file.exists():
-        try:
-            meta = json.loads(metadata_file.read_text(encoding="utf-8"))
-            source_url = meta.get("source_url", "")
-            uploads_dir = data_root / "uploads"
-            source_path = Path(source_url)
-            if source_path.exists() and uploads_dir.resolve() in source_path.resolve().parents:
-                source_path.unlink()
-                source_deleted = True
-        except Exception:
-            pass
-
     # Delete the archive directory (with Windows file-lock retry)
     import time
 
@@ -300,13 +336,12 @@ async def delete_archive(req: ArchiveDeleteRequest):
         except Exception:
             pass
 
-    logger.info(f"Deleted archive: {archive_dir} (task={task_deleted}, source={source_deleted})")
+    logger.info(f"Deleted archive: {archive_dir} (task={task_deleted})")
 
     return {
         "message": "Deleted",
         "path": str(archive_dir),
         "task_deleted": task_deleted,
-        "source_deleted": source_deleted,
     }
 
 

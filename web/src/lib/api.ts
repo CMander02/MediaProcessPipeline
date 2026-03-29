@@ -116,9 +116,12 @@ export const api = {
   },
 
   pipeline: {
-    upload: async (file: File, signal?: AbortSignal) => {
+    upload: async (file: File, options?: Record<string, unknown>, signal?: AbortSignal) => {
       const form = new FormData()
       form.append("file", file)
+      if (options && Object.keys(options).length > 0) {
+        form.append("options", JSON.stringify(options))
+      }
       const res = await fetch("/api/pipeline/upload", {
         method: "POST",
         headers: { "X-Requested-With": "fetch" },
@@ -126,7 +129,7 @@ export const api = {
         signal,
       })
       if (!res.ok) throw new Error("Upload failed")
-      return res.json() as Promise<{ file_path: string }>
+      return res.json() as Promise<Task>
     },
     probe: (url: string) =>
       get<{ title?: string; description?: string; tags?: string[]; uploader?: string; duration?: number }>(

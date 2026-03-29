@@ -20,7 +20,8 @@ interface QueuedFile {
   name: string
   size: number
   duration: number | null
-  serverPath: string
+  taskId: string
+  outputDir: string
   uploading: boolean
   error: string
 }
@@ -69,6 +70,8 @@ export function SubmitPage() {
     if (hotwordTags.length > 0) opts.hotwords = hotwordTags
     return opts
   }
+  const buildOptionsRef = useRef(buildOptions)
+  buildOptionsRef.current = buildOptions
 
   const uploadAndQueue = useCallback(async (file: File) => {
     const id = `${file.name}-${Date.now()}-${Math.random()}`
@@ -76,19 +79,19 @@ export function SubmitPage() {
     abortControllers.current.set(id, controller)
     setQueuedFiles((prev) => [...prev, {
       id, name: file.name, size: file.size, duration: null,
-      serverPath: "", uploading: true, error: "",
+      taskId: "", outputDir: "", uploading: true, error: "",
     }])
     try {
-      const [duration, { file_path }] = await Promise.all([
+      const [duration, task] = await Promise.all([
         getMediaDuration(file),
-        api.pipeline.upload(file, controller.signal),
+        api.pipeline.upload(file, buildOptionsRef.current(), controller.signal),
       ])
+      const outputDir = (task.result as Record<string, unknown> | null)?.output_dir as string || ""
       setQueuedFiles((prev) => prev.map((f) =>
-        f.id === id ? { ...f, duration, serverPath: file_path, uploading: false } : f
+        f.id === id ? { ...f, duration, taskId: task.id, outputDir, uploading: false } : f
       ))
     } catch (err) {
       if (controller.signal.aborted) {
-        // Removed by user — just drop it from the list
         setQueuedFiles((prev) => prev.filter((f) => f.id !== id))
       } else {
         setQueuedFiles((prev) => prev.map((f) =>
@@ -116,27 +119,43 @@ export function SubmitPage() {
   }
 
   const handleSubmitAll = async () => {
-    const sources: string[] = []
-    if (source.trim()) sources.push(source.trim())
-    sources.push(...queuedFiles.filter((f) => f.serverPath && !f.uploading && !f.error).map((f) => f.serverPath))
-    if (!sources.length || submitting) return
+    // Uploaded files already have tasks — only URL/path sources need creation
+    const readyFiles = queuedFiles.filter((f) => f.taskId && !f.uploading && !f.error)
+    const urlSource = source.trim()
+    if (!urlSource && !readyFiles.length) return
+    if (submitting) return
 
     setSubmitting(true)
     setError("")
     try {
       const opts = buildOptions()
-      if (sources.length === 1) {
-        const task = await api.tasks.create(sources[0], opts)
+
+      // Single uploaded file, no URL
+      if (!urlSource && readyFiles.length === 1) {
+        const f = readyFiles[0]
+        if (f.outputDir) {
+          navigate(`#/result/archive?path=${encodeURIComponent(f.outputDir)}&taskId=${encodeURIComponent(f.taskId)}`)
+        } else {
+          navigate(`#/result/task/${f.taskId}`)
+        }
+        return
+      }
+
+      // Single URL, no files
+      if (urlSource && !readyFiles.length) {
+        const task = await api.tasks.create(urlSource, opts)
         const outputDir = task.result?.output_dir as string | undefined
         if (outputDir) {
           navigate(`#/result/archive?path=${encodeURIComponent(outputDir)}&taskId=${encodeURIComponent(task.id)}`)
         } else {
           navigate(`#/result/task/${task.id}`)
         }
-      } else {
-        for (const src of sources) await api.tasks.create(src, opts)
-        navigate("#/files")
+        return
       }
+
+      // Multiple items — create tasks for URL sources (file tasks already exist)
+      if (urlSource) await api.tasks.create(urlSource, opts)
+      navigate("#/files")
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交失败")
       setSubmitting(false)
@@ -167,7 +186,7 @@ export function SubmitPage() {
   const { isDragging, dropZoneProps } = useDropZone({ accept: ["video/*", "audio/*"], onDrop: handleFileSelect })
 
   const anyUploading = queuedFiles.some((f) => f.uploading)
-  const readyCount = queuedFiles.filter((f) => f.serverPath && !f.error).length
+  const readyCount = queuedFiles.filter((f) => f.taskId && !f.error).length
   const uploadingCount = queuedFiles.filter((f) => f.uploading).length
   const totalCount = (source.trim() ? 1 : 0) + readyCount
   const canSubmit = totalCount > 0 && !submitting && !anyUploading

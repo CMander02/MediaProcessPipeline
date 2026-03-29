@@ -34,7 +34,6 @@ class PipelineStep(StrEnum):
     TRANSCRIBE = "transcribe"
     ANALYZE = "analyze"
     POLISH = "polish"
-    SUMMARIZE = "summarize"
     ARCHIVE = "archive"
 
 
@@ -162,15 +161,20 @@ def _extract_audio_from_video(video_path: Path, output_path: Path) -> Path:
         "-ac", "1",
         str(output_path.resolve()),
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    subprocess.run(cmd, check=True, capture_output=True, timeout=600)
     return output_path
 
 
-def _cleanup_intermediate_files(task_dir: Path, audio_path: str, vocals_path: str) -> None:
-    """Clean up intermediate audio files to save disk space."""
+def _cleanup_vocals(task_dir: Path, audio_path: str | None, vocals_path: str | None) -> None:
+    """Clean up UVR vocals and ASR segment files after transcription.
+
+    Called right after TRANSCRIBE completes — these large WAVs are no longer
+    needed once ASR is done.
+    """
     cleaned_files = []
     cleaned_size = 0
 
+    # Delete UVR vocals output (only if it's a separate file from the source audio)
     if vocals_path and vocals_path != audio_path:
         vocals_file = Path(vocals_path)
         if vocals_file.exists():
@@ -179,26 +183,31 @@ def _cleanup_intermediate_files(task_dir: Path, audio_path: str, vocals_path: st
             cleaned_files.append(vocals_file.name)
             cleaned_size += size
 
+    # Delete ASR segment files
     for segment_file in task_dir.glob("segment_*.wav"):
         size = segment_file.stat().st_size
         segment_file.unlink()
         cleaned_files.append(segment_file.name)
         cleaned_size += size
 
-    for wav_file in task_dir.glob("*.wav"):
-        # Keep UVR vocals output (the file ASR actually uses)
-        if "_Vocals_" in wav_file.name or "(Vocals)" in wav_file.name:
-            continue
-        if wav_file.name.startswith("segment_"):
-            continue
-        size = wav_file.stat().st_size
-        wav_file.unlink()
-        cleaned_files.append(wav_file.name)
-        cleaned_size += size
-
     if cleaned_files:
         size_mb = cleaned_size / (1024 * 1024)
-        logger.info(f"Cleaned up {len(cleaned_files)} intermediate files ({size_mb:.1f} MB): {cleaned_files}")
+        logger.info(f"Cleaned up vocals/segments ({size_mb:.1f} MB): {cleaned_files}")
+
+
+def _cleanup_extracted_audio(task_dir: Path, audio_path: str | None, media_type: str | None) -> None:
+    """Clean up the extracted WAV from video in the final archive step.
+
+    Only deletes the ffmpeg-extracted WAV for video files. Audio-only files
+    keep their source since it IS the original media.
+    """
+    if media_type != "video" or not audio_path:
+        return
+    audio_file = Path(audio_path)
+    if audio_file.exists() and audio_file.suffix.lower() == ".wav":
+        size = audio_file.stat().st_size
+        audio_file.unlink()
+        logger.info(f"Cleaned up extracted audio ({size / (1024*1024):.1f} MB): {audio_file.name}")
 
 
 
@@ -265,7 +274,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     """
     from app.services.ingestion import download_media
     from app.services.ingestion.ytdlp import download_subtitles
-    from app.services.ingestion.local import find_local_subtitle, parse_nfo, find_original_file
+    from app.services.ingestion.local import find_local_subtitle, parse_nfo
     from app.services.preprocessing import separate_vocals
     from app.services.recognition import transcribe_audio
     from app.services.recognition.subtitle_processor import process_subtitles
@@ -421,23 +430,39 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     else:
         await _update_step(task, PipelineStep.DOWNLOAD)
 
-        if _looks_like_local_path(task.source):
-            source_path = Path(source)
-            if not source_path.exists():
-                raise FileNotFoundError(f"本地文件不存在: {source}")
-            if not source_path.is_file():
-                raise ValueError(f"路径不是文件: {source}")
+        if source.startswith("upload://") or _looks_like_local_path(task.source):
+            # Two sub-cases:
+            #  1) upload:// — file already lives inside task_dir (browser upload)
+            #  2) local path — file on disk, move it into task_dir
+            is_browser_upload = source.startswith("upload://")
 
-            title = source_path.stem
-            if not task_dir:
-                task_dir = create_task_dir(task.id, title)
-            dest_source = task_dir / source_path.name
-            shutil.copy2(source_path, dest_source)
+            if is_browser_upload:
+                # File is already in task_dir — find it
+                upload_name = source.removeprefix("upload://")
+                if task_dir is None:
+                    raise RuntimeError("upload:// source but task_dir is None")
+                dest_source = task_dir / upload_name
+                if not dest_source.exists():
+                    raise FileNotFoundError(f"上传文件不存在: {dest_source}")
+                source_path = dest_source  # for subtitle/nfo search (won't find any — that's fine)
+            else:
+                source_path = Path(source)
+                if not source_path.exists():
+                    raise FileNotFoundError(f"本地文件不存在: {source}")
+                if not source_path.is_file():
+                    raise ValueError(f"路径不是文件: {source}")
+                title = source_path.stem
+                if not task_dir:
+                    task_dir = create_task_dir(task.id, title)
+                dest_source = task_dir / source_path.name
+                # Move instead of copy — same partition is instant rename
+                shutil.move(str(source_path), str(dest_source))
 
+            title = dest_source.stem
             video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov"}
             audio_exts = {".mp3", ".wav", ".flac", ".m4a", ".ogg"}
 
-            if source_path.suffix.lower() in video_exts:
+            if dest_source.suffix.lower() in video_exts:
                 audio_path = task_dir / f"{title}.wav"
                 await asyncio.to_thread(_extract_audio_from_video, dest_source, audio_path)
                 audio_path = str(audio_path)
@@ -449,35 +474,29 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 )
 
                 # Search for local subtitle and NFO metadata
-                # If file is in uploads dir, try to find the original location
-                search_path = source_path
-                if use_platform_subtitles:
-                    platform_subtitle = find_local_subtitle(search_path)
-                    if not platform_subtitle:
-                        # File may have been uploaded — search for original location
-                        original = find_original_file(search_path)
-                        if original:
-                            search_path = original
-                            platform_subtitle = find_local_subtitle(search_path)
+                # For browser uploads source_path == dest_source (no original dir to search)
+                if not is_browser_upload and use_platform_subtitles:
+                    platform_subtitle = find_local_subtitle(source_path)
                     if platform_subtitle:
                         logger.info(f"Found local subtitle: {platform_subtitle['subtitle_path']}")
 
-                nfo_meta = parse_nfo(search_path)
-                if nfo_meta:
-                    if nfo_meta.get("title"):
-                        metadata.title = nfo_meta["title"]
-                    if nfo_meta.get("description"):
-                        metadata.description = nfo_meta["description"]
-                    if nfo_meta.get("tags"):
-                        metadata.tags = nfo_meta["tags"]
-                    if nfo_meta.get("uploader"):
-                        metadata.uploader = nfo_meta["uploader"]
-                    if nfo_meta.get("upload_date"):
-                        metadata.upload_date = nfo_meta["upload_date"]
-                    if nfo_meta.get("source_url"):
-                        metadata.source_url = nfo_meta["source_url"]
+                if not is_browser_upload:
+                    nfo_meta = parse_nfo(source_path)
+                    if nfo_meta:
+                        if nfo_meta.get("title"):
+                            metadata.title = nfo_meta["title"]
+                        if nfo_meta.get("description"):
+                            metadata.description = nfo_meta["description"]
+                        if nfo_meta.get("tags"):
+                            metadata.tags = nfo_meta["tags"]
+                        if nfo_meta.get("uploader"):
+                            metadata.uploader = nfo_meta["uploader"]
+                        if nfo_meta.get("upload_date"):
+                            metadata.upload_date = nfo_meta["upload_date"]
+                        if nfo_meta.get("source_url"):
+                            metadata.source_url = nfo_meta["source_url"]
 
-            elif source_path.suffix.lower() in audio_exts:
+            elif dest_source.suffix.lower() in audio_exts:
                 audio_path = str(dest_source)
                 metadata = MediaMetadata(
                     title=title,
@@ -486,24 +505,13 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     file_path=str(dest_source),
                 )
             else:
-                raise ValueError(f"Unsupported file format: {source_path.suffix}")
+                raise ValueError(f"Unsupported file format: {dest_source.suffix}")
 
-            # Set has_subtitle for local files (was previously only set for URLs)
             has_subtitle = platform_subtitle is not None
 
             # Write metadata.json immediately after local file processing
             meta_path = write_metadata_json(task_dir, metadata, status="processing")
             await _emit_file_ready(task, "metadata.json", str(meta_path))
-
-            # Clean up uploaded source file from uploads/ dir (avoid double storage)
-            rt_data_root = Path(rt.data_root).resolve()
-            uploads_dir = rt_data_root / "uploads"
-            if uploads_dir.exists() and source_path.resolve().is_relative_to(uploads_dir):
-                try:
-                    source_path.unlink()
-                    logger.info(f"Cleaned up uploaded source: {source_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to clean up uploaded source {source_path}: {e}")
 
         else:
             # For Bilibili URLs, skip yt-dlp probe (403 without cookie);
@@ -647,6 +655,11 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 await _update_step(task, PipelineStep.TRANSCRIBE, completed=True)
             # end if TRANSCRIBE not in done
         # end async with gpu_sem
+
+    # Clean up UVR vocals and segment files immediately after ASR is done —
+    # these large WAVs are no longer needed and can free significant disk space.
+    _cleanup_vocals(task_dir, audio_path, vocals_path)
+
     # end if SEPARATE+TRANSCRIBE not both done
 
     # Guard: skip LLM if transcript is empty or trivially short
@@ -669,7 +682,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             analysis=empty_analysis,
         )
         write_metadata_json(task_dir, metadata, status="completed")
-        _cleanup_intermediate_files(task_dir, audio_path, vocals_path)
+        _cleanup_extracted_audio(task_dir, audio_path, metadata.media_type if metadata else None)
         await _update_step(task, PipelineStep.ARCHIVE, completed=True)
 
         task.result = {
@@ -776,8 +789,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     meta_path = write_metadata_json(task_dir, metadata, status="completed")
     await _emit_file_ready(task, "metadata.json", str(meta_path))
 
-    _cleanup_intermediate_files(task_dir, audio_path, vocals_path)
-
+    _cleanup_extracted_audio(task_dir, audio_path, metadata.media_type if metadata else None)
 
     await _update_step(task, PipelineStep.ARCHIVE, completed=True)
 
