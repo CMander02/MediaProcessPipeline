@@ -188,16 +188,23 @@ class YtdlpService:
             "-e", "hevc,avc,av1",
             "-q", "1080P 高码率, 1080P 高清, 720P 高清",
         ]
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, encoding="utf-8",
-            cwd=str(_BBDOWN_DIR),  # so BBDown.data is found
-        )
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True,
+                cwd=str(_BBDOWN_DIR),  # so BBDown.data is found
+                timeout=600,  # 10 min — prevents indefinite hang
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("BBDown download timed out after 10 minutes")
+        # BBDown outputs GBK on Windows — decode with fallback
+        stdout = proc.stdout.decode("utf-8", errors="replace") if proc.stdout else ""
+        stderr = proc.stderr.decode("utf-8", errors="replace") if proc.stderr else ""
         if proc.returncode != 0:
-            logger.error(f"BBDown stderr: {proc.stderr[:500]}")
-            logger.error(f"BBDown stdout: {proc.stdout[-500:]}")
+            logger.error(f"BBDown stderr: {stderr[:500]}")
+            logger.error(f"BBDown stdout: {stdout[-500:]}")
             raise RuntimeError("BBDown download failed — check server logs for details")
 
-        logger.info(f"BBDown stdout: {proc.stdout[-300:]}")
+        logger.info(f"BBDown stdout: {stdout[-300:]}")
 
         # Find the downloaded mp4
         mp4_files = sorted(output_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -215,7 +222,7 @@ class YtdlpService:
             ["ffmpeg", "-i", str(video_file), "-vn",
              "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
              str(audio_file), "-y"],
-            capture_output=True, check=True,
+            capture_output=True, check=True, timeout=300,
         )
 
         # Fetch metadata via Bilibili public API (yt-dlp gets 403).
@@ -229,6 +236,77 @@ class YtdlpService:
             "video_path": str(video_file),
             "info": info,
         }
+
+    def _download_bilibili_subtitle(self, url: str, output_dir: Path) -> dict[str, Any]:
+        """Download Bilibili AI subtitle via BBDown."""
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        cmd = [
+            str(_BBDOWN_EXE), url,
+            "--work-dir", str(output_dir),
+            "--sub-only", "--skip-ai", "false",
+        ]
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True,
+                cwd=str(_BBDOWN_DIR),
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("BBDown subtitle download timed out")
+            return {"subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
+
+        stdout = proc.stdout.decode("utf-8", errors="replace") if proc.stdout else ""
+        if proc.returncode != 0:
+            logger.warning(f"BBDown subtitle failed: {stdout[-300:]}")
+            return {"subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
+
+        # Find downloaded .srt file (BBDown names it like: title.ai-zh.srt)
+        # For multi-P videos BBDown may create a subfolder, so search recursively
+        srt_files = sorted(output_dir.rglob("*.srt"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not srt_files:
+            logger.info("BBDown found no AI subtitle for this video")
+            return {"subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
+
+        srt_path = srt_files[0]
+
+        # Validate subtitle has meaningful content (not just BGM lyrics)
+        content = srt_path.read_text(encoding="utf-8-sig")
+        lines = [l.strip() for l in content.splitlines()
+                 if l.strip() and not l.strip().isdigit() and "-->" not in l]
+        # Filter out music lines (♪...♪)
+        text_lines = [l for l in lines if not (l.startswith("♪") and l.endswith("♪"))]
+        if len(text_lines) < 3:
+            logger.info(f"Bilibili AI subtitle too short ({len(text_lines)} lines), skipping")
+            srt_path.unlink()
+            return {"subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
+
+        logger.info(f"Downloaded Bilibili AI subtitle: {srt_path.name} ({len(text_lines)} lines)")
+        return {
+            "subtitle_path": str(srt_path),
+            "subtitle_lang": "zh",
+            "subtitle_format": "srt",
+        }
+
+    def fetch_metadata(self, url: str) -> dict[str, Any]:
+        """Fetch video metadata without downloading the video.
+
+        Returns the same info dict format as download() so extract_metadata() works.
+        Bilibili: uses public API. YouTube/other: uses yt-dlp --skip-download.
+        """
+        if _is_bilibili_url(url):
+            info = self._fetch_bilibili_metadata(url)
+            return info
+
+        import yt_dlp
+        with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
+            info = ydl.extract_info(url, download=False)
+        if info is None:
+            raise RuntimeError(f"Failed to extract metadata: {url}")
+        return info
 
     def _download_audio_only(self, url: str, output_dir: Path, title: str) -> Path:
         """Fallback: download audio only using yt-dlp."""
@@ -389,10 +467,9 @@ class YtdlpService:
         """
         import yt_dlp
 
-        # yt-dlp gets 403 on Bilibili — skip subtitle download
-        if _is_bilibili_url(url):
-            logger.info("Skipping yt-dlp subtitle download for Bilibili (403)")
-            return {"subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
+        # Bilibili: use BBDown to download AI subtitles (yt-dlp gets 403)
+        if _is_bilibili_url(url) and _BBDOWN_EXE.exists():
+            return self._download_bilibili_subtitle(url, output_dir)
 
         if langs is None:
             from app.core.settings import get_runtime_settings
@@ -493,3 +570,11 @@ async def download_subtitles(
     import asyncio
     service = get_ytdlp_service()
     return await asyncio.to_thread(service.download_subtitles, url, output_dir, langs)
+
+
+async def fetch_metadata(url: str) -> "MediaMetadata":
+    """Fetch metadata without downloading — for subtitle fast path."""
+    import asyncio
+    service = get_ytdlp_service()
+    info = await asyncio.to_thread(service.fetch_metadata, url)
+    return service.extract_metadata(info)
