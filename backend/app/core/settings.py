@@ -66,6 +66,7 @@ class RuntimeSettings(BaseModel):
     # Platform Subtitles
     prefer_platform_subtitles: bool = True  # Use platform subtitles when available
     subtitle_languages: str = "zh,en"  # Comma-separated language priority
+    force_asr: bool = False  # Force ASR even when platform subtitles are available
 
     # UVR
     uvr_model: str = "UVR-MDX-NET-Inst_HQ_3"
