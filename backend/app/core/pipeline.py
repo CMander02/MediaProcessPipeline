@@ -257,6 +257,143 @@ async def _update_step(
 
 
 # ---------------------------------------------------------------------------
+# Fast-path subtitle runner (no GPU needed)
+# ---------------------------------------------------------------------------
+
+async def _run_subtitle_fast_path(
+    task: Task,
+    task_dir: Path,
+    platform_subtitle: dict,
+    metadata: "MediaMetadata",
+) -> dict:
+    """Run subtitle processing + LLM analysis — no GPU needed.
+
+    This is the 'Branch A' of the fast path: processes platform subtitles
+    through LLM for polish/analysis/summary/mindmap. Runs concurrently with
+    video download (Branch B).
+
+    Returns the text-related portion of the task result.
+    """
+    from app.services.recognition.subtitle_processor import process_subtitles
+    from app.services.analysis import polish_text, summarize_text, generate_mindmap, analyze_content
+    from app.services.archiving import archive_result
+
+    # -- SEPARATE: skip (no audio to separate) --
+    await _update_step(task, PipelineStep.SEPARATE, completed=True)
+
+    # -- TRANSCRIBE: process platform subtitle --
+    await _update_step(task, PipelineStep.TRANSCRIBE)
+    sub_result = await process_subtitles(
+        subtitle_path=platform_subtitle["subtitle_path"],
+        subtitle_format=platform_subtitle["subtitle_format"],
+        metadata=metadata,
+    )
+    transcript = " ".join(s["text"] for s in sub_result.get("segments", []))
+    srt = sub_result.get("srt", "")
+    polished = sub_result.get("polished_srt", "")
+    polished_md = sub_result.get("polished_md", "")
+    recognition_segments = sub_result.get("segments", [])
+
+    # Write transcript files
+    if srt:
+        srt_path = task_dir / "transcript.srt"
+        srt_path.write_text(srt, encoding="utf-8")
+        await _emit_file_ready(task, "transcript.srt", str(srt_path))
+    if polished:
+        polished_srt_path = task_dir / "transcript_polished.srt"
+        polished_srt_path.write_text(polished, encoding="utf-8")
+        await _emit_file_ready(task, "transcript_polished.srt", str(polished_srt_path))
+        if polished_md:
+            polished_md_path = task_dir / "transcript_polished.md"
+            polished_md_path.write_text(polished_md, encoding="utf-8")
+
+    await _update_step(task, PipelineStep.TRANSCRIBE, completed=True)
+
+    # Guard: skip LLM if transcript is empty
+    if not transcript or len(transcript.strip()) < 10:
+        logger.warning(f"Fast path: transcript too short ({len(transcript)} chars), skipping LLM")
+        await _update_step(task, PipelineStep.ANALYZE, completed=True)
+        await _update_step(task, PipelineStep.POLISH, completed=True)
+        empty_analysis = {"language": "unknown", "content_type": "unknown", "main_topics": [],
+                          "keywords": [], "proper_nouns": [], "speakers_detected": 0, "tone": "unknown"}
+        empty_summary = {"tldr": "未检测到有效语音内容", "key_facts": [], "action_items": [], "topics": []}
+        return {
+            "transcript": transcript,
+            "srt": srt,
+            "polished": polished,
+            "polished_md": polished_md,
+            "recognition_segments": recognition_segments,
+            "analysis": empty_analysis,
+            "summary": empty_summary,
+            "mindmap": "",
+            "subtitle_source": "platform",
+        }
+
+    # -- ANALYZE: analyze + summarize + mindmap (parallel, CPU/network) --
+    await _update_step(task, PipelineStep.ANALYZE)
+    video_metadata = {
+        "uploader": metadata.uploader,
+        "description": metadata.description,
+        "tags": metadata.tags,
+        "chapters": [{"title": ch.title, "start_time": ch.start_time}
+                     for ch in metadata.chapters] if metadata.chapters else None,
+    }
+    mindmap_metadata = {
+        "title": metadata.title,
+        "uploader": metadata.uploader,
+        "description": metadata.description,
+        "chapters": [{"title": ch.title, "start_time": ch.start_time}
+                     for ch in metadata.chapters] if metadata.chapters else None,
+    }
+    analysis, summary, mindmap = await asyncio.gather(
+        analyze_content(transcript, metadata.title, metadata=video_metadata),
+        summarize_text(transcript),
+        generate_mindmap(srt or transcript, metadata=mindmap_metadata),
+    )
+
+    # Write analysis outputs
+    import json as _json
+    if analysis:
+        analysis_path = task_dir / "analysis.json"
+        analysis_path.write_text(_json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
+        await _emit_file_ready(task, "analysis.json", str(analysis_path))
+    if summary:
+        from app.services.archiving.archive import SUMMARY_TEMPLATE, get_archive_service
+        _svc = get_archive_service()
+        sum_path = task_dir / "summary.md"
+        sum_content = SUMMARY_TEMPLATE.format(
+            title=metadata.title,
+            source_url=metadata.source_url or "",
+            date=datetime.now().strftime("%Y-%m-%d"),
+            tldr=summary.get("tldr", ""),
+            key_facts=_svc._fmt_list(summary.get("key_facts", [])),
+        )
+        sum_path.write_text(sum_content, encoding="utf-8")
+        await _emit_file_ready(task, "summary.md", str(sum_path))
+    if mindmap:
+        mm_path = task_dir / "mindmap.md"
+        mm_path.write_text(mindmap, encoding="utf-8")
+        await _emit_file_ready(task, "mindmap.md", str(mm_path))
+
+    await _update_step(task, PipelineStep.ANALYZE, completed=True)
+
+    # -- POLISH: skip (platform subtitle already polished above) --
+    await _update_step(task, PipelineStep.POLISH, completed=True)
+
+    return {
+        "transcript": transcript,
+        "srt": srt,
+        "polished": polished,
+        "polished_md": polished_md,
+        "recognition_segments": recognition_segments,
+        "analysis": analysis,
+        "summary": summary,
+        "mindmap": mindmap,
+        "subtitle_source": "platform",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Pipeline runner
 # ---------------------------------------------------------------------------
 
@@ -423,14 +560,21 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         logger.info(f"Task {task.id}: skipping DOWNLOAD (already done), restoring from disk")
         _restore_metadata()
         _restore_audio_paths()
-        # Restore has_subtitle flag from disk (check for subtitle files)
+        # Restore has_subtitle + platform_subtitle from disk
         if task_dir:
             sub_dir = task_dir / "subtitles"
-            if sub_dir.exists() and any(sub_dir.iterdir()):
-                has_subtitle = True
-            elif any(task_dir.glob("transcript_polished.srt")):
-                # Platform subtitle path writes polished immediately
-                has_subtitle = True
+            if sub_dir.exists():
+                for ext in ("*.srt", "*.ass", "*.vtt"):
+                    srt_files = list(sub_dir.glob(ext))
+                    if srt_files:
+                        sub_file = srt_files[0]
+                        platform_subtitle = {
+                            "subtitle_path": str(sub_file),
+                            "subtitle_lang": "zh",
+                            "subtitle_format": sub_file.suffix.lstrip("."),
+                        }
+                        has_subtitle = True
+                        break
     else:
         await _update_step(task, PipelineStep.DOWNLOAD)
 
@@ -521,16 +665,27 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             # For Bilibili URLs, skip yt-dlp probe (403 without cookie);
             # BBDown inside download_media will handle title extraction.
             source_type = _detect_source_type(source)
-            if source_type != "bilibili":
+            if source_type == "bilibili":
+                # Use BV id as temp dir name — avoids placeholder "download"
+                bv_match = re.search(r'(BV[0-9A-Za-z]+)', source)
+                title = bv_match.group(1) if bv_match else None
+            elif source_type == "youtube":
+                # Use video ID as temp dir name
+                yt_match = re.search(r'(?:v=|youtu\.be/)([\w-]{11})', source)
+                title = yt_match.group(1) if yt_match else None
+                if not title:
+                    import yt_dlp
+                    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+                        info = ydl.extract_info(source, download=False)
+                        title = info.get("title", "unknown") if info else "unknown"
+            else:
                 import yt_dlp
                 with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
                     info = ydl.extract_info(source, download=False)
                     title = info.get("title", "unknown") if info else "unknown"
-            else:
-                title = None
 
             if not task_dir:
-                task_dir = create_task_dir(task.id, title or "download")
+                task_dir = create_task_dir(task.id, title or str(task.id)[:8])
 
             ingest = await download_media(source, output_dir=task_dir)
             audio_path = ingest.get("file_path")
@@ -539,7 +694,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             if ingest.get("video_path"):
                 metadata.file_path = ingest["video_path"]
 
-            # Rename task_dir to real title if it was a placeholder (e.g. Bilibili)
+            # Rename task_dir from temp name (BV号/video ID) to real title
             real_title = metadata.title
             if real_title and task_dir.name != _sanitize_filename(real_title):
                 new_dir = task_dir.parent / _sanitize_filename(real_title)
@@ -552,6 +707,8 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     if metadata.file_path:
                         metadata.file_path = str(new_dir / Path(metadata.file_path).name)
                     logger.info(f"Renamed task dir to: {new_dir}")
+                else:
+                    logger.warning(f"Cannot rename to {new_dir} (already exists), keeping {task_dir}")
 
             # Try to download platform subtitles
             if use_platform_subtitles:
@@ -586,6 +743,12 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     # The GPU worker will call process_task again; at that point DOWNLOAD is
     # in completed_steps so this block is skipped and we continue below.
     if _download_worker_call:
+        # Persist output_dir so the GPU worker can restore task_dir from DB
+        # (task_dir may have been renamed after download, so we must save the
+        # current — possibly renamed — path before handing off).
+        task.result = {"output_dir": str(task_dir)}
+        store = get_task_store()
+        store.update_status(task.id, task.status, result=task.result)
         await get_task_queue().advance_to_gpu(task.id)
         return
 
