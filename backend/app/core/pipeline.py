@@ -662,15 +662,14 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             await _emit_file_ready(task, "metadata.json", str(meta_path))
 
         else:
-            # For Bilibili URLs, skip yt-dlp probe (403 without cookie);
-            # BBDown inside download_media will handle title extraction.
+            # ── URL source: probe metadata + subtitle first ──
             source_type = _detect_source_type(source)
+
+            # 1. Resolve title for task_dir naming
             if source_type == "bilibili":
-                # Use BV id as temp dir name — avoids placeholder "download"
                 bv_match = re.search(r'(BV[0-9A-Za-z]+)', source)
                 title = bv_match.group(1) if bv_match else None
             elif source_type == "youtube":
-                # Use video ID as temp dir name
                 yt_match = re.search(r'(?:v=|youtu\.be/)([\w-]{11})', source)
                 title = yt_match.group(1) if yt_match else None
                 if not title:
@@ -687,10 +686,109 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             if not task_dir:
                 task_dir = create_task_dir(task.id, title or str(task.id)[:8])
 
+            # 2. Decide whether to attempt fast path
+            force_asr = rt.force_asr or task.options.get("force_asr", False)
+
+            if use_platform_subtitles and not force_asr:
+                # Probe: fetch metadata + subtitle (lightweight, no video download)
+                from app.services.ingestion.ytdlp import fetch_metadata as _fetch_meta
+                try:
+                    probe_metadata = await _fetch_meta(source)
+                except Exception as e:
+                    logger.warning(f"Metadata probe failed: {e}, falling back to full pipeline")
+                    probe_metadata = None
+
+                probe_subtitle = None
+                if probe_metadata:
+                    try:
+                        sub_dir = task_dir / "subtitles"
+                        probe_subtitle = await download_subtitles(source, sub_dir)
+                        if not probe_subtitle or not probe_subtitle.get("subtitle_path"):
+                            probe_subtitle = None
+                            if sub_dir.exists() and not any(sub_dir.iterdir()):
+                                sub_dir.rmdir()
+                    except Exception as e:
+                        logger.warning(f"Subtitle probe failed: {e}")
+                        probe_subtitle = None
+
+                if probe_metadata and probe_subtitle:
+                    # ── FAST PATH: subtitle + video download in parallel ──
+                    logger.info(f"Task {task.id}: fast path — subtitle found, running parallel")
+                    metadata = probe_metadata
+
+                    # Rename task_dir to real title
+                    real_title = metadata.title
+                    if real_title and task_dir.name != _sanitize_filename(real_title):
+                        new_dir = task_dir.parent / _sanitize_filename(real_title)
+                        if not new_dir.exists():
+                            task_dir.rename(new_dir)
+                            task_dir = new_dir
+                            # Update subtitle path after rename
+                            old_sub_path = Path(probe_subtitle["subtitle_path"])
+                            new_sub_path = task_dir / "subtitles" / old_sub_path.name
+                            probe_subtitle["subtitle_path"] = str(new_sub_path)
+                            logger.info(f"Renamed task dir to: {new_dir}")
+                        else:
+                            logger.warning(f"Cannot rename to {new_dir} (already exists), keeping {task_dir}")
+
+                    logger.info(f"Downloaded platform subtitle: {probe_subtitle['subtitle_path']}")
+
+                    # Write metadata.json
+                    meta_path = write_metadata_json(task_dir, metadata, status="processing")
+                    await _emit_file_ready(task, "metadata.json", str(meta_path))
+
+                    await _update_step(task, PipelineStep.DOWNLOAD, completed=True)
+
+                    # Persist output_dir so resume can find task_dir
+                    task.result = {"output_dir": str(task_dir)}
+                    store = get_task_store()
+                    store.update_status(task.id, task.status, result=task.result)
+
+                    # Fork: Branch A (subtitle→LLM) + Branch B (video download)
+                    async def _branch_video_download():
+                        nonlocal audio_path
+                        ingest = await download_media(source, output_dir=task_dir)
+                        audio_path = ingest.get("file_path")
+                        # Update metadata with file paths from download
+                        if ingest.get("video_path"):
+                            metadata.file_path = ingest["video_path"]
+                        write_metadata_json(task_dir, metadata, status="processing")
+
+                    text_result, _ = await asyncio.gather(
+                        _run_subtitle_fast_path(task, task_dir, probe_subtitle, metadata),
+                        _branch_video_download(),
+                    )
+
+                    # Archive
+                    await _update_step(task, PipelineStep.ARCHIVE)
+                    archive = await archive_result(
+                        metadata,
+                        polished_srt=text_result.get("polished", ""),
+                        summary=text_result.get("summary", {}),
+                        mindmap=text_result.get("mindmap", ""),
+                        original_srt=text_result.get("srt", ""),
+                        work_dir=task_dir,
+                        analysis=text_result.get("analysis", {}),
+                    )
+                    write_metadata_json(task_dir, metadata, status="completed")
+                    _cleanup_extracted_audio(task_dir, audio_path, metadata.media_type if metadata else None)
+                    await _update_step(task, PipelineStep.ARCHIVE, completed=True)
+
+                    task.result = {
+                        "metadata": metadata.model_dump(mode="json"),
+                        "transcript_segments": len(text_result.get("recognition_segments", [])),
+                        "archive": archive,
+                        "output_dir": str(task_dir),
+                        "analysis": text_result.get("analysis"),
+                        "subtitle_source": "platform",
+                    }
+                    return  # Done — skip the rest of run_pipeline
+
+            # ── FULL PIPELINE: no subtitle or force_asr ──
+            # (existing code path, unchanged)
             ingest = await download_media(source, output_dir=task_dir)
             audio_path = ingest.get("file_path")
             metadata = MediaMetadata(**ingest.get("metadata", {"title": source}))
-            # Store video path for frontend playback
             if ingest.get("video_path"):
                 metadata.file_path = ingest["video_path"]
 
@@ -701,7 +799,6 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 if not new_dir.exists():
                     task_dir.rename(new_dir)
                     task_dir = new_dir
-                    # Update file paths to reflect new directory
                     if audio_path:
                         audio_path = str(new_dir / Path(audio_path).name)
                     if metadata.file_path:
@@ -710,7 +807,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 else:
                     logger.warning(f"Cannot rename to {new_dir} (already exists), keeping {task_dir}")
 
-            # Try to download platform subtitles
+            # Try to download platform subtitles (for full pipeline, still useful)
             if use_platform_subtitles:
                 try:
                     sub_dir = task_dir / "subtitles"
@@ -719,7 +816,6 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         logger.info(f"Downloaded platform subtitle: {platform_subtitle['subtitle_path']}")
                     else:
                         platform_subtitle = None
-                        # Clean up empty subtitles directory
                         if sub_dir.exists() and not any(sub_dir.iterdir()):
                             sub_dir.rmdir()
                 except Exception as e:
