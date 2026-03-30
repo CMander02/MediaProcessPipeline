@@ -114,8 +114,17 @@ class TaskQueue:
             # If download was already done, skip straight to GPU queue
             completed = set(task.completed_steps or [])
             if PipelineStep.DOWNLOAD in completed:
-                await self._gpu_queue.put(task.id)
-                logger.info(f"Restored task {task.id} → gpu queue (download already done)")
+                # Check if this was a fast-path task that already finished LLM steps.
+                # If TRANSCRIBE+ANALYZE+POLISH are done but ARCHIVE isn't, it was a
+                # fast-path task interrupted during video download — send to download
+                # queue to re-download the video, not GPU queue.
+                fast_path_done = {PipelineStep.TRANSCRIBE, PipelineStep.ANALYZE, PipelineStep.POLISH}
+                if fast_path_done.issubset(completed) and PipelineStep.ARCHIVE not in completed:
+                    await self._download_queue.put(task.id)
+                    logger.info(f"Restored fast-path task {task.id} → download queue (video re-download)")
+                else:
+                    await self._gpu_queue.put(task.id)
+                    logger.info(f"Restored task {task.id} → gpu queue (download already done)")
             else:
                 await self._download_queue.put(task.id)
                 logger.info(f"Restored task {task.id} → download queue")

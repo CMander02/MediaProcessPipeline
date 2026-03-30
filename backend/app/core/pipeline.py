@@ -575,6 +575,49 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         }
                         has_subtitle = True
                         break
+
+        # Fast-path resume: LLM steps done, just need video + archive
+        fast_path_steps = {PipelineStep.TRANSCRIBE, PipelineStep.ANALYZE, PipelineStep.POLISH}
+        if fast_path_steps.issubset(done) and PipelineStep.ARCHIVE not in done:
+            logger.info(f"Task {task.id}: fast-path resume — re-downloading video")
+            ingest = await download_media(source, output_dir=task_dir)
+            audio_path = ingest.get("file_path")
+            if not metadata:
+                metadata = MediaMetadata(**ingest.get("metadata", {"title": source}))
+            if ingest.get("video_path"):
+                metadata.file_path = ingest["video_path"]
+
+            # Restore text outputs from disk
+            _restore_transcript()
+            _restore_analysis()
+            _restore_summary()
+            _restore_mindmap()
+
+            # Archive
+            from app.services.archiving import archive_result
+            await _update_step(task, PipelineStep.ARCHIVE)
+            archive = await archive_result(
+                metadata,
+                polished_srt=polished or "",
+                summary=summary,
+                mindmap=mindmap,
+                original_srt=srt,
+                work_dir=task_dir,
+                analysis=analysis,
+            )
+            write_metadata_json(task_dir, metadata, status="completed")
+            _cleanup_extracted_audio(task_dir, audio_path, metadata.media_type if metadata else None)
+            await _update_step(task, PipelineStep.ARCHIVE, completed=True)
+
+            task.result = {
+                "metadata": metadata.model_dump(mode="json"),
+                "transcript_segments": len(recognition_segments),
+                "archive": archive,
+                "output_dir": str(task_dir),
+                "analysis": analysis,
+                "subtitle_source": "platform",
+            }
+            return
     else:
         await _update_step(task, PipelineStep.DOWNLOAD)
 
