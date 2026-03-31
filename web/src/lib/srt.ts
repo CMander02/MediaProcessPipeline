@@ -66,12 +66,48 @@ export function parseSRT(content: string): Subtitle[] {
  * Strips speaker tags [Name] since VTT renders them as visible text.
  */
 export function srtToVTT(srt: string): string {
-  // Replace SRT comma timestamps with VTT period timestamps
-  const body = srt
-    .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, "$1.$2")
-    // Remove speaker tags like [张小琦] from subtitle text
-    .replace(/^\[([^\]]+)\]\s*/gm, "")
-  return "WEBVTT\n\n" + body
+  // Parse into cues, shrink endTime by 1ms to prevent boundary overlap,
+  // strip speaker tags, and emit WebVTT.
+  const blocks = srt.trim().split(/\n\n+/)
+  const cues: string[] = []
+
+  for (const block of blocks) {
+    const lines = block.trim().split("\n")
+    if (lines.length < 3) continue
+
+    const tsMatch = lines[1].match(
+      /(\d{2}:\d{2}:\d{2}),(\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}),(\d{3})/,
+    )
+    if (!tsMatch) continue
+
+    // Shrink end time by 1ms to avoid two cues showing at the boundary
+    const endMs =
+      timeToMs(tsMatch[3]) + parseInt(tsMatch[4]) - 1
+    const endStr = msToVttTime(Math.max(endMs, 0))
+    const startStr = `${tsMatch[1]}.${tsMatch[2]}`
+
+    const text = lines
+      .slice(2)
+      .join("\n")
+      .replace(/^\[([^\]]+)\]\s*/gm, "")
+
+    cues.push(`${startStr} --> ${endStr}\n${text}`)
+  }
+
+  return "WEBVTT\n\n" + cues.join("\n\n")
+}
+
+function timeToMs(hhmmss: string): number {
+  const [h, m, s] = hhmmss.split(":").map(Number)
+  return h * 3600000 + m * 60000 + s * 1000
+}
+
+function msToVttTime(ms: number): string {
+  const h = Math.floor(ms / 3600000)
+  const m = Math.floor((ms % 3600000) / 60000)
+  const s = Math.floor((ms % 60000) / 1000)
+  const r = ms % 1000
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(r).padStart(3, "0")}`
 }
 
 /**

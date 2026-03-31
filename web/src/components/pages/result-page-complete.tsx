@@ -513,7 +513,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
                 {(mindmap || isProcessing) && (
                   <TabsContent value="mindmap" className="mt-3 relative flex-1">
                     {mindmap ? (
-                      <MindmapViewer markdown={mindmap} fillContainer />
+                      <MindmapViewer markdown={mindmap} fillContainer title={displayTitle} />
                     ) : isProcessing ? (
                       <div className="flex items-center justify-center h-full text-muted-foreground">
                         <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />

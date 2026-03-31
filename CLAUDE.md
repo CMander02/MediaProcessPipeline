@@ -40,6 +40,13 @@ Electron (MPP.exe) / CLI (mpp) / HTTP
 - daemon 未运行时 `list` 和 `config` 可离线读 SQLite / settings.json
 
 
+### 前端 (Vite + React)
+
+- 源码在 `web/`，构建产物在 `web/dist/`
+- 后端通过 FastAPI 静态文件 serve `web/dist/`
+- **修改前端代码后必须 `cd web && npm run build`**，否则改动不会生效
+- 开发时也可用 `npm run dev` 启动 Vite dev server（端口 5173），但生产始终用 build 产物
+
 ### 通信协议
 
 - SSE (Server-Sent Events): `GET /api/tasks/events` (全局) 和 `GET /api/tasks/{id}/events` (单任务)

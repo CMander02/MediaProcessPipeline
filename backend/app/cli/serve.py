@@ -2,10 +2,87 @@
 
 from __future__ import annotations
 
+import ctypes
 import signal
 import socket
 import sys
 import uvicorn
+
+
+def _setup_win32_job_object() -> None:
+    """Create a Windows Job Object so all child processes die with us.
+
+    When the console window is closed, Windows terminates the lead process.
+    Without a Job Object, child processes (ffmpeg, BBDown, etc.) can survive
+    as orphans.  By assigning ourselves to a Job Object with the
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE flag, the kernel guarantees that
+    every child process is killed when our process handle is closed.
+    """
+    if sys.platform != "win32":
+        return
+
+    kernel32 = ctypes.windll.kernel32
+
+    # Job Object constants
+    JobObjectExtendedLimitInformation = 9
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+
+    class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", ctypes.c_uint32),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", ctypes.c_uint32),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", ctypes.c_uint32),
+            ("SchedulingClass", ctypes.c_uint32),
+        ]
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_uint64),
+            ("WriteOperationCount", ctypes.c_uint64),
+            ("OtherOperationCount", ctypes.c_uint64),
+            ("ReadTransferCount", ctypes.c_uint64),
+            ("WriteTransferCount", ctypes.c_uint64),
+            ("OtherTransferCount", ctypes.c_uint64),
+        ]
+
+    class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+            ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    try:
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return
+
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+
+        kernel32.SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        )
+
+        # Assign current process to the job
+        current_process = kernel32.GetCurrentProcess()
+        kernel32.AssignProcessToJobObject(job, current_process)
+
+        # Keep a reference so the handle isn't garbage-collected
+        _setup_win32_job_object._handle = job
+    except Exception:
+        pass  # Non-fatal — best effort
 
 
 def _port_in_use(host: str, port: int) -> bool:
@@ -24,6 +101,9 @@ def run_server(host: str = "127.0.0.1", port: int = 18000, reload: bool = False)
     if sys.platform == "win32":
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+    # Ensure child processes (ffmpeg, BBDown, etc.) die when we exit
+    _setup_win32_job_object()
 
     from rich.console import Console
     console = Console()

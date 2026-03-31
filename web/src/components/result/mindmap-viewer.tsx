@@ -9,6 +9,8 @@ interface MindmapViewerProps {
   /** When true, the SVG fills its parent container (for use as a tab panel).
    *  When false (default), renders as a compact preview with expand-to-dialog. */
   fillContainer?: boolean
+  /** Override the root node label (defaults to whatever markmap generates). */
+  title?: string
 }
 
 interface NodeRect {
@@ -169,7 +171,7 @@ async function focusBranch(mm: MarkmapInstance, target: MindmapNode) {
   await Promise.resolve(svgSelection.call(zoomBehavior.transform, translated))
 }
 
-export function MindmapViewer({ markdown, fillContainer }: MindmapViewerProps) {
+export function MindmapViewer({ markdown, fillContainer, title }: MindmapViewerProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const dialogSvgRef = useRef<SVGSVGElement>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -189,7 +191,9 @@ export function MindmapViewer({ markdown, fillContainer }: MindmapViewerProps) {
 
         if (cancelled) return
 
-        setRootNode(cloneMindmapNode(root as MindmapNode))
+        const cloned = cloneMindmapNode(root as MindmapNode)
+        if (title) cloned.content = title
+        setRootNode(cloned)
         setError(null)
       } catch (e) {
         if (cancelled) return
@@ -201,7 +205,7 @@ export function MindmapViewer({ markdown, fillContainer }: MindmapViewerProps) {
     return () => {
       cancelled = true
     }
-  }, [markdown])
+  }, [markdown, title])
 
   const renderMarkmap = useCallback(
     async (
@@ -318,47 +322,30 @@ export function MindmapViewer({ markdown, fillContainer }: MindmapViewerProps) {
 
   if (fillContainer) {
     return (
-      <div className="flex h-full w-full flex-col">
-        <div className="shrink-0 px-1 pb-2">
-          <div className="flex items-center justify-between">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Mindmap
-            </h3>
-            <button
-              onClick={() => mmRef.current?.fit?.()}
-              className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              title="Fit to viewport"
-            >
-              <HugeiconsIcon icon={Gps01Icon} className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        </div>
-        <div className="min-h-0 flex-1 overflow-hidden rounded-lg border bg-card">
-          <svg ref={svgRef} className="h-full w-full" />
-        </div>
+      <div className="relative h-full w-full overflow-hidden rounded-lg border bg-card">
+        <svg ref={svgRef} className="h-full w-full" />
+        <button
+          onClick={() => mmRef.current?.fit?.()}
+          className="absolute right-2 top-2 rounded-md bg-background/80 p-1.5 text-muted-foreground shadow-sm backdrop-blur-sm transition-colors hover:bg-muted hover:text-foreground"
+          title="回正视角"
+        >
+          <HugeiconsIcon icon={Gps01Icon} className="h-4 w-4" />
+        </button>
       </div>
     )
   }
 
   return (
     <>
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Mindmap
-          </h3>
-          <button
-            onClick={() => setDialogOpen(true)}
-            className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
-            title="Open expanded view"
-          >
-            <HugeiconsIcon icon={Maximize01Icon} className="h-3.5 w-3.5" />
-            <span>Open</span>
-          </button>
-        </div>
-        <div className="h-[280px] overflow-hidden rounded-lg border bg-card transition-colors hover:border-primary/30">
-          <svg ref={svgRef} className="h-full w-full" />
-        </div>
+      <div className="relative h-[280px] overflow-hidden rounded-lg border bg-card transition-colors hover:border-primary/30">
+        <svg ref={svgRef} className="h-full w-full" />
+        <button
+          onClick={() => setDialogOpen(true)}
+          className="absolute right-2 top-2 rounded-md bg-background/80 p-1.5 text-muted-foreground shadow-sm backdrop-blur-sm transition-colors hover:bg-muted hover:text-foreground"
+          title="展开导图"
+        >
+          <HugeiconsIcon icon={Maximize01Icon} className="h-4 w-4" />
+        </button>
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -367,12 +354,11 @@ export function MindmapViewer({ markdown, fillContainer }: MindmapViewerProps) {
           showCloseButton
         >
           <div className="shrink-0 border-b px-4 py-2">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium">Mindmap</h3>
+            <div className="flex items-center justify-end">
               <button
                 onClick={() => dialogMMRef.current?.fit?.()}
                 className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                title="Fit to viewport"
+                title="回正视角"
               >
                 <HugeiconsIcon icon={Gps01Icon} className="h-4 w-4" />
               </button>

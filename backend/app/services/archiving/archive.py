@@ -56,13 +56,13 @@ class ArchiveService:
 
         # Metadata
         meta_path = output_dir / "metadata.json"
-        meta_path.write_text(json.dumps(metadata.model_dump(mode="json"), indent=2, ensure_ascii=False))
+        meta_path.write_text(json.dumps(metadata.model_dump(mode="json"), indent=2, ensure_ascii=False), encoding="utf-8")
         files["metadata"] = str(meta_path)
 
         # Analysis (LLM extracted metadata)
         if analysis:
             analysis_path = output_dir / "analysis.json"
-            analysis_path.write_text(json.dumps(analysis, indent=2, ensure_ascii=False))
+            analysis_path.write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
             files["analysis"] = str(analysis_path)
 
         # Original SRT (raw transcription)

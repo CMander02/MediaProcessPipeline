@@ -65,24 +65,35 @@ class LLMService:
 
         return client, model, self._static_settings.temperature
 
-    async def _call(self, prompt: str) -> str:
+    async def _call(self, prompt: str, *, max_retries: int = 3) -> str:
         result = self._get_client_and_model()
         if not result:
             logger.warning("LLM not configured - check API key and settings")
             return "[LLM not configured]"
 
         client, model, temperature = result
-        try:
-            logger.info(f"Calling LLM: {model}")
-            response = await client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=temperature,
-            )
-            return response.choices[0].message.content or ""
-        except Exception as e:
-            logger.error(f"LLM error: {e}")
-            raise
+        import openai
+
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Calling LLM: {model}")
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature,
+                )
+                return response.choices[0].message.content or ""
+            except (openai.APITimeoutError, openai.APIConnectionError) as e:
+                if attempt < max_retries - 1:
+                    delay = 2 ** attempt  # 1s, 2s, 4s
+                    logger.warning(f"LLM request failed ({e}), retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"LLM error after {max_retries} attempts: {e}")
+                    raise
+            except Exception as e:
+                logger.error(f"LLM error: {e}")
+                raise
 
     async def analyze_content(
         self,

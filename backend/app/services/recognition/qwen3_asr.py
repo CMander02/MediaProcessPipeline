@@ -163,7 +163,14 @@ class Qwen3ASRService:
                 raise FileNotFoundError(f"config.yaml not found in {path}")
 
         logger.info(f"Loading diarization model from: {model_path}")
-        pipeline = Pipeline.from_pretrained(model_path)
+        # PyTorch 2.6+ defaults weights_only=True which breaks pyannote/lightning
+        # checkpoint loading. Temporarily override to allow loading trusted local models.
+        _orig_load = torch.load
+        torch.load = lambda *a, **kw: _orig_load(*a, **{**kw, "weights_only": False})
+        try:
+            pipeline = Pipeline.from_pretrained(model_path)
+        finally:
+            torch.load = _orig_load
         pipeline = pipeline.to(torch.device(device))
 
         # Optimize for long audio: reduce batch sizes to prevent OOM
@@ -353,6 +360,8 @@ class Qwen3ASRService:
             sample_rate = 16000
 
         # Run Silero VAD
+        # PyTorch 2.6+ defaults weights_only=True which breaks Silero's checkpoint
+        torch.serialization.add_safe_globals([torch.torch_version.TorchVersion])
         vad_model, utils = torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True)
         get_ts = utils[0]
         timestamps = get_ts(waveform.squeeze(), vad_model, sampling_rate=sample_rate, return_seconds=True)

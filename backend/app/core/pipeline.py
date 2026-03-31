@@ -797,10 +797,19 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                             metadata.file_path = ingest["video_path"]
                         write_metadata_json(task_dir, metadata, status="processing")
 
-                    text_result, _ = await asyncio.gather(
+                    results = await asyncio.gather(
                         _run_subtitle_fast_path(task, task_dir, probe_subtitle, metadata),
                         _branch_video_download(),
+                        return_exceptions=True,
                     )
+                    text_result, video_result = results
+
+                    # If either branch raised, re-raise after the other has
+                    # had a chance to complete (so video download is preserved).
+                    if isinstance(text_result, BaseException):
+                        raise text_result
+                    if isinstance(video_result, BaseException):
+                        raise video_result
 
                     # Archive
                     await _update_step(task, PipelineStep.ARCHIVE)
