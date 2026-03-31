@@ -50,7 +50,7 @@ function isVideoFile(name: string) {
 export function SubmitPage() {
   const [source, setSource] = useState("")
   const [queuedFiles, setQueuedFiles] = useState<QueuedFile[]>([])
-  const [skipSep, setSkipSep] = useState(false)
+  const [forceAsr, setForceAsr] = useState(false)
   const [numSpeakers, setNumSpeakers] = useState("")
   const [hotwordTags, setHotwordTags] = useState<string[]>([])
   const [hotwordInput, setHotwordInput] = useState("")
@@ -64,7 +64,7 @@ export function SubmitPage() {
 
   const buildOptions = () => {
     const opts: Record<string, unknown> = {}
-    if (skipSep) opts.skip_separation = true
+    if (forceAsr) opts.force_asr = true
     const ns = parseInt(numSpeakers, 10)
     if (ns > 0) opts.num_speakers = ns
     if (hotwordTags.length > 0) opts.hotwords = hotwordTags
@@ -191,7 +191,7 @@ export function SubmitPage() {
   const totalCount = (source.trim() ? 1 : 0) + readyCount
   const canSubmit = totalCount > 0 && !submitting && !anyUploading
   const hasFiles = queuedFiles.length > 0
-  const activeOptions = [skipSep, !!numSpeakers, hotwordTags.length > 0].filter(Boolean).length
+  const activeOptions = [forceAsr, !!numSpeakers, hotwordTags.length > 0].filter(Boolean).length
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -308,8 +308,8 @@ export function SubmitPage() {
             {showAdvanced && (
               <div className="mt-3 space-y-4 rounded-lg border p-4 bg-muted/30">
                 <div className="flex items-center gap-2">
-                  <Switch id="skip-sep" checked={skipSep} onCheckedChange={setSkipSep} />
-                  <Label htmlFor="skip-sep" className="text-sm cursor-pointer">跳过人声分离</Label>
+                  <Switch id="force-asr" checked={forceAsr} onCheckedChange={setForceAsr} />
+                  <Label htmlFor="force-asr" className="text-sm cursor-pointer">强制语音识别</Label>
                 </div>
 
                 <div className="space-y-1.5">

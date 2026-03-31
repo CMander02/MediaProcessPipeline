@@ -10,7 +10,7 @@ import { PlayIcon, Upload01Icon, Folder01Icon, Loading03Icon, ArrowDown01Icon, A
 
 export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
   const [source, setSource] = useState("")
-  const [skipSep, setSkipSep] = useState(false)
+  const [forceAsr, setForceAsr] = useState(false)
   const [numSpeakers, setNumSpeakers] = useState("")
   const [hotwords, setHotwords] = useState("")
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -20,7 +20,7 @@ export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
 
   const buildOptions = () => {
     const opts: Record<string, unknown> = {}
-    if (skipSep) opts.skip_separation = true
+    if (forceAsr) opts.force_asr = true
     const ns = parseInt(numSpeakers, 10)
     if (ns > 0) opts.num_speakers = ns
     const hw = hotwords
@@ -120,9 +120,9 @@ export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
-            <Switch id="skip-sep" checked={skipSep} onCheckedChange={setSkipSep} />
-            <Label htmlFor="skip-sep" className="text-sm text-muted-foreground">
-              跳过人声分离
+            <Switch id="force-asr" checked={forceAsr} onCheckedChange={setForceAsr} />
+            <Label htmlFor="force-asr" className="text-sm text-muted-foreground">
+              强制语音识别
             </Label>
           </div>
           <button
