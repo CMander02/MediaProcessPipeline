@@ -1,6 +1,6 @@
 [project]
 name = "MediaProcessPipeline"
-version = "0.2.4"
+version = "0.3.0"
 description = "Omni-Media Processing Pipeline - Convert audio/video to structured knowledge"
 readme = "doc/oldREADME.md"
 requires-python = ">=3.11,<3.13"

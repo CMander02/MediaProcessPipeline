@@ -1,6 +1,6 @@
 {
   "name": "media-process-pipeline",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "媒体处理管线 - 将音视频转化为结构化知识",
   "main": "main.js",
   "scripts": {
