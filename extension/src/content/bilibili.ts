@@ -1,0 +1,1 @@
+// Bilibili content script stub

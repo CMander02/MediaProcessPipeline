@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "MPP Video Summarizer",
+  "version": "0.1.0",
+  "description": "Extract subtitles and generate AI summaries for Bilibili and YouTube videos",
+  "permissions": ["storage", "sidePanel", "activeTab"],
+  "host_permissions": [
+    "https://*.bilibili.com/*",
+    "https://*.hdslb.com/*",
+    "https://*.youtube.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background.ts"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.bilibili.com/video/*"],
+      "js": ["src/content/bilibili.ts"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://*.youtube.com/watch*"],
+      "js": ["src/content/youtube.ts"],
+      "run_at": "document_idle"
+    }
+  ],
+  "side_panel": {
+    "default_path": "src/sidepanel/index.html"
+  },
+  "action": {
+    "default_title": "Open MPP Summarizer"
+  }
+}
