@@ -32,7 +32,7 @@ import { SummaryTab } from "@/components/result/summary-tab"
 import { MindmapViewer } from "@/components/result/mindmap-viewer"
 import { AnalysisBadges } from "@/components/result/analysis-badges"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { ArrowLeft01Icon, Tick02Icon, Copy01Icon, Download01Icon, Loading03Icon, MoreHorizontalIcon, PencilEdit01Icon, Delete01Icon, Cancel01Icon } from "@hugeicons/core-free-icons"
+import { ArrowLeft01Icon, Tick02Icon, Copy01Icon, Download01Icon, Loading03Icon, MoreHorizontalIcon, PencilEdit01Icon, Delete01Icon, Cancel01Icon, Gps01Icon } from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
 
 interface Props {
@@ -50,6 +50,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
   const [transcript, setTranscript] = useState<string | null>(null)
   const [isPolished, setIsPolished] = useState(false)
   const [mindmap, setMindmap] = useState<string | null>(null)
+  const [mindmapFit, setMindmapFit] = useState<(() => void) | null>(null)
   const [analysis, setAnalysis] = useState<ArchiveItem["analysis"]>({})
   const [subtitles, setSubtitles] = useState<Subtitle[]>([])
 
@@ -447,7 +448,15 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
                     </TabsTrigger>
                     {(mindmap || isProcessing) && <TabsTrigger value="mindmap">导图</TabsTrigger>}
                   </TabsList>
-                  <div className="flex-1" />
+                  {activeTab === "mindmap" && mindmapFit && (
+                    <button
+                      onClick={mindmapFit}
+                      className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                      title="回正视角"
+                    >
+                      <HugeiconsIcon icon={Gps01Icon} className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                   {getTabContent()?.content && (
                     <>
                       <button
@@ -513,7 +522,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
                 {(mindmap || isProcessing) && (
                   <TabsContent value="mindmap" className="mt-3 relative flex-1">
                     {mindmap ? (
-                      <MindmapViewer markdown={mindmap} fillContainer title={displayTitle} />
+                      <MindmapViewer markdown={mindmap} fillContainer title={displayTitle} onFitReady={(fn) => setMindmapFit(() => fn)} />
                     ) : isProcessing ? (
                       <div className="flex items-center justify-center h-full text-muted-foreground">
                         <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />

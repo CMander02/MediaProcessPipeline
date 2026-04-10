@@ -11,6 +11,8 @@ interface MindmapViewerProps {
   fillContainer?: boolean
   /** Override the root node label (defaults to whatever markmap generates). */
   title?: string
+  /** Called with a fit() function once the markmap is ready (fillContainer mode). */
+  onFitReady?: (fit: () => void) => void
 }
 
 interface NodeRect {
@@ -171,7 +173,7 @@ async function focusBranch(mm: MarkmapInstance, target: MindmapNode) {
   await Promise.resolve(svgSelection.call(zoomBehavior.transform, translated))
 }
 
-export function MindmapViewer({ markdown, fillContainer, title }: MindmapViewerProps) {
+export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: MindmapViewerProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const dialogSvgRef = useRef<SVGSVGElement>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -179,6 +181,8 @@ export function MindmapViewer({ markdown, fillContainer, title }: MindmapViewerP
   const [rootNode, setRootNode] = useState<MindmapNode | null>(null)
   const mmRef = useRef<MarkmapInstance | null>(null)
   const dialogMMRef = useRef<MarkmapInstance | null>(null)
+  const onFitReadyRef = useRef(onFitReady)
+  onFitReadyRef.current = onFitReady
 
   useEffect(() => {
     let cancelled = false
@@ -225,6 +229,7 @@ export function MindmapViewer({ markdown, fillContainer, title }: MindmapViewerP
             autoFit: true,
             duration: 300,
             initialExpandLevel: 2,
+            maxWidth: 300,
           },
           cloneMindmapNode(data),
         ) as unknown as MarkmapInstance
@@ -290,13 +295,18 @@ export function MindmapViewer({ markdown, fillContainer, title }: MindmapViewerP
     const el = svgRef.current
 
     ;(async () => {
-      if (!cancelled) await renderMarkmap(el, mmRef, rootNode)
+      if (!cancelled) {
+        await renderMarkmap(el, mmRef, rootNode)
+        if (!cancelled && fillContainer && onFitReadyRef.current) {
+          onFitReadyRef.current(() => mmRef.current?.fit?.())
+        }
+      }
     })()
 
     return () => {
       cancelled = true
     }
-  }, [rootNode, renderMarkmap])
+  }, [rootNode, renderMarkmap, fillContainer])
 
   useEffect(() => {
     if (!dialogOpen || !dialogSvgRef.current || !rootNode) return
@@ -324,13 +334,6 @@ export function MindmapViewer({ markdown, fillContainer, title }: MindmapViewerP
     return (
       <div className="relative h-full w-full overflow-hidden rounded-lg border bg-card">
         <svg ref={svgRef} className="h-full w-full" />
-        <button
-          onClick={() => mmRef.current?.fit?.()}
-          className="absolute right-2 top-2 rounded-md bg-background/80 p-1.5 text-muted-foreground shadow-sm backdrop-blur-sm transition-colors hover:bg-muted hover:text-foreground"
-          title="回正视角"
-        >
-          <HugeiconsIcon icon={Gps01Icon} className="h-4 w-4" />
-        </button>
       </div>
     )
   }
