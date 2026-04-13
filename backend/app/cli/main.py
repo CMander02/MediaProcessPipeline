@@ -1,16 +1,169 @@
-"""mpp — CLI entry point for MediaProcessPipeline."""
+"""mpp — CLI entry point for MediaProcessPipeline.
+
+Design goals (see agentspace/2026-04-13):
+  - 抽一下，动一下：每条命令自洽，CLI 自己处理 daemon 问题
+  - @last / @fail / @run 引用语法
+  - submit / attach / retry 补齐生命周期
+  - config list|get|set 子命令化，未知 key 报错
+  - tasks 统一视图（替代 status + list）
+  - 全局 --plain / --no-color / --json
+"""
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
+from difflib import get_close_matches
 from typing import Optional
 
 import typer
+
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
 
 app = typer.Typer(
     name="mpp",
     help="MediaProcessPipeline — 将音视频转化为结构化知识",
     no_args_is_help=True,
+    rich_markup_mode="rich",
 )
+
+config_app = typer.Typer(help="查看/修改配置", no_args_is_help=True)
+app.add_typer(config_app, name="config")
+
+
+@app.command(name="help", hidden=True)
+def show_help():
+    """显示帮助信息（等同于 --help）。"""
+    import click
+    from typer.main import get_command
+    click_app = get_command(app)
+    with click.Context(click_app, info_name="mpp") as ctx:
+        print(ctx.get_help())
+
+# ---------------------------------------------------------------------------
+# Global state (set via callback before any command runs)
+# ---------------------------------------------------------------------------
+
+_plain_mode: bool = False
+_json_mode: bool = False
+
+
+@app.callback(invoke_without_command=True)
+def _global_options(
+    ctx: typer.Context,
+    plain: bool = typer.Option(False, "--plain", help="纯文本输出，无颜色，无 Unicode 图标（ASCII）"),
+    no_color: bool = typer.Option(False, "--no-color", help="去掉颜色，保留格式结构"),
+    json_out: bool = typer.Option(False, "--json", help="机器可读 JSON 输出（stdout）"),
+) -> None:
+    global _plain_mode, _json_mode
+    _plain_mode = plain or (os.environ.get("MPP_PLAIN_OUTPUT") == "1")
+    _json_mode = json_out
+
+    # Apply to display module so Rich output adapts
+    if plain or _plain_mode:
+        from app.cli.display import set_plain
+        set_plain(True)
+    elif no_color:
+        from app.cli.display import set_no_color
+        set_no_color(True)
+
+
+# ---------------------------------------------------------------------------
+# Helpers: daemon auto-check
+# ---------------------------------------------------------------------------
+
+def _get_client() -> "MppClient":  # noqa: F821
+    from app.cli.client import MppClient
+    return MppClient()
+
+
+def _require_daemon(client=None) -> "MppClient":  # noqa: F821
+    """Return a connected client, or exit with a helpful message."""
+    if client is None:
+        client = _get_client()
+    if not client.ping():
+        from app.cli.display import console
+        console.print(
+            "[red]Daemon 未运行[/red]  →  先执行 [bold]mpp serve[/bold]，或使用 [bold]mpp ping[/bold] 诊断"
+        )
+        raise typer.Exit(1)
+    return client
+
+
+def _resolve_ref(ref: str, client=None) -> str:
+    """Resolve @last / @fail / @run to a real task ID.
+
+    Falls back to SQLite offline read when daemon is not reachable.
+    Prefix-match for plain hex IDs.
+    """
+    if not ref.startswith("@"):
+        # Plain ID or prefix — resolve via list
+        return _resolve_prefix(ref, client)
+
+    keyword = ref.lstrip("@").lower()
+    status_map = {
+        "last": None,          # most recent overall
+        "fail": "failed",
+        "run":  "processing",
+    }
+    if keyword not in status_map:
+        from app.cli.display import console
+        console.print(f"[red]未知引用: {ref}  (支持 @last / @fail / @run)[/red]")
+        raise typer.Exit(1)
+
+    status_filter = status_map[keyword]
+
+    # Try daemon first, fall back to SQLite
+    tasks = _list_tasks_any(status_filter=status_filter, limit=1, client=client)
+    if not tasks:
+        from app.cli.display import console
+        console.print(f"[red]没有匹配 {ref} 的任务[/red]")
+        raise typer.Exit(1)
+    return tasks[0]["id"]
+
+
+def _resolve_prefix(prefix: str, client=None) -> str:
+    """Resolve a task ID prefix to a full ID."""
+    tasks = _list_tasks_any(limit=200, client=client)
+    matches = [t for t in tasks if t["id"].startswith(prefix)]
+    if not matches:
+        from app.cli.display import console
+        console.print(f"[red]没有匹配 '{prefix}' 的任务[/red]")
+        raise typer.Exit(1)
+    if len(matches) > 1:
+        from app.cli.display import console
+        console.print(f"[yellow]前缀模糊，{len(matches)} 个匹配，使用最近一条[/yellow]")
+    return matches[0]["id"]
+
+
+def _list_tasks_any(
+    status_filter: str | None = None,
+    limit: int = 50,
+    client=None,
+) -> list[dict]:
+    """List tasks from daemon if available, else from SQLite."""
+    if client is None:
+        client = _get_client()
+    if client.ping():
+        return client.list_tasks(status=status_filter, limit=limit)
+    # Offline fallback
+    try:
+        from app.core.database import get_task_store, init_db
+        init_db()
+        store = get_task_store()
+        items = store.list(status=status_filter, limit=limit)
+        return [_task_to_dict(t) for t in items]
+    except Exception:
+        return []
+
+
+def _task_to_dict(task) -> dict:
+    """Convert Task model to plain dict for display."""
+    return task.model_dump(mode="json")
 
 
 # ---------------------------------------------------------------------------
@@ -23,9 +176,26 @@ def serve(
     port: int = typer.Option(18000, help="Port"),
     reload: bool = typer.Option(False, help="Enable auto-reload"),
 ):
-    """启动 daemon 服务。"""
+    """启动 daemon 服务（前台运行）。"""
     from app.cli.serve import run_server
     run_server(host=host, port=port, reload=reload)
+
+
+# ---------------------------------------------------------------------------
+# mpp ping
+# ---------------------------------------------------------------------------
+
+@app.command()
+def ping():
+    """检查 daemon 是否在线。"""
+    from app.cli.display import console
+    client = _get_client()
+    if client.ping():
+        console.print("[green]+[/green] daemon 在线  (http://127.0.0.1:18000)" if _plain_mode
+                      else "[green]✓[/green] daemon 在线  (http://127.0.0.1:18000)")
+    else:
+        console.print("[red]x[/red] daemon 未运行" if _plain_mode else "[red]✗[/red] daemon 未运行")
+        raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -35,33 +205,124 @@ def serve(
 @app.command()
 def run(
     source: str = typer.Argument(..., help="媒体文件路径或 URL"),
-    skip_separation: bool = typer.Option(False, "--no-sep", help="跳过人声分离"),
-    num_speakers: int = typer.Option(None, "--speakers", "-s", help="说话人数量（留空自动检测）"),
-    hotwords: str = typer.Option(None, "--hotwords", "-w", help="热词，逗号分隔，用于润色修正"),
+    no_sep: bool = typer.Option(False, "--no-sep", help="跳过人声分离"),
+    speakers: int = typer.Option(None, "--speakers", "-s", help="说话人数量（留空自动检测）"),
+    hotwords: str = typer.Option(None, "--hotwords", "-w", help="热词，逗号分隔"),
+    force_asr: bool = typer.Option(False, "--force-asr", help="强制 ASR，忽略平台字幕"),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="只输出结果路径"),
 ):
-    """提交任务并实时显示进度。"""
-    from rich.console import Console
-    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
-    from app.cli.client import MppClient
-
-    console = Console()
-    client = MppClient()
-
-    if not client.ping():
-        console.print("[red]Daemon 未运行，请先执行 mpp serve[/red]")
-        raise typer.Exit(1)
-
-    options = {}
-    if skip_separation:
-        options["skip_separation"] = True
-    if num_speakers is not None:
-        options["num_speakers"] = num_speakers
-    if hotwords:
-        options["hotwords"] = [w.strip() for w in hotwords.split(",") if w.strip()]
+    """提交任务并实时显示进度（Ctrl+C 可脱离，任务继续后台运行）。"""
+    client = _require_daemon()
+    options = _build_options(no_sep=no_sep, speakers=speakers, hotwords=hotwords, force_asr=force_asr)
 
     task = client.create_task(source, options=options)
     task_id = task["id"]
-    console.print(f"Task [bold]{task_id[:8]}[/bold] submitted")
+
+    if not quiet and not _json_mode:
+        from app.cli.display import console
+        console.print(f"已提交  [bold]{task_id[:8]}[/bold]")
+
+    _do_attach(task_id, client=client, quiet=quiet)
+
+
+def _build_options(
+    no_sep: bool = False,
+    speakers: int | None = None,
+    hotwords: str | None = None,
+    force_asr: bool = False,
+) -> dict:
+    opts: dict = {}
+    if no_sep:
+        opts["skip_separation"] = True
+    if speakers is not None:
+        opts["num_speakers"] = speakers
+    if hotwords:
+        opts["hotwords"] = [w.strip() for w in hotwords.split(",") if w.strip()]
+    if force_asr:
+        opts["force_asr"] = True
+    return opts
+
+
+# ---------------------------------------------------------------------------
+# mpp submit
+# ---------------------------------------------------------------------------
+
+@app.command()
+def submit(
+    source: str = typer.Argument(..., help="媒体文件路径或 URL"),
+    no_sep: bool = typer.Option(False, "--no-sep", help="跳过人声分离"),
+    speakers: int = typer.Option(None, "--speakers", "-s", help="说话人数量"),
+    hotwords: str = typer.Option(None, "--hotwords", "-w", help="热词，逗号分隔"),
+    force_asr: bool = typer.Option(False, "--force-asr", help="强制 ASR"),
+):
+    """纯提交，打印 task_id 后立即返回（供脚本捕获）。
+
+    示例：
+
+    \b
+    ID=$(mpp submit video.mp4)
+    mpp attach $ID
+    """
+    client = _require_daemon()
+    options = _build_options(no_sep=no_sep, speakers=speakers, hotwords=hotwords, force_asr=force_asr)
+    task = client.create_task(source, options=options)
+    task_id = task["id"]
+
+    if _json_mode:
+        print(json.dumps({"id": task_id, "status": task.get("status", "queued")}))
+    else:
+        # stdout only the ID for easy shell capture; status goes to stderr
+        print(task_id)
+        sys.stderr.write(f"queued  {task_id[:8]}\n")
+
+
+# ---------------------------------------------------------------------------
+# mpp attach
+# ---------------------------------------------------------------------------
+
+@app.command()
+def attach(
+    task_ref: str = typer.Argument(..., help="Task ID、前缀或 @last / @fail / @run"),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="只输出最终结果"),
+):
+    """挂接到任务实时进度流（任务已完成则立即显示结果）。"""
+    client = _require_daemon()
+    task_id = _resolve_ref(task_ref, client=client)
+    _do_attach(task_id, client=client, quiet=quiet)
+
+
+def _do_attach(task_id: str, client=None, quiet: bool = False) -> None:
+    """Core attach logic: stream SSE events for a task to the terminal."""
+    from app.cli.display import console
+    if client is None:
+        client = _require_daemon()
+
+    # Snapshot current state first — task may already be done
+    current = client.get_task(task_id)
+    status = current.get("status", "")
+
+    if status in ("completed", "failed", "cancelled"):
+        _print_final(current, quiet=quiet)
+        raise typer.Exit(0 if status == "completed" else 1)
+
+    if quiet or _json_mode:
+        # Minimal mode: just wait for completion event
+        try:
+            for event in client.stream_task_events(task_id):
+                etype = event.get("type", "")
+                if etype in ("completed", "failed", "cancelled"):
+                    final = client.get_task(task_id)
+                    _print_final(final, quiet=quiet)
+                    raise typer.Exit(0 if etype == "completed" else 1)
+        except KeyboardInterrupt:
+            _print_detach_hint(task_id)
+            raise typer.Exit(0)
+        return
+
+    # Rich progress display
+    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+    src = current.get("source", task_id)
+    label = src if len(src) <= 40 else "..." + src[-37:]
 
     with Progress(
         SpinnerColumn(),
@@ -71,7 +332,7 @@ def run(
         TimeElapsedColumn(),
         console=console,
     ) as progress:
-        bar = progress.add_task(source if len(source) <= 40 else "..." + source[-37:], total=100)
+        bar = progress.add_task(label, total=100, completed=current.get("progress", 0) * 100)
 
         try:
             for event in client.stream_task_events(task_id):
@@ -81,7 +342,7 @@ def run(
                 if etype == "step":
                     pct = data.get("progress", 0) * 100
                     msg = data.get("message", "")
-                    progress.update(bar, completed=pct, description=msg)
+                    progress.update(bar, completed=pct, description=msg or label)
                 elif etype == "completed":
                     progress.update(bar, completed=100, description="完成")
                     break
@@ -92,85 +353,198 @@ def run(
                     progress.update(bar, description="[dim]已取消[/dim]")
                     break
         except KeyboardInterrupt:
-            console.print("\n[yellow]中断，任务仍在后台运行[/yellow]")
+            console.print()
+            _print_detach_hint(task_id)
             raise typer.Exit(0)
 
-    # Final status
     final = client.get_task(task_id)
-    status = final.get("status", "")
+    _print_final(final, quiet=quiet)
+    if final.get("status") != "completed":
+        raise typer.Exit(1)
+
+
+def _print_final(task: dict, quiet: bool = False) -> None:
+    from app.cli.display import console
+    status = task.get("status", "")
+    ok  = "+" if _plain_mode else "✓"
+    err = "x" if _plain_mode else "✗"
+
+    if _json_mode:
+        print(json.dumps(task, default=str))
+        return
+
     if status == "completed":
-        output = final.get("result", {}).get("output_dir", "")
-        console.print(f"[green]✓[/green] 完成  {output}")
+        output = (task.get("result") or {}).get("output_dir", "")
+        if quiet:
+            print(output)
+        else:
+            console.print(f"[green]{ok}[/green] 完成  {output}")
     elif status == "failed":
-        console.print(f"[red]✗[/red] 失败: {final.get('error', '')}")
+        msg = task.get("error", "")
+        if quiet:
+            sys.stderr.write(f"failed: {msg}\n")
+        else:
+            console.print(f"[red]{err}[/red] 失败: {msg}")
+    else:
+        if not quiet:
+            console.print(f"[dim]{status}[/dim]  {task.get('id', '')[:8]}")
+
+
+def _print_detach_hint(task_id: str) -> None:
+    from app.cli.display import console
+    console.print(f"\n[yellow]已脱离，任务仍在后台运行[/yellow]")
+    console.print(f"  查看进度: [bold]mpp attach {task_id[:8]}[/bold]")
+    console.print(f"  查看结果: [bold]mpp show {task_id[:8]}[/bold]")
 
 
 # ---------------------------------------------------------------------------
-# mpp status
+# mpp retry
 # ---------------------------------------------------------------------------
 
 @app.command()
-def status():
-    """查看队列和活跃任务。"""
-    from app.cli.client import MppClient
-    from app.cli.display import console, print_task_table
-
-    client = MppClient()
-    if not client.ping():
-        console.print("[red]Daemon 未运行[/red]")
-        raise typer.Exit(1)
-
-    stats = client.get_stats()
-    console.print(f"[bold]Total:[/bold] {stats.get('total', 0)}  "
-                  f"[blue]processing: {stats.get('processing', 0)}[/blue]  "
-                  f"[yellow]queued: {stats.get('queued', 0)}[/yellow]  "
-                  f"[green]completed: {stats.get('completed', 0)}[/green]  "
-                  f"[red]failed: {stats.get('failed', 0)}[/red]")
-
-    # Show active + queued tasks
-    active = client.list_tasks(status="processing")
-    queued = client.list_tasks(status="queued")
-    if active or queued:
-        print_task_table(active + queued)
-
-
-# ---------------------------------------------------------------------------
-# mpp list
-# ---------------------------------------------------------------------------
-
-@app.command(name="list")
-def list_tasks(
-    status_filter: Optional[str] = typer.Option(None, "--status", "-s", help="Filter by status"),
-    limit: int = typer.Option(20, "--limit", "-n"),
+def retry(
+    task_ref: str = typer.Argument(..., help="Task ID、前缀或 @last / @fail"),
+    quiet: bool = typer.Option(False, "--quiet", "-q"),
 ):
-    """查看历史任务。"""
-    from app.cli.client import MppClient
-    from app.cli.display import console, print_task_table
+    """按原参数重新提交失败任务，然后 attach。"""
+    from app.cli.display import console
+    client = _require_daemon()
+    task_id = _resolve_ref(task_ref, client=client)
+    original = client.get_task(task_id)
 
-    client = MppClient()
+    source = original.get("source", "")
+    options = original.get("options") or {}
+
+    new_task = client.create_task(source, options=options)
+    new_id = new_task["id"]
+
+    if not quiet and not _json_mode:
+        console.print(f"重新提交  [bold]{new_id[:8]}[/bold]  (原: {task_id[:8]})")
+
+    _do_attach(new_id, client=client, quiet=quiet)
+
+
+# ---------------------------------------------------------------------------
+# mpp tasks  (replaces status + list)
+# ---------------------------------------------------------------------------
+
+@app.command()
+def tasks(
+    watch: bool = typer.Option(False, "--watch", "-w", help="实时刷新（每 2 秒）"),
+    all_tasks: bool = typer.Option(False, "--all", help="显示所有历史记录"),
+    status_filter: Optional[str] = typer.Option(None, "--status", "-s", help="按状态筛选"),
+    limit: int = typer.Option(20, "--limit", "-n", help="最多显示条数"),
+    json_out: bool = typer.Option(False, "--json", help="JSON 输出"),
+):
+    """查看任务队列和历史（替代 status + list）。"""
+    from app.cli.display import console
+
+    use_json = json_out or _json_mode
+
+    if watch:
+        _tasks_watch(status_filter=status_filter, limit=limit)
+        return
+
+    offline = False
+    client = _get_client()
     if not client.ping():
-        # Fallback: read SQLite directly
+        offline = True
+
+    if offline:
         try:
-            _list_from_db(status_filter, limit)
-            return
-        except Exception:
-            console.print("[red]Daemon 未运行且无法读取数据库[/red]")
+            from app.core.database import get_task_store, init_db
+            init_db()
+            store = get_task_store()
+            task_list = store.list(status=status_filter, limit=limit if not all_tasks else 1000)
+            task_dicts = [_task_to_dict(t) for t in task_list]
+            if not use_json:
+                console.print("[dim](offline — 读取本地 SQLite)[/dim]")
+        except Exception as e:
+            console.print(f"[red]Daemon 未运行且无法读取数据库: {e}[/red]")
             raise typer.Exit(1)
+    else:
+        if all_tasks:
+            task_dicts = client.list_tasks(status=status_filter, limit=1000)
+        elif status_filter:
+            task_dicts = client.list_tasks(status=status_filter, limit=limit)
+        else:
+            # Default: active + recent history
+            active = client.list_tasks(status="processing", limit=50)
+            queued = client.list_tasks(status="queued", limit=50)
+            recent = client.list_tasks(limit=limit)
+            # Deduplicate, active/queued first
+            seen = set()
+            task_dicts = []
+            for t in active + queued + recent:
+                if t["id"] not in seen:
+                    seen.add(t["id"])
+                    task_dicts.append(t)
+            task_dicts = task_dicts[:limit]
 
-    tasks = client.list_tasks(status=status_filter, limit=limit)
-    print_task_table(tasks)
+    if use_json:
+        print(json.dumps(task_dicts, default=str))
+        return
+
+    from app.cli.display import print_task_table
+    print_task_table(task_dicts)
 
 
-def _list_from_db(status_filter: str | None, limit: int) -> None:
-    """Directly read SQLite when daemon is not running."""
-    from app.core.database import get_task_store, init_db
-    from app.cli.display import console, print_task_table
+def _tasks_watch(status_filter: str | None = None, limit: int = 20) -> None:
+    """Live-refresh task list using Rich Live + global SSE stream."""
+    from app.cli.display import console
+    from rich.live import Live
+    from rich.table import Table
+    from rich.text import Text
+    from app.cli.display import styled_status, time_ago
 
-    init_db()
-    store = get_task_store()
-    tasks = store.list(status=status_filter, limit=limit)
-    console.print("[dim](offline — reading from SQLite)[/dim]")
-    print_task_table([t.model_dump(mode="json") for t in tasks])
+    client = _require_daemon()
+
+    def _make_table(task_list: list[dict]) -> Table:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("ID", width=8)
+        table.add_column("Status", width=14)
+        table.add_column("Source", max_width=48, overflow="ellipsis")
+        table.add_column("Progress", width=8, justify="right")
+        table.add_column("Updated", width=10)
+        for t in task_list:
+            src = t.get("source", "")
+            if len(src) > 48:
+                src = "..." + src[-45:]
+            table.add_row(
+                t.get("id", "")[:8],
+                styled_status(t.get("status", "")),
+                src,
+                f"{t.get('progress', 0) * 100:.0f}%",
+                time_ago(t.get("updated_at") or t.get("created_at")),
+            )
+        return table
+
+    current_tasks: list[dict] = []
+
+    def _refresh() -> list[dict]:
+        if status_filter:
+            return client.list_tasks(status=status_filter, limit=limit)
+        active = client.list_tasks(status="processing", limit=50)
+        queued = client.list_tasks(status="queued", limit=50)
+        recent = client.list_tasks(limit=limit)
+        seen: set[str] = set()
+        merged: list[dict] = []
+        for t in active + queued + recent:
+            if t["id"] not in seen:
+                seen.add(t["id"])
+                merged.append(t)
+        return merged[:limit]
+
+    try:
+        current_tasks = _refresh()
+        with Live(_make_table(current_tasks), console=console, refresh_per_second=1) as live:
+            for event in client.stream_all_events():
+                etype = event.get("type", "")
+                if etype in ("step", "completed", "failed", "cancelled", "queued"):
+                    current_tasks = _refresh()
+                    live.update(_make_table(current_tasks))
+    except KeyboardInterrupt:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -178,26 +552,131 @@ def _list_from_db(status_filter: str | None, limit: int) -> None:
 # ---------------------------------------------------------------------------
 
 @app.command()
-def show(task_id: str = typer.Argument(..., help="Task ID (prefix match)")):
-    """查看单个任务详情。"""
-    from app.cli.client import MppClient
+def show(
+    task_ref: str = typer.Argument(..., help="Task ID、前缀或 @last / @fail / @run"),
+    summary: bool = typer.Option(False, "--summary", help="打印摘要文件到 stdout"),
+    transcript: bool = typer.Option(False, "--transcript", help="打印字幕/转录到 stdout"),
+    json_out: bool = typer.Option(False, "--json", help="JSON 输出"),
+):
+    """查看任务详情（步骤、输出文件、选项）。"""
     from app.cli.display import console, print_task_detail
 
-    client = MppClient()
-    if not client.ping():
-        console.print("[red]Daemon 未运行[/red]")
+    use_json = json_out or _json_mode
+
+    client = _get_client()
+    online = client.ping()
+
+    if online:
+        task_id = _resolve_ref(task_ref, client=client)
+        task = client.get_task(task_id)
+    else:
+        # Offline: read from SQLite
+        try:
+            from app.core.database import get_task_store, init_db
+            from uuid import UUID
+            init_db()
+            store = get_task_store()
+
+            if task_ref.startswith("@"):
+                tasks_offline = _list_tasks_any(
+                    status_filter="failed" if task_ref == "@fail" else
+                                  "processing" if task_ref == "@run" else None,
+                    limit=1,
+                )
+                if not tasks_offline:
+                    console.print(f"[red]没有匹配 {task_ref} 的任务（离线）[/red]")
+                    raise typer.Exit(1)
+                task = tasks_offline[0]
+            else:
+                all_tasks = _list_tasks_any(limit=200)
+                matches = [t for t in all_tasks if t["id"].startswith(task_ref)]
+                if not matches:
+                    console.print(f"[red]没有匹配 '{task_ref}' 的任务[/red]")
+                    raise typer.Exit(1)
+                task = matches[0]
+            console.print("[dim](offline)[/dim]")
+        except typer.Exit:
+            raise
+        except Exception as e:
+            console.print(f"[red]无法读取任务: {e}[/red]")
+            raise typer.Exit(1)
+
+    if use_json:
+        print(json.dumps(task, default=str))
+        return
+
+    if summary or transcript:
+        _cat_task(task, summary=summary, transcript=transcript)
+        return
+
+    print_task_detail(task)
+
+
+def _cat_task(task: dict, summary: bool = False, transcript: bool = False) -> None:
+    """Print summary or transcript file content to stdout."""
+    import pathlib
+    result = task.get("result") or {}
+    output_dir = result.get("output_dir") or task.get("output_dir")
+    if not output_dir:
+        sys.stderr.write("No output directory found for this task.\n")
         raise typer.Exit(1)
 
-    # Support prefix matching
-    tasks = client.list_tasks(limit=200)
-    matches = [t for t in tasks if t["id"].startswith(task_id)]
-    if not matches:
-        console.print(f"[red]No task matching '{task_id}'[/red]")
+    od = pathlib.Path(output_dir)
+    if not od.exists():
+        sys.stderr.write(f"Output directory not found: {output_dir}\n")
         raise typer.Exit(1)
-    if len(matches) > 1:
-        console.print(f"[yellow]Ambiguous prefix, {len(matches)} matches. Showing first.[/yellow]")
 
-    print_task_detail(matches[0])
+    if summary:
+        candidates = sorted(od.glob("*_summary.md")) + sorted(od.glob("*summary*.md"))
+        if not candidates:
+            sys.stderr.write(f"No summary file found in {output_dir}\n")
+            raise typer.Exit(1)
+        print(candidates[0].read_text(encoding="utf-8"))
+
+    if transcript:
+        # Prefer .srt, then .txt
+        candidates = sorted(od.glob("*.srt")) + sorted(od.glob("*transcript*.txt"))
+        if not candidates:
+            sys.stderr.write(f"No transcript/subtitle file found in {output_dir}\n")
+            raise typer.Exit(1)
+        print(candidates[0].read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# mpp open
+# ---------------------------------------------------------------------------
+
+@app.command(name="open")
+def open_output(
+    task_ref: str = typer.Argument(..., help="Task ID、前缀或 @last"),
+):
+    """在文件管理器中打开任务输出目录。"""
+    from app.cli.display import console
+
+    task_id = _resolve_ref(task_ref)
+    client = _require_daemon()
+    task = client.get_task(task_id)
+
+    result = task.get("result") or {}
+    output_dir = result.get("output_dir") or task.get("output_dir")
+    if not output_dir:
+        console.print("[red]该任务没有输出目录（可能未完成）[/red]")
+        raise typer.Exit(1)
+
+    import pathlib
+    od = pathlib.Path(output_dir)
+    if not od.exists():
+        console.print(f"[red]目录不存在: {output_dir}[/red]")
+        raise typer.Exit(1)
+
+    if sys.platform == "win32":
+        subprocess.run(["explorer", str(od)], check=False)
+    elif sys.platform == "darwin":
+        subprocess.run(["open", str(od)], check=False)
+    else:
+        subprocess.run(["xdg-open", str(od)], check=False)
+
+    console.print(f"已打开  {output_dir}")
 
 
 # ---------------------------------------------------------------------------
@@ -205,61 +684,215 @@ def show(task_id: str = typer.Argument(..., help="Task ID (prefix match)")):
 # ---------------------------------------------------------------------------
 
 @app.command()
-def cancel(task_id: str = typer.Argument(..., help="Task ID to cancel")):
-    """取消任务。"""
-    from app.cli.client import MppClient
-    from app.cli.display import console
-
-    client = MppClient()
-    if not client.ping():
-        console.print("[red]Daemon 未运行[/red]")
-        raise typer.Exit(1)
-
-    # Prefix match
-    tasks = client.list_tasks(limit=200)
-    matches = [t for t in tasks if t["id"].startswith(task_id)]
-    if not matches:
-        console.print(f"[red]No task matching '{task_id}'[/red]")
-        raise typer.Exit(1)
-
-    result = client.cancel_task(matches[0]["id"])
-    console.print(f"[green]Cancelled[/green] {matches[0]['id'][:8]}")
-
-
-# ---------------------------------------------------------------------------
-# mpp config
-# ---------------------------------------------------------------------------
-
-@app.command()
-def config(
-    key: Optional[str] = typer.Argument(None, help="Setting key"),
-    value: Optional[str] = typer.Argument(None, help="New value"),
+def cancel(
+    task_ref: str = typer.Argument(..., help="Task ID、前缀或 @last / @run"),
 ):
-    """查看/修改配置。无参数显示全部，一个参数查看，两个参数修改。"""
+    """取消任务。"""
     from app.cli.display import console
 
-    if key is None:
-        # Show all settings
-        _config_show_all()
-        return
+    client = _require_daemon()
+    task_id = _resolve_ref(task_ref, client=client)
+    client.cancel_task(task_id)
+    ok = "+" if _plain_mode else "✓"
+    console.print(f"[green]{ok}[/green] 已取消  {task_id[:8]}")
 
-    if value is None:
-        # Show single key
-        settings = _config_read()
-        if key in settings:
-            console.print(f"[bold]{key}[/bold] = {settings[key]}")
-        else:
-            console.print(f"[red]Unknown key: {key}[/red]")
+
+# ---------------------------------------------------------------------------
+# mpp config  (subcommands: list / get / set)
+# ---------------------------------------------------------------------------
+
+# --- config group metadata (defined on RuntimeSettings fields) ---
+
+_CONFIG_GROUPS: dict[str, list[str]] = {
+    "llm": [
+        "llm_provider",
+        "anthropic_api_key", "anthropic_api_base", "anthropic_model",
+        "openai_api_key", "openai_api_base", "openai_model",
+        "custom_api_key", "custom_api_base", "custom_model", "custom_name",
+        "local_llm_model_path", "local_llm_n_gpu_layers", "local_llm_n_ctx", "local_llm_n_batch",
+        "polish_provider",
+    ],
+    "asr": [
+        "asr_backend",
+        "qwen3_asr_model_path", "qwen3_aligner_model_path",
+        "qwen3_enable_timestamps", "qwen3_batch_size", "qwen3_max_new_tokens", "qwen3_device",
+        "whisper_model", "whisper_model_path", "whisper_device",
+        "whisper_compute_type", "whisper_batch_size", "enable_alignment",
+    ],
+    "diarization": [
+        "enable_diarization", "hf_token",
+        "pyannote_model_path", "pyannote_segmentation_path",
+        "alignment_model_zh", "alignment_model_en", "diarization_batch_size",
+    ],
+    "subtitle": [
+        "prefer_platform_subtitles", "subtitle_languages", "force_asr",
+    ],
+    "uvr": [
+        "uvr_model", "uvr_device", "uvr_model_dir",
+        "uvr_mdx_inst_hq3_path", "uvr_hp_uvr_path", "uvr_denoise_lite_path",
+        "uvr_kim_vocal_2_path", "uvr_deecho_dereverb_path", "uvr_htdemucs_path",
+    ],
+    "paths": [
+        "data_root",
+        "qwen3_asr_model_path", "qwen3_aligner_model_path",
+        "whisper_model_path", "uvr_model_dir",
+        "pyannote_model_path", "pyannote_segmentation_path",
+        "alignment_model_zh", "alignment_model_en",
+        "local_llm_model_path",
+    ],
+    "security": [
+        "api_token",
+        "anthropic_api_key", "openai_api_key", "custom_api_key", "hf_token",
+        "bilibili_sessdata", "bilibili_bili_jct", "bilibili_dede_user_id",
+    ],
+    "bilibili": [
+        "bilibili_sessdata", "bilibili_bili_jct", "bilibili_dede_user_id",
+    ],
+    "concurrency": [
+        "max_download_concurrency",
+    ],
+}
+
+_SECRET_KEYS = {
+    "anthropic_api_key", "openai_api_key", "custom_api_key",
+    "hf_token", "api_token",
+    "bilibili_sessdata", "bilibili_bili_jct",
+}
+
+
+def _mask(key: str, value) -> str:
+    if key in _SECRET_KEYS and value:
+        s = str(value)
+        return s[:4] + "..." if len(s) > 4 else "***"
+    return str(value)
+
+
+def _read_settings() -> dict:
+    client = _get_client()
+    if client.ping():
+        return client.get_settings()
+    from app.core.settings import get_runtime_settings
+    return get_runtime_settings().model_dump()
+
+
+def _all_valid_keys() -> list[str]:
+    from app.core.settings import RuntimeSettings
+    return list(RuntimeSettings.model_fields.keys())
+
+
+@config_app.callback(invoke_without_command=True)
+def _config_default(ctx: typer.Context):
+    """查看/修改配置。子命令: list / get / set"""
+    if ctx.invoked_subcommand is None:
+        # Bare `mpp config` → show all (same as `mpp config list`)
+        _config_list_impl(group=None)
+
+
+@config_app.command(name="list")
+def config_list(
+    group: Optional[str] = typer.Option(None, "--group", "-g", help="分组: llm/asr/uvr/diarization/subtitle/paths/security/bilibili/concurrency"),
+    json_out: bool = typer.Option(False, "--json", help="JSON 输出"),
+):
+    """列出所有配置（可按组筛选）。"""
+    if json_out or _json_mode:
+        settings = _read_settings()
+        if group:
+            keys = _CONFIG_GROUPS.get(group, [])
+            settings = {k: settings[k] for k in keys if k in settings}
+        print(json.dumps(settings, ensure_ascii=False))
+    else:
+        _config_list_impl(group=group)
+
+
+def _config_list_impl(group: str | None) -> None:
+    from app.cli.display import console
+    from rich.table import Table
+
+    settings = _read_settings()
+    valid_keys = _all_valid_keys()
+
+    if group:
+        if group not in _CONFIG_GROUPS:
+            close = get_close_matches(group, list(_CONFIG_GROUPS.keys()), n=3, cutoff=0.4)
+            msg = f"[red]未知分组: {group}[/red]"
+            if close:
+                msg += f"  建议: {', '.join(close)}"
+            console.print(msg)
             raise typer.Exit(1)
+        keys_to_show = [k for k in _CONFIG_GROUPS[group] if k in settings]
+        title = f"config  [bold]{group}[/bold]"
+    else:
+        keys_to_show = valid_keys
+        title = "config"
+
+    table = Table(title=title, show_header=True, header_style="bold", show_lines=False)
+    table.add_column("Key", style="cyan", no_wrap=True)
+    table.add_column("Value")
+
+    for k in keys_to_show:
+        v = settings.get(k, "")
+        table.add_row(k, _mask(k, v))
+
+    console.print(table)
+
+
+@config_app.command(name="get")
+def config_get(
+    key: str = typer.Argument(..., help="配置项 key"),
+    json_out: bool = typer.Option(False, "--json"),
+):
+    """查看单个配置项的当前值。"""
+    from app.cli.display import console
+    from app.core.settings import RuntimeSettings
+
+    valid_keys = _all_valid_keys()
+    if key not in valid_keys:
+        close = get_close_matches(key, valid_keys, n=3, cutoff=0.4)
+        msg = f"[red]未知配置项: {key}[/red]"
+        if close:
+            msg += f"\n  你是指: [bold]{', '.join(close)}[/bold] ?"
+        console.print(msg)
+        raise typer.Exit(1)
+
+    settings = _read_settings()
+    value = settings.get(key, "")
+
+    defaults = RuntimeSettings().model_dump()
+    default_val = defaults.get(key)
+
+    if json_out or _json_mode:
+        print(json.dumps({"key": key, "value": value, "default": default_val}))
         return
 
-    # Set value
-    from app.cli.client import MppClient
-    client = MppClient()
+    display_val = _mask(key, value)
+    diff_hint = ""
+    if str(value) != str(default_val):
+        diff_hint = f"  [dim](默认: {_mask(key, default_val)})[/dim]"
 
-    # Coerce types
+    console.print(f"[cyan]{key}[/cyan] = [bold]{display_val}[/bold]{diff_hint}")
+
+
+@config_app.command(name="set")
+def config_set(
+    key: str = typer.Argument(..., help="配置项 key"),
+    value: str = typer.Argument(..., help="新值"),
+):
+    """设置配置项。未知 key 报错并提示近似匹配。"""
+    from app.cli.display import console
+
+    valid_keys = _all_valid_keys()
+    if key not in valid_keys:
+        close = get_close_matches(key, valid_keys, n=3, cutoff=0.4)
+        msg = f"[red]未知配置项: {key}[/red]"
+        if close:
+            msg += f"\n  你是指: [bold]{', '.join(close)}[/bold] ?"
+        console.print(msg)
+        raise typer.Exit(1)
+
+    # Type coercion
+    typed_value: str | bool | int | float
     if value.lower() in ("true", "false"):
-        typed_value: str | bool | int | float = value.lower() == "true"
+        typed_value = value.lower() == "true"
     else:
         try:
             typed_value = int(value)
@@ -269,37 +902,81 @@ def config(
             except ValueError:
                 typed_value = value
 
+    client = _get_client()
     if client.ping():
         client.patch_settings({key: typed_value})
     else:
-        # Direct file write
-        from app.core.settings import get_runtime_settings, patch_runtime_settings
+        from app.core.settings import patch_runtime_settings
         patch_runtime_settings({key: typed_value})
 
-    console.print(f"[green]✓[/green] {key} = {typed_value}")
+    ok = "+" if _plain_mode else "✓"
+    console.print(f"[green]{ok}[/green]  {key} = {_mask(key, typed_value)}")
 
 
-def _config_read() -> dict:
-    """Read settings, preferring daemon, falling back to file."""
-    from app.cli.client import MppClient
-    client = MppClient()
-    if client.ping():
-        return client.get_settings()
-    from app.core.settings import get_runtime_settings
-    return get_runtime_settings().model_dump()
+# ---------------------------------------------------------------------------
+# mpp doctor
+# ---------------------------------------------------------------------------
 
-
-def _config_show_all() -> None:
+@app.command()
+def doctor():
+    """检查运行环境（ffmpeg、CUDA、模型文件、API key 等）。"""
+    import shutil
+    import pathlib
     from app.cli.display import console
-    from rich.table import Table
-    settings = _config_read()
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Key", style="cyan")
-    table.add_column("Value")
-    for k, v in settings.items():
-        display = str(v)
-        # Mask API keys
-        if "api_key" in k and v:
-            display = v[:8] + "..." if len(str(v)) > 8 else "***"
-        table.add_row(k, display)
-    console.print(table)
+
+    ok  = "[green]+" if _plain_mode else "[green]✓"
+    err = "[red]x"   if _plain_mode else "[red]✗"
+    warn = "[yellow]!"
+
+    def check(label: str, passed: bool, detail: str = "") -> None:
+        icon = ok if passed else err
+        style_end = "[/green]" if passed else "[/red]"
+        line = f"  {icon}{style_end}  {label:<20}"
+        if detail:
+            line += f"  [dim]{detail}[/dim]"
+        console.print(line)
+
+    # Daemon
+    client = _get_client()
+    daemon_ok = client.ping()
+    check("Daemon", daemon_ok, "http://127.0.0.1:18000" if daemon_ok else "未运行 — mpp serve")
+
+    # ffmpeg
+    ff = shutil.which("ffmpeg")
+    check("ffmpeg", ff is not None, ff or "未在 PATH 中")
+
+    # CUDA
+    try:
+        import torch
+        cuda_ok = torch.cuda.is_available()
+        device_name = torch.cuda.get_device_name(0) if cuda_ok else ""
+        check("CUDA", cuda_ok, device_name)
+    except ImportError:
+        check("CUDA", False, "torch 未安装")
+
+    # Settings
+    settings = _read_settings()
+    data_root = settings.get("data_root", "")
+    dr_ok = pathlib.Path(data_root).exists() if data_root else False
+    check("data_root", dr_ok, data_root)
+
+    # API key
+    provider = settings.get("llm_provider", "")
+    key_field = f"{provider}_api_key" if provider in ("anthropic", "openai", "custom") else ""
+    if key_field:
+        has_key = bool(settings.get(key_field, ""))
+        check(f"LLM key ({provider})", has_key, "已配置" if has_key else f"未设置 — mpp config set {key_field} <key>")
+    else:
+        check("LLM", True, f"provider={provider}")
+
+    # ASR model
+    asr_backend = settings.get("asr_backend", "")
+    if asr_backend == "qwen3":
+        mp = settings.get("qwen3_asr_model_path", "")
+        mp_ok = pathlib.Path(mp).exists() if mp else False
+        check("ASR model (qwen3)", mp_ok or not mp,
+              mp if mp_ok else ("未配置路径 (将从 HF 下载)" if not mp else f"路径不存在: {mp}"))
+    else:
+        mp = settings.get("whisper_model_path", "")
+        check("ASR model (whisperx)", not mp or pathlib.Path(mp).exists(),
+              mp if mp else f"使用在线模型 {settings.get('whisper_model', '')}")
