@@ -164,7 +164,7 @@ export function SettingsPanel() {
           <RadioGroup
             value={settings.llm_provider}
             onValueChange={(v) => updateSetting("llm_provider", v)}
-            className="flex gap-4"
+            className="flex flex-wrap gap-4"
           >
             <div className="flex items-center gap-2">
               <RadioGroupItem value="anthropic" id="llm-anthropic" />
@@ -178,11 +178,42 @@ export function SettingsPanel() {
               <RadioGroupItem value="custom" id="llm-custom" />
               <Label htmlFor="llm-custom">Custom</Label>
             </div>
+            <div className="flex items-center gap-2">
+              <RadioGroupItem value="local" id="llm-local" />
+              <Label htmlFor="llm-local">本地 GGUF</Label>
+            </div>
           </RadioGroup>
 
           <Separator />
 
-          {settings.llm_provider === "custom" ? (
+          {settings.llm_provider === "local" ? (
+            <div className="space-y-3">
+              <SettingRow
+                label="模型路径 (.gguf)"
+                settingKey="local_llm_model_path"
+                value={String(settings.local_llm_model_path ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+              />
+              <SettingRow
+                label="GPU Layers (-1=全部)"
+                settingKey="local_llm_n_gpu_layers"
+                value={String(settings.local_llm_n_gpu_layers ?? -1)}
+                onSave={(key, val) => updateSetting(key, Number(val))}
+                saving={saving}
+                saved={saved}
+              />
+              <SettingRow
+                label="Context 长度"
+                settingKey="local_llm_n_ctx"
+                value={String(settings.local_llm_n_ctx ?? 16384)}
+                onSave={(key, val) => updateSetting(key, Number(val))}
+                saving={saving}
+                saved={saved}
+              />
+            </div>
+          ) : settings.llm_provider === "custom" ? (
             <div className="space-y-3">
               <SettingRow
                 label="名称"
@@ -259,6 +290,38 @@ export function SettingsPanel() {
               />
             </div>
           )}
+
+          <Separator />
+
+          <div className="space-y-2">
+            <Label className="text-sm text-muted-foreground">润色阶段使用</Label>
+            <RadioGroup
+              value={settings.polish_provider ?? "local"}
+              onValueChange={(v) => updateSetting("polish_provider", v)}
+              className="flex flex-wrap gap-4"
+            >
+              <div className="flex items-center gap-2">
+                <RadioGroupItem value="" id="polish-global" />
+                <Label htmlFor="polish-global">跟随全局</Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <RadioGroupItem value="local" id="polish-local" />
+                <Label htmlFor="polish-local">本地 GGUF</Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <RadioGroupItem value="anthropic" id="polish-anthropic" />
+                <Label htmlFor="polish-anthropic">Anthropic</Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <RadioGroupItem value="openai" id="polish-openai" />
+                <Label htmlFor="polish-openai">OpenAI</Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <RadioGroupItem value="custom" id="polish-custom" />
+                <Label htmlFor="polish-custom">Custom</Label>
+              </div>
+            </RadioGroup>
+          </div>
         </CardContent>
       </Card>
 

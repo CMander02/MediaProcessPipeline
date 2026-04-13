@@ -33,6 +33,11 @@ export interface TaskStats {
 export interface Settings {
   asr_backend: string
   llm_provider: string
+  local_llm_model_path: string
+  local_llm_n_gpu_layers: number
+  local_llm_n_ctx: number
+  local_llm_n_batch: number
+  polish_provider: string
   [key: string]: unknown
 }
 
