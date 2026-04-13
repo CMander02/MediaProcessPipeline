@@ -67,9 +67,8 @@ nul
 # Experiment outputs (frames, crops, results)
 experiment/*/out/
 
-# Agent workspace (dev screenshots, temp analysis)
-agentspace/*.png
-agentspace/*.txt
+# Agent workspace (informal dev notes, not for commit)
+agentspace/
 
 # Test output (experiment results, generated PDFs)
 test_output/

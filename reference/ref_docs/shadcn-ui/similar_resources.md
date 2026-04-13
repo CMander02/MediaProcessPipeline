@@ -1,3 +1,0 @@
-- https://ui-private.shadcn.com/examples/dashboard
-- https://shadcnuikit.com/dashboard/default
-- https://free.shadcnuikit.com/dashboard/default
