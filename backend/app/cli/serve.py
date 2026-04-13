@@ -6,6 +6,8 @@ import ctypes
 import signal
 import socket
 import sys
+import threading
+import time
 import uvicorn
 
 
@@ -144,3 +146,62 @@ def run_server(host: str = "127.0.0.1", port: int = 18000, reload: bool = False)
         port=port,
         reload=reload,
     )
+
+
+# ---------------------------------------------------------------------------
+# Background daemon (auto-start from mpp run/attach when no daemon is up)
+# ---------------------------------------------------------------------------
+
+_bg_thread: threading.Thread | None = None
+_bg_started_by_cli: bool = False  # True if we launched it (so Ctrl+C can offer to stop it)
+
+
+def start_daemon_background(host: str = "127.0.0.1", port: int = 18000, timeout: float = 15.0) -> bool:
+    """Start uvicorn in a daemon thread. Returns True when /health is reachable.
+
+    Safe to call if the daemon is already running — detects and skips.
+    Sets the module-level _bg_started_by_cli flag so callers know whether
+    they own the server process.
+    """
+    global _bg_thread, _bg_started_by_cli
+
+    # Already reachable — nothing to do
+    if _port_in_use(host, port):
+        _bg_started_by_cli = False
+        return True
+
+    def _run() -> None:
+        # Suppress uvicorn startup banner — the CLI prints its own message
+        import logging
+        logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+        logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+        uvicorn.run(
+            "app.main:app",
+            host=host,
+            port=port,
+            reload=False,
+            log_level="warning",
+        )
+
+    _bg_thread = threading.Thread(target=_run, name="mpp-daemon", daemon=True)
+    _bg_thread.start()
+    _bg_started_by_cli = True
+
+    # Wait until /health responds (or timeout)
+    import httpx
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            r = httpx.get(f"http://{host}:{port}/health", timeout=1.0)
+            if r.status_code == 200:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.3)
+
+    return False  # timed out
+
+
+def daemon_was_started_by_cli() -> bool:
+    """Return True if this process launched the background daemon."""
+    return _bg_started_by_cli

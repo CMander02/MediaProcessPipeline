@@ -81,16 +81,31 @@ def _get_client() -> "MppClient":  # noqa: F821
     return MppClient()
 
 
-def _require_daemon(client=None) -> "MppClient":  # noqa: F821
-    """Return a connected client, or exit with a helpful message."""
+def _require_daemon(client=None, auto_start: bool = False) -> "MppClient":  # noqa: F821
+    """Return a connected client, auto-starting the daemon in background if needed."""
     if client is None:
         client = _get_client()
-    if not client.ping():
+    if client.ping():
+        return client
+
+    if not auto_start:
         from app.cli.display import console
         console.print(
             "[red]Daemon 未运行[/red]  →  先执行 [bold]mpp serve[/bold]，或使用 [bold]mpp ping[/bold] 诊断"
         )
         raise typer.Exit(1)
+
+    from app.cli.display import console
+    from app.cli.serve import start_daemon_background
+
+    ok_char = "+" if _plain_mode else "✓"
+    console.print("[dim]启动后台服务…[/dim]", end="\r")
+    ready = start_daemon_background()
+    if not ready:
+        console.print("[red]后台服务启动超时，请手动运行 mpp serve[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[green]{ok_char}[/green] 后台服务已启动  (http://127.0.0.1:18000)")
     return client
 
 
@@ -212,7 +227,7 @@ def run(
     quiet: bool = typer.Option(False, "--quiet", "-q", help="只输出结果路径"),
 ):
     """提交任务并实时显示进度（Ctrl+C 可脱离，任务继续后台运行）。"""
-    client = _require_daemon()
+    client = _require_daemon(auto_start=True)
     options = _build_options(no_sep=no_sep, speakers=speakers, hotwords=hotwords, force_asr=force_asr)
 
     task = client.create_task(source, options=options)
@@ -263,7 +278,7 @@ def submit(
     ID=$(mpp submit video.mp4)
     mpp attach $ID
     """
-    client = _require_daemon()
+    client = _require_daemon(auto_start=True)
     options = _build_options(no_sep=no_sep, speakers=speakers, hotwords=hotwords, force_asr=force_asr)
     task = client.create_task(source, options=options)
     task_id = task["id"]
@@ -286,7 +301,7 @@ def attach(
     quiet: bool = typer.Option(False, "--quiet", "-q", help="只输出最终结果"),
 ):
     """挂接到任务实时进度流（任务已完成则立即显示结果）。"""
-    client = _require_daemon()
+    client = _require_daemon(auto_start=True)
     task_id = _resolve_ref(task_ref, client=client)
     _do_attach(task_id, client=client, quiet=quiet)
 
@@ -295,7 +310,7 @@ def _do_attach(task_id: str, client=None, quiet: bool = False) -> None:
     """Core attach logic: stream SSE events for a task to the terminal."""
     from app.cli.display import console
     if client is None:
-        client = _require_daemon()
+        client = _require_daemon(auto_start=True)
 
     # Snapshot current state first — task may already be done
     current = client.get_task(task_id)
@@ -319,42 +334,98 @@ def _do_attach(task_id: str, client=None, quiet: bool = False) -> None:
             raise typer.Exit(0)
         return
 
-    # Rich progress display
-    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+    # Rich progress display — uv-style: each completed step prints a line,
+    # current step shows a live spinner+bar.
+    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, MofNCompleteColumn
+    from app.cli.display import STEP_LABELS
+
     src = current.get("source", task_id)
     label = src if len(src) <= 40 else "..." + src[-37:]
 
+    ok_char  = "+" if _plain_mode else "✓"
+    err_char = "x" if _plain_mode else "✗"
+
+    # Track which steps have already been printed as completed lines
+    printed_steps: set[str] = set()
+    step_start_time: dict[str, float] = {}
+    import time as _time
+
+    # Pre-fill already-completed steps from snapshot (resume / already-running task)
+    for s in (current.get("completed_steps") or []):
+        console.print(f"  [green]{ok_char}[/green] {STEP_LABELS.get(s, s)}")
+        printed_steps.add(s)
+
+    current_step_name = current.get("current_step") or ""
+    if current_step_name and current_step_name not in printed_steps:
+        step_start_time[current_step_name] = _time.monotonic()
+
     with Progress(
         SpinnerColumn(),
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(bar_width=30),
+        TextColumn("  [bold]{task.description}"),
+        BarColumn(bar_width=28),
         TextColumn("{task.percentage:>3.0f}%"),
         TimeElapsedColumn(),
         console=console,
+        transient=True,   # clears the bar line when a step finishes
     ) as progress:
-        bar = progress.add_task(label, total=100, completed=current.get("progress", 0) * 100)
+        step_label = STEP_LABELS.get(current_step_name, current_step_name) if current_step_name else label
+        init_pct = current.get("progress", 0) * 100
+        # Per-step progress: each step is 1/N of the whole; show within-step %
+        bar = progress.add_task(step_label, total=100, completed=init_pct)
+
+        def _finish_step(step: str, failed: bool = False) -> None:
+            """Print a completed-step line above the live bar."""
+            if step in printed_steps:
+                return
+            elapsed = _time.monotonic() - step_start_time.get(step, _time.monotonic())
+            lbl = STEP_LABELS.get(step, step)
+            if failed:
+                console.print(f"  [red]{err_char}[/red] {lbl}  [dim]{elapsed:.1f}s[/dim]")
+            else:
+                console.print(f"  [green]{ok_char}[/green] {lbl}  [dim]{elapsed:.1f}s[/dim]")
+            printed_steps.add(step)
 
         try:
             for event in client.stream_task_events(task_id):
                 etype = event.get("type", "")
-                data = event.get("data", {})
+                data  = event.get("data", {})
 
                 if etype == "step":
-                    pct = data.get("progress", 0) * 100
-                    msg = data.get("message", "")
-                    progress.update(bar, completed=pct, description=msg or label)
+                    step     = data.get("step", "")
+                    completed = data.get("completed", False)
+                    msg      = data.get("message", "")
+                    overall_pct = data.get("progress", 0) * 100
+
+                    if completed:
+                        _finish_step(step)
+                    else:
+                        # New step starting
+                        if step and step not in step_start_time:
+                            step_start_time[step] = _time.monotonic()
+                        lbl = STEP_LABELS.get(step, step) if step else (msg or label)
+                        progress.update(bar, description=lbl, completed=overall_pct)
+
                 elif etype == "completed":
-                    progress.update(bar, completed=100, description="完成")
+                    # Mark last step complete if not already
+                    last_step = data.get("step", "")
+                    if last_step:
+                        _finish_step(last_step)
+                    progress.update(bar, completed=100)
                     break
+
                 elif etype == "failed":
-                    progress.update(bar, description="[red]失败[/red]")
+                    last_step = data.get("step", "")
+                    if last_step:
+                        _finish_step(last_step, failed=True)
                     break
+
                 elif etype == "cancelled":
-                    progress.update(bar, description="[dim]已取消[/dim]")
                     break
+
         except KeyboardInterrupt:
             console.print()
             _print_detach_hint(task_id)
+            _maybe_stop_daemon(console)
             raise typer.Exit(0)
 
     final = client.get_task(task_id)
@@ -397,6 +468,24 @@ def _print_detach_hint(task_id: str) -> None:
     console.print(f"  查看结果: [bold]mpp show {task_id[:8]}[/bold]")
 
 
+def _maybe_stop_daemon(console) -> None:
+    """If we auto-started the daemon, ask the user whether to shut it down."""
+    from app.cli.serve import daemon_was_started_by_cli
+    if not daemon_was_started_by_cli():
+        return
+
+    try:
+        answer = input("\n后台服务由本次 mpp run 启动。是否关闭？[y/N] ").strip().lower()
+    except (EOFError, OSError):
+        # Non-interactive terminal — leave server running
+        return
+
+    if answer in ("y", "yes", "是"):
+        import os, signal as _sig
+        console.print("[dim]正在关闭后台服务…[/dim]")
+        os.kill(os.getpid(), _sig.SIGINT)  # triggers uvicorn graceful shutdown in the bg thread
+
+
 # ---------------------------------------------------------------------------
 # mpp retry
 # ---------------------------------------------------------------------------
@@ -408,7 +497,7 @@ def retry(
 ):
     """按原参数重新提交失败任务，然后 attach。"""
     from app.cli.display import console
-    client = _require_daemon()
+    client = _require_daemon(auto_start=True)
     task_id = _resolve_ref(task_ref, client=client)
     original = client.get_task(task_id)
 
