@@ -2,7 +2,6 @@
 name = "MediaProcessPipeline"
 version = "0.3.0"
 description = "Omni-Media Processing Pipeline - Convert audio/video to structured knowledge"
-readme = "doc/oldREADME.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "fastapi>=0.115.0",
@@ -21,13 +20,18 @@ dependencies = [
 ]
 
 [project.scripts]
-mpp = "app.cli.main:app"
+mpp = "app.cli:_entry"
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.8.0",
+]
+# Local GGUF inference via llama-cpp-python (CUDA build)
+# Install with: uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu128
+local-llm = [
+    "llama-cpp-python>=0.3.0",
 ]
 media = [
     "yt-dlp>=2024.0.0",
@@ -41,6 +45,10 @@ media = [
     # Qwen3-ASR (可选, 支持本地模型)
     "qwen-asr>=0.0.6",
 ]
+
+[tool.setuptools.packages.find]
+where = ["backend"]   # look for packages under backend/
+include = ["app*"]    # only include app and its subpackages
 
 [tool.ruff]
 line-length = 100
@@ -64,3 +72,16 @@ torchaudio = { index = "pytorch-cu128" }
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
+# ============================================================================
+# Force onnxruntime-gpu over onnxruntime
+# ============================================================================
+# faster-whisper pulls onnxruntime (CPU), which conflicts with onnxruntime-gpu
+# pulled by audio-separator[gpu]. Both install the same `onnxruntime/` Python
+# package, and the CPU variant wins, disabling CUDAExecutionProvider.
+# Override forces uv to drop the CPU variant and use onnxruntime-gpu for both.
+# ============================================================================
+[tool.uv]
+override-dependencies = [
+    "onnxruntime ; sys_platform == 'never'",
+]
