@@ -79,6 +79,13 @@ class RuntimeSettings(BaseModel):
     uvr_deecho_dereverb_path: str = ""
     uvr_htdemucs_path: str = ""
 
+    # Local LLM (llama-cpp-python, GGUF)
+    local_llm_model_path: str = ""       # Path to .gguf file
+    local_llm_n_gpu_layers: int = -1     # -1 = all layers on GPU
+    local_llm_n_ctx: int = 16384         # Context window size
+    local_llm_n_batch: int = 512         # Batch size for prompt eval
+    polish_provider: str = "local"       # Provider for polish step: "" = follow llm_provider, or "local"/"anthropic"/"openai"/"custom"
+
     # Concurrency
     max_download_concurrency: int = 2  # max parallel downloads (I/O bound, set 1-4)
 

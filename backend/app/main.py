@@ -28,11 +28,21 @@ _log_fmt = "%(asctime)s %(levelname)-8s [%(name)s] %(message)s"
 _log_datefmt = "%Y-%m-%dT%H:%M:%SZ"
 logging.Formatter.converter = time.gmtime
 
+_formatter = logging.Formatter(_log_fmt, datefmt=_log_datefmt)
+
 _handler = logging.StreamHandler(sys.stderr)
-_handler.setFormatter(logging.Formatter(_log_fmt, datefmt=_log_datefmt))
+_handler.setFormatter(_formatter)
 logging.root.setLevel(logging.INFO)
 logging.root.handlers.clear()
 logging.root.addHandler(_handler)
+
+# File logging — one log file per daemon launch, named by start time
+_log_dir = Path(__file__).resolve().parent.parent.parent / "logs"
+_log_dir.mkdir(exist_ok=True)
+_log_file = _log_dir / time.strftime("mpp_%Y%m%d_%H%M%S.log", time.gmtime())
+_file_handler = logging.FileHandler(_log_file, encoding="utf-8")
+_file_handler.setFormatter(_formatter)
+logging.root.addHandler(_file_handler)
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +52,21 @@ for _noisy in ("httpx", "httpcore", "openai", "uvicorn.access"):
 
 # Suppress Windows ProactorEventLoop ConnectionResetError spam
 # (harmless — triggered when browser closes SSE connections)
+# The asyncio logger emits the exception via exc_info rather than the
+# formatted message, so we must inspect exc_info[0] to catch it.
 if sys.platform == "win32":
-    _asyncio_logger = logging.getLogger("asyncio")
-    _asyncio_logger.addFilter(
-        lambda r: "ConnectionResetError" not in (r.getMessage() if callable(getattr(r, 'getMessage', None)) else str(r.msg))
-    )
+    def _filter_connection_reset(record: logging.LogRecord) -> bool:
+        exc_info = getattr(record, "exc_info", None)
+        if exc_info and exc_info[0] is ConnectionResetError:
+            return False
+        # Fallback: also check the formatted message for safety
+        try:
+            msg = record.getMessage()
+        except Exception:
+            msg = str(getattr(record, "msg", ""))
+        return "ConnectionResetError" not in msg
+
+    logging.getLogger("asyncio").addFilter(_filter_connection_reset)
 
 config = get_settings()
 

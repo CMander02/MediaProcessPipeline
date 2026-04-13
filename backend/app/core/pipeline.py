@@ -1212,3 +1212,10 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
             completed_at=datetime.now(),
         )
         await bus.publish(TaskEvent(task_id, "failed", {"error": str(e)}))
+
+    finally:
+        # Offload local GGUF model after each task to free VRAM.
+        # No-op when using API providers.
+        if not _download_worker_call:
+            from app.services.analysis.llm import offload_local_llm
+            offload_local_llm()

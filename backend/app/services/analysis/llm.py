@@ -20,21 +20,82 @@ from app.services.analysis.prompts import (
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Local GGUF model singleton — loaded on first use, offloaded after task ends
+# ---------------------------------------------------------------------------
+_local_llm: Any = None          # llama_cpp.Llama instance
+_local_llm_path: str = ""       # path that was used to load the model
+_local_llm_lock: asyncio.Lock | None = None   # serialise local calls
+
+
+def _get_local_llm_lock() -> asyncio.Lock:
+    global _local_llm_lock
+    if _local_llm_lock is None:
+        _local_llm_lock = asyncio.Lock()
+    return _local_llm_lock
+
+
+def _load_local_llm(model_path: str, n_gpu_layers: int, n_ctx: int, n_batch: int) -> Any:
+    """Load GGUF model via llama-cpp-python (blocking, call from thread pool)."""
+    try:
+        from llama_cpp import Llama
+    except ImportError as e:
+        raise RuntimeError(
+            "llama-cpp-python is not installed. "
+            "Run: uv pip install llama-cpp-python --extra-index-url "
+            "https://abetlen.github.io/llama-cpp-python/whl/cu128"
+        ) from e
+
+    logger.info(f"Loading local GGUF model: {model_path} (n_gpu_layers={n_gpu_layers})")
+    return Llama(
+        model_path=model_path,
+        n_gpu_layers=n_gpu_layers,
+        n_ctx=n_ctx,
+        n_batch=n_batch,
+        verbose=False,
+    )
+
+
+def offload_local_llm() -> None:
+    """Release the local GGUF model and free VRAM. Safe to call multiple times."""
+    global _local_llm, _local_llm_path
+    if _local_llm is not None:
+        logger.info("Offloading local GGUF model from VRAM")
+        try:
+            _local_llm.close()
+        except Exception:
+            pass
+        _local_llm = None
+        _local_llm_path = ""
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
 
 class LLMService:
     def __init__(self):
         self._static_settings = get_settings()
 
-    def _get_client_and_model(self):
+    def _get_client_and_model(self, provider_override: str = ""):
         """Build an AsyncOpenAI client from runtime settings.
 
         Returns (client, model_name, temperature) or None if not configured.
         All three providers (anthropic, openai, custom) are called through the
         OpenAI-compatible chat completions endpoint.
+        Returns "local" string when local provider is selected.
+
+        Args:
+            provider_override: If non-empty, use this provider instead of rt.llm_provider.
         """
         from openai import AsyncOpenAI
         rt = get_runtime_settings()
-        provider = rt.llm_provider
+        provider = provider_override or rt.llm_provider
+
+        if provider == "local":
+            return "local"
 
         if provider == "anthropic":
             if not rt.anthropic_api_key:
@@ -65,11 +126,67 @@ class LLMService:
 
         return client, model, self._static_settings.temperature
 
-    async def _call(self, prompt: str, *, max_retries: int = 3) -> str:
-        result = self._get_client_and_model()
+    async def _call_local(self, prompt: str) -> str:
+        """Call local GGUF model. Loads on first call; serialised via lock."""
+        global _local_llm, _local_llm_path
+        rt = get_runtime_settings()
+        model_path = rt.local_llm_model_path
+
+        if not model_path:
+            logger.warning("Local LLM: model path not configured")
+            return "[Local LLM not configured]"
+
+        loop = asyncio.get_running_loop()
+        lock = _get_local_llm_lock()
+
+        async with lock:
+            # Load or reload if path changed
+            if _local_llm is None or _local_llm_path != model_path:
+                if _local_llm is not None:
+                    offload_local_llm()
+                _local_llm = await loop.run_in_executor(
+                    None,
+                    _load_local_llm,
+                    model_path,
+                    rt.local_llm_n_gpu_layers,
+                    rt.local_llm_n_ctx,
+                    rt.local_llm_n_batch,
+                )
+                _local_llm_path = model_path
+                logger.info(f"Local GGUF model loaded: {model_path}")
+
+            llm = _local_llm
+            temperature = self._static_settings.temperature
+
+        # Run inference in thread pool (CPU/GPU bound, must not block event loop)
+        def _infer() -> str:
+            response = llm.create_chat_completion(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=temperature,
+                max_tokens=4096,
+            )
+            return response["choices"][0]["message"]["content"] or ""
+
+        return await loop.run_in_executor(None, _infer)
+
+    async def _call(self, prompt: str, *, max_retries: int = 3, provider_override: str = "") -> str:
+        if provider_override == "local":
+            rt = get_runtime_settings()
+            if rt.local_llm_model_path:
+                logger.info("Calling local GGUF model (polish_provider override)")
+                return await self._call_local(prompt)
+            logger.warning("polish_provider=local but local_llm_model_path is empty, falling back to llm_provider")
+            provider_override = ""
+
+        result = self._get_client_and_model(provider_override)
         if not result:
             logger.warning("LLM not configured - check API key and settings")
             return "[LLM not configured]"
+
+        # Local GGUF path — no retry loop needed (errors surface directly)
+        if result == "local":
+            logger.info("Calling local GGUF model")
+            return await self._call_local(prompt)
 
         client, model, temperature = result
         import openai
@@ -185,6 +302,7 @@ class LLMService:
         chunk_size: int = 64,
         overlap: int = 16,
         max_concurrency: int = 8,
+        provider_override: str = "",
     ) -> str:
         """
         Phase 2: Polish transcript using parallel chunks with context.
@@ -196,12 +314,17 @@ class LLMService:
             chunk_size: Number of segments per chunk (default 64)
             overlap: Overlap between chunks (default 16)
             max_concurrency: Maximum parallel LLM calls (default 8)
+            provider_override: If non-empty, use this provider instead of global llm_provider
         """
+        # Local GGUF is single-threaded; serialise chunks
+        if provider_override == "local":
+            max_concurrency = 1
+
         segments = self._parse_srt(srt_content)
         if not segments:
             # Fallback to simple polish if not valid SRT
             prompt = get_simple_polish_prompt(srt_content)
-            return await self._call(prompt)
+            return await self._call(prompt, provider_override=provider_override)
 
         # Generate all chunks with overlap
         chunks: list[tuple[int, int, list[dict]]] = []
@@ -243,7 +366,7 @@ class LLMService:
                 )
 
                 # Call LLM
-                polished_chunk = await self._call(prompt)
+                polished_chunk = await self._call(prompt, provider_override=provider_override)
 
                 # Parse polished result
                 polished_segs = self._parse_srt(polished_chunk)
@@ -289,10 +412,13 @@ class LLMService:
 
     async def polish(self, text: str, context: dict[str, Any] | None = None) -> str:
         """Polish text, optionally with context from analysis phase."""
+        rt = get_runtime_settings()
+        # polish_provider="" means follow global llm_provider (no override)
+        provider_override = rt.polish_provider
         if context:
-            return await self.polish_with_context_parallel(text, context)
+            return await self.polish_with_context_parallel(text, context, provider_override=provider_override)
         prompt = get_simple_polish_prompt(text)
-        return await self._call(prompt)
+        return await self._call(prompt, provider_override=provider_override)
 
     def srt_to_markdown(self, srt_content: str, title: str = "") -> str:
         """
