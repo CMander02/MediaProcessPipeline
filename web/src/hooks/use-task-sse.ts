@@ -16,7 +16,17 @@ export interface StepEvent {
   message: string
 }
 
+export interface SnapshotEvent {
+  status: string
+  progress: number
+  message: string
+  current_step: string | null
+  completed_steps: string[]
+  error: string | null
+}
+
 interface TaskSSEHandlers {
+  onSnapshot?: (data: SnapshotEvent) => void
   onStep?: (data: StepEvent) => void
   onFileReady?: (data: FileReadyEvent) => void
   onCompleted?: (data: { output_dir?: string }) => void
@@ -36,6 +46,9 @@ export function useTaskSSE(
     const unsub = subscribeTaskEvents(taskId, (event) => {
       const h = handlersRef.current
       switch (event.type) {
+        case "snapshot":
+          h.onSnapshot?.(event.data as unknown as SnapshotEvent)
+          break
         case "step":
           h.onStep?.(event.data as unknown as StepEvent)
           break

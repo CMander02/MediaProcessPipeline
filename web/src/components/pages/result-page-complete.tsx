@@ -164,6 +164,14 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
 
   // --- SSE subscription for in-progress tasks ---
   useTaskSSE(taskId, {
+    // Snapshot is sent immediately on (re)connect — rebuilds pipeline state
+    // when the user navigates back to the result page mid-processing.
+    onSnapshot(data) {
+      setTaskStatus(data.status)
+      setCurrentStep(data.current_step)
+      setCompletedSteps(data.completed_steps ?? [])
+      if (data.error) setTaskError(data.error)
+    },
     onStep(data: StepEvent) {
       setTaskStatus("processing")
       setCurrentStep(data.step)

@@ -198,6 +198,11 @@ async def stream_task_events(task_id: UUID):
 
     async def event_generator():
         try:
+            # Send full progress snapshot so newly-connected clients can rebuild
+            # UI state without waiting for the next live event. This matters
+            # when the user navigates away from the result page and back during
+            # processing — otherwise pipeline step state appears to "reset"
+            # until the next step transition fires.
             snapshot = json.dumps({
                 "task_id": str(task_id),
                 "type": "snapshot",
@@ -205,6 +210,9 @@ async def stream_task_events(task_id: UUID):
                     "status": task.status,
                     "progress": task.progress,
                     "message": task.message or "",
+                    "current_step": task.current_step,
+                    "completed_steps": task.completed_steps,
+                    "error": task.error,
                 },
             }, ensure_ascii=False)
             yield f"data: {snapshot}\n\n"

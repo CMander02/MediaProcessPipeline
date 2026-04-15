@@ -41,7 +41,11 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
         detail = `归档完成`
       }
 
-      setLogs((prev) => [...prev, { ts, type: event.type, detail }])
+      // Snapshot is a state-rebuild ping on (re)connect; merge it into task
+      // state but don't add it to the visible event log (it isn't a real event).
+      if (event.type !== "snapshot") {
+        setLogs((prev) => [...prev, { ts, type: event.type, detail }])
+      }
 
       // Update task state from snapshot or progress events
       if (data.status || data.current_step || data.completed_steps) {
