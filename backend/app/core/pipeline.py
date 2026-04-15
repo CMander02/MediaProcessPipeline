@@ -148,6 +148,45 @@ def _looks_like_local_path(source: str) -> bool:
     return False
 
 
+# Map of locale codes → human-readable names fed into English prompts.
+# The model gets plain names (no codes) so the language-policy clause in
+# the prompt reads naturally and handles mixed / unknown cases gracefully.
+_LANG_NAME = {
+    "zh": "Chinese",
+    "zh-cn": "Chinese",
+    "zh-hans": "Chinese",
+    "zh-hant": "Traditional Chinese",
+    "zh-tw": "Traditional Chinese",
+    "en": "English",
+    "en-us": "English",
+    "en-gb": "English",
+    "ja": "Japanese",
+    "ja-jp": "Japanese",
+    "ko": "Korean",
+    "ko-kr": "Korean",
+    "fr": "French",
+    "de": "German",
+    "es": "Spanish",
+    "ru": "Russian",
+    "pt": "Portuguese",
+    "it": "Italian",
+}
+
+
+def _user_language_hint(analysis: dict | None) -> str | None:
+    """Pull a human-readable primary-language name out of analysis output.
+
+    Falls back to whatever the analyze step returned (raw code/name) when we
+    don't have a mapping, and to ``None`` when analysis is empty.
+    """
+    if not analysis:
+        return None
+    raw = str(analysis.get("language") or "").strip()
+    if not raw or raw.lower() == "unknown":
+        return None
+    return _LANG_NAME.get(raw.lower(), raw)
+
+
 def _extract_audio_from_video(video_path: Path, output_path: Path) -> Path:
     """Extract audio from video file using ffmpeg."""
     # Resolve to absolute paths so filenames starting with '-' can't be
@@ -329,7 +368,11 @@ async def _run_subtitle_fast_path(
             "subtitle_source": "platform",
         }
 
-    # -- ANALYZE: analyze + summarize + mindmap (parallel, CPU/network) --
+    # -- ANALYZE: analyze first (cheap, ~8k-char prompt) so the detected
+    # language can be injected into the summarize+mindmap prompts. Running
+    # analyze serially before the other two adds ~1-2s but prevents the
+    # summarize/mindmap steps from collapsing multilingual transcripts into
+    # one language.
     await _update_step(task, PipelineStep.ANALYZE)
     video_metadata = {
         "uploader": metadata.uploader,
@@ -345,18 +388,22 @@ async def _run_subtitle_fast_path(
         "chapters": [{"title": ch.title, "start_time": ch.start_time}
                      for ch in metadata.chapters] if metadata.chapters else None,
     }
-    analysis, summary, mindmap = await asyncio.gather(
-        analyze_content(transcript, metadata.title, metadata=video_metadata),
-        summarize_text(transcript),
-        generate_mindmap(srt or transcript, metadata=mindmap_metadata),
-    )
 
-    # Write analysis outputs
+    analysis = await analyze_content(transcript, metadata.title, metadata=video_metadata)
+    user_language = _user_language_hint(analysis)
+
+    # Write analysis first so the frontend can surface language/topics early
     import json as _json
     if analysis:
         analysis_path = task_dir / "analysis.json"
         analysis_path.write_text(_json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
         await _emit_file_ready(task, "analysis.json", str(analysis_path))
+
+    summary, mindmap = await asyncio.gather(
+        summarize_text(transcript, user_language=user_language),
+        generate_mindmap(srt or transcript, metadata=mindmap_metadata, user_language=user_language),
+    )
+
     if summary:
         from app.services.archiving.archive import SUMMARY_TEMPLATE, get_archive_service
         _svc = get_archive_service()
@@ -1031,17 +1078,23 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             "description": metadata.description,
             "chapters": [{"title": ch.title, "start_time": ch.start_time} for ch in metadata.chapters] if metadata.chapters else None,
         }
-        analysis, summary, mindmap = await asyncio.gather(
-            analyze_content(transcript, metadata.title, metadata=video_metadata),
-            summarize_text(transcript),
-            generate_mindmap(srt or transcript, metadata=mindmap_metadata),
-        )
-        # Write analysis + summary + mindmap immediately
+        # Run analyze first so its detected language can be injected into
+        # the summarize+mindmap prompts (prevents multilingual transcripts
+        # from being collapsed into a single output language).
+        analysis = await analyze_content(transcript, metadata.title, metadata=video_metadata)
+        user_language = _user_language_hint(analysis)
+
         import json as _json
         if analysis:
             analysis_path = task_dir / "analysis.json"
             analysis_path.write_text(_json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
             await _emit_file_ready(task, "analysis.json", str(analysis_path))
+
+        summary, mindmap = await asyncio.gather(
+            summarize_text(transcript, user_language=user_language),
+            generate_mindmap(srt or transcript, metadata=mindmap_metadata, user_language=user_language),
+        )
+
         if summary:
             from app.services.archiving.archive import SUMMARY_TEMPLATE, get_archive_service
             _svc = get_archive_service()

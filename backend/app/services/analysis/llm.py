@@ -482,8 +482,8 @@ class LLMService:
 
         return '\n'.join(lines)
 
-    async def summarize(self, text: str) -> dict[str, Any]:
-        prompt = get_summarize_prompt(text)
+    async def summarize(self, text: str, user_language: str | None = None) -> dict[str, Any]:
+        prompt = get_summarize_prompt(text, user_language=user_language)
         resp = await self._call(prompt)
         try:
             start, end = resp.find("{"), resp.rfind("}") + 1
@@ -497,18 +497,19 @@ class LLMService:
         self,
         text: str,
         metadata: dict[str, Any] | None = None,
+        user_language: str | None = None,
     ) -> str:
         """Generate mindmap, auto-selecting single-pass or map-reduce based on length."""
         # Rough threshold: ~15k chars ≈ 30min of Chinese transcript
         if len(text) > 15000 and metadata:
             chapters = metadata.get("chapters")
             if chapters:
-                return await self._mindmap_map_reduce(text, metadata, chapters)
+                return await self._mindmap_map_reduce(text, metadata, chapters, user_language=user_language)
             # No chapters but long text — auto-split by segment count
-            return await self._mindmap_map_reduce_auto(text, metadata)
+            return await self._mindmap_map_reduce_auto(text, metadata, user_language=user_language)
 
         # Short content: single-pass
-        prompt = get_mindmap_prompt(text)
+        prompt = get_mindmap_prompt(text, user_language=user_language)
         resp = await self._call(prompt)
         return self._filter_mindmap_lines(resp)
 
@@ -517,6 +518,7 @@ class LLMService:
         text: str,
         metadata: dict[str, Any],
         chapters: list[dict],
+        user_language: str | None = None,
     ) -> str:
         """Map-reduce mindmap using chapter markers to split transcript."""
         segments = self._parse_srt(text) if "\n-->" in text else None
@@ -536,7 +538,9 @@ class LLMService:
 
         async def map_one(title: str, content: str) -> tuple[str, str]:
             async with semaphore:
-                prompt = get_mindmap_map_prompt(title, content, global_context)
+                prompt = get_mindmap_map_prompt(
+                    title, content, global_context, user_language=user_language,
+                )
                 resp = await self._call(prompt)
                 return title, resp
 
@@ -552,12 +556,13 @@ class LLMService:
         )
 
         # --- Reduce phase: group into batches to stay within output limits ---
-        return await self._mindmap_reduce(chapter_summaries)
+        return await self._mindmap_reduce(chapter_summaries, user_language=user_language)
 
     async def _mindmap_map_reduce_auto(
         self,
         text: str,
         metadata: dict[str, Any],
+        user_language: str | None = None,
     ) -> str:
         """Map-reduce for long text without chapter markers — auto-split."""
         segments = self._parse_srt(text) if "\n-->" in text else None
@@ -584,7 +589,9 @@ class LLMService:
 
         async def map_one(title: str, content: str) -> tuple[str, str]:
             async with semaphore:
-                prompt = get_mindmap_map_prompt(title, content, global_context)
+                prompt = get_mindmap_map_prompt(
+                    title, content, global_context, user_language=user_language,
+                )
                 resp = await self._call(prompt)
                 return title, resp
 
@@ -593,9 +600,13 @@ class LLMService:
         ])
         chapter_summaries = dict(map_results)
 
-        return await self._mindmap_reduce(chapter_summaries)
+        return await self._mindmap_reduce(chapter_summaries, user_language=user_language)
 
-    async def _mindmap_reduce(self, chapter_summaries: dict[str, str]) -> str:
+    async def _mindmap_reduce(
+        self,
+        chapter_summaries: dict[str, str],
+        user_language: str | None = None,
+    ) -> str:
         """Reduce chapter summaries into final mindmap, batching to fit output limits."""
         names = list(chapter_summaries.keys())
 
@@ -617,7 +628,9 @@ class LLMService:
                 summaries = ""
                 for name in batch_names:
                     summaries += f"\n### {name}\n{chapter_summaries[name]}\n"
-                prompt = get_mindmap_reduce_prompt(label, summaries)
+                prompt = get_mindmap_reduce_prompt(
+                    label, summaries, user_language=user_language,
+                )
                 resp = await self._call(prompt)
                 return self._filter_mindmap_lines(resp)
 
@@ -744,12 +757,15 @@ def srt_to_markdown(srt_content: str, title: str = "") -> str:
     return get_llm_service().srt_to_markdown(srt_content, title)
 
 
-async def summarize_text(text: str) -> dict[str, Any]:
-    return await get_llm_service().summarize(text)
+async def summarize_text(text: str, user_language: str | None = None) -> dict[str, Any]:
+    return await get_llm_service().summarize(text, user_language=user_language)
 
 
 async def generate_mindmap(
     text: str,
     metadata: dict[str, Any] | None = None,
+    user_language: str | None = None,
 ) -> str:
-    return await get_llm_service().mindmap(text, metadata=metadata)
+    return await get_llm_service().mindmap(
+        text, metadata=metadata, user_language=user_language,
+    )

@@ -1,43 +1,62 @@
-"""Summarization prompt."""
+"""Summarization prompt.
+
+Written in English with explicit language-preservation policy so multilingual
+transcripts don't get collapsed into a single output language.
+"""
 
 
-def get_summarize_prompt(text: str) -> str:
+def get_summarize_prompt(text: str, user_language: str | None = None) -> str:
     """
     Generate the summarization prompt.
 
     Args:
         text: Transcript text to summarize
+        user_language: Primary language of the transcript (e.g. "Chinese",
+            "English", "Japanese"). When unknown the model will auto-detect.
 
     Returns:
         Formatted prompt string
     """
-    return f"""分析以下转录文本，生成结构化摘要。
+    lang = (user_language or "").strip() or "auto-detect from transcript"
 
-转录内容:
+    return f"""Analyse the following transcript and produce a structured summary.
+
+## Language policy (critical)
+- The transcript's primary language: {lang}.
+- Write the narrative fields (tldr, key_facts, action_items) in that primary
+  language.
+- PRESERVE code-switched content verbatim. When the transcript mixes
+  languages (e.g. Chinese narration with English technical terms, Japanese
+  quotes, proper nouns, brand names, code identifiers, song titles), keep
+  those tokens in their original script and spelling — do NOT translate them.
+- Do NOT collapse a multilingual transcript into a monolingual output.
+
+## Transcript
 {text}
 
-请返回 JSON 格式:
+## Output
+Return JSON in exactly this shape:
 {{
-    "tldr": "一句话总结（不超过100字）",
+    "tldr": "one-sentence summary (<= 100 chars in the primary language)",
     "key_facts": [
-        "关键要点1",
-        "关键要点2",
-        "关键要点3",
+        "key point 1",
+        "key point 2",
+        "key point 3",
         "..."
     ],
     "action_items": [
-        "如有待办事项或建议行动，列在此处",
-        "..."
+        "only include explicitly stated action items / recommendations;",
+        "empty array if there are none"
     ],
     "topics": [
-        "主题1",
-        "主题2",
+        "topic 1",
+        "topic 2",
         "..."
     ]
 }}
 
-注意:
-1. key_facts 应包含 3-10 个最重要的信息点
-2. action_items 只包含明确提到的行动建议，如果没有则返回空数组
-3. topics 列出讨论的主要主题
-4. 只返回 JSON，不要其他内容"""
+Rules:
+1. key_facts: 3-10 of the most important information points.
+2. action_items: only things explicitly proposed as actions; otherwise empty.
+3. topics: the main discussion topics.
+4. Return JSON only, no prose, no code fences."""

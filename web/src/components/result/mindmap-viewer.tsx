@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { IPureNode } from "markmap-common"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import { Dialog, DialogContent } from "@/components/ui/dialog"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { Gps01Icon, Maximize01Icon } from "@hugeicons/core-free-icons"
+import { Gps01Icon, Maximize01Icon, HierarchyIcon, File02Icon } from "@hugeicons/core-free-icons"
 
 interface MindmapViewerProps {
   markdown: string
@@ -177,6 +180,7 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
   const svgRef = useRef<SVGSVGElement>(null)
   const dialogSvgRef = useRef<SVGSVGElement>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [viewMode, setViewMode] = useState<"mindmap" | "markdown">("mindmap")
   const [error, setError] = useState<string | null>(null)
   const [rootNode, setRootNode] = useState<MindmapNode | null>(null)
   const mmRef = useRef<MarkmapInstance | null>(null)
@@ -290,7 +294,7 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
   )
 
   useEffect(() => {
-    if (!svgRef.current || !rootNode) return
+    if (viewMode !== "mindmap" || !svgRef.current || !rootNode) return
     let cancelled = false
     const el = svgRef.current
 
@@ -306,10 +310,10 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
     return () => {
       cancelled = true
     }
-  }, [rootNode, renderMarkmap, fillContainer])
+  }, [rootNode, renderMarkmap, fillContainer, viewMode])
 
   useEffect(() => {
-    if (!dialogOpen || !dialogSvgRef.current || !rootNode) return
+    if (viewMode !== "mindmap" || !dialogOpen || !dialogSvgRef.current || !rootNode) return
     const timer = setTimeout(() => {
       if (dialogSvgRef.current) {
         renderMarkmap(dialogSvgRef.current, dialogMMRef, rootNode)
@@ -317,7 +321,7 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
     }, 100)
 
     return () => clearTimeout(timer)
-  }, [dialogOpen, rootNode, renderMarkmap])
+  }, [dialogOpen, rootNode, renderMarkmap, viewMode])
 
   useEffect(() => () => {
     mmRef.current?.destroy?.()
@@ -330,10 +334,40 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
     return <p className="p-4 text-sm text-destructive">{error}</p>
   }
 
+  const toggleView = () =>
+    setViewMode((m) => (m === "mindmap" ? "markdown" : "mindmap"))
+
+  // Button shows the icon of the *other* view — click to switch to it.
+  const ViewToggleButton = (
+    <button
+      onClick={toggleView}
+      className="absolute right-2 top-2 z-10 rounded-md bg-background/80 p-1.5 text-muted-foreground shadow-sm backdrop-blur-sm transition-colors hover:bg-muted hover:text-foreground"
+      title={viewMode === "mindmap" ? "切换到 Markdown" : "切换到思维导图"}
+    >
+      <HugeiconsIcon
+        icon={viewMode === "mindmap" ? File02Icon : HierarchyIcon}
+        className="h-4 w-4"
+      />
+    </button>
+  )
+
+  const MarkdownPane = (
+    <ScrollArea className="h-full w-full">
+      <article className="prose prose-sm dark:prose-invert max-w-none px-4 py-3">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
+      </article>
+    </ScrollArea>
+  )
+
   if (fillContainer) {
     return (
       <div className="relative h-full w-full overflow-hidden rounded-lg border bg-card">
-        <svg ref={svgRef} className="h-full w-full" />
+        {ViewToggleButton}
+        {viewMode === "mindmap" ? (
+          <svg ref={svgRef} className="h-full w-full" />
+        ) : (
+          MarkdownPane
+        )}
       </div>
     )
   }
@@ -341,10 +375,15 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
   return (
     <>
       <div className="relative h-[280px] overflow-hidden rounded-lg border bg-card transition-colors hover:border-primary/30">
-        <svg ref={svgRef} className="h-full w-full" />
+        {ViewToggleButton}
+        {viewMode === "mindmap" ? (
+          <svg ref={svgRef} className="h-full w-full" />
+        ) : (
+          MarkdownPane
+        )}
         <button
           onClick={() => setDialogOpen(true)}
-          className="absolute right-2 top-2 rounded-md bg-background/80 p-1.5 text-muted-foreground shadow-sm backdrop-blur-sm transition-colors hover:bg-muted hover:text-foreground"
+          className="absolute right-11 top-2 z-10 rounded-md bg-background/80 p-1.5 text-muted-foreground shadow-sm backdrop-blur-sm transition-colors hover:bg-muted hover:text-foreground"
           title="展开导图"
         >
           <HugeiconsIcon icon={Maximize01Icon} className="h-4 w-4" />
@@ -357,18 +396,34 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
           showCloseButton
         >
           <div className="shrink-0 border-b px-4 py-2">
-            <div className="flex items-center justify-end">
+            <div className="flex items-center justify-end gap-1">
               <button
-                onClick={() => dialogMMRef.current?.fit?.()}
+                onClick={toggleView}
                 className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                title="回正视角"
+                title={viewMode === "mindmap" ? "切换到 Markdown" : "切换到思维导图"}
               >
-                <HugeiconsIcon icon={Gps01Icon} className="h-4 w-4" />
+                <HugeiconsIcon
+                  icon={viewMode === "mindmap" ? File02Icon : HierarchyIcon}
+                  className="h-4 w-4"
+                />
               </button>
+              {viewMode === "mindmap" && (
+                <button
+                  onClick={() => dialogMMRef.current?.fit?.()}
+                  className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  title="回正视角"
+                >
+                  <HugeiconsIcon icon={Gps01Icon} className="h-4 w-4" />
+                </button>
+              )}
             </div>
           </div>
           <div className="min-h-0 flex-1 bg-card">
-            <svg ref={dialogSvgRef} className="h-full w-full" />
+            {viewMode === "mindmap" ? (
+              <svg ref={dialogSvgRef} className="h-full w-full" />
+            ) : (
+              MarkdownPane
+            )}
           </div>
         </DialogContent>
       </Dialog>

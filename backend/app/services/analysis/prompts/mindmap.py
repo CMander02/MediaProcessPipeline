@@ -2,72 +2,131 @@
 
 All prompts produce plain text only: `- ` list markers with 2-space indentation.
 No markdown formatting (no bold, italic, links, code, headings).
+
+Prompts are written in English to avoid biasing the model toward outputting
+a single language. The user's primary language is injected explicitly so the
+model can mirror the source's linguistic structure — including code-switched
+segments (e.g. Chinese with English technical terms).
 """
 
 
-def get_mindmap_prompt(text: str) -> str:
+# ---------------------------------------------------------------------------
+# Shared clauses
+# ---------------------------------------------------------------------------
+
+def _language_clause(user_language: str | None) -> str:
+    """Build the 'primary language + preserve code-switching' instruction block.
+
+    The cardinal rule: do NOT force the output into a single language when the
+    source mixes languages. Proper nouns, quoted phrases, product/model names,
+    code identifiers, and in-line foreign terms must be kept verbatim in their
+    original script. Only the surrounding connective prose adopts the primary
+    language.
+    """
+    lang = (user_language or "").strip() or "auto-detect from transcript"
+    return f"""## Language policy (critical)
+- The transcript's primary language: {lang}.
+- Write the connective / narrative words of each node in that primary language.
+- PRESERVE code-switched content verbatim. If the source mixes languages
+  (for example Chinese narration with English technical terms, Japanese quotes,
+  proper nouns, brand names, code identifiers, song titles), keep those tokens
+  in their original script and spelling. Do NOT translate them.
+- Do NOT collapse a multilingual transcript into a monolingual output.
+- If a speaker quotes another language, keep the quote in its original form
+  and (only when clarity demands it) add a short parenthetical gloss."""
+
+
+# ---------------------------------------------------------------------------
+# Prompts
+# ---------------------------------------------------------------------------
+
+def get_mindmap_prompt(text: str, user_language: str | None = None) -> str:
     """Short-content prompt (< ~30 min transcript). Used as fallback."""
-    return f"""你是一个内容整理专家。请阅读以下文本（可能是会议录音、访谈、讲座的转录），提炼其中的核心内容，生成一份结构化的思维导图大纲。
+    return f"""You are a content-structuring expert. Read the following transcript
+(it may be a meeting, interview, lecture, or podcast) and distill it into a
+structured mind-map outline.
 
-## 关键要求
-1. **归纳提炼**，不是逐句搬运。将零散的口语对话提炼为有信息量的要点
-2. 一级节点为讨论的主要话题板块（3-8 个），二级为该话题下的要点，三级为具体细节
-3. 每个节点应是一个完整的、有信息量的短句，而不是口语碎片
-4. 过滤掉语气词、重复、无意义的对话（"嗯"、"对"、"那个"等）
-5. 保留关键人名、术语、数字、决策、结论
-6. 合并表达同一意思的多句话为一个节点
+{_language_clause(user_language)}
 
-## 格式要求
-- 使用 `- ` 标记，2 空格缩进表示层级（2-4 层深度）
-- 纯文本，禁止使用任何 markdown 格式（不要加粗、斜体、链接、代码块、标题符号）
-- 直接输出列表，不要任何前言或总结
+## Core requirements
+1. Distill and rephrase — do NOT copy sentences verbatim. Turn scattered
+   conversational speech into information-dense bullet points.
+2. Level-1 nodes are the main topic sections of the discussion (3-8 of them);
+   level-2 are sub-points under each topic; level-3 are supporting details.
+3. Each node should be a complete, informative short phrase — not a fragment
+   of spoken language.
+4. Filter out filler words, hesitations, and meaningless repetition (e.g.
+   "uh", "you know", "嗯", "那个", "えーと", etc.) in whichever language(s)
+   they appear.
+5. Keep key names, technical terms, numbers, decisions, and conclusions.
+6. Merge multiple sentences expressing the same idea into one node.
 
-## 待提炼内容
+## Output format
+- Use `- ` markers with 2-space indentation to express hierarchy (2-4 levels deep).
+- Plain text only. NO markdown formatting — no bold, italic, links, code
+  blocks, or heading symbols.
+- Emit the list directly, with no preamble or closing remarks.
+
+## Transcript
 {text}
 
-请直接输出纯文本列表:"""
+Output the plain-text bullet list now:"""
 
 
 def get_mindmap_map_prompt(
     chapter_title: str,
     chapter_text: str,
     global_context: str,
+    user_language: str | None = None,
 ) -> str:
     """Map phase: summarize one chapter into a structured list."""
-    return f"""你是一个内容整理专家。以下是一段视频中「{chapter_title}」章节的字幕内容。
+    return f"""You are a content-structuring expert. The following is the
+transcript of the chapter titled "{chapter_title}" from a longer video.
 
-## 视频元信息
+{_language_clause(user_language)}
+
+## Video-level context
 {global_context}
 
-## 本章节字幕
+## Chapter transcript
 {chapter_text}
 
-## 任务
-将本章节的内容**归纳提炼**为结构化的思维导图大纲。要求：
-1. 归纳提炼，不是逐句搬运。将零散口语提炼为有信息量的要点
-2. 一级节点为该章节的主要话题（2-5 个），二三级逐层细化
-3. 每个节点是完整的短句，不是口语碎片
-4. 过滤语气词和无意义重复，保留关键人名、术语、数字
-5. 使用 `- ` 标记，2 空格缩进，2-4 层深度
-6. 纯文本，禁止使用任何 markdown 格式（不要加粗、斜体、链接、代码块）
-7. 直接输出纯文本列表，不要代码块"""
+## Task
+Distill this chapter into a structured mind-map outline. Requirements:
+1. Distill and rephrase — do NOT copy sentences verbatim. Turn scattered
+   conversational speech into information-dense points.
+2. Level-1 nodes are the chapter's main sub-topics (2-5 of them); levels 2
+   and 3 progressively add detail.
+3. Each node is a complete short phrase, not a fragment of spoken language.
+4. Filter out filler words and meaningless repetition; keep key names,
+   technical terms, numbers.
+5. Use `- ` markers with 2-space indentation, 2-4 levels deep.
+6. Plain text only — no markdown formatting (no bold, italic, links, code).
+7. Emit the plain-text list directly, with no code fences or prose wrapper."""
 
 
 def get_mindmap_reduce_prompt(
     group_label: str,
     group_summaries: str,
+    user_language: str | None = None,
 ) -> str:
     """Reduce phase: merge several chapter summaries into one cohesive section."""
-    return f"""你是一个内容整理专家。以下是视频「{group_label}」部分的各章节提炼摘要。
+    return f"""You are a content-structuring expert. Below are the distilled
+summaries of several chapters from the "{group_label}" part of a video.
 
-## 章节摘要
+{_language_clause(user_language)}
+
+## Chapter summaries
 {group_summaries}
 
-## 任务
-将这些章节合并为一个结构化的思维导图大纲。要求：
-1. 一级节点为该部分的主要话题板块
-2. 二级、三级、四级逐层细化，保留关键人名、术语、数字
-3. 合并重复内容，消除冗余
-4. 每个节点是完整的、有信息量的短句
-5. 纯文本，禁止使用任何 markdown 格式（不要加粗、斜体、链接、代码块）
-6. 直接输出列表，`- ` 标记，2 空格缩进，无代码块"""
+## Task
+Merge these chapter summaries into a single structured mind-map outline.
+Requirements:
+1. Level-1 nodes are the major topic sections of this part.
+2. Levels 2, 3, and 4 progressively add detail; preserve key names, technical
+   terms, and numbers.
+3. Merge overlapping content and remove redundancy.
+4. Each node is a complete, informative short phrase.
+5. Plain text only — no markdown formatting (no bold, italic, links, code).
+6. Emit the list directly with `- ` markers and 2-space indentation. No code
+   fences."""
