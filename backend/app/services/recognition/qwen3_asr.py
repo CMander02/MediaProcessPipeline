@@ -58,7 +58,7 @@ if _has_unicode_path_issue:
     logger.warning(
         "Detected non-ASCII characters in Python path. "
         "Qwen3-ASR may fail due to nagisa/dynet Unicode path limitations. "
-        "Consider using WhisperX backend or moving project to an ASCII-only path."
+        "Consider moving project to an ASCII-only path."
     )
 
 
@@ -71,7 +71,18 @@ class Qwen3ASRService:
         self._current_model_path: str | None = None
         self._current_aligner_path: str | None = None
         self._diarize_model = None
+        self._diarize_pipeline = None  # raw pyannote Pipeline (unwrapped)
+        self._last_diarize_df = None    # most recent diarization result
+        self._last_diarize_audio = None  # audio path used in last diarization
         self._load_error: str | None = None
+
+    def get_pyannote_pipeline(self):
+        """Return the loaded pyannote SpeakerDiarization pipeline (unwrapped) or None."""
+        return self._diarize_pipeline
+
+    def get_last_diarization(self) -> tuple[Any, str | None]:
+        """Return (diarize_df, audio_path) from the most recent diarization call."""
+        return self._last_diarize_df, self._last_diarize_audio
 
     def _get_model_path(self) -> str:
         """Get Qwen3-ASR model path from runtime settings."""
@@ -91,15 +102,20 @@ class Qwen3ASRService:
     def _ensure_init(self):
         """Initialize or reinitialize model with current settings.
 
-        ForcedAligner is not loaded by default. Qwen3-ASR handles audio
-        chunking natively via its internal toolkit.
+        Prefer the local ForcedAligner when configured so timestamped output
+        does not depend on the VAD fallback path or a torch.hub download.
         """
         import torch
         rt = get_runtime_settings()
         model_path = self._get_model_path()
+        aligner_path = self._get_aligner_path()
 
         # Check if we need to reinitialize (settings changed)
-        if self._model is not None and self._current_model_path == model_path:
+        if (
+            self._model is not None
+            and self._current_model_path == model_path
+            and self._current_aligner_path == aligner_path
+        ):
             return
 
         try:
@@ -119,14 +135,21 @@ class Qwen3ASRService:
                 "max_new_tokens": rt.qwen3_max_new_tokens,
             }
 
-            # Note: ForcedAligner not loaded by default - Qwen3-ASR handles
-            # segmentation natively via its internal toolkit
+            if aligner_path:
+                model_kwargs["forced_aligner"] = aligner_path
+                model_kwargs["forced_aligner_kwargs"] = {
+                    "dtype": dtype,
+                    "device_map": rt.qwen3_device,
+                }
 
             self._model = Qwen3ASRModel.from_pretrained(model_path, **model_kwargs)
             self._current_model_path = model_path
-            self._current_aligner_path = None
+            self._current_aligner_path = aligner_path
 
-            logger.info("Qwen3-ASR model loaded (native mode, no ForcedAligner)")
+            if aligner_path:
+                logger.info(f"Qwen3-ASR model loaded with ForcedAligner: {aligner_path}")
+            else:
+                logger.info("Qwen3-ASR model loaded (native mode, no ForcedAligner)")
 
         except ImportError as e:
             logger.warning(f"qwen-asr not installed - mock mode: {e}")
@@ -221,6 +244,7 @@ class Qwen3ASRService:
 
                 return diarize_df
 
+        self._diarize_pipeline = pipeline
         return DiarizationWrapper(pipeline)
 
     def transcribe(
@@ -422,15 +446,22 @@ class Qwen3ASRService:
             final.append({"start": chunk["start"], "end": split_point})
             final.append({"start": split_point, "end": chunk["end"]})
 
-        # Recursively split if still too long (one more pass)
+        # Force-split any chunk still longer than max_duration into equal pieces.
+        # Needed when VAD sees a long uninterrupted speech (interviews, lectures)
+        # and the gap-based splitter above can't find split points.
         merged = []
         for chunk in final:
-            if chunk["end"] - chunk["start"] > max_duration * 1.5:
-                mid = (chunk["start"] + chunk["end"]) / 2
-                merged.append({"start": chunk["start"], "end": mid})
-                merged.append({"start": mid, "end": chunk["end"]})
-            else:
+            duration = chunk["end"] - chunk["start"]
+            if duration <= max_duration:
                 merged.append(chunk)
+                continue
+            # Number of equal slices so each is <= max_duration
+            n_slices = int(-(-duration // max_duration))  # ceil
+            slice_dur = duration / n_slices
+            for k in range(n_slices):
+                s = chunk["start"] + k * slice_dur
+                e = chunk["start"] + (k + 1) * slice_dur if k < n_slices - 1 else chunk["end"]
+                merged.append({"start": s, "end": e})
 
         logger.info(f"VAD segmented to {len(merged)} chunks (max {max_duration}s each)")
 
@@ -701,6 +732,10 @@ class Qwen3ASRService:
             logger.info(f"Using fixed num_speakers={num_speakers}")
         diarize_df = self._diarize_model(audio_data.astype(np.float32), **diarize_kwargs)
         logger.info(f"Diarization complete: found {len(diarize_df)} speaker segments")
+
+        # Cache for voiceprint extraction step
+        self._last_diarize_df = diarize_df
+        self._last_diarize_audio = str(audio_path)
 
         # Assign speakers to segments based on overlap
         for seg in segments:

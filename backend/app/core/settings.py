@@ -35,9 +35,6 @@ class RuntimeSettings(BaseModel):
     custom_model: str = ""
     custom_name: str = "Custom"
 
-    # ASR Backend Selection
-    asr_backend: str = "qwen3"  # "qwen3" | "whisperx"
-
     # Qwen3-ASR Settings
     qwen3_asr_model_path: str = ""  # Local path, empty = use HuggingFace
     qwen3_aligner_model_path: str = ""  # ForcedAligner path for timestamps
@@ -46,22 +43,17 @@ class RuntimeSettings(BaseModel):
     qwen3_max_new_tokens: int = 4096
     qwen3_device: str = "cuda"
 
-    # WhisperX (backup)
-    whisper_model: str = "large-v3-turbo"
-    whisper_model_path: str = ""
-    whisper_device: str = "cuda"
-    whisper_compute_type: str = "float16"
-    whisper_batch_size: int = 16
-    enable_alignment: bool = True
-
-    # Speaker Diarization (shared by both backends)
+    # Speaker Diarization
     enable_diarization: bool = True
     hf_token: str = ""
     pyannote_model_path: str = ""
     pyannote_segmentation_path: str = ""
-    alignment_model_zh: str = ""
-    alignment_model_en: str = ""
     diarization_batch_size: int = 16
+
+    # Voiceprint (speaker embedding) library
+    enable_voiceprint: bool = True
+    voiceprint_match_threshold: float = 0.75      # >= → auto-merge into existing person
+    voiceprint_suggest_threshold: float = 0.60    # [suggest, match) → suggest but create new; < suggest → new person
 
     # Platform Subtitles
     prefer_platform_subtitles: bool = True  # Use platform subtitles when available
@@ -79,12 +71,16 @@ class RuntimeSettings(BaseModel):
     uvr_deecho_dereverb_path: str = ""
     uvr_htdemucs_path: str = ""
 
-    # Local LLM (llama-cpp-python, GGUF)
-    local_llm_model_path: str = ""       # Path to .gguf file
-    local_llm_n_gpu_layers: int = -1     # -1 = all layers on GPU
-    local_llm_n_ctx: int = 16384         # Context window size
-    local_llm_n_batch: int = 512         # Batch size for prompt eval
-    polish_provider: str = "local"       # Provider for polish step: "" = follow llm_provider, or "local"/"anthropic"/"openai"/"custom"
+    # Local LLM (transformers + safetensors)
+    local_llm_model_path: str = ""          # Path to HuggingFace model directory
+    local_llm_device: str = "cuda"          # "cuda" | "cpu" | "auto"
+    local_llm_dtype: str = "bfloat16"       # "bfloat16" | "float16" | "float32" | "auto"
+    local_llm_max_new_tokens: int = 4096    # Cap per generate() call
+    # Kept for backward compat with older settings.json; unused by the transformers backend
+    local_llm_n_gpu_layers: int = -1
+    local_llm_n_ctx: int = 16384
+    local_llm_n_batch: int = 512
+    polish_provider: str = "local"          # "" = follow llm_provider, or local/anthropic/openai/custom
 
     # Concurrency
     max_download_concurrency: int = 2  # max parallel downloads (I/O bound, set 1-4)

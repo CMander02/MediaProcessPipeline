@@ -17,6 +17,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
+import { SpeakerMergeDialog, type SpeakerMergeInfo } from "@/components/speaker-merge-dialog"
 import { useArchives, type ArchiveItem } from "@/hooks/use-archives"
 import { useMediaSync } from "@/hooks/use-media-sync"
 import { useViewPosition } from "@/hooks/use-view-position"
@@ -77,17 +78,73 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
 
   const sep = archivePath.includes("\\") ? "\\" : "/"
 
+  const [mergeInfo, setMergeInfo] = useState<SpeakerMergeInfo | null>(null)
+
+  const applyRenameLocally = useCallback(
+    async (oldName: string, newName: string) => {
+      const updated = subtitles.map((sub) =>
+        sub.speaker === oldName ? { ...sub, speaker: newName } : sub,
+      )
+      setSubtitles(updated)
+      const srtPath = archivePath + sep + (isPolished ? "transcript_polished.srt" : "transcript.srt")
+      try {
+        await api.filesystem.write(srtPath, subtitlesToSRT(updated))
+      } catch (err) {
+        console.warn("Failed to save SRT after speaker rename:", err)
+      }
+    },
+    [subtitles, archivePath, sep],
+  )
+
   const handleRenameSpeaker = async (oldName: string, newName: string) => {
-    const updated = subtitles.map((sub) =>
-      sub.speaker === oldName ? { ...sub, speaker: newName } : sub,
-    )
-    setSubtitles(updated)
-    const srtPath = archivePath + sep + (isPolished ? "transcript_polished.srt" : "transcript.srt")
-    try {
-      await api.filesystem.write(srtPath, subtitlesToSRT(updated))
-    } catch (err) {
-      console.warn("Failed to save SRT after speaker rename:", err)
+    if (!taskId) {
+      // Legacy archive without taskId — fall back to local-only rename
+      await applyRenameLocally(oldName, newName)
+      return
     }
+    try {
+      const res = await api.voiceprints.renameTaskSpeaker(taskId, oldName, newName, "ask")
+      if (res.status === "conflict") {
+        setMergeInfo({
+          oldName,
+          newName,
+          existingPersonId: res.conflict_person_id ?? "",
+          existingPersonName: res.conflict_person_name ?? newName,
+          existingSampleCount: res.conflict_sample_count ?? 0,
+        })
+        return
+      }
+      // renamed or merged — both mean local SRT should reflect the resolved name
+      const appliedName = res.person_name ?? newName
+      await applyRenameLocally(oldName, appliedName)
+    } catch (err) {
+      console.warn("renameTaskSpeaker failed, falling back to local rename:", err)
+      await applyRenameLocally(oldName, newName)
+    }
+  }
+
+  const resolveMerge = async (choice: "merge" | "new" | "cancel") => {
+    if (!mergeInfo || !taskId) {
+      setMergeInfo(null)
+      return
+    }
+    if (choice === "cancel") {
+      setMergeInfo(null)
+      return
+    }
+    try {
+      const res = await api.voiceprints.renameTaskSpeaker(
+        taskId,
+        mergeInfo.oldName,
+        mergeInfo.newName,
+        choice,
+      )
+      const appliedName = res.person_name ?? mergeInfo.newName
+      await applyRenameLocally(mergeInfo.oldName, appliedName)
+    } catch (err) {
+      console.warn("Conflict resolution failed:", err)
+    }
+    setMergeInfo(null)
   }
 
   // Find archive from list
@@ -553,6 +610,9 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
         archivePath={archivePath}
         onDeleted={() => navigate("#/files")}
       />
+
+      {/* Speaker merge confirmation */}
+      <SpeakerMergeDialog info={mergeInfo} onResolve={resolveMerge} />
     </div>
   )
 }

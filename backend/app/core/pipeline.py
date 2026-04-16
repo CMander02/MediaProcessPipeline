@@ -32,6 +32,7 @@ class PipelineStep(StrEnum):
     DOWNLOAD = "download"
     SEPARATE = "separate"
     TRANSCRIBE = "transcribe"
+    VOICEPRINT = "voiceprint"
     ANALYZE = "analyze"
     POLISH = "polish"
     ARCHIVE = "archive"
@@ -41,6 +42,7 @@ PIPELINE_STEPS = [
     {"id": PipelineStep.DOWNLOAD, "name": "下载媒体", "name_en": "Downloading"},
     {"id": PipelineStep.SEPARATE, "name": "分离人声", "name_en": "Separating vocals"},
     {"id": PipelineStep.TRANSCRIBE, "name": "转录音频", "name_en": "Transcribing"},
+    {"id": PipelineStep.VOICEPRINT, "name": "声纹识别", "name_en": "Matching voiceprints"},
     {"id": PipelineStep.ANALYZE, "name": "分析+摘要+脑图", "name_en": "Analyzing & summarizing"},
     {"id": PipelineStep.POLISH, "name": "润色字幕", "name_en": "Polishing transcript"},
     {"id": PipelineStep.ARCHIVE, "name": "归档保存", "name_en": "Archiving"},
@@ -187,6 +189,29 @@ def _user_language_hint(analysis: dict | None) -> str | None:
     return _LANG_NAME.get(raw.lower(), raw)
 
 
+def _extract_internal_asr_error(recognition_segments: list[dict[str, Any]] | None) -> str | None:
+    """Detect mock/error placeholder text emitted by ASR backends.
+
+    These placeholders are useful in isolated service tests, but they should
+    not be treated as a valid transcript for downstream LLM analysis.
+    """
+    if not recognition_segments:
+        return None
+
+    texts = [str(seg.get("text", "")).strip() for seg in recognition_segments if seg.get("text")]
+    if not texts:
+        return None
+
+    prefixes = (
+        "[Qwen3-ASR error:",
+        "[Mock - Qwen3-ASR not installed]",
+    )
+    for text in texts:
+        if text.startswith(prefixes):
+            return text.strip("[]")
+    return None
+
+
 def _extract_audio_from_video(video_path: Path, output_path: Path) -> Path:
     """Extract audio from video file using ffmpeg."""
     # Resolve to absolute paths so filenames starting with '-' can't be
@@ -295,6 +320,73 @@ async def _update_step(
     }))
 
 
+async def _run_voiceprint_step(
+    task: Task,
+    recognition_segments: list,
+    task_dir: Path,
+) -> list:
+    """Extract speaker embeddings, match against library, rewrite segment speakers.
+
+    Gracefully no-ops when:
+      - voiceprint disabled in settings
+      - no diarization was run (no speaker labels present)
+      - ASR service didn't cache a diarize_df (e.g. platform subtitle path)
+    """
+    from app.core.settings import get_runtime_settings
+    rt = get_runtime_settings()
+    if not getattr(rt, "enable_voiceprint", True):
+        return recognition_segments
+    if not recognition_segments:
+        return recognition_segments
+
+    # Only run if diarization produced speaker labels
+    has_speakers = any(s.get("speaker") for s in recognition_segments)
+    if not has_speakers:
+        logger.info("Voiceprint: no speaker labels in segments, skipping")
+        return recognition_segments
+
+    from app.services.recognition import get_asr_service
+    service = get_asr_service()
+    pipeline_obj = service.get_pyannote_pipeline() if hasattr(service, "get_pyannote_pipeline") else None
+    if pipeline_obj is None:
+        logger.info("Voiceprint: pyannote pipeline not loaded, skipping")
+        return recognition_segments
+
+    diarize_df, audio_path = service.get_last_diarization() if hasattr(service, "get_last_diarization") else (None, None)
+    if diarize_df is None or audio_path is None:
+        logger.info("Voiceprint: no cached diarization, skipping")
+        return recognition_segments
+
+    from app.services.voiceprint import get_voiceprint_store
+    from app.services.voiceprint.extractor import extract_voiceprints
+    from app.services.voiceprint.matcher import resolve_speakers, apply_to_segments
+
+    store = get_voiceprint_store()
+    clips_dir = store.clips_dir
+
+    voiceprints = extract_voiceprints(
+        audio_path=audio_path,
+        diarize_df=diarize_df,
+        pyannote_pipeline=pipeline_obj,
+        clips_dir=clips_dir,
+        sample_id_prefix=f"{task.id}_",
+    )
+    if not voiceprints:
+        logger.info("Voiceprint: no voiceprints extracted, skipping")
+        return recognition_segments
+
+    resolutions = resolve_speakers(
+        task_id=str(task.id),
+        voiceprints=voiceprints,
+        store=store,
+        match_threshold=float(getattr(rt, "voiceprint_match_threshold", 0.75)),
+        suggest_threshold=float(getattr(rt, "voiceprint_suggest_threshold", 0.60)),
+    )
+    recognition_segments = apply_to_segments(recognition_segments, resolutions)
+    logger.info(f"Voiceprint: resolved {len(resolutions)} speaker(s)")
+    return recognition_segments
+
+
 # ---------------------------------------------------------------------------
 # Fast-path subtitle runner (no GPU needed)
 # ---------------------------------------------------------------------------
@@ -347,6 +439,9 @@ async def _run_subtitle_fast_path(
             polished_md_path.write_text(polished_md, encoding="utf-8")
 
     await _update_step(task, PipelineStep.TRANSCRIBE, completed=True)
+
+    # -- VOICEPRINT: platform subtitles have no diarization, mark skipped --
+    await _update_step(task, PipelineStep.VOICEPRINT, completed=True)
 
     # Guard: skip LLM if transcript is empty
     if not transcript or len(transcript.strip()) < 10:
@@ -479,7 +574,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             task_dir = candidate
 
     done = set(task.completed_steps or [])
-    logger.info(f"Task {task.id}: starting pipeline, already done: {done}")
+    logger.info(f"starting pipeline, already done: {done}")
 
     # Variables that later steps depend on — populated either by running the
     # step or by reading back files written in a previous run.
@@ -604,7 +699,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
     # ── Step 1: DOWNLOAD ───────────────────────────────────────────────────
     if PipelineStep.DOWNLOAD in done:
-        logger.info(f"Task {task.id}: skipping DOWNLOAD (already done), restoring from disk")
+        logger.info(f"skipping DOWNLOAD (already done), restoring from disk")
         _restore_metadata()
         _restore_audio_paths()
         # Restore has_subtitle + platform_subtitle from disk
@@ -626,7 +721,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         # Fast-path resume: LLM steps done, just need video + archive
         fast_path_steps = {PipelineStep.TRANSCRIBE, PipelineStep.ANALYZE, PipelineStep.POLISH}
         if fast_path_steps.issubset(done) and PipelineStep.ARCHIVE not in done:
-            logger.info(f"Task {task.id}: fast-path resume — re-downloading video")
+            logger.info(f"fast-path resume — re-downloading video")
             ingest = await download_media(source, output_dir=task_dir)
             audio_path = ingest.get("file_path")
             if not metadata:
@@ -639,6 +734,9 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             _restore_analysis()
             _restore_summary()
             _restore_mindmap()
+
+            if PipelineStep.VOICEPRINT not in done:
+                await _update_step(task, PipelineStep.VOICEPRINT, completed=True)
 
             # Archive
             from app.services.archiving import archive_result
@@ -803,7 +901,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
                 if probe_metadata and probe_subtitle:
                     # ── FAST PATH: subtitle + video download in parallel ──
-                    logger.info(f"Task {task.id}: fast path — subtitle found, running parallel")
+                    logger.info(f"fast path — subtitle found, running parallel")
                     metadata = probe_metadata
 
                     # Rename task_dir to real title
@@ -951,16 +1049,16 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     gpu_sem = get_task_queue().gpu_semaphore
 
     if PipelineStep.SEPARATE in done and PipelineStep.TRANSCRIBE in done:
-        logger.info(f"Task {task.id}: skipping SEPARATE+TRANSCRIBE (already done), restoring transcript")
+        logger.info(f"skipping SEPARATE+TRANSCRIBE (already done), restoring transcript")
         _restore_transcript()
         _restore_audio_paths()
     else:
         async with gpu_sem:
-            logger.info(f"Task {task.id}: acquired GPU semaphore")
+            logger.info(f"acquired GPU semaphore")
 
             # Step 2: Separate vocals
             if PipelineStep.SEPARATE in done:
-                logger.info(f"Task {task.id}: skipping SEPARATE, restoring audio paths")
+                logger.info(f"skipping SEPARATE, restoring audio paths")
                 _restore_audio_paths()
             else:
                 await _update_step(task, PipelineStep.SEPARATE)
@@ -974,7 +1072,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
             # Step 3: Transcribe
             if PipelineStep.TRANSCRIBE in done:
-                logger.info(f"Task {task.id}: skipping TRANSCRIBE, restoring transcript")
+                logger.info(f"skipping TRANSCRIBE, restoring transcript")
                 _restore_transcript()
             else:
                 await _update_step(task, PipelineStep.TRANSCRIBE)
@@ -1001,6 +1099,10 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     subtitle_source = "asr"
                     recognition_segments = recognition.get("segments", [])
 
+                    asr_error = _extract_internal_asr_error(recognition_segments)
+                    if asr_error:
+                        raise RuntimeError(f"ASR backend produced an internal error placeholder: {asr_error}")
+
                 # Write transcript.srt immediately
                 if srt:
                     srt_path = task_dir / "transcript.srt"
@@ -1016,6 +1118,37 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
                 await _update_step(task, PipelineStep.TRANSCRIBE, completed=True)
             # end if TRANSCRIBE not in done
+
+            # ── Voiceprint step: run while vocals files are still on disk ──
+            # Must run inside the GPU semaphore block (pyannote pipeline is loaded),
+            # and before _cleanup_vocals() wipes the WAV files we just transcribed.
+            if PipelineStep.VOICEPRINT not in done:
+                await _update_step(task, PipelineStep.VOICEPRINT)
+                try:
+                    recognition_segments = await _run_voiceprint_step(
+                        task=task,
+                        recognition_segments=recognition_segments,
+                        task_dir=task_dir,
+                    )
+                    # Rewrite SRT so downstream consumers see canonical names
+                    if recognition_segments and subtitle_source == "asr":
+                        from app.services.recognition import get_asr_service
+                        service = get_asr_service()
+                        if hasattr(service, "to_srt"):
+                            from app.models import TranscriptSegment
+                            segs_models = [
+                                TranscriptSegment(**{k: v for k, v in s.items() if k in {"start", "end", "text", "speaker"}})
+                                for s in recognition_segments
+                            ]
+                            new_srt = service.to_srt(segs_models)
+                            if new_srt:
+                                srt = new_srt
+                                srt_path = task_dir / "transcript.srt"
+                                srt_path.write_text(srt, encoding="utf-8")
+                                await _emit_file_ready(task, "transcript.srt", str(srt_path))
+                except Exception as e:
+                    logger.warning(f"Voiceprint step failed (non-fatal): {e}", exc_info=True)
+                await _update_step(task, PipelineStep.VOICEPRINT, completed=True)
         # end async with gpu_sem
 
     # Clean up UVR vocals and segment files immediately after ASR is done —
@@ -1023,6 +1156,10 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     _cleanup_vocals(task_dir, audio_path, vocals_path)
 
     # end if SEPARATE+TRANSCRIBE not both done
+
+    # Ensure VOICEPRINT is marked complete even in the "both already done" resume path
+    if PipelineStep.VOICEPRINT not in task.completed_steps:
+        await _update_step(task, PipelineStep.VOICEPRINT, completed=True)
 
     # Guard: skip LLM if transcript is empty or trivially short
     if not transcript or len(transcript.strip()) < 10:
@@ -1059,7 +1196,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
     # ── Step 4: Analyze + Summarize + Mindmap (parallel, CPU/network) ────────
     if PipelineStep.ANALYZE in done:
-        logger.info(f"Task {task.id}: skipping ANALYZE, restoring from disk")
+        logger.info(f"skipping ANALYZE, restoring from disk")
         _restore_analysis()
         _restore_summary()
         _restore_mindmap()
@@ -1118,7 +1255,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
     # ── Step 5: Polish transcript (CPU/network) ────────────────────────────
     if PipelineStep.POLISH in done:
-        logger.info(f"Task {task.id}: skipping POLISH, restoring from disk")
+        logger.info(f"skipping POLISH, restoring from disk")
         _restore_transcript()  # picks up polished if present
     else:
         await _update_step(task, PipelineStep.POLISH)

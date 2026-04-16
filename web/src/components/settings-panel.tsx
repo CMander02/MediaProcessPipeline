@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
+import { Slider } from "@/components/ui/slider"
 import { api, type Settings } from "@/lib/api"
 import { usePreferences } from "@/hooks/use-preferences"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -90,68 +91,32 @@ export function SettingsPanel() {
         </CardContent>
       </Card>
 
-      {/* ASR Backend */}
+      {/* ASR */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">ASR 后端</CardTitle>
+          <CardTitle className="text-base">ASR</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <RadioGroup
-            value={settings.asr_backend}
-            onValueChange={(v) => updateSetting("asr_backend", v)}
-            className="flex gap-4"
-          >
-            <div className="flex items-center gap-2">
-              <RadioGroupItem value="qwen3" id="asr-qwen3" />
-              <Label htmlFor="asr-qwen3">Qwen3-ASR</Label>
-            </div>
-            <div className="flex items-center gap-2">
-              <RadioGroupItem value="whisperx" id="asr-whisperx" />
-              <Label htmlFor="asr-whisperx">WhisperX</Label>
-            </div>
-          </RadioGroup>
-
+          <p className="text-sm text-muted-foreground">当前固定使用 Qwen3-ASR。</p>
           <Separator />
-
-          {settings.asr_backend === "qwen3" ? (
-            <div className="space-y-3">
-              <SettingRow
-                label="模型路径"
-                settingKey="qwen3_asr_model_path"
-                value={String(settings.qwen3_asr_model_path ?? "")}
-                onSave={updateSetting}
-                saving={saving}
-                saved={saved}
-              />
-              <SettingRow
-                label="设备"
-                settingKey="qwen3_device"
-                value={String(settings.qwen3_device ?? "cuda")}
-                onSave={updateSetting}
-                saving={saving}
-                saved={saved}
-              />
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <SettingRow
-                label="Whisper 模型"
-                settingKey="whisper_model"
-                value={String(settings.whisper_model ?? "")}
-                onSave={updateSetting}
-                saving={saving}
-                saved={saved}
-              />
-              <SettingRow
-                label="模型路径"
-                settingKey="whisper_model_path"
-                value={String(settings.whisper_model_path ?? "")}
-                onSave={updateSetting}
-                saving={saving}
-                saved={saved}
-              />
-            </div>
-          )}
+          <div className="space-y-3">
+            <SettingRow
+              label="模型路径"
+              settingKey="qwen3_asr_model_path"
+              value={String(settings.qwen3_asr_model_path ?? "")}
+              onSave={updateSetting}
+              saving={saving}
+              saved={saved}
+            />
+            <SettingRow
+              label="设备"
+              settingKey="qwen3_device"
+              value={String(settings.qwen3_device ?? "cuda")}
+              onSave={updateSetting}
+              saving={saving}
+              saved={saved}
+            />
+          </div>
         </CardContent>
       </Card>
 
@@ -180,7 +145,7 @@ export function SettingsPanel() {
             </div>
             <div className="flex items-center gap-2">
               <RadioGroupItem value="local" id="llm-local" />
-              <Label htmlFor="llm-local">本地 GGUF</Label>
+              <Label htmlFor="llm-local">本地 HF 模型</Label>
             </div>
           </RadioGroup>
 
@@ -189,25 +154,43 @@ export function SettingsPanel() {
           {settings.llm_provider === "local" ? (
             <div className="space-y-3">
               <SettingRow
-                label="模型路径 (.gguf)"
+                label="模型目录"
                 settingKey="local_llm_model_path"
                 value={String(settings.local_llm_model_path ?? "")}
                 onSave={updateSetting}
                 saving={saving}
                 saved={saved}
+                placeholder="包含 config.json 和 *.safetensors 的目录"
               />
+              <div className="flex items-center gap-3">
+                <Label className="w-24 shrink-0 text-sm text-muted-foreground">设备</Label>
+                <select
+                  value={String(settings.local_llm_device ?? "cuda")}
+                  onChange={(e) => updateSetting("local_llm_device", e.target.value)}
+                  className="h-8 rounded-md border border-input bg-background px-3 text-sm"
+                >
+                  <option value="cuda">cuda</option>
+                  <option value="cpu">cpu</option>
+                  <option value="auto">auto</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-3">
+                <Label className="w-24 shrink-0 text-sm text-muted-foreground">精度</Label>
+                <select
+                  value={String(settings.local_llm_dtype ?? "bfloat16")}
+                  onChange={(e) => updateSetting("local_llm_dtype", e.target.value)}
+                  className="h-8 rounded-md border border-input bg-background px-3 text-sm"
+                >
+                  <option value="bfloat16">bfloat16</option>
+                  <option value="float16">float16</option>
+                  <option value="float32">float32</option>
+                  <option value="auto">auto</option>
+                </select>
+              </div>
               <SettingRow
-                label="GPU Layers (-1=全部)"
-                settingKey="local_llm_n_gpu_layers"
-                value={String(settings.local_llm_n_gpu_layers ?? -1)}
-                onSave={(key, val) => updateSetting(key, Number(val))}
-                saving={saving}
-                saved={saved}
-              />
-              <SettingRow
-                label="Context 长度"
-                settingKey="local_llm_n_ctx"
-                value={String(settings.local_llm_n_ctx ?? 16384)}
+                label="最大生成长度"
+                settingKey="local_llm_max_new_tokens"
+                value={String(settings.local_llm_max_new_tokens ?? 4096)}
                 onSave={(key, val) => updateSetting(key, Number(val))}
                 saving={saving}
                 saved={saved}
@@ -306,7 +289,7 @@ export function SettingsPanel() {
               </div>
               <div className="flex items-center gap-2">
                 <RadioGroupItem value="local" id="polish-local" />
-                <Label htmlFor="polish-local">本地 GGUF</Label>
+                <Label htmlFor="polish-local">本地 HF</Label>
               </div>
               <div className="flex items-center gap-2">
                 <RadioGroupItem value="anthropic" id="polish-anthropic" />
@@ -393,9 +376,121 @@ export function SettingsPanel() {
         </CardContent>
       </Card>
 
+      {/* Voiceprint */}
+      <VoiceprintCard settings={settings} updateSetting={updateSetting} />
+
       {/* Bilibili */}
       <BilibiliCard />
     </div>
+  )
+}
+
+interface VoiceprintCardProps {
+  settings: Settings
+  updateSetting: (key: string, value: unknown) => Promise<void>
+}
+
+function VoiceprintCard({ settings, updateSetting }: VoiceprintCardProps) {
+  const enabled = Boolean(settings.enable_voiceprint ?? true)
+  const serverMatch = Number(settings.voiceprint_match_threshold ?? 0.75)
+  const serverSuggest = Number(settings.voiceprint_suggest_threshold ?? 0.60)
+
+  const [match, setMatch] = useState(serverMatch)
+  const [suggest, setSuggest] = useState(serverSuggest)
+
+  // Sync with server changes
+  useEffect(() => setMatch(serverMatch), [serverMatch])
+  useEffect(() => setSuggest(serverSuggest), [serverSuggest])
+
+  const MATCH_MIN = 0.50, MATCH_MAX = 0.90
+  const SUGGEST_MIN = 0.40, SUGGEST_MAX = 0.80
+  const GAP = 0.10
+
+  const clampSuggest = (m: number, s: number) => {
+    const ceiling = Math.min(SUGGEST_MAX, Math.round((m - GAP) * 100) / 100)
+    return Math.max(SUGGEST_MIN, Math.min(ceiling, Math.round(s * 100) / 100))
+  }
+
+  const handleMatchChange = (v: number) => {
+    const rounded = Math.round(v * 100) / 100
+    setMatch(rounded)
+    // Enforce suggest <= match - GAP
+    const adjusted = clampSuggest(rounded, suggest)
+    if (adjusted !== suggest) setSuggest(adjusted)
+  }
+
+  const handleSuggestChange = (v: number) => {
+    const rounded = Math.round(v * 100) / 100
+    const ceiling = Math.min(SUGGEST_MAX, Math.round((match - GAP) * 100) / 100)
+    setSuggest(Math.min(rounded, ceiling))
+  }
+
+  const commitMatch = () => {
+    if (match !== serverMatch) updateSetting("voiceprint_match_threshold", match)
+    const adjusted = clampSuggest(match, suggest)
+    if (adjusted !== serverSuggest) updateSetting("voiceprint_suggest_threshold", adjusted)
+  }
+
+  const commitSuggest = () => {
+    if (suggest !== serverSuggest) updateSetting("voiceprint_suggest_threshold", suggest)
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">声纹识别</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <div className="flex items-center justify-between">
+          <Label>启用声纹识别</Label>
+          <Switch
+            checked={enabled}
+            onCheckedChange={(v) => updateSetting("enable_voiceprint", Boolean(v))}
+          />
+        </div>
+
+        {enabled && (
+          <>
+            <Separator />
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm text-muted-foreground">匹配阈值（自动合并）</Label>
+                <span className="text-sm tabular-nums">{match.toFixed(2)}</span>
+              </div>
+              <Slider
+                min={MATCH_MIN}
+                max={MATCH_MAX}
+                step={0.01}
+                value={[match]}
+                onValueChange={(v) => handleMatchChange(v[0])}
+                onValueCommit={commitMatch}
+              />
+              <p className="text-xs text-muted-foreground">
+                相似度 ≥ 此值时，说话人会被自动归入已存在的声纹。
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm text-muted-foreground">待确认下限</Label>
+                <span className="text-sm tabular-nums">{suggest.toFixed(2)}</span>
+              </div>
+              <Slider
+                min={SUGGEST_MIN}
+                max={Math.min(SUGGEST_MAX, Math.round((match - GAP) * 100) / 100)}
+                step={0.01}
+                value={[suggest]}
+                onValueChange={(v) => handleSuggestChange(v[0])}
+                onValueCommit={commitSuggest}
+              />
+              <p className="text-xs text-muted-foreground">
+                必须 ≤ 匹配阈值 − 0.10。介于此值与匹配阈值之间会建立新身份但记录为可疑匹配。
+              </p>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

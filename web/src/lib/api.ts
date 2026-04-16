@@ -31,8 +31,9 @@ export interface TaskStats {
 }
 
 export interface Settings {
-  asr_backend: string
   llm_provider: string
+  qwen3_asr_model_path: string
+  qwen3_device: string
   local_llm_model_path: string
   local_llm_n_gpu_layers: number
   local_llm_n_ctx: number
@@ -140,6 +141,40 @@ export const api = {
       get<{ title?: string; description?: string; tags?: string[]; uploader?: string; duration?: number }>(
         `/api/pipeline/probe?url=${encodeURIComponent(url)}`,
       ),
+  },
+
+  voiceprints: {
+    listPersons: () =>
+      get<Array<{ id: string; name: string; notes: string; created_at: string; sample_count: number }>>(
+        "/api/voiceprints/persons",
+      ),
+    patchPerson: (id: string, body: { name?: string; notes?: string }) =>
+      patch<{ id: string; name: string; notes: string; created_at: string; sample_count: number }>(
+        `/api/voiceprints/persons/${id}`,
+        body,
+      ),
+    deletePerson: (id: string) =>
+      httpDelete<{ success: boolean }>(`/api/voiceprints/persons/${id}`),
+    mergePersons: (dstId: string, srcId: string) =>
+      post<{ id: string; name: string; notes: string; created_at: string; sample_count: number }>(
+        `/api/voiceprints/persons/${dstId}/merge`,
+        { src_person_id: srcId },
+      ),
+    sampleClipUrl: (sampleId: string) => `/api/voiceprints/samples/${sampleId}/clip`,
+    renameTaskSpeaker: (
+      taskId: string,
+      oldName: string,
+      newName: string,
+      onConflict: "ask" | "merge" | "new" = "ask",
+    ) =>
+      patch<{
+        status: "renamed" | "merged" | "conflict"
+        person_id?: string
+        person_name?: string
+        conflict_person_id?: string
+        conflict_person_name?: string
+        conflict_sample_count?: number
+      }>(`/api/tasks/${taskId}/speakers`, { old_name: oldName, new_name: newName, on_conflict: onConflict }),
   },
 
   bilibili: {
