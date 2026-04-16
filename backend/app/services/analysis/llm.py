@@ -21,11 +21,13 @@ from app.services.analysis.prompts import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Local GGUF model singleton — loaded on first use, offloaded after task ends
+# Local HuggingFace model singleton — transformers + safetensors backend.
+# Loaded on first use, offloaded after task ends.
 # ---------------------------------------------------------------------------
-_local_llm: Any = None          # llama_cpp.Llama instance
-_local_llm_path: str = ""       # path that was used to load the model
-_local_llm_lock: asyncio.Lock | None = None   # serialise local calls
+_local_llm: Any = None           # dict: {"model": ..., "tokenizer": ...}
+_local_llm_path: str = ""        # path that was used to load the model
+_local_llm_lock: asyncio.Lock | None = None
+_local_llm_infer_lock: asyncio.Lock | None = None
 
 
 def _get_local_llm_lock() -> asyncio.Lock:
@@ -35,39 +37,89 @@ def _get_local_llm_lock() -> asyncio.Lock:
     return _local_llm_lock
 
 
-def _load_local_llm(model_path: str, n_gpu_layers: int, n_ctx: int, n_batch: int) -> Any:
-    """Load GGUF model via llama-cpp-python (blocking, call from thread pool)."""
+def _get_local_llm_infer_lock() -> asyncio.Lock:
+    global _local_llm_infer_lock
+    if _local_llm_infer_lock is None:
+        _local_llm_infer_lock = asyncio.Lock()
+    return _local_llm_infer_lock
+
+
+def _resolve_dtype(name: str):
+    """Map a string dtype to a torch dtype. Unknown/empty → bfloat16."""
+    import torch
+    mapping = {
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "half": torch.float16,
+        "float32": torch.float32,
+        "fp32": torch.float32,
+        "auto": "auto",
+    }
+    return mapping.get(name.lower() if name else "", torch.bfloat16)
+
+
+def _load_local_llm(model_path: str, device: str = "cuda", dtype: str = "bfloat16") -> Any:
+    """Load HF model from a local directory via transformers (blocking).
+
+    Supports both text-only and VL/multimodal checkpoints — we auto-pick the
+    right AutoModel class from the config's architectures field.
+    """
     try:
-        from llama_cpp import Llama
+        import torch
+        from transformers import AutoConfig, AutoTokenizer
     except ImportError as e:
         raise RuntimeError(
-            "llama-cpp-python is not installed. "
-            "Run: uv pip install llama-cpp-python --extra-index-url "
-            "https://abetlen.github.io/llama-cpp-python/whl/cu128"
+            "transformers/torch not installed. Sync the project environment first: "
+            "uv sync"
         ) from e
 
-    logger.info(f"Loading local GGUF model: {model_path} (n_gpu_layers={n_gpu_layers})")
-    return Llama(
-        model_path=model_path,
-        n_gpu_layers=n_gpu_layers,
-        n_ctx=n_ctx,
-        n_batch=n_batch,
-        verbose=False,
+    logger.info(f"Loading local HF model: {model_path} (device={device}, dtype={dtype})")
+
+    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    torch_dtype = _resolve_dtype(dtype)
+
+    # Decide model class. VL / image-text-to-text architectures expose
+    # `*ForConditionalGeneration`; plain text uses `*ForCausalLM`.
+    archs = getattr(config, "architectures", []) or []
+    is_vl = any("ConditionalGeneration" in a or "ImageTextToText" in a for a in archs)
+
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+
+    if is_vl:
+        try:
+            from transformers import AutoModelForImageTextToText
+            ModelCls = AutoModelForImageTextToText
+        except ImportError:
+            from transformers import AutoModelForCausalLM
+            ModelCls = AutoModelForCausalLM
+    else:
+        from transformers import AutoModelForCausalLM
+        ModelCls = AutoModelForCausalLM
+
+    device_map = device if device else "auto"
+    model = ModelCls.from_pretrained(
+        model_path,
+        torch_dtype=torch_dtype,
+        device_map=device_map,
+        trust_remote_code=True,
     )
+    model.eval()
+    logger.info(f"Local HF model loaded: {model.__class__.__name__} on {device}")
+    return {"model": model, "tokenizer": tokenizer, "is_vl": is_vl}
 
 
 def offload_local_llm() -> None:
-    """Release the local GGUF model and free VRAM. Safe to call multiple times."""
+    """Release the local HF model and free VRAM. Safe to call multiple times."""
     global _local_llm, _local_llm_path
     if _local_llm is not None:
-        logger.info("Offloading local GGUF model from VRAM")
-        try:
-            _local_llm.close()
-        except Exception:
-            pass
+        logger.info("Offloading local HF model from VRAM")
         _local_llm = None
         _local_llm_path = ""
         try:
+            import gc
+            gc.collect()
             import torch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -78,6 +130,10 @@ def offload_local_llm() -> None:
 class LLMService:
     def __init__(self):
         self._static_settings = get_settings()
+
+    def _effective_provider(self, provider_override: str = "") -> str:
+        rt = get_runtime_settings()
+        return provider_override or rt.llm_provider
 
     def _get_client_and_model(self, provider_override: str = ""):
         """Build an AsyncOpenAI client from runtime settings.
@@ -127,7 +183,7 @@ class LLMService:
         return client, model, self._static_settings.temperature
 
     async def _call_local(self, prompt: str) -> str:
-        """Call local GGUF model. Loads on first call; serialised via lock."""
+        """Call local HF model (transformers). Loads on first call; serialised via lock."""
         global _local_llm, _local_llm_path
         rt = get_runtime_settings()
         model_path = rt.local_llm_model_path
@@ -137,43 +193,62 @@ class LLMService:
             return "[Local LLM not configured]"
 
         loop = asyncio.get_running_loop()
-        lock = _get_local_llm_lock()
+        load_lock = _get_local_llm_lock()
+        infer_lock = _get_local_llm_infer_lock()
 
-        async with lock:
-            # Load or reload if path changed
+        async with load_lock:
             if _local_llm is None or _local_llm_path != model_path:
                 if _local_llm is not None:
                     offload_local_llm()
+                device = getattr(rt, "local_llm_device", "cuda") or "cuda"
+                dtype = getattr(rt, "local_llm_dtype", "bfloat16") or "bfloat16"
                 _local_llm = await loop.run_in_executor(
                     None,
                     _load_local_llm,
                     model_path,
-                    rt.local_llm_n_gpu_layers,
-                    rt.local_llm_n_ctx,
-                    rt.local_llm_n_batch,
+                    device,
+                    dtype,
                 )
                 _local_llm_path = model_path
-                logger.info(f"Local GGUF model loaded: {model_path}")
 
-            llm = _local_llm
+            state = _local_llm
             temperature = self._static_settings.temperature
+            max_new_tokens = int(getattr(rt, "local_llm_max_new_tokens", 4096) or 4096)
 
-        # Run inference in thread pool (CPU/GPU bound, must not block event loop)
         def _infer() -> str:
-            response = llm.create_chat_completion(
-                messages=[{"role": "user", "content": prompt}],
-                temperature=temperature,
-                max_tokens=4096,
-            )
-            return response["choices"][0]["message"]["content"] or ""
+            import torch
+            model = state["model"]
+            tokenizer = state["tokenizer"]
 
-        return await loop.run_in_executor(None, _infer)
+            messages = [{"role": "user", "content": prompt}]
+            text = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True,
+            )
+            inputs = tokenizer(text, return_tensors="pt").to(model.device)
+            input_len = inputs["input_ids"].shape[1]
+
+            do_sample = temperature > 0
+            gen_kwargs = {
+                "max_new_tokens": max_new_tokens,
+                "do_sample": do_sample,
+                "pad_token_id": tokenizer.eos_token_id,
+            }
+            if do_sample:
+                gen_kwargs["temperature"] = temperature
+
+            with torch.inference_mode():
+                out = model.generate(**inputs, **gen_kwargs)
+            new_tokens = out[0][input_len:]
+            return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+
+        async with infer_lock:
+            return await loop.run_in_executor(None, _infer)
 
     async def _call(self, prompt: str, *, max_retries: int = 3, provider_override: str = "") -> str:
         if provider_override == "local":
             rt = get_runtime_settings()
             if rt.local_llm_model_path:
-                logger.info("Calling local GGUF model (polish_provider override)")
+                logger.info("Calling local HF model (polish_provider override)")
                 return await self._call_local(prompt)
             logger.warning("polish_provider=local but local_llm_model_path is empty, falling back to llm_provider")
             provider_override = ""
@@ -183,9 +258,9 @@ class LLMService:
             logger.warning("LLM not configured - check API key and settings")
             return "[LLM not configured]"
 
-        # Local GGUF path — no retry loop needed (errors surface directly)
+        # Local HF path — no retry loop needed (errors surface directly)
         if result == "local":
-            logger.info("Calling local GGUF model")
+            logger.info("Calling local HF model")
             return await self._call_local(prompt)
 
         client, model, temperature = result
@@ -317,7 +392,7 @@ class LLMService:
             provider_override: If non-empty, use this provider instead of global llm_provider
         """
         # Local GGUF is single-threaded; serialise chunks
-        if provider_override == "local":
+        if self._effective_provider(provider_override) == "local":
             max_concurrency = 1
 
         segments = self._parse_srt(srt_content)
@@ -534,7 +609,8 @@ class LLMService:
 
         # --- Map phase: parallel ---
         logger.info(f"Mindmap map-reduce: {len(chapter_texts)} chapters")
-        semaphore = asyncio.Semaphore(8)
+        map_concurrency = 1 if self._effective_provider() == "local" else 8
+        semaphore = asyncio.Semaphore(map_concurrency)
 
         async def map_one(title: str, content: str) -> tuple[str, str]:
             async with semaphore:
@@ -585,7 +661,8 @@ class LLMService:
         global_context = self._build_global_context(metadata, [])
 
         logger.info(f"Mindmap auto map-reduce: {len(chapter_texts)} chunks")
-        semaphore = asyncio.Semaphore(8)
+        map_concurrency = 1 if self._effective_provider() == "local" else 8
+        semaphore = asyncio.Semaphore(map_concurrency)
 
         async def map_one(title: str, content: str) -> tuple[str, str]:
             async with semaphore:
@@ -621,7 +698,8 @@ class LLMService:
         logger.info(f"Mindmap reduce: {len(groups)} groups from {len(names)} chapters")
 
         # Reduce each group (can be parallel for small groups)
-        semaphore = asyncio.Semaphore(4)
+        reduce_concurrency = 1 if self._effective_provider() == "local" else 4
+        semaphore = asyncio.Semaphore(reduce_concurrency)
 
         async def reduce_one(label: str, batch_names: list[str]) -> str:
             async with semaphore:
