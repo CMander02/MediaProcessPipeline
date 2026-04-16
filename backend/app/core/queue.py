@@ -19,6 +19,10 @@ from uuid import UUID
 
 from app.core.database import get_task_store
 from app.core.events import TaskEvent, get_event_bus
+from app.core.logging_setup import (
+    set_task_context, set_worker_context, reset_context,
+    task_id_var, worker_var,
+)
 from app.models.task import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -75,8 +79,12 @@ class TaskQueue:
         bus = get_event_bus()
         store.update_status(task_id, TaskStatus.QUEUED)
         await bus.publish(TaskEvent(task_id, "queued"))
-        await self._download_queue.put(task_id)
-        logger.info(f"Task {task_id} → download queue (depth: {self._download_queue.qsize()})")
+        t_token = set_task_context(str(task_id))
+        try:
+            await self._download_queue.put(task_id)
+            logger.info(f"queued → download (depth={self._download_queue.qsize()})")
+        finally:
+            reset_context(t_token, task_id_var)
 
     async def cancel(self, task_id: UUID) -> bool:
         store = get_task_store()
@@ -88,7 +96,11 @@ class TaskQueue:
         store.update_status(task_id, TaskStatus.CANCELLED, completed_at=datetime.now())
         bus = get_event_bus()
         await bus.publish(TaskEvent(task_id, "cancelled"))
-        logger.info(f"Task {task_id} cancelled")
+        t_token = set_task_context(str(task_id))
+        try:
+            logger.info("task cancelled")
+        finally:
+            reset_context(t_token, task_id_var)
         return True
 
     # ------------------------------------------------------------------
@@ -119,20 +131,28 @@ class TaskQueue:
                 # fast-path task interrupted during video download — send to download
                 # queue to re-download the video, not GPU queue.
                 fast_path_done = {PipelineStep.TRANSCRIBE, PipelineStep.ANALYZE, PipelineStep.POLISH}
-                if fast_path_done.issubset(completed) and PipelineStep.ARCHIVE not in completed:
-                    await self._download_queue.put(task.id)
-                    logger.info(f"Restored fast-path task {task.id} → download queue (video re-download)")
-                else:
-                    await self._gpu_queue.put(task.id)
-                    logger.info(f"Restored task {task.id} → gpu queue (download already done)")
+                t_token = set_task_context(str(task.id))
+                try:
+                    if fast_path_done.issubset(completed) and PipelineStep.ARCHIVE not in completed:
+                        await self._download_queue.put(task.id)
+                        logger.info("restored (fast-path) → download queue for re-download")
+                    else:
+                        await self._gpu_queue.put(task.id)
+                        logger.info("restored → gpu queue (download already done)")
+                finally:
+                    reset_context(t_token, task_id_var)
             else:
-                await self._download_queue.put(task.id)
-                logger.info(f"Restored task {task.id} → download queue")
+                t_token = set_task_context(str(task.id))
+                try:
+                    await self._download_queue.put(task.id)
+                    logger.info("restored → download queue")
+                finally:
+                    reset_context(t_token, task_id_var)
 
         # Start download workers
         for i in range(n_dl):
             t = asyncio.create_task(
-                self._download_worker(), name=f"dl-worker-{i}"
+                self._download_worker(worker_index=i + 1), name=f"dl-worker-{i + 1}"
             )
             self._download_worker_tasks.append(t)
 
@@ -167,61 +187,74 @@ class TaskQueue:
     # Workers
     # ------------------------------------------------------------------
 
-    async def _download_worker(self) -> None:
+    async def _download_worker(self, worker_index: int = 0) -> None:
         """Pull tasks, run DOWNLOAD step, then hand off to GPU queue."""
-        while self._running:
-            try:
-                task_id = await asyncio.wait_for(self._download_queue.get(), timeout=1.0)
-            except asyncio.TimeoutError:
-                continue
-            except asyncio.CancelledError:
-                break
+        worker_name = f"dl-{worker_index}"
+        w_token = set_worker_context(worker_name)
+        try:
+            while self._running:
+                try:
+                    task_id = await asyncio.wait_for(self._download_queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+                except asyncio.CancelledError:
+                    break
 
-            store = get_task_store()
-            task = store.get(task_id)
-            if not task or task.status == TaskStatus.CANCELLED:
-                self._download_queue.task_done()
-                continue
+                store = get_task_store()
+                task = store.get(task_id)
+                if not task or task.status == TaskStatus.CANCELLED:
+                    self._download_queue.task_done()
+                    continue
 
-            self._active_download_ids.add(task_id)
-            logger.info(f"Download worker: starting task {task_id}")
+                self._active_download_ids.add(task_id)
+                t_token = set_task_context(str(task_id))
+                logger.info("Download worker picked up task")
 
-            try:
-                if self._pipeline_fn:
-                    await self._pipeline_fn(task_id, True)  # download-worker call
-            except Exception:
-                logger.exception(f"Download step failed for task {task_id}")
-            finally:
-                self._active_download_ids.discard(task_id)
-                self._download_queue.task_done()
+                try:
+                    if self._pipeline_fn:
+                        await self._pipeline_fn(task_id, True)  # download-worker call
+                except Exception:
+                    logger.exception("Download step failed")
+                finally:
+                    reset_context(t_token, task_id_var)
+                    self._active_download_ids.discard(task_id)
+                    self._download_queue.task_done()
+        finally:
+            reset_context(w_token, worker_var)
 
     async def _gpu_worker(self) -> None:
         """Pull downloaded tasks and run GPU + LLM steps sequentially."""
-        while self._running:
-            try:
-                task_id = await asyncio.wait_for(self._gpu_queue.get(), timeout=1.0)
-            except asyncio.TimeoutError:
-                continue
-            except asyncio.CancelledError:
-                break
+        w_token = set_worker_context("gpu-1")
+        try:
+            while self._running:
+                try:
+                    task_id = await asyncio.wait_for(self._gpu_queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+                except asyncio.CancelledError:
+                    break
 
-            store = get_task_store()
-            task = store.get(task_id)
-            if not task or task.status == TaskStatus.CANCELLED:
-                self._gpu_queue.task_done()
-                continue
+                store = get_task_store()
+                task = store.get(task_id)
+                if not task or task.status == TaskStatus.CANCELLED:
+                    self._gpu_queue.task_done()
+                    continue
 
-            self._active_gpu_id = task_id
-            logger.info(f"GPU worker: starting task {task_id}")
+                self._active_gpu_id = task_id
+                t_token = set_task_context(str(task_id))
+                logger.info("GPU worker picked up task")
 
-            try:
-                if self._pipeline_fn:
-                    await self._pipeline_fn(task_id, False)  # gpu-worker call
-            except Exception:
-                logger.exception(f"GPU/LLM steps failed for task {task_id}")
-            finally:
-                self._active_gpu_id = None
-                self._gpu_queue.task_done()
+                try:
+                    if self._pipeline_fn:
+                        await self._pipeline_fn(task_id, False)  # gpu-worker call
+                except Exception:
+                    logger.exception("GPU/LLM steps failed")
+                finally:
+                    reset_context(t_token, task_id_var)
+                    self._active_gpu_id = None
+                    self._gpu_queue.task_done()
+        finally:
+            reset_context(w_token, worker_var)
 
     # ------------------------------------------------------------------
     # Called by pipeline to hand a task from download → GPU queue
@@ -230,7 +263,7 @@ class TaskQueue:
     async def advance_to_gpu(self, task_id: UUID) -> None:
         """Move a task from download stage to the GPU queue."""
         await self._gpu_queue.put(task_id)
-        logger.info(f"Task {task_id} → gpu queue (depth: {self._gpu_queue.qsize()})")
+        logger.info(f"→ gpu queue (depth={self._gpu_queue.qsize()})")
 
     # ------------------------------------------------------------------
     # Inspection

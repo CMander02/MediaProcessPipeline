@@ -1,6 +1,5 @@
 import logging
 import sys
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -9,12 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 
-from app.api.routes import tasks, pipeline, filesystem
+from app.api.routes import tasks, pipeline, filesystem, voiceprints
 from app.api.routes import settings as settings_router
 from app.core.settings import get_runtime_settings, SETTINGS_FILE
 from app.core.config import get_settings
 from app.core.database import init_db, close_db
 from app.core.events import get_event_bus
+from app.core.logging_setup import setup_logging
 from app.core.pipeline import process_task
 from app.core.queue import get_task_queue
 
@@ -23,50 +23,12 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-# Unified log format with UTC timestamps
-_log_fmt = "%(asctime)s %(levelname)-8s [%(name)s] %(message)s"
-_log_datefmt = "%Y-%m-%dT%H:%M:%SZ"
-logging.Formatter.converter = time.gmtime
-
-_formatter = logging.Formatter(_log_fmt, datefmt=_log_datefmt)
-
-_handler = logging.StreamHandler(sys.stderr)
-_handler.setFormatter(_formatter)
-logging.root.setLevel(logging.INFO)
-logging.root.handlers.clear()
-logging.root.addHandler(_handler)
-
-# File logging — one log file per daemon launch, named by start time
 _log_dir = Path(__file__).resolve().parent.parent.parent / "logs"
-_log_dir.mkdir(exist_ok=True)
-_log_file = _log_dir / time.strftime("mpp_%Y%m%d_%H%M%S.log", time.gmtime())
-_file_handler = logging.FileHandler(_log_file, encoding="utf-8")
-_file_handler.setFormatter(_formatter)
-logging.root.addHandler(_file_handler)
+_log_file = setup_logging(_log_dir)
 
 logger = logging.getLogger(__name__)
-
-# Suppress noisy third-party loggers
-for _noisy in ("httpx", "httpcore", "openai", "uvicorn.access"):
-    logging.getLogger(_noisy).setLevel(logging.WARNING)
-
-# Suppress Windows ProactorEventLoop ConnectionResetError spam
-# (harmless — triggered when browser closes SSE connections)
-# The asyncio logger emits the exception via exc_info rather than the
-# formatted message, so we must inspect exc_info[0] to catch it.
-if sys.platform == "win32":
-    def _filter_connection_reset(record: logging.LogRecord) -> bool:
-        exc_info = getattr(record, "exc_info", None)
-        if exc_info and exc_info[0] is ConnectionResetError:
-            return False
-        # Fallback: also check the formatted message for safety
-        try:
-            msg = record.getMessage()
-        except Exception:
-            msg = str(getattr(record, "msg", ""))
-        return "ConnectionResetError" not in msg
-
-    logging.getLogger("asyncio").addFilter(_filter_connection_reset)
+if _log_file:
+    logger.info(f"Logging to {_log_file}")
 
 config = get_settings()
 
@@ -155,6 +117,7 @@ app.include_router(tasks.router, prefix="/api")
 app.include_router(pipeline.router, prefix="/api")
 app.include_router(settings_router.router, prefix="/api")
 app.include_router(filesystem.router, prefix="/api")
+app.include_router(voiceprints.router, prefix="/api")
 
 
 @app.get("/health")

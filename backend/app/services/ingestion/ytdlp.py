@@ -4,6 +4,8 @@ import hashlib
 import logging
 import re
 import subprocess
+import threading
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,57 @@ _BBDOWN_EXE = _BBDOWN_DIR / "BBDown.exe"
 
 def _is_bilibili_url(url: str) -> bool:
     return bool(re.search(r'bilibili\.com|b23\.tv|BV[0-9A-Za-z]+', url))
+
+
+def _run_subprocess_streamed(
+    cmd: list[str],
+    cwd: str | None,
+    timeout: int,
+    log_prefix: str,
+    tail: int = 20,
+) -> tuple[int, list[str]]:
+    """Run a subprocess and relay stdout line-by-line to logger.
+
+    Each non-empty line becomes its own INFO log record, so it gets a real
+    timestamp and can be correlated with main-pipeline events. Keeps the last
+    `tail` lines around for error reporting.
+
+    Returns (returncode, tail_lines).
+    """
+    # stdout=PIPE, stderr=STDOUT so we get a single ordered stream
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,  # line-buffered
+    )
+    buf: deque[str] = deque(maxlen=tail)
+
+    def _reader():
+        assert proc.stdout is not None
+        for raw in iter(proc.stdout.readline, b""):
+            # BBDown outputs GBK on Windows; decode with fallback
+            try:
+                line = raw.decode("utf-8").rstrip()
+            except UnicodeDecodeError:
+                line = raw.decode("gbk", errors="replace").rstrip()
+            if not line:
+                continue
+            buf.append(line)
+            logger.info(f"{log_prefix} | {line}")
+        proc.stdout.close()
+
+    t = threading.Thread(target=_reader, daemon=True)
+    t.start()
+    try:
+        rc = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        t.join(timeout=2)
+        raise RuntimeError(f"{log_prefix} timed out after {timeout}s")
+    t.join(timeout=2)
+    return rc, list(buf)
 
 
 class YtdlpService:
@@ -188,23 +241,18 @@ class YtdlpService:
             "-e", "hevc,avc,av1",
             "-q", "1080P 高码率, 1080P 高清, 720P 高清",
         ]
-        try:
-            proc = subprocess.run(
-                cmd, capture_output=True,
-                cwd=str(_BBDOWN_DIR),  # so BBDown.data is found
-                timeout=600,  # 10 min — prevents indefinite hang
-            )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("BBDown download timed out after 10 minutes")
-        # BBDown outputs GBK on Windows — decode with fallback
-        stdout = proc.stdout.decode("utf-8", errors="replace") if proc.stdout else ""
-        stderr = proc.stderr.decode("utf-8", errors="replace") if proc.stderr else ""
-        if proc.returncode != 0:
-            logger.error(f"BBDown stderr: {stderr[:500]}")
-            logger.error(f"BBDown stdout: {stdout[-500:]}")
+        # Stream BBDown stdout line by line so each line gets its own timestamp
+        # (instead of one big blob minutes later).
+        rc, tail_lines = _run_subprocess_streamed(
+            cmd,
+            cwd=str(_BBDOWN_DIR),
+            timeout=600,
+            log_prefix="bbdown",
+            tail=20,
+        )
+        if rc != 0:
+            logger.error(f"BBDown exited with code {rc}; last lines:\n{chr(10).join(tail_lines)}")
             raise RuntimeError("BBDown download failed — check server logs for details")
-
-        logger.info(f"BBDown stdout: {stdout[-300:]}")
 
         # Find the downloaded mp4
         mp4_files = sorted(output_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
