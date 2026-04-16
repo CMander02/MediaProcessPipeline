@@ -802,16 +802,13 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "polish_provider",
     ],
     "asr": [
-        "asr_backend",
         "qwen3_asr_model_path", "qwen3_aligner_model_path",
         "qwen3_enable_timestamps", "qwen3_batch_size", "qwen3_max_new_tokens", "qwen3_device",
-        "whisper_model", "whisper_model_path", "whisper_device",
-        "whisper_compute_type", "whisper_batch_size", "enable_alignment",
     ],
     "diarization": [
         "enable_diarization", "hf_token",
         "pyannote_model_path", "pyannote_segmentation_path",
-        "alignment_model_zh", "alignment_model_en", "diarization_batch_size",
+        "diarization_batch_size",
     ],
     "subtitle": [
         "prefer_platform_subtitles", "subtitle_languages", "force_asr",
@@ -824,9 +821,8 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
     "paths": [
         "data_root",
         "qwen3_asr_model_path", "qwen3_aligner_model_path",
-        "whisper_model_path", "uvr_model_dir",
+        "uvr_model_dir",
         "pyannote_model_path", "pyannote_segmentation_path",
-        "alignment_model_zh", "alignment_model_en",
         "local_llm_model_path",
     ],
     "security": [
@@ -1059,13 +1055,7 @@ def doctor():
         check("LLM", True, f"provider={provider}")
 
     # ASR model
-    asr_backend = settings.get("asr_backend", "")
-    if asr_backend == "qwen3":
-        mp = settings.get("qwen3_asr_model_path", "")
-        mp_ok = pathlib.Path(mp).exists() if mp else False
-        check("ASR model (qwen3)", mp_ok or not mp,
-              mp if mp_ok else ("未配置路径 (将从 HF 下载)" if not mp else f"路径不存在: {mp}"))
-    else:
-        mp = settings.get("whisper_model_path", "")
-        check("ASR model (whisperx)", not mp or pathlib.Path(mp).exists(),
-              mp if mp else f"使用在线模型 {settings.get('whisper_model', '')}")
+    mp = settings.get("qwen3_asr_model_path", "")
+    mp_ok = pathlib.Path(mp).exists() if mp else False
+    check("ASR model (qwen3)", mp_ok or not mp,
+          mp if mp_ok else ("未配置路径 (将从 HF 下载)" if not mp else f"路径不存在: {mp}"))

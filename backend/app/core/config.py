@@ -58,22 +58,11 @@ class Settings(BaseSettings):
     temperature: float = 0.1
 
     # =========================================================================
-    # WhisperX settings
+    # Diarization settings
     # =========================================================================
     hf_token: str = ""
-    whisper_model: str = "large-v3-turbo"
-    whisper_model_path: str = ""  # 本地 Whisper 模型路径
-    faster_whisper_model_path: str = ""  # 本地 faster-whisper 模型路径
-    compute_type: str = "float16"
-    device: str = "cuda"
-
-    # Pyannote/Diarization settings
     pyannote_model_path: str = ""
     pyannote_segmentation_path: str = ""
-
-    # wav2vec2 alignment model paths (per language)
-    alignment_model_zh: str = ""
-    alignment_model_en: str = ""
 
     # =========================================================================
     # UVR settings

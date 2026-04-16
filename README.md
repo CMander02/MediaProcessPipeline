@@ -8,7 +8,7 @@
 - **本地文件处理**: 支持直接处理本地音视频文件
 - **平台字幕优先**: 自动下载平台字幕，LLM 补充说话人标注和标点
 - **人声分离**: UVR5 (audio-separator) 分离人声和背景音乐
-- **语音转录**: WhisperX / Qwen3-ASR，支持说话人分离
+- **语音转录**: Qwen3-ASR，支持说话人分离
 - **智能润色**: LLM 滑动窗口润色，修正错字、添加标点
 - **内容分析**: 自动提取关键信息、生成摘要和思维导图（支持 map-reduce 长文本）
 - **桌面应用**: Electron 打包，双击即用
@@ -26,7 +26,7 @@ MediaProcessPipeline/
 │   │   └── services/           # 业务逻辑
 │   │       ├── ingestion/      # yt-dlp 下载
 │   │       ├── preprocessing/  # UVR5 人声分离, VAD 切分
-│   │       ├── recognition/    # WhisperX / Qwen3-ASR 转录
+│   │       ├── recognition/    # Qwen3-ASR 转录
 │   │       ├── analysis/       # LLM 润色/摘要/思维导图
 │   │       └── archiving/      # 结果归档
 │   └── run.py
@@ -56,8 +56,8 @@ MediaProcessPipeline/
 git clone <repo-url>
 cd MediaProcessPipeline
 
-# 后端依赖
-cd backend && uv sync && cd ..
+# Python 依赖（默认即包含下载 / UVR / ASR 运行链路）
+uv sync
 
 # 前端依赖 + 构建
 cd web && npm install && npm run build && cd ..
@@ -74,6 +74,12 @@ cd electron && npm install && npm start
 或打包后双击 `MPP.exe`（放在项目根目录）。
 
 **方式 2: 后端 + 浏览器**
+
+```bash
+start.bat                          # 启动后端并自动打开浏览器
+```
+
+或手动运行：
 
 ```bash
 cd backend
@@ -132,7 +138,7 @@ cd web && npm run dev              # :5173
 
 1. **下载/导入** - 从 URL 下载或导入本地文件，自动尝试下载平台字幕
 2. **人声分离** - UVR5 分离人声（有平台字幕时跳过）
-3. **语音转录** - WhisperX / Qwen3-ASR 转录（有平台字幕时由 LLM 处理）
+3. **语音转录** - Qwen3-ASR 转录（有平台字幕时由 LLM 处理）
 4. **内容分析** - LLM 提取元数据、关键词、主题
 5. **文本润色** - LLM 滑动窗口修正转录错误、生成摘要和思维导图
 6. **归档输出** - 保存结构化文件到 `data/{title}/`
@@ -154,7 +160,7 @@ cd web && npm run dev              # :5173
 在前端 Settings 页面或 `data/settings.json` 中配置：
 
 - **LLM**: Provider (OpenAI / Anthropic / DeepSeek 等 OpenAI 兼容), 模型, API 密钥
-- **ASR**: 后端选择 (WhisperX / Qwen3-ASR), 模型大小, 语言, 设备
+- **ASR**: Qwen3-ASR 模型路径、对齐器路径、设备
 - **UVR**: 模型选择, 模型目录
 - **路径**: 数据目录
 
@@ -163,7 +169,7 @@ cd web && npm run dev              # :5173
 - **Backend**: Python 3.11+, FastAPI, SQLite, uv
 - **Frontend**: React 19, Vite, shadcn/ui, Tailwind CSS 4
 - **Desktop**: Electron
-- **AI**: WhisperX, Qwen3-ASR, UVR5 (audio-separator), LiteLLM
+- **AI**: Qwen3-ASR, pyannote-audio, UVR5 (audio-separator), LiteLLM
 - **下载**: yt-dlp, FFmpeg
 
 ## 已知问题 / 待办

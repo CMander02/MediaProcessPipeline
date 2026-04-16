@@ -17,6 +17,18 @@ dependencies = [
     "typer>=0.15.0",
     "rich>=13.0.0",
     "youtube-transcript-api>=1.2.4",
+    "sqlite-vec>=0.1.6",
+    # Media pipeline runtime dependencies
+    "yt-dlp>=2024.0.0",
+    # PyTorch GPU - CUDA 12.8 (cu128 索引)
+    "torch~=2.8.0",
+    "torchaudio~=2.8.0",
+    # 音频处理 (UVR5 人声分离)
+    "audio-separator[gpu]>=0.41.0",
+    # Qwen3-ASR (支持本地模型)
+    "qwen-asr>=0.0.6",
+    # 说话人分离 / 声纹
+    "pyannote-audio>=3.4.0",
 ]
 
 [project.scripts]
@@ -27,23 +39,6 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.8.0",
-]
-# Local GGUF inference via llama-cpp-python (CUDA build)
-# Install with: uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu128
-local-llm = [
-    "llama-cpp-python>=0.3.0",
-]
-media = [
-    "yt-dlp>=2024.0.0",
-    # PyTorch GPU - CUDA 12.8 (cu128 索引)
-    "torch~=2.8.0",
-    "torchaudio~=2.8.0",
-    # 音频处理 (UVR5 人声分离)
-    "audio-separator[gpu]>=0.41.0",
-    # 语音识别 (whisperx 依赖 pyannote-audio)
-    "whisperx>=3.7.0",
-    # Qwen3-ASR (可选, 支持本地模型)
-    "qwen-asr>=0.0.6",
 ]
 
 [tool.setuptools.packages.find]
@@ -61,7 +56,7 @@ select = ["E", "F", "I", "W"]
 # UV 配置：强制使用 PyTorch CUDA 12.8 索引
 # ============================================================================
 # 4090 + CUDA 13.0 驱动向下兼容 CUDA 12.8
-# torch~=2.8.0 满足 whisperx 和 pyannote-audio 要求
+# torch~=2.8.0 满足 qwen-asr 和 pyannote-audio 要求
 # ============================================================================
 
 [tool.uv.sources]
@@ -73,15 +68,3 @@ name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
-# ============================================================================
-# Force onnxruntime-gpu over onnxruntime
-# ============================================================================
-# faster-whisper pulls onnxruntime (CPU), which conflicts with onnxruntime-gpu
-# pulled by audio-separator[gpu]. Both install the same `onnxruntime/` Python
-# package, and the CPU variant wins, disabling CUDAExecutionProvider.
-# Override forces uv to drop the CPU variant and use onnxruntime-gpu for both.
-# ============================================================================
-[tool.uv]
-override-dependencies = [
-    "onnxruntime ; sys_platform == 'never'",
-]
