@@ -27,19 +27,25 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
     if (mediaFilter === "audio") list = list.filter((a) => !a.has_video && a.has_audio)
     if (search.trim()) {
       const q = search.toLowerCase()
-      list = list.filter(
-        (a) =>
-          a.title.toLowerCase().includes(q) ||
-          a.analysis?.content_type?.toLowerCase().includes(q) ||
-          a.analysis?.main_topics?.some((t) => t.toLowerCase().includes(q)) ||
-          a.analysis?.keywords?.some((k) => k.toLowerCase().includes(q)),
-      )
+      list = list.filter((a) => a.title.toLowerCase().includes(q))
     }
-    return list
+    // Surface in-progress tasks at the top so the user sees their just-submitted work first
+    return [...list].sort((a, b) => {
+      if (!!a.processing !== !!b.processing) return a.processing ? -1 : 1
+      return 0
+    })
   }, [archives, search, mediaFilter])
 
   // Reset page when filters change
   useEffect(() => { setPage(1) }, [search, mediaFilter])
+
+  // While any task is processing, poll for updates so the queue card progress stays fresh
+  const anyProcessing = archives.some((a) => a.processing)
+  useEffect(() => {
+    if (!anyProcessing) return
+    const id = window.setInterval(() => { refresh() }, 3000)
+    return () => window.clearInterval(id)
+  }, [anyProcessing, refresh])
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const safePage = Math.min(page, totalPages)

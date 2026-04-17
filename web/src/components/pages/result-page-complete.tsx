@@ -31,10 +31,16 @@ import { SpeakerPanel } from "@/components/result/speaker-panel"
 import { TranscriptTab } from "@/components/result/transcript-tab"
 import { SummaryTab } from "@/components/result/summary-tab"
 import { MindmapViewer } from "@/components/result/mindmap-viewer"
-import { AnalysisBadges } from "@/components/result/analysis-badges"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { ArrowLeft01Icon, Tick02Icon, Copy01Icon, Download01Icon, Loading03Icon, MoreHorizontalIcon, PencilEdit01Icon, Delete01Icon, Cancel01Icon, Gps01Icon } from "@hugeicons/core-free-icons"
+import { ArrowLeft01Icon, Tick02Icon, Copy01Icon, Download01Icon, Loading03Icon, MoreHorizontalIcon, PencilEdit01Icon, Delete01Icon, Link01Icon, Gps01Icon } from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
+
+interface SubtitleTrackInfo {
+  lang: string
+  type: string
+  filename: string
+  polished: boolean
+}
 
 interface Props {
   archivePath: string
@@ -52,8 +58,12 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
   const [isPolished, setIsPolished] = useState(false)
   const [mindmap, setMindmap] = useState<string | null>(null)
   const [mindmapFit, setMindmapFit] = useState<(() => void) | null>(null)
-  const [analysis, setAnalysis] = useState<ArchiveItem["analysis"]>({})
   const [subtitles, setSubtitles] = useState<Subtitle[]>([])
+  const [subtitleTracks, setSubtitleTracks] = useState<SubtitleTrackInfo[]>([])
+  const [activeTrackLang, setActiveTrackLang] = useState<string | null>(null)
+  const [polishedLang, setPolishedLang] = useState<string | null>(null)
+  const [subtitleSourceType, setSubtitleSourceType] = useState<"platform" | "asr" | null>(null)
+  const [sourceUrl, setSourceUrl] = useState<string | null>(null)
 
   // Pipeline progress state
   const [taskStatus, setTaskStatus] = useState<string | null>(null)
@@ -152,7 +162,16 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
     const found = archives.find((a) => a.path === archivePath)
     if (found) {
       setArchive(found)
-      setAnalysis(found.analysis ?? {})
+      const meta = (found.metadata || {}) as Record<string, unknown>
+      setSourceUrl((meta.source_url as string | null) ?? null)
+      const extra = (meta.extra || {}) as Record<string, unknown>
+      const tracks = (extra.subtitle_tracks as SubtitleTrackInfo[] | undefined) ?? []
+      setSubtitleTracks(tracks)
+      const polished = tracks.find((t) => t.polished)
+      setPolishedLang(polished?.lang ?? null)
+      if (polished && !activeTrackLang) setActiveTrackLang(polished.lang)
+      if (tracks.some((t) => t.type === "asr")) setSubtitleSourceType("asr")
+      else if (tracks.length > 0) setSubtitleSourceType("platform")
       // Determine initial task status from archive
       if (found.processing) {
         setTaskStatus("processing")
@@ -195,24 +214,21 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
     loadFile("summary.md").then((c) => { if (c) setSummary(c) })
     // Mindmap
     loadFile("mindmap.md").then((c) => { if (c) setMindmap(c) })
-    // Analysis
-    loadFile("analysis.json").then((c) => {
-      if (c) {
-        try { setAnalysis(JSON.parse(c)) } catch { /* ignore */ }
-      }
-    })
     // Transcript — prefer polished, fallback to raw
     loadFile("transcript_polished.srt").then((polished) => {
       if (polished) {
         setTranscript(polished)
         setIsPolished(true)
         setSubtitles(parseSRT(polished))
+        setSubtitleSourceType((prev) => prev ?? "platform")
+        setActiveTrackLang((prev) => prev ?? null)
       } else {
         loadFile("transcript.srt").then((raw) => {
           if (raw) {
             setTranscript(raw)
             setIsPolished(false)
             setSubtitles(parseSRT(raw))
+            setSubtitleSourceType((prev) => prev ?? "asr")
           }
         })
       }
@@ -259,12 +275,6 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
         loadFile("summary.md").then((c) => { if (c) setSummary(c) })
       } else if (file === "mindmap.md") {
         loadFile("mindmap.md").then((c) => { if (c) setMindmap(c) })
-      } else if (file === "analysis.json") {
-        loadFile("analysis.json").then((c) => {
-          if (c) {
-            try { setAnalysis(JSON.parse(c)) } catch { /* ignore */ }
-          }
-        })
       } else if (file === "metadata.json") {
         // Refresh archive list to pick up updated metadata
         refreshArchives()
@@ -280,6 +290,27 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
       setTaskError(data.error ?? "处理失败")
     },
   })
+
+  const selectTrack = useCallback(async (lang: string) => {
+    const track = subtitleTracks.find((t) => t.lang === lang)
+    if (!track) return
+    setActiveTrackLang(lang)
+    if (track.polished) {
+      const c = await loadFile("transcript_polished.srt")
+      if (c) {
+        setTranscript(c)
+        setIsPolished(true)
+        setSubtitles(parseSRT(c))
+      }
+    } else {
+      const c = await loadFile(track.filename)
+      if (c) {
+        setTranscript(c)
+        setIsPolished(false)
+        setSubtitles(parseSRT(c))
+      }
+    }
+  }, [subtitleTracks, loadFile])
 
   const mediaType = archive?.has_video ? "video" : "audio"
   const [displayTitle, setDisplayTitle] = useState<string>("")
@@ -367,14 +398,42 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
             }}
           />
         ) : (
-          <button
-            className="flex-1 text-sm font-medium truncate text-left hover:text-primary transition-colors group flex items-center gap-1 min-w-0"
-            onClick={startEditTitle}
-            title="点击编辑标题"
-          >
-            <span className="truncate">{displayTitle}</span>
-            <HugeiconsIcon icon={PencilEdit01Icon} className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-50 transition-opacity" />
-          </button>
+          <div className="flex-1 flex items-center gap-1.5 min-w-0">
+            <button
+              className="text-sm font-medium truncate text-left hover:text-primary transition-colors group flex items-center gap-1 min-w-0"
+              onClick={startEditTitle}
+              title="点击编辑标题"
+            >
+              <span className="truncate">{displayTitle}</span>
+              <HugeiconsIcon icon={PencilEdit01Icon} className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-50 transition-opacity" />
+            </button>
+            {sourceUrl && /^https?:\/\//i.test(sourceUrl) && (
+              <a
+                href={sourceUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="shrink-0 p-1 rounded text-muted-foreground hover:text-primary hover:bg-muted transition-colors"
+                title="打开原始链接"
+              >
+                <HugeiconsIcon icon={Link01Icon} className="h-3.5 w-3.5" />
+              </a>
+            )}
+            {subtitleSourceType && (
+              <span
+                className={cn(
+                  "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                  subtitleSourceType === "platform"
+                    ? "bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                    : "bg-violet-500/10 text-violet-700 dark:text-violet-300",
+                )}
+                title={subtitleSourceType === "platform" ? "字幕来自平台" : "字幕由 ASR 生成"}
+              >
+                {subtitleSourceType === "platform"
+                  ? (isPolished ? "Platform+润色" : "Platform")
+                  : (isPolished ? "ASR+润色" : "ASR")}
+              </span>
+            )}
+          </div>
         )}
         {isProcessing && (
           <span className="text-xs text-blue-600 flex items-center gap-1">
@@ -492,7 +551,6 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
                   onRenameSpeaker={handleRenameSpeaker}
                 />
               )}
-              <AnalysisBadges analysis={analysis} />
             </div>
           </ResizablePanel>
 
@@ -561,6 +619,30 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
 
                 <TabsContent value="transcript" className="mt-3 relative flex-1">
                   <div className="absolute inset-0 rounded-md border flex flex-col">
+                    {subtitleTracks.length > 1 && (
+                      <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b bg-muted/20 overflow-x-auto">
+                        <span className="text-[10px] text-muted-foreground shrink-0">语言：</span>
+                        {subtitleTracks.map((t) => {
+                          const active = (activeTrackLang ?? polishedLang) === t.lang
+                          return (
+                            <button
+                              key={t.lang}
+                              onClick={() => selectTrack(t.lang)}
+                              className={cn(
+                                "shrink-0 rounded px-2 py-0.5 text-[11px] transition-colors",
+                                active
+                                  ? "bg-primary text-primary-foreground"
+                                  : "bg-muted hover:bg-muted/70 text-foreground",
+                              )}
+                              title={t.polished ? "已润色" : "原始字幕"}
+                            >
+                              {t.lang}
+                              {t.polished && <span className="ml-1 text-[9px] opacity-80">✓</span>}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
                     {subtitles.length > 0 ? (
                       <TranscriptTab
                         subtitles={subtitles}
@@ -568,7 +650,11 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
                         autoScroll={autoScroll}
                         onSegmentClick={(sub) => seekTo(sub.startTime)}
                         onManualScroll={onManualScroll}
-                        srtPath={archivePath + sep + (isPolished ? "transcript_polished.srt" : "transcript.srt")}
+                        srtPath={archivePath + sep + (
+                          activeTrackLang && !subtitleTracks.find((t) => t.lang === activeTrackLang)?.polished
+                            ? `transcript.${activeTrackLang}.srt`
+                            : (isPolished ? "transcript_polished.srt" : "transcript.srt")
+                        )}
                         onSubtitlesChange={setSubtitles}
                       />
                     ) : isProcessing ? (

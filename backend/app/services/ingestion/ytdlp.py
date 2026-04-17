@@ -25,6 +25,23 @@ def _is_bilibili_url(url: str) -> bool:
     return bool(re.search(r'bilibili\.com|b23\.tv|BV[0-9A-Za-z]+', url))
 
 
+def _bili_json_to_srt(body: list[dict]) -> str:
+    """Convert Bilibili player/v2 subtitle JSON body to SRT text."""
+    def _fmt(t: float) -> str:
+        if t < 0:
+            t = 0
+        h = int(t // 3600); m = int((t % 3600) // 60)
+        s = t - h * 3600 - m * 60
+        return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
+    out: list[str] = []
+    for i, cue in enumerate(body, 1):
+        out.append(str(i))
+        out.append(f"{_fmt(float(cue.get('from') or 0))} --> {_fmt(float(cue.get('to') or 0))}")
+        out.append(str(cue.get("content") or ""))
+        out.append("")
+    return "\n".join(out)
+
+
 def _run_subprocess_streamed(
     cmd: list[str],
     cwd: str | None,
@@ -286,57 +303,145 @@ class YtdlpService:
         }
 
     def _download_bilibili_subtitle(self, url: str, output_dir: Path) -> dict[str, Any]:
-        """Download Bilibili AI subtitle via BBDown."""
+        """Download ALL usable Bilibili subtitle tracks via the player/v2 API.
+
+        Uses BBDown's logged-in cookie (SESSDATA) to authenticate. Downloads
+        every track that passes coverage validation; the pipeline later picks
+        which one to polish based on LLM-detected video language.
+
+        Returns:
+            {
+                "tracks": [{"path": str, "lang": str, "format": "srt", "type": "cc"|"ai"}, ...],
+                # Back-compat single-track fields (first good track):
+                "subtitle_path": str|None,
+                "subtitle_lang": str|None,
+                "subtitle_format": "srt"|None,
+            }
+        """
+        import json
+        import urllib.request
+
+        empty = {"tracks": [], "subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
+
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
+        bv_match = re.search(r'(BV[0-9A-Za-z]+)', url)
+        if not bv_match:
+            logger.warning(f"Cannot extract BV id from URL: {url}")
+            return empty
+        bvid = bv_match.group(1)
+
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        cmd = [
-            str(_BBDOWN_EXE), url,
-            "--work-dir", str(output_dir),
-            "--sub-only", "--skip-ai", "false",
-        ]
-        try:
-            proc = subprocess.run(
-                cmd, capture_output=True,
-                cwd=str(_BBDOWN_DIR),
-                timeout=60,
-            )
-        except subprocess.TimeoutExpired:
-            logger.warning("BBDown subtitle download timed out")
-            return {"subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
+        cookie_file = _BBDOWN_DIR / "BBDown.data"
+        cookie = ""
+        if cookie_file.exists():
+            try:
+                cookie = cookie_file.read_text(encoding="utf-8", errors="ignore").strip()
+            except Exception as e:
+                logger.warning(f"Failed to read BBDown.data: {e}")
 
-        stdout = proc.stdout.decode("utf-8", errors="replace") if proc.stdout else ""
-        if proc.returncode != 0:
-            logger.warning(f"BBDown subtitle failed: {stdout[-300:]}")
-            return {"subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": f"https://www.bilibili.com/video/{bvid}",
+        }
+        if cookie:
+            headers["Cookie"] = cookie
 
-        # Find downloaded .srt file (BBDown names it like: title.ai-zh.srt)
-        # For multi-P videos BBDown may create a subfolder, so search recursively
-        srt_files = sorted(output_dir.rglob("*.srt"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if not srt_files:
-            logger.info("BBDown found no AI subtitle for this video")
-            return {"subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
+        def _get_json(api_url: str, timeout: int = 10) -> dict | None:
+            try:
+                req = urllib.request.Request(api_url, headers=headers)
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    return json.loads(resp.read())
+            except Exception as e:
+                logger.warning(f"bili API {api_url[:60]}... failed: {e}")
+                return None
 
-        srt_path = srt_files[0]
+        view = _get_json(f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}")
+        if not view or view.get("code") != 0:
+            logger.warning(f"Bilibili view API returned no data for {bvid}")
+            return empty
+        pages = view["data"].get("pages") or []
+        if not pages:
+            return empty
+        page = pages[0]
+        cid = page["cid"]
+        video_duration = float(page.get("duration") or view["data"].get("duration") or 0)
 
-        # Validate subtitle has meaningful content (not just BGM lyrics)
-        content = srt_path.read_text(encoding="utf-8-sig")
-        lines = [l.strip() for l in content.splitlines()
-                 if l.strip() and not l.strip().isdigit() and "-->" not in l]
-        # Filter out music lines (♪...♪)
-        text_lines = [l for l in lines if not (l.startswith("♪") and l.endswith("♪"))]
-        if len(text_lines) < 3:
-            logger.info(f"Bilibili AI subtitle too short ({len(text_lines)} lines), skipping")
-            srt_path.unlink()
-            return {"subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
+        pv2 = _get_json(f"https://api.bilibili.com/x/player/v2?bvid={bvid}&cid={cid}")
+        if not pv2 or pv2.get("code") != 0:
+            return empty
+        tracks = ((pv2.get("data") or {}).get("subtitle") or {}).get("subtitles") or []
+        if not tracks:
+            logger.info(f"Bilibili: no subtitle tracks for {bvid}")
+            return empty
 
-        logger.info(f"Downloaded Bilibili AI subtitle: {srt_path.name} ({len(text_lines)} lines)")
+        usable = [t for t in tracks if t.get("subtitle_url")]
+        if not usable:
+            logger.info(f"Bilibili: {len(tracks)} track(s) but all empty url")
+            return empty
+        # Sort: user CC (type 0) before AI (type 1) so the first good track is the highest quality
+        usable.sort(key=lambda t: int(t.get("type") or 1))
+
+        saved_tracks: list[dict[str, Any]] = []
+        seen_langs: set[str] = set()
+        for track in usable:
+            sub_url = track["subtitle_url"]
+            if sub_url.startswith("//"):
+                sub_url = "https:" + sub_url
+            lan = track.get("lan", "unknown")
+            t_type = int(track.get("type") or 1)
+            t_label = "CC" if t_type == 0 else "AI"
+
+            # Prefer CC over AI when same language has both
+            if lan in seen_langs:
+                continue
+
+            try:
+                req = urllib.request.Request(sub_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    sub_json = json.loads(resp.read())
+            except Exception as e:
+                logger.warning(f"download {t_label}/{lan} failed: {e}")
+                continue
+
+            body = sub_json.get("body") or []
+            if len(body) < 3:
+                logger.info(f"Bilibili {t_label}/{lan}: only {len(body)} cues, skipping")
+                continue
+
+            if video_duration > 0:
+                last_t = float(body[-1].get("from") or 0)
+                coverage = last_t / video_duration
+                if coverage < 0.6:
+                    logger.warning(
+                        f"Bilibili {t_label}/{lan}: coverage {coverage:.0%} "
+                        f"(last_cue={last_t:.0f}s vs video={video_duration:.0f}s) — skipping"
+                    )
+                    continue
+
+            srt_path = output_dir / f"{bvid}.{lan}.srt"
+            srt_path.write_text(_bili_json_to_srt(body), encoding="utf-8")
+            logger.info(f"Bilibili subtitle OK: {t_label}/{lan}, {len(body)} cues")
+            saved_tracks.append({
+                "path": str(srt_path),
+                "lang": lan,
+                "format": "srt",
+                "type": "cc" if t_type == 0 else "ai",
+            })
+            seen_langs.add(lan)
+
+        if not saved_tracks:
+            logger.info(f"Bilibili: all {len(usable)} subtitle track(s) failed validation")
+            return empty
+
+        first = saved_tracks[0]
         return {
-            "subtitle_path": str(srt_path),
-            "subtitle_lang": "zh",
-            "subtitle_format": "srt",
+            "tracks": saved_tracks,
+            "subtitle_path": first["path"],
+            "subtitle_lang": first["lang"],
+            "subtitle_format": first["format"],
         }
 
     def fetch_metadata(self, url: str) -> dict[str, Any]:
@@ -501,86 +606,109 @@ class YtdlpService:
         output_dir: Path,
         langs: list[str] | None = None,
     ) -> dict[str, Any]:
-        """
-        Download platform subtitles without downloading the video.
-
-        Args:
-            url: Video URL
-            output_dir: Directory to save subtitle files
-            langs: Language priority list, e.g. ["zh", "en"]
+        """Download ALL available platform subtitle tracks without downloading video.
 
         Returns:
-            {"subtitle_path": str|None, "subtitle_lang": str|None,
-             "subtitle_format": "json3"|"srt"|None}
+            {
+                "tracks": [{"path": str, "lang": str, "format": str, "type": "cc"|"ai"}],
+                # Back-compat: first track as single fields
+                "subtitle_path": str|None,
+                "subtitle_lang": str|None,
+                "subtitle_format": "json3"|"srt"|None,
+            }
         """
         import yt_dlp
 
-        # Bilibili: use BBDown to download AI subtitles (yt-dlp gets 403)
+        empty = {"tracks": [], "subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
+
         if _is_bilibili_url(url) and _BBDOWN_EXE.exists():
             return self._download_bilibili_subtitle(url, output_dir)
 
-        if langs is None:
-            from app.core.settings import get_runtime_settings
-            rt = get_runtime_settings()
-            langs = [l.strip() for l in rt.subtitle_languages.split(",") if l.strip()]
-
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Try manual subtitles first, then auto-generated
-        for write_auto in [False, True]:
+        # Probe all available subtitle languages via yt-dlp metadata
+        try:
+            with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as e:
+            logger.warning(f"yt-dlp probe failed: {e}")
+            return empty
+        if not info:
+            return empty
+
+        manual_subs = info.get("subtitles") or {}
+        auto_subs = info.get("automatic_captions") or {}
+
+        # If user provided langs, filter; otherwise take ALL available
+        def _filter(avail: dict, want: list[str] | None) -> list[str]:
+            if not want:
+                return list(avail.keys())
+            out = []
+            for w in want:
+                w_l = w.lower()
+                for k in avail.keys():
+                    if k.lower() == w_l or k.lower().startswith(w_l) or w_l in k.lower():
+                        if k not in out:
+                            out.append(k)
+            return out
+
+        manual_langs = _filter(manual_subs, langs)
+        auto_langs = _filter(auto_subs, langs)
+        # Skip auto-captions for languages where a manual track exists
+        auto_langs = [l for l in auto_langs if l not in manual_langs]
+
+        tracks: list[dict[str, Any]] = []
+
+        def _try_download(use_auto: bool, target_langs: list[str], type_label: str) -> None:
+            if not target_langs:
+                return
             ydl_opts = {
                 "skip_download": True,
-                "writesubtitles": True,
-                "writeautomaticsub": write_auto,
-                "subtitleslangs": langs,
+                "writesubtitles": not use_auto,
+                "writeautomaticsub": use_auto,
+                "subtitleslangs": target_langs,
                 "subtitlesformat": "json3/srt/best",
                 "outtmpl": str(output_dir / "%(id)s"),
                 "quiet": True,
             }
-
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
             except Exception as e:
-                logger.warning(f"Subtitle download failed (auto={write_auto}): {e}")
-                continue
-
-            result = self._find_best_subtitle(output_dir, langs)
-            if result:
-                kind = "auto" if write_auto else "manual"
-                logger.info(f"Downloaded {kind} subtitle: {result['subtitle_path']}")
-                return result
-
-        logger.info(f"No subtitles found for {url}")
-        return {"subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
-
-    def _find_best_subtitle(self, output_dir: Path, langs: list[str]) -> dict | None:
-        """Find the best subtitle file in output_dir by language and format priority."""
-        for lang in langs:
-            for ext in ["json3", "srt", "vtt"]:
-                for f in output_dir.glob(f"*.{lang}.{ext}"):
-                    return {
-                        "subtitle_path": str(f),
-                        "subtitle_lang": lang,
-                        "subtitle_format": ext,
-                    }
-            for variant in [f"{lang}-Hans", f"{lang}-CN", f"{lang}-Hant"]:
+                logger.warning(f"Subtitle download failed (auto={use_auto}, langs={target_langs}): {e}")
+                return
+            for lang in target_langs:
+                # Find the file yt-dlp wrote for this lang
                 for ext in ["json3", "srt", "vtt"]:
-                    for f in output_dir.glob(f"*.{variant}.{ext}"):
-                        return {
-                            "subtitle_path": str(f),
-                            "subtitle_lang": lang,
-                            "subtitle_format": ext,
-                        }
-        for ext in ["json3", "srt", "vtt"]:
-            files = list(output_dir.glob(f"*.{ext}"))
-            if files:
-                return {
-                    "subtitle_path": str(files[0]),
-                    "subtitle_lang": "unknown",
-                    "subtitle_format": ext,
-                }
-        return None
+                    for f in output_dir.glob(f"*.{lang}.{ext}"):
+                        if any(t["path"] == str(f) for t in tracks):
+                            continue
+                        tracks.append({
+                            "path": str(f),
+                            "lang": lang,
+                            "format": ext,
+                            "type": type_label,
+                        })
+                        break
+                    else:
+                        continue
+                    break
+
+        _try_download(False, manual_langs, "cc")
+        _try_download(True, auto_langs, "ai")
+
+        if not tracks:
+            logger.info(f"No subtitles found for {url}")
+            return empty
+
+        logger.info(f"Downloaded {len(tracks)} subtitle track(s): {[t['lang'] for t in tracks]}")
+        first = tracks[0]
+        return {
+            "tracks": tracks,
+            "subtitle_path": first["path"],
+            "subtitle_lang": first["lang"],
+            "subtitle_format": first["format"],
+        }
 
     def _compute_hash(self, file_path: str) -> str:
         sha256 = hashlib.sha256()

@@ -4,7 +4,6 @@ import { navigate } from "@/lib/router"
 import { api } from "@/lib/api"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
-import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { FolderQueueDialog } from "@/components/folder-queue-dialog"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -47,10 +46,13 @@ function isVideoFile(name: string) {
   return /\.(mp4|mkv|avi|webm|mov|flv|wmv)$/i.test(name)
 }
 
+type SubtitleStrategy = "auto" | "force_asr"
+
 export function SubmitPage() {
   const [source, setSource] = useState("")
   const [queuedFiles, setQueuedFiles] = useState<QueuedFile[]>([])
-  const [forceAsr, setForceAsr] = useState(false)
+  const [strategy, setStrategy] = useState<SubtitleStrategy>("auto")
+  const forceAsr = strategy === "force_asr"
   const [numSpeakers, setNumSpeakers] = useState("")
   const [hotwordTags, setHotwordTags] = useState<string[]>([])
   const [hotwordInput, setHotwordInput] = useState("")
@@ -130,31 +132,11 @@ export function SubmitPage() {
     try {
       const opts = buildOptions()
 
-      // Single uploaded file, no URL
-      if (!urlSource && readyFiles.length === 1) {
-        const f = readyFiles[0]
-        if (f.outputDir) {
-          navigate(`#/result/archive?path=${encodeURIComponent(f.outputDir)}&taskId=${encodeURIComponent(f.taskId)}`)
-        } else {
-          navigate(`#/result/task/${f.taskId}`)
-        }
-        return
-      }
-
-      // Single URL, no files
-      if (urlSource && !readyFiles.length) {
-        const task = await api.tasks.create(urlSource, opts)
-        const outputDir = task.result?.output_dir as string | undefined
-        if (outputDir) {
-          navigate(`#/result/archive?path=${encodeURIComponent(outputDir)}&taskId=${encodeURIComponent(task.id)}`)
-        } else {
-          navigate(`#/result/task/${task.id}`)
-        }
-        return
-      }
-
-      // Multiple items — create tasks for URL sources (file tasks already exist)
+      // URL source needs task creation; file tasks already exist (created on upload)
       if (urlSource) await api.tasks.create(urlSource, opts)
+
+      // Unified navigation: all submissions land on the files/queue view
+      // where in-progress tasks are surfaced alongside archives.
       navigate("#/files")
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交失败")
@@ -307,9 +289,41 @@ export function SubmitPage() {
 
             {showAdvanced && (
               <div className="mt-3 space-y-4 rounded-lg border p-4 bg-muted/30">
-                <div className="flex items-center gap-2">
-                  <Switch id="force-asr" checked={forceAsr} onCheckedChange={setForceAsr} />
-                  <Label htmlFor="force-asr" className="text-sm cursor-pointer">强制语音识别</Label>
+                <div className="space-y-1.5">
+                  <Label className="text-sm">字幕来源</Label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setStrategy("auto")}
+                      className={cn(
+                        "flex flex-col items-start gap-0.5 rounded-md border px-2.5 py-2 text-left transition-colors",
+                        strategy === "auto"
+                          ? "border-primary bg-primary/5"
+                          : "border-border hover:bg-muted",
+                      )}
+                    >
+                      <span className="text-xs font-medium">自动</span>
+                      <span className="text-[10px] text-muted-foreground leading-tight">有字幕用字幕，无则 ASR</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setStrategy("force_asr")}
+                      className={cn(
+                        "flex flex-col items-start gap-0.5 rounded-md border px-2.5 py-2 text-left transition-colors",
+                        strategy === "force_asr"
+                          ? "border-primary bg-primary/5"
+                          : "border-border hover:bg-muted",
+                      )}
+                    >
+                      <span className="text-xs font-medium">强制 ASR</span>
+                      <span className="text-[10px] text-muted-foreground leading-tight">忽略平台字幕自行转录</span>
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    {strategy === "auto"
+                      ? "阶段：下载 → 字幕/ASR → 分析 → 归档"
+                      : "阶段：下载 → 人声分离 → ASR → 声纹 → 分析 → 润色 → 归档"}
+                  </p>
                 </div>
 
                 <div className="space-y-1.5">

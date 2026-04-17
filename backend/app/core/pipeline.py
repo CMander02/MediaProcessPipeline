@@ -229,6 +229,85 @@ def _extract_audio_from_video(video_path: Path, output_path: Path) -> Path:
     return output_path
 
 
+async def _select_polish_track(
+    tracks: list[dict],
+    srt_text_hint: str = "",
+) -> tuple[dict, str]:
+    """Pick the subtitle track to polish based on LLM-detected language.
+
+    Detects the video's spoken language from a sample of the first (best)
+    track's subtitle content; then matches the detected language against
+    the available tracks. Falls back to the first track when no match or
+    detection fails.
+
+    Returns (selected_track, detected_lang). detected_lang may be "unknown".
+    """
+    from app.services.analysis.language_detect import detect_transcript_language, match_track_by_language
+
+    if not tracks:
+        raise ValueError("no tracks to select from")
+    if len(tracks) == 1:
+        # No point running LLM — still detect lang so we can tag metadata
+        try:
+            sample_srt = Path(tracks[0]["path"]).read_text(encoding="utf-8", errors="ignore")
+            detected = await detect_transcript_language(srt=sample_srt)
+        except Exception:
+            detected = tracks[0].get("lang") or "unknown"
+        return tracks[0], detected
+
+    # Use the first (best — CC before AI) track's content as detection sample
+    # if no external srt_text_hint was provided.
+    sample = srt_text_hint
+    if not sample:
+        try:
+            sample = Path(tracks[0]["path"]).read_text(encoding="utf-8", errors="ignore")
+        except Exception as e:
+            logger.warning(f"Failed to read sample track for lang detection: {e}")
+            return tracks[0], tracks[0].get("lang") or "unknown"
+
+    detected = await detect_transcript_language(srt=sample)
+    if detected == "unknown":
+        logger.info("Language detection returned unknown, using first track for polish")
+        return tracks[0], detected
+
+    matched = match_track_by_language(tracks, detected)
+    if matched:
+        logger.info(f"Polish track selected: lang={matched.get('lang')} (detected={detected})")
+        return matched, detected
+
+    logger.info(f"Detected lang '{detected}' has no matching track, using first")
+    return tracks[0], detected
+
+
+def _save_all_tracks_as_transcripts(tracks: list[dict], task_dir: Path) -> list[dict]:
+    """Copy each platform subtitle track into task_dir as transcript.{lang}.srt.
+
+    The one chosen for polish will additionally get transcript_polished.srt
+    (written elsewhere). Returns a list of manifest entries for metadata.json.
+    """
+    from shutil import copyfile
+    manifest: list[dict] = []
+    for t in tracks:
+        src = Path(t["path"])
+        if not src.exists():
+            continue
+        lang = t.get("lang") or "unknown"
+        dest = task_dir / f"transcript.{lang}.srt"
+        try:
+            if str(src.resolve()) != str(dest.resolve()):
+                copyfile(src, dest)
+        except Exception as e:
+            logger.warning(f"Failed to copy track {src} → {dest}: {e}")
+            continue
+        manifest.append({
+            "lang": lang,
+            "type": t.get("type") or "cc",
+            "filename": dest.name,
+            "polished": False,
+        })
+    return manifest
+
+
 def _cleanup_vocals(task_dir: Path, audio_path: str | None, vocals_path: str | None) -> None:
     """Clean up UVR vocals and ASR segment files after transcription.
 
@@ -414,9 +493,31 @@ async def _run_subtitle_fast_path(
 
     # -- TRANSCRIBE: process platform subtitle --
     await _update_step(task, PipelineStep.TRANSCRIBE)
+
+    # Multi-track handling: save every track as transcript.{lang}.srt and
+    # pick the one matching the video's spoken language for polish.
+    tracks = platform_subtitle.get("tracks") or []
+    if not tracks and platform_subtitle.get("subtitle_path"):
+        # Legacy single-track shape — synthesize a 1-item list
+        tracks = [{
+            "path": platform_subtitle["subtitle_path"],
+            "lang": platform_subtitle.get("subtitle_lang") or "unknown",
+            "format": platform_subtitle.get("subtitle_format") or "srt",
+            "type": "cc",
+        }]
+    tracks_manifest = _save_all_tracks_as_transcripts(tracks, task_dir)
+
+    selected_track, detected_lang = await _select_polish_track(tracks)
+    for entry in tracks_manifest:
+        if entry["lang"] == (selected_track.get("lang") or "unknown"):
+            entry["polished"] = True
+    # Attach tracks + detected language to metadata for archive/UI
+    metadata.extra["subtitle_tracks"] = tracks_manifest
+    metadata.extra["detected_language"] = detected_lang
+
     sub_result = await process_subtitles(
-        subtitle_path=platform_subtitle["subtitle_path"],
-        subtitle_format=platform_subtitle["subtitle_format"],
+        subtitle_path=selected_track["path"],
+        subtitle_format=selected_track.get("format") or "srt",
         metadata=metadata,
     )
     transcript = " ".join(s["text"] for s in sub_result.get("segments", []))
@@ -1078,9 +1179,25 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 await _update_step(task, PipelineStep.TRANSCRIBE)
                 if has_subtitle:
                     logger.info("Using platform subtitle path (skipping ASR)")
+                    pst_tracks = platform_subtitle.get("tracks") or []
+                    if not pst_tracks and platform_subtitle.get("subtitle_path"):
+                        pst_tracks = [{
+                            "path": platform_subtitle["subtitle_path"],
+                            "lang": platform_subtitle.get("subtitle_lang") or "unknown",
+                            "format": platform_subtitle.get("subtitle_format") or "srt",
+                            "type": "cc",
+                        }]
+                    tracks_manifest = _save_all_tracks_as_transcripts(pst_tracks, task_dir)
+                    selected_track, detected_lang = await _select_polish_track(pst_tracks)
+                    for entry in tracks_manifest:
+                        if entry["lang"] == (selected_track.get("lang") or "unknown"):
+                            entry["polished"] = True
+                    metadata.extra["subtitle_tracks"] = tracks_manifest
+                    metadata.extra["detected_language"] = detected_lang
+
                     sub_result = await process_subtitles(
-                        subtitle_path=platform_subtitle["subtitle_path"],
-                        subtitle_format=platform_subtitle["subtitle_format"],
+                        subtitle_path=selected_track["path"],
+                        subtitle_format=selected_track.get("format") or "srt",
                         metadata=metadata,
                     )
                     transcript = " ".join(s["text"] for s in sub_result.get("segments", []))
@@ -1102,6 +1219,21 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     asr_error = _extract_internal_asr_error(recognition_segments)
                     if asr_error:
                         raise RuntimeError(f"ASR backend produced an internal error placeholder: {asr_error}")
+
+                    # Detect transcript language (non-fatal, populates metadata for UI)
+                    if srt:
+                        try:
+                            from app.services.analysis.language_detect import detect_transcript_language
+                            detected_lang = await detect_transcript_language(srt=srt)
+                            metadata.extra["detected_language"] = detected_lang
+                            metadata.extra["subtitle_tracks"] = [{
+                                "lang": detected_lang if detected_lang != "unknown" else "asr",
+                                "type": "asr",
+                                "filename": "transcript.srt",
+                                "polished": True,  # polish step will populate
+                            }]
+                        except Exception as e:
+                            logger.warning(f"ASR language detection failed: {e}")
 
                 # Write transcript.srt immediately
                 if srt:
