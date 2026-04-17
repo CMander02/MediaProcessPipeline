@@ -796,7 +796,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
             title = dest_source.stem
             video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov"}
-            audio_exts = {".mp3", ".wav", ".flac", ".m4a", ".ogg"}
+            audio_exts = {".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac", ".opus", ".wma"}
 
             if dest_source.suffix.lower() in video_exts:
                 audio_path = task_dir / f"{title}.wav"
