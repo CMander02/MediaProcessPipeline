@@ -187,13 +187,17 @@ class Qwen3ASRService:
 
         logger.info(f"Loading diarization model from: {model_path}")
         # PyTorch 2.6+ defaults weights_only=True which breaks pyannote/lightning
-        # checkpoint loading. Temporarily override to allow loading trusted local models.
-        _orig_load = torch.load
-        torch.load = lambda *a, **kw: _orig_load(*a, **{**kw, "weights_only": False})
-        try:
-            pipeline = Pipeline.from_pretrained(model_path)
-        finally:
-            torch.load = _orig_load
+        # checkpoint loading. pyannote loads sub-models lazily (segmentation/embedding
+        # on first __call__), so a scoped patch around from_pretrained is insufficient.
+        # Install the override globally — all our checkpoints are trusted local files.
+        if not getattr(torch.load, "_mpp_weights_only_patched", False):
+            _orig_load = torch.load
+            def _patched_load(*a, **kw):
+                kw.setdefault("weights_only", False)
+                return _orig_load(*a, **kw)
+            _patched_load._mpp_weights_only_patched = True  # type: ignore[attr-defined]
+            torch.load = _patched_load  # type: ignore[assignment]
+        pipeline = Pipeline.from_pretrained(model_path)
         pipeline = pipeline.to(torch.device(device))
 
         # Optimize for long audio: reduce batch sizes to prevent OOM
