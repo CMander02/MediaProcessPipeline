@@ -166,7 +166,31 @@ def setup_logging(log_dir: Path | None = None) -> Path | None:
     formatter = ConsoleFormatter()
     ctx_filter = ContextFilter()
 
-    stream = logging.StreamHandler(sys.stderr)
+    # Ensure stderr is UTF-8 so emoji (e.g. \U0001f31f in BV titles) don't raise
+    # UnicodeEncodeError under Windows' cp936/GBK default and abort the task.
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            if hasattr(_s, "reconfigure"):
+                _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+    class _SafeStreamHandler(logging.StreamHandler):
+        def emit(self, record: logging.LogRecord) -> None:
+            try:
+                super().emit(record)
+            except UnicodeEncodeError:
+                try:
+                    msg = self.format(record)
+                    stream = self.stream
+                    enc = getattr(stream, "encoding", None) or "utf-8"
+                    stream.write(msg.encode(enc, errors="replace").decode(enc, errors="replace"))
+                    stream.write(self.terminator)
+                    self.flush()
+                except Exception:
+                    self.handleError(record)
+
+    stream = _SafeStreamHandler(sys.stderr)
     stream.setFormatter(formatter)
     stream.addFilter(ctx_filter)
     root.addHandler(stream)
