@@ -963,12 +963,14 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 title = yt_match.group(1) if yt_match else None
                 if not title:
                     import yt_dlp
-                    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+                    from app.services.ingestion.ytdlp import ytdlp_auth_opts
+                    with yt_dlp.YoutubeDL({"quiet": True, **ytdlp_auth_opts()}) as ydl:
                         info = ydl.extract_info(source, download=False)
                         title = info.get("title", "unknown") if info else "unknown"
             else:
                 import yt_dlp
-                with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+                from app.services.ingestion.ytdlp import ytdlp_auth_opts
+                with yt_dlp.YoutubeDL({"quiet": True, **ytdlp_auth_opts()}) as ydl:
                     info = ydl.extract_info(source, download=False)
                     title = info.get("title", "unknown") if info else "unknown"
 
@@ -1012,10 +1014,14 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         if not new_dir.exists():
                             task_dir.rename(new_dir)
                             task_dir = new_dir
-                            # Update subtitle path after rename
-                            old_sub_path = Path(probe_subtitle["subtitle_path"])
-                            new_sub_path = task_dir / "subtitles" / old_sub_path.name
-                            probe_subtitle["subtitle_path"] = str(new_sub_path)
+                            # Update all subtitle paths after rename: tracks[].path + back-compat subtitle_path
+                            new_sub_dir = task_dir / "subtitles"
+                            for tr in probe_subtitle.get("tracks") or []:
+                                if tr.get("path"):
+                                    tr["path"] = str(new_sub_dir / Path(tr["path"]).name)
+                            if probe_subtitle.get("subtitle_path"):
+                                old_sub_path = Path(probe_subtitle["subtitle_path"])
+                                probe_subtitle["subtitle_path"] = str(new_sub_dir / old_sub_path.name)
                             logger.info(f"Renamed task dir to: {new_dir}")
                         else:
                             logger.warning(f"Cannot rename to {new_dir} (already exists), keeping {task_dir}")
@@ -1050,12 +1056,17 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     )
                     text_result, video_result = results
 
-                    # If either branch raised, re-raise after the other has
-                    # had a chance to complete (so video download is preserved).
+                    # Text branch is the core output — if it fails, the task fails.
                     if isinstance(text_result, BaseException):
                         raise text_result
+                    # Video branch is auxiliary: log but don't fail the task.
+                    # The transcript/summary/mindmap are already produced.
                     if isinstance(video_result, BaseException):
-                        raise video_result
+                        logger.warning(
+                            f"Video download branch failed (transcript still OK): "
+                            f"{type(video_result).__name__}: {video_result}"
+                        )
+                        metadata.file_path = None
 
                     # Archive
                     await _update_step(task, PipelineStep.ARCHIVE)

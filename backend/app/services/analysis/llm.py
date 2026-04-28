@@ -1,10 +1,13 @@
-"""LLM service for text analysis via OpenAI-compatible API."""
+"""LLM service for text analysis via LiteLLM unified gateway."""
 
 import asyncio
 import json
 import logging
+import os
 import re
 from typing import Any
+
+os.environ.setdefault("LITELLM_LOG", "WARNING")
 
 from app.core.config import get_settings
 from app.core.settings import get_runtime_settings
@@ -127,6 +130,82 @@ def offload_local_llm() -> None:
             pass
 
 
+def _get_litellm_params(provider_override: str = "", stage: str = "polish") -> dict[str, Any] | None:
+    """Build litellm.acompletion kwargs from runtime settings.
+
+    Returns None if provider is not configured or is the local HF path.
+    Callers should handle the local provider case before calling this function.
+
+    Args:
+        provider_override: If non-empty, use this provider instead of rt.llm_provider.
+        stage: One of "analyze" | "polish" | "summary" | "mindmap". Currently
+            only deepseek uses it to pick per-stage model/thinking/effort.
+    """
+    rt = get_runtime_settings()
+    provider = provider_override or rt.llm_provider
+
+    if provider == "local":
+        return None  # caller handles local path
+
+    params: dict[str, Any] = {"num_retries": 3}
+
+    if provider == "anthropic":
+        if not rt.anthropic_api_key:
+            return None
+        model_name = rt.anthropic_model or "claude-sonnet-4-6"
+        params["model"] = f"anthropic/{model_name}"
+        params["api_key"] = rt.anthropic_api_key
+        if rt.anthropic_api_base:
+            params["api_base"] = rt.anthropic_api_base
+
+    elif provider == "openai":
+        if not rt.openai_api_key:
+            return None
+        model_name = rt.openai_model or "gpt-4o"
+        params["model"] = f"openai/{model_name}"
+        params["api_key"] = rt.openai_api_key
+        if rt.openai_api_base:
+            params["api_base"] = rt.openai_api_base
+
+    elif provider == "deepseek":
+        if not rt.deepseek_api_key:
+            return None
+        stage_map = {
+            "analyze": (rt.deepseek_analyze_model, rt.deepseek_analyze_thinking, rt.deepseek_analyze_effort),
+            "polish":  (rt.deepseek_polish_model,  rt.deepseek_polish_thinking,  rt.deepseek_polish_effort),
+            "summary": (rt.deepseek_summary_model, rt.deepseek_summary_thinking, rt.deepseek_summary_effort),
+            "mindmap": (rt.deepseek_mindmap_model, rt.deepseek_mindmap_thinking, rt.deepseek_mindmap_effort),
+        }
+        model_name, thinking_type, effort = stage_map.get(stage, stage_map["polish"])
+        if not model_name:
+            return None
+        params["model"] = f"openai/{model_name}"  # DeepSeek is OpenAI-compatible
+        params["api_key"] = rt.deepseek_api_key
+        params["api_base"] = rt.deepseek_api_base or "https://api.deepseek.com"
+        # Thinking control via extra_body (LiteLLM passes this through)
+        if thinking_type == "enabled":
+            thinking_body: dict[str, Any] = {"type": "enabled"}
+            if effort:
+                thinking_body["reasoning_effort"] = effort
+            params["extra_body"] = {"thinking": thinking_body}
+        else:
+            params["extra_body"] = {"thinking": {"type": "disabled"}}
+
+    elif provider == "custom":
+        if not rt.custom_api_base or not rt.custom_model:
+            return None
+        params["model"] = f"openai/{rt.custom_model}"
+        params["api_key"] = rt.custom_api_key or "not-needed"
+        params["api_base"] = rt.custom_api_base
+        if rt.custom_name:
+            params["custom_llm_provider"] = "openai"
+
+    else:
+        return None
+
+    return params
+
+
 class LLMService:
     def __init__(self):
         self._static_settings = get_settings()
@@ -134,53 +213,6 @@ class LLMService:
     def _effective_provider(self, provider_override: str = "") -> str:
         rt = get_runtime_settings()
         return provider_override or rt.llm_provider
-
-    def _get_client_and_model(self, provider_override: str = ""):
-        """Build an AsyncOpenAI client from runtime settings.
-
-        Returns (client, model_name, temperature) or None if not configured.
-        All three providers (anthropic, openai, custom) are called through the
-        OpenAI-compatible chat completions endpoint.
-        Returns "local" string when local provider is selected.
-
-        Args:
-            provider_override: If non-empty, use this provider instead of rt.llm_provider.
-        """
-        from openai import AsyncOpenAI
-        rt = get_runtime_settings()
-        provider = provider_override or rt.llm_provider
-
-        if provider == "local":
-            return "local"
-
-        if provider == "anthropic":
-            if not rt.anthropic_api_key:
-                return None
-            client = AsyncOpenAI(
-                api_key=rt.anthropic_api_key,
-                base_url=rt.anthropic_api_base or "https://api.anthropic.com/v1",
-            )
-            model = rt.anthropic_model
-        elif provider == "openai":
-            if not rt.openai_api_key:
-                return None
-            kwargs: dict[str, Any] = {"api_key": rt.openai_api_key}
-            if rt.openai_api_base:
-                kwargs["base_url"] = rt.openai_api_base
-            client = AsyncOpenAI(**kwargs)
-            model = rt.openai_model
-        elif provider == "custom":
-            if not rt.custom_api_base or not rt.custom_model:
-                return None
-            client = AsyncOpenAI(
-                api_key=rt.custom_api_key or "not-needed",
-                base_url=rt.custom_api_base,
-            )
-            model = rt.custom_model
-        else:
-            return None
-
-        return client, model, self._static_settings.temperature
 
     async def _call_local(self, prompt: str) -> str:
         """Call local HF model (transformers). Loads on first call; serialised via lock."""
@@ -244,48 +276,43 @@ class LLMService:
         async with infer_lock:
             return await loop.run_in_executor(None, _infer)
 
-    async def _call(self, prompt: str, *, max_retries: int = 3, provider_override: str = "") -> str:
-        if provider_override == "local":
-            rt = get_runtime_settings()
+    async def _call(
+        self,
+        prompt: str,
+        *,
+        max_retries: int = 3,
+        provider_override: str = "",
+        stage: str = "polish",
+    ) -> str:
+        import litellm
+
+        rt = get_runtime_settings()
+        provider = provider_override or rt.llm_provider
+
+        # Local HF path — unchanged, no LiteLLM involved
+        if provider == "local":
             if rt.local_llm_model_path:
-                logger.info("Calling local HF model (polish_provider override)")
+                logger.info("Calling local HF model")
                 return await self._call_local(prompt)
             logger.warning("polish_provider=local but local_llm_model_path is empty, falling back to llm_provider")
+            provider = rt.llm_provider
             provider_override = ""
 
-        result = self._get_client_and_model(provider_override)
-        if not result:
-            logger.warning("LLM not configured - check API key and settings")
+        params = _get_litellm_params(provider_override=provider_override, stage=stage)
+        if params is None:
+            logger.warning(f"LLM not configured for provider={provider!r}")
             return "[LLM not configured]"
 
-        # Local HF path — no retry loop needed (errors surface directly)
-        if result == "local":
-            logger.info("Calling local HF model")
-            return await self._call_local(prompt)
+        params["messages"] = [{"role": "user", "content": prompt}]
 
-        client, model, temperature = result
-        import openai
-
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"Calling LLM: {model}")
-                response = await client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=temperature,
-                )
-                return response.choices[0].message.content or ""
-            except (openai.APITimeoutError, openai.APIConnectionError) as e:
-                if attempt < max_retries - 1:
-                    delay = 2 ** attempt  # 1s, 2s, 4s
-                    logger.warning(f"LLM request failed ({e}), retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
-                    await asyncio.sleep(delay)
-                else:
-                    logger.error(f"LLM error after {max_retries} attempts: {e}")
-                    raise
-            except Exception as e:
-                logger.error(f"LLM error: {e}")
-                raise
+        logger.info(f"LiteLLM call: model={params.get('model')} stage={stage}")
+        try:
+            response = await litellm.acompletion(**params)
+            content = response.choices[0].message.content or ""
+            return content
+        except Exception as e:
+            logger.error(f"LiteLLM error (provider={provider}, stage={stage}): {e}")
+            raise
 
     async def analyze_content(
         self,
@@ -319,7 +346,7 @@ class LLMService:
             tags=tags,
             chapters=chapters,
         )
-        resp = await self._call(prompt)
+        resp = await self._call(prompt, stage="analyze")
 
         try:
             # Extract JSON from response
@@ -399,7 +426,7 @@ class LLMService:
         if not segments:
             # Fallback to simple polish if not valid SRT
             prompt = get_simple_polish_prompt(srt_content)
-            return await self._call(prompt, provider_override=provider_override)
+            return await self._call(prompt, provider_override=provider_override, stage="polish")
 
         # Generate all chunks with overlap
         chunks: list[tuple[int, int, list[dict]]] = []
@@ -441,7 +468,7 @@ class LLMService:
                 )
 
                 # Call LLM
-                polished_chunk = await self._call(prompt, provider_override=provider_override)
+                polished_chunk = await self._call(prompt, provider_override=provider_override, stage="polish")
 
                 # Parse polished result
                 polished_segs = self._parse_srt(polished_chunk)
@@ -493,7 +520,7 @@ class LLMService:
         if context:
             return await self.polish_with_context_parallel(text, context, provider_override=provider_override)
         prompt = get_simple_polish_prompt(text)
-        return await self._call(prompt, provider_override=provider_override)
+        return await self._call(prompt, provider_override=provider_override, stage="polish")
 
     def srt_to_markdown(self, srt_content: str, title: str = "") -> str:
         """
@@ -559,7 +586,7 @@ class LLMService:
 
     async def summarize(self, text: str, user_language: str | None = None) -> dict[str, Any]:
         prompt = get_summarize_prompt(text, user_language=user_language)
-        resp = await self._call(prompt)
+        resp = await self._call(prompt, stage="summary")
         try:
             start, end = resp.find("{"), resp.rfind("}") + 1
             if start >= 0 and end > start:
@@ -585,7 +612,7 @@ class LLMService:
 
         # Short content: single-pass
         prompt = get_mindmap_prompt(text, user_language=user_language)
-        resp = await self._call(prompt)
+        resp = await self._call(prompt, stage="mindmap")
         return self._filter_mindmap_lines(resp)
 
     async def _mindmap_map_reduce(
@@ -617,7 +644,7 @@ class LLMService:
                 prompt = get_mindmap_map_prompt(
                     title, content, global_context, user_language=user_language,
                 )
-                resp = await self._call(prompt)
+                resp = await self._call(prompt, stage="mindmap")
                 return title, resp
 
         map_results = await asyncio.gather(*[
@@ -669,7 +696,7 @@ class LLMService:
                 prompt = get_mindmap_map_prompt(
                     title, content, global_context, user_language=user_language,
                 )
-                resp = await self._call(prompt)
+                resp = await self._call(prompt, stage="mindmap")
                 return title, resp
 
         map_results = await asyncio.gather(*[
@@ -709,7 +736,7 @@ class LLMService:
                 prompt = get_mindmap_reduce_prompt(
                     label, summaries, user_language=user_language,
                 )
-                resp = await self._call(prompt)
+                resp = await self._call(prompt, stage="mindmap")
                 return self._filter_mindmap_lines(resp)
 
         results = await asyncio.gather(*[

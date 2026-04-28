@@ -185,8 +185,9 @@ async def probe_url(url: str):
 
     def _probe(url: str) -> dict[str, Any]:
         import yt_dlp
+        from app.services.ingestion.ytdlp import ytdlp_auth_opts
         try:
-            with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
+            with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True, **ytdlp_auth_opts()}) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if not info:
                     return {}
@@ -481,37 +482,128 @@ async def disk_usage():
 
 @router.get("/bilibili/status")
 async def bilibili_login_status():
-    """Check BBDown login status by reading BBDown.data cookie expiry."""
-    bbdown_data = Path(__file__).resolve().parent.parent.parent.parent / "tools" / "bbdown" / "BBDown.data"
-    if not bbdown_data.exists():
-        return {"logged_in": False, "message": "BBDown.data 不存在"}
-
+    """Check Bilibili login status using auth.py (settings or BBDown.data fallback)."""
     try:
-        text = bbdown_data.read_text(encoding="utf-8")
-        # Parse Expires from cookie string
-        import re
-        m = re.search(r'Expires=(\d+)', text)
-        if not m:
-            return {"logged_in": False, "message": "无法解析 cookie"}
-
+        from app.services.ingestion.platform.bilibili.auth import is_logged_in, get_cookie
         from datetime import datetime, timezone
-        expires = int(m.group(1))
-        expires_dt = datetime.fromtimestamp(expires, tz=timezone.utc)
-        now = datetime.now(tz=timezone.utc)
 
-        if now >= expires_dt:
-            return {"logged_in": False, "expires": expires_dt.isoformat(), "message": "Cookie 已过期"}
+        cookie = get_cookie()
+        if not cookie:
+            return {"logged_in": False, "message": "未配置 Bilibili cookie（settings 或 BBDown.data）"}
 
-        days_left = (expires_dt - now).days
-        # Extract DedeUserID
-        uid_m = re.search(r'DedeUserID=(\d+)', text)
+        # Parse Expires and DedeUserID from cookie string
+        expires_m = re.search(r'Expires=(\d+)', cookie)
+        uid_m = re.search(r'DedeUserID=(\d+)', cookie)
+
+        if expires_m:
+            expires = int(expires_m.group(1))
+            expires_dt = datetime.fromtimestamp(expires, tz=timezone.utc)
+            now = datetime.now(tz=timezone.utc)
+            if now >= expires_dt:
+                return {"logged_in": False, "expires": expires_dt.isoformat(), "message": "Cookie 已过期"}
+            days_left = (expires_dt - now).days
+            uid = uid_m.group(1) if uid_m else "unknown"
+            return {
+                "logged_in": True,
+                "uid": uid,
+                "expires": expires_dt.isoformat(),
+                "days_left": days_left,
+            }
+
+        # No Expires field — validate via nav API
+        logged = is_logged_in()
         uid = uid_m.group(1) if uid_m else "unknown"
+        if logged:
+            return {"logged_in": True, "uid": uid, "expires": None, "days_left": None}
+        return {"logged_in": False, "message": "Cookie 无效或未登录"}
 
-        return {
-            "logged_in": True,
-            "uid": uid,
-            "expires": expires_dt.isoformat(),
-            "days_left": days_left,
-        }
     except Exception as e:
         return {"logged_in": False, "message": str(e)}
+
+
+@router.get("/platforms")
+async def get_platform_configs():
+    """Get per-platform download strategy configs + auth status."""
+    from app.services.ingestion.platform.bilibili.auth import is_logged_in as bili_logged_in
+    from app.core.settings import get_runtime_settings
+    import json
+    rt = get_runtime_settings()
+    try:
+        stored = json.loads(rt.platform_configs or "{}")
+    except Exception:
+        stored = {}
+
+    bilibili_cfg = stored.get("bilibili", {})
+    youtube_cfg = stored.get("youtube", {})
+
+    try:
+        bili_status = bili_logged_in()
+    except Exception:
+        bili_status = False
+
+    return {
+        "platforms": [
+            {
+                "id": "bilibili",
+                "name": "哔哩哔哩",
+                "status": "active",
+                "auth_status": "logged_in" if bili_status else "not_logged_in",
+                "preferred_quality": bilibili_cfg.get("preferred_quality", rt.bilibili_preferred_quality),
+                "prefer_subtitle": bilibili_cfg.get("prefer_subtitle", rt.prefer_platform_subtitles),
+            },
+            {
+                "id": "youtube",
+                "name": "YouTube",
+                "status": "active",
+                "auth_status": "configured" if (rt.youtube_cookies_file or rt.youtube_cookies_browser) else "not_configured",
+                "preferred_quality": youtube_cfg.get("preferred_quality", rt.youtube_preferred_quality),
+                "prefer_subtitle": youtube_cfg.get("prefer_subtitle", True),
+            },
+            {
+                "id": "xiaoyuzhou",
+                "name": "小宇宙",
+                "status": "coming_soon",
+                "auth_status": "not_applicable",
+                "preferred_quality": None,
+                "prefer_subtitle": False,
+            },
+            {
+                "id": "xiaohongshu",
+                "name": "小红书",
+                "status": "coming_soon",
+                "auth_status": "not_configured",
+                "preferred_quality": None,
+                "prefer_subtitle": False,
+            },
+            {
+                "id": "zhihu",
+                "name": "知乎",
+                "status": "coming_soon",
+                "auth_status": "not_configured",
+                "preferred_quality": None,
+                "prefer_subtitle": False,
+            },
+        ]
+    }
+
+
+@router.put("/platforms/{platform_id}")
+async def update_platform_config(platform_id: str, config: dict):
+    """Update per-platform download strategy."""
+    from app.core.settings import patch_runtime_settings
+    rt = get_runtime_settings()
+    try:
+        stored = json.loads(rt.platform_configs or "{}")
+    except Exception:
+        stored = {}
+    stored[platform_id] = config
+
+    updates: dict = {"platform_configs": json.dumps(stored)}
+    if platform_id == "bilibili" and "preferred_quality" in config:
+        updates["bilibili_preferred_quality"] = config["preferred_quality"]
+    if platform_id == "youtube" and "preferred_quality" in config:
+        updates["youtube_preferred_quality"] = config["preferred_quality"]
+    if platform_id == "bilibili" and "prefer_subtitle" in config:
+        updates["prefer_platform_subtitles"] = config["prefer_subtitle"]
+    patch_runtime_settings(updates)
+    return {"ok": True}

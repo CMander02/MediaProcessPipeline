@@ -70,6 +70,16 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
   return res.json()
 }
 
+async function put<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json()
+}
+
 async function httpDelete<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method: "DELETE",
@@ -182,6 +192,22 @@ export const api = {
       get<{ logged_in: boolean; uid?: string; expires?: string; days_left?: number; message?: string }>(
         "/api/pipeline/bilibili/status",
       ),
+  },
+
+  platforms: {
+    list: () =>
+      get<{
+        platforms: Array<{
+          id: string
+          name: string
+          status: "active" | "coming_soon"
+          auth_status: string
+          preferred_quality: number | string | null
+          prefer_subtitle: boolean
+        }>
+      }>("/api/pipeline/platforms"),
+    update: (id: string, config: { preferred_quality?: number | string; prefer_subtitle?: boolean }) =>
+      put<{ ok: boolean }>(`/api/pipeline/platforms/${id}`, config),
   },
 }
 

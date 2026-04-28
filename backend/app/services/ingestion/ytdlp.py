@@ -25,6 +25,29 @@ def _is_bilibili_url(url: str) -> bool:
     return bool(re.search(r'bilibili\.com|b23\.tv|BV[0-9A-Za-z]+', url))
 
 
+def ytdlp_auth_opts() -> dict[str, Any]:
+    """yt-dlp options for YouTube (and other sites) auth cookies.
+
+    YouTube increasingly blocks unauthenticated requests ("Sign in to confirm
+    you're not a bot"). Users can either point to an exported cookies.txt or
+    name a browser for yt-dlp to read cookies from directly.
+    """
+    rt = get_runtime_settings()
+    opts: dict[str, Any] = {}
+    cookie_file = (rt.youtube_cookies_file or "").strip()
+    cookie_browser = (rt.youtube_cookies_browser or "").strip().lower()
+    if cookie_file:
+        p = Path(cookie_file)
+        if p.exists():
+            opts["cookiefile"] = str(p)
+        else:
+            logger.warning(f"youtube_cookies_file does not exist: {cookie_file}")
+    elif cookie_browser:
+        # yt-dlp expects a tuple (browser, profile, keyring, container)
+        opts["cookiesfrombrowser"] = (cookie_browser,)
+    return opts
+
+
 def _bili_json_to_srt(body: list[dict]) -> str:
     """Convert Bilibili player/v2 subtitle JSON body to SRT text."""
     def _fmt(t: float) -> str:
@@ -108,7 +131,7 @@ class YtdlpService:
             output_dir = Path(rt.data_root).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        if _is_bilibili_url(url) and _BBDOWN_EXE.exists():
+        if _is_bilibili_url(url):
             return self._download_bilibili(url, output_dir)
 
         import yt_dlp
@@ -127,6 +150,7 @@ class YtdlpService:
             "outtmpl": outtmpl,
             "writeinfojson": False,
             "quiet": not self._settings.debug,
+            **ytdlp_auth_opts(),
         }
 
         # Try video+audio download; on failure fall back to audio-only
@@ -146,6 +170,7 @@ class YtdlpService:
                 "outtmpl": outtmpl,
                 "skip_download": True,
                 "quiet": True,
+                **ytdlp_auth_opts(),
             }
             with yt_dlp.YoutubeDL(meta_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -242,72 +267,47 @@ class YtdlpService:
         return info
 
     def _download_bilibili(self, url: str, output_dir: Path) -> dict[str, Any]:
-        """Download Bilibili video using BBDown (with login cookie)."""
+        """Download Bilibili video using native DASH API (replaces BBDown)."""
+        from app.services.ingestion.platform.bilibili.dash import download_video, extract_audio
+        from app.services.ingestion.platform.bilibili.auth import is_logged_in
 
-        # BBDown requires full URL with protocol prefix
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
-        logger.info(f"Downloading Bilibili video via BBDown: {url}")
+        rt = get_runtime_settings()
+        qn = rt.bilibili_preferred_quality if is_logged_in() else 16
+        if not is_logged_in() and qn > 16:
+            logger.warning("Bilibili: not logged in, forcing 360P (qn=16)")
+            qn = 16
 
-        # Run BBDown — downloads video+audio merged mp4
-        cmd = [
-            str(_BBDOWN_EXE), url,
-            "--work-dir", str(output_dir),
-            "--skip-subtitle", "--skip-cover",
-            "-e", "hevc,avc,av1",
-            "-q", "1080P 高码率, 1080P 高清, 720P 高清",
-        ]
-        # Stream BBDown stdout line by line so each line gets its own timestamp
-        # (instead of one big blob minutes later).
-        rc, tail_lines = _run_subprocess_streamed(
-            cmd,
-            cwd=str(_BBDOWN_DIR),
-            timeout=600,
-            log_prefix="bbdown",
-            tail=20,
-        )
-        if rc != 0:
-            logger.error(f"BBDown exited with code {rc}; last lines:\n{chr(10).join(tail_lines)}")
-            raise RuntimeError("BBDown download failed — check server logs for details")
+        bv_match = re.search(r'(BV[0-9A-Za-z]+)', url)
+        if not bv_match:
+            raise RuntimeError(f"Cannot extract BV id from URL: {url}")
+        bvid = bv_match.group(1)
 
-        # Find the downloaded mp4
-        mp4_files = sorted(output_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
-        video_file = mp4_files[0] if mp4_files else None
-
-        if not video_file:
-            raise RuntimeError(f"BBDown produced no mp4 file in {output_dir}")
+        logger.info(f"Downloading Bilibili video via DASH API: {bvid} qn={qn}")
+        video_file, info = download_video(bvid, output_dir, qn=qn)
 
         title = video_file.stem
-        logger.info(f"BBDown downloaded: {video_file.name}")
-
-        # Extract audio from video for pipeline processing
         audio_file = output_dir / f"{title}.wav"
-        subprocess.run(
-            ["ffmpeg", "-i", str(video_file), "-vn",
-             "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
-             str(audio_file), "-y"],
-            capture_output=True, check=True, timeout=300,
-        )
+        extract_audio(video_file, audio_file)
 
-        # Fetch metadata via Bilibili public API (yt-dlp gets 403).
-        info = self._fetch_bilibili_metadata(url)
-        info["title"] = title
+        meta = self._fetch_bilibili_metadata(url)
+        meta["title"] = info.get("title", title)
 
         return {
             "url": url,
-            "title": title,
+            "title": meta["title"],
             "file_path": str(audio_file),
             "video_path": str(video_file),
-            "info": info,
+            "info": meta,
         }
 
     def _download_bilibili_subtitle(self, url: str, output_dir: Path) -> dict[str, Any]:
-        """Download ALL usable Bilibili subtitle tracks via the player/v2 API.
+        """Download ALL usable Bilibili subtitle tracks via the wbi-signed player/v2 API.
 
-        Uses BBDown's logged-in cookie (SESSDATA) to authenticate. Downloads
-        every track that passes coverage validation; the pipeline later picks
-        which one to polish based on LLM-detected video language.
+        Uses wbi-signed /x/player/wbi/v2 (authenticated via SESSDATA from settings or
+        BBDown.data fallback) to avoid the stale-URL bug in the unsigned endpoint.
 
         Returns:
             {
@@ -334,45 +334,45 @@ class YtdlpService:
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        cookie_file = _BBDOWN_DIR / "BBDown.data"
-        cookie = ""
-        if cookie_file.exists():
-            try:
-                cookie = cookie_file.read_text(encoding="utf-8", errors="ignore").strip()
-            except Exception as e:
-                logger.warning(f"Failed to read BBDown.data: {e}")
+        # Try new wbi-signed path first; fall back to old unsigned path on import error
+        try:
+            from app.services.ingestion.platform.bilibili.api import (
+                player_v2 as bili_player_v2,
+                view as bili_view,
+                subtitle_url_matches_video,
+            )
+        except ImportError as e:
+            logger.warning(f"bilibili.api import failed ({e}), falling back to unsigned player/v2")
+            return self._download_bilibili_subtitle_legacy(url, output_dir, bvid)
 
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Referer": f"https://www.bilibili.com/video/{bvid}",
-        }
-        if cookie:
-            headers["Cookie"] = cookie
-
-        def _get_json(api_url: str, timeout: int = 10) -> dict | None:
-            try:
-                req = urllib.request.Request(api_url, headers=headers)
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    return json.loads(resp.read())
-            except Exception as e:
-                logger.warning(f"bili API {api_url[:60]}... failed: {e}")
-                return None
-
-        view = _get_json(f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}")
-        if not view or view.get("code") != 0:
-            logger.warning(f"Bilibili view API returned no data for {bvid}")
+        # --- Fetch video metadata (aid, cid, duration) ---
+        try:
+            view_data = bili_view(bvid)
+        except Exception as e:
+            logger.warning(f"Bilibili view API failed for {bvid}: {e}")
             return empty
-        pages = view["data"].get("pages") or []
+
+        aid = int(view_data.get("aid") or 0)
+        pages = view_data.get("pages") or []
         if not pages:
+            logger.warning(f"Bilibili: no pages for {bvid}")
             return empty
         page = pages[0]
-        cid = page["cid"]
-        video_duration = float(page.get("duration") or view["data"].get("duration") or 0)
+        cid = int(page.get("cid") or 0)
+        video_duration = float(page.get("duration") or view_data.get("duration") or 0)
 
-        pv2 = _get_json(f"https://api.bilibili.com/x/player/v2?bvid={bvid}&cid={cid}")
-        if not pv2 or pv2.get("code") != 0:
+        if not aid or not cid:
+            logger.warning(f"Bilibili: missing aid/cid for {bvid} (aid={aid}, cid={cid})")
             return empty
-        tracks = ((pv2.get("data") or {}).get("subtitle") or {}).get("subtitles") or []
+
+        # --- Fetch subtitle track list via wbi-signed endpoint ---
+        try:
+            pv2_data = bili_player_v2(bvid, aid, cid)
+        except Exception as e:
+            logger.warning(f"Bilibili player/wbi/v2 failed for {bvid}: {e}")
+            return empty
+
+        tracks = ((pv2_data.get("subtitle") or {}).get("subtitles")) or []
         if not tracks:
             logger.info(f"Bilibili: no subtitle tracks for {bvid}")
             return empty
@@ -381,7 +381,7 @@ class YtdlpService:
         if not usable:
             logger.info(f"Bilibili: {len(tracks)} track(s) but all empty url")
             return empty
-        # Sort: user CC (type 0) before AI (type 1) so the first good track is the highest quality
+        # Sort: user CC (type 0) before AI (type 1) so the first good track is highest quality
         usable.sort(key=lambda t: int(t.get("type") or 1))
 
         saved_tracks: list[dict[str, Any]] = []
@@ -396,6 +396,14 @@ class YtdlpService:
 
             # Prefer CC over AI when same language has both
             if lan in seen_langs:
+                continue
+
+            # Validate that the blob URL encodes this video's aid+cid
+            if not subtitle_url_matches_video(sub_url, aid, cid):
+                logger.warning(
+                    f"Bilibili {t_label}/{lan}: subtitle URL does not match video "
+                    f"(aid={aid}, cid={cid}) — skipping mismatched blob"
+                )
                 continue
 
             try:
@@ -444,6 +452,106 @@ class YtdlpService:
             "subtitle_format": first["format"],
         }
 
+    def _download_bilibili_subtitle_legacy(
+        self, url: str, output_dir: Path, bvid: str
+    ) -> dict[str, Any]:
+        """Legacy fallback: unsigned /x/player/v2 (used only if new api.py fails to import)."""
+        import json
+        import urllib.request
+
+        empty = {"tracks": [], "subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
+
+        cookie_file = _BBDOWN_DIR / "BBDown.data"
+        cookie = ""
+        if cookie_file.exists():
+            try:
+                cookie = cookie_file.read_text(encoding="utf-8", errors="ignore").strip()
+            except Exception as e:
+                logger.warning(f"Failed to read BBDown.data: {e}")
+
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": f"https://www.bilibili.com/video/{bvid}",
+        }
+        if cookie:
+            headers["Cookie"] = cookie
+
+        def _get_json(api_url: str, timeout: int = 10) -> dict | None:
+            try:
+                req = urllib.request.Request(api_url, headers=headers)
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    return json.loads(resp.read())
+            except Exception as e:
+                logger.warning(f"bili API {api_url[:60]}... failed: {e}")
+                return None
+
+        view_resp = _get_json(f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}")
+        if not view_resp or view_resp.get("code") != 0:
+            return empty
+        pages = view_resp["data"].get("pages") or []
+        if not pages:
+            return empty
+        page = pages[0]
+        cid = page["cid"]
+        video_duration = float(page.get("duration") or view_resp["data"].get("duration") or 0)
+
+        pv2 = _get_json(f"https://api.bilibili.com/x/player/v2?bvid={bvid}&cid={cid}")
+        if not pv2 or pv2.get("code") != 0:
+            return empty
+        tracks = ((pv2.get("data") or {}).get("subtitle") or {}).get("subtitles") or []
+        if not tracks:
+            return empty
+
+        usable = [t for t in tracks if t.get("subtitle_url")]
+        if not usable:
+            return empty
+        usable.sort(key=lambda t: int(t.get("type") or 1))
+
+        saved_tracks: list[dict[str, Any]] = []
+        seen_langs: set[str] = set()
+        for track in usable:
+            sub_url = track["subtitle_url"]
+            if sub_url.startswith("//"):
+                sub_url = "https:" + sub_url
+            lan = track.get("lan", "unknown")
+            t_type = int(track.get("type") or 1)
+            t_label = "CC" if t_type == 0 else "AI"
+            if lan in seen_langs:
+                continue
+            try:
+                req = urllib.request.Request(sub_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    sub_json = json.loads(resp.read())
+            except Exception as e:
+                logger.warning(f"download {t_label}/{lan} failed: {e}")
+                continue
+            body = sub_json.get("body") or []
+            if len(body) < 3:
+                continue
+            if video_duration > 0:
+                last_t = float(body[-1].get("from") or 0)
+                if (last_t / video_duration) < 0.6:
+                    continue
+            srt_path = output_dir / f"{bvid}.{lan}.srt"
+            srt_path.write_text(_bili_json_to_srt(body), encoding="utf-8")
+            saved_tracks.append({
+                "path": str(srt_path),
+                "lang": lan,
+                "format": "srt",
+                "type": "cc" if t_type == 0 else "ai",
+            })
+            seen_langs.add(lan)
+
+        if not saved_tracks:
+            return empty
+        first = saved_tracks[0]
+        return {
+            "tracks": saved_tracks,
+            "subtitle_path": first["path"],
+            "subtitle_lang": first["lang"],
+            "subtitle_format": first["format"],
+        }
+
     def fetch_metadata(self, url: str) -> dict[str, Any]:
         """Fetch video metadata without downloading the video.
 
@@ -455,7 +563,7 @@ class YtdlpService:
             return info
 
         import yt_dlp
-        with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
+        with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True, **ytdlp_auth_opts()}) as ydl:
             info = ydl.extract_info(url, download=False)
         if info is None:
             raise RuntimeError(f"Failed to extract metadata: {url}")
@@ -475,6 +583,7 @@ class YtdlpService:
                 "preferredcodec": "wav",
                 "preferredquality": "192",
             }],
+            **ytdlp_auth_opts(),
         }
 
         logger.info(f"Downloading audio-only: {url}")
@@ -621,14 +730,14 @@ class YtdlpService:
 
         empty = {"tracks": [], "subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
 
-        if _is_bilibili_url(url) and _BBDOWN_EXE.exists():
+        if _is_bilibili_url(url):
             return self._download_bilibili_subtitle(url, output_dir)
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Probe all available subtitle languages via yt-dlp metadata
         try:
-            with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
+            with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True, **ytdlp_auth_opts()}) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as e:
             logger.warning(f"yt-dlp probe failed: {e}")
@@ -670,6 +779,7 @@ class YtdlpService:
                 "subtitlesformat": "json3/srt/best",
                 "outtmpl": str(output_dir / "%(id)s"),
                 "quiet": True,
+                **ytdlp_auth_opts(),
             }
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:

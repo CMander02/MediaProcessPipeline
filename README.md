@@ -37,7 +37,9 @@ MediaProcessPipeline/
 ├── scripts/                    # CLI 快捷脚本
 │   ├── mpp.ps1                 # PowerShell
 │   └── mpp                     # bash
-└── data/                       # 数据目录（settings.json, tasks.db）
+└── data/                       # 配置目录（settings.json）；
+                                # 实际数据/任务输出/SQLite 走 settings.data_root
+                                # （本机：D:/Video/MediaProcessPipeline/）
 ```
 
 ## 快速开始
@@ -157,6 +159,8 @@ cd web && npm run dev              # :5173
 
 ## 配置
 
+> ⚠️ **任务数据库实际位置**：`tasks.db` 不在仓库里的 `data/`，而在 `settings.data_root` 指向的目录下，例如本机 `D:/Video/MediaProcessPipeline/tasks.db`。仓库下的 `data/tasks.db` 是历史遗留的 0 字节文件，不要去查它。需要直连 SQLite 调试时，认准 `data_root`。
+
 在前端 Settings 页面或 `data/settings.json` 中配置：
 
 - **LLM**: Provider (OpenAI / Anthropic / DeepSeek 等 OpenAI 兼容), 模型, API 密钥
@@ -169,7 +173,7 @@ cd web && npm run dev              # :5173
 - **Backend**: Python 3.11+, FastAPI, SQLite, uv
 - **Frontend**: React 19, Vite, shadcn/ui, Tailwind CSS 4
 - **Desktop**: Electron
-- **AI**: Qwen3-ASR, pyannote-audio, UVR5 (audio-separator), LiteLLM
+- **AI**: Qwen3-ASR, pyannote-audio, UVR5 (audio-separator), OpenAI SDK（Anthropic / OpenAI / DeepSeek v4 / OpenAI-compatible）
 - **下载**: yt-dlp, FFmpeg
 
 ## 已知问题 / 待办

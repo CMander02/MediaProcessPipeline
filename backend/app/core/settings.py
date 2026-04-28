@@ -35,6 +35,29 @@ class RuntimeSettings(BaseModel):
     custom_model: str = ""
     custom_name: str = "Custom"
 
+    # DeepSeek (native v4 API with thinking control)
+    # Shared credentials — per-stage model/thinking/effort below.
+    deepseek_api_key: str = ""
+    deepseek_api_base: str = "https://api.deepseek.com"
+
+    # Per-stage config. thinking: "disabled" | "enabled". effort: "" | "high" | "max".
+    # Analyze (Phase 1 metadata extraction) — cheap + fast
+    deepseek_analyze_model: str = "deepseek-v4-flash"
+    deepseek_analyze_thinking: str = "disabled"
+    deepseek_analyze_effort: str = ""
+    # Polish (subtitle rewrite, bulk work) — cheap + fast
+    deepseek_polish_model: str = "deepseek-v4-flash"
+    deepseek_polish_thinking: str = "disabled"
+    deepseek_polish_effort: str = ""
+    # Summary / README — quality priority
+    deepseek_summary_model: str = "deepseek-v4-pro"
+    deepseek_summary_thinking: str = "enabled"
+    deepseek_summary_effort: str = "max"
+    # Mindmap (map + reduce) — cheap + fast
+    deepseek_mindmap_model: str = "deepseek-v4-flash"
+    deepseek_mindmap_thinking: str = "disabled"
+    deepseek_mindmap_effort: str = ""
+
     # Qwen3-ASR Settings
     qwen3_asr_model_path: str = ""  # Local path, empty = use HuggingFace
     qwen3_aligner_model_path: str = ""  # ForcedAligner path for timestamps
@@ -84,11 +107,31 @@ class RuntimeSettings(BaseModel):
 
     # Concurrency
     max_download_concurrency: int = 2  # max parallel downloads (I/O bound, set 1-4)
+    # When False, GPU steps only start after all active downloads finish (serial mode).
+    # Reduces peak VRAM by preventing download+GPU overlap.
+    # Recommended False for machines with ≤16 GB VRAM.
+    pipeline_overlap: bool = True
+
+    # YouTube (yt-dlp)
+    # Path to a Netscape-format cookies.txt exported from a logged-in browser.
+    # Takes precedence over youtube_cookies_browser when both are set.
+    youtube_cookies_file: str = ""
+    # Browser name to read cookies from directly (yt-dlp --cookies-from-browser).
+    # One of: "", "chrome", "firefox", "edge", "brave", "opera", "vivaldi", "safari".
+    # Chrome locks its cookie DB while running — prefer firefox/edge or close Chrome.
+    youtube_cookies_browser: str = ""
 
     # Bilibili
     bilibili_sessdata: str = ""
     bilibili_bili_jct: str = ""
     bilibili_dede_user_id: str = ""
+    bilibili_preferred_quality: int = 64   # qn: 16=360P 32=480P 64=720P 80=1080P
+
+    # YouTube download quality (for DASH-based YouTube downloader parity)
+    youtube_preferred_quality: str = "1080p"  # "720p" | "1080p" | "best"
+
+    # Per-platform configs (JSON string: {platform_id: {quality, prefer_subtitle, ...}})
+    platform_configs: str = "{}"
 
     # Security
     api_token: str = ""  # Bearer token for API auth; empty = auth disabled

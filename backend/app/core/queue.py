@@ -28,6 +28,47 @@ from app.models.task import TaskStatus
 logger = logging.getLogger(__name__)
 
 
+def _flush_gpu_models() -> None:
+    """Release all GPU models to free VRAM. Runs in a thread (torch calls are blocking)."""
+    import gc
+    try:
+        from app.services.preprocessing.uvr import get_uvr_service
+        svc = get_uvr_service()
+        if svc._separator is not None:
+            logger.info("Releasing UVR model")
+            svc._separator = None
+            svc._current_model = None
+            svc._current_model_dir = None
+    except Exception as e:
+        logger.warning(f"UVR release failed: {e}")
+    try:
+        from app.services.recognition.qwen3_asr import get_qwen3_service
+        svc = get_qwen3_service()
+        if svc._model is not None:
+            logger.info("Releasing Qwen3-ASR model")
+            svc._model = None
+            svc._current_model_path = None
+            svc._current_aligner_path = None
+        if svc._diarize_pipeline is not None:
+            logger.info("Releasing diarization pipeline")
+            svc._diarize_pipeline = None
+            svc._diarize_model = None
+    except Exception as e:
+        logger.warning(f"ASR/Diarization release failed: {e}")
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            logger.info("CUDA cache cleared")
+    except Exception as e:
+        logger.warning(f"CUDA cache clear failed: {e}")
+    try:
+        gc.collect()
+        logger.info("GC collected")
+    except Exception:
+        pass
+
+
 class TaskQueue:
     """Two-stage queue: parallel download → serialised GPU → free LLM."""
 
@@ -184,6 +225,21 @@ class TaskQueue:
         logger.info("TaskQueue stopped")
 
     # ------------------------------------------------------------------
+    # VRAM flush
+    # ------------------------------------------------------------------
+
+    async def _maybe_flush_all_models(self) -> None:
+        """If queue is fully drained, release all GPU models to free VRAM."""
+        if (
+            self._download_queue.empty()
+            and self._gpu_queue.empty()
+            and not self._active_download_ids
+            and self._active_gpu_id is None
+        ):
+            logger.info("Queue drained — releasing all GPU models")
+            await asyncio.to_thread(_flush_gpu_models)
+
+    # ------------------------------------------------------------------
     # Workers
     # ------------------------------------------------------------------
 
@@ -219,6 +275,7 @@ class TaskQueue:
                     reset_context(t_token, task_id_var)
                     self._active_download_ids.discard(task_id)
                     self._download_queue.task_done()
+                    await self._maybe_flush_all_models()
         finally:
             reset_context(w_token, worker_var)
 
@@ -240,6 +297,16 @@ class TaskQueue:
                     self._gpu_queue.task_done()
                     continue
 
+                # Serial mode: wait until all downloads are idle before using GPU
+                from app.core.settings import get_runtime_settings
+                if not get_runtime_settings().pipeline_overlap:
+                    waited = 0
+                    while self._active_download_ids and self._running:
+                        if waited == 0:
+                            logger.info("Serial mode: waiting for downloads to finish before GPU step")
+                        await asyncio.sleep(0.5)
+                        waited += 1
+
                 self._active_gpu_id = task_id
                 t_token = set_task_context(str(task_id))
                 logger.info("GPU worker picked up task")
@@ -253,6 +320,7 @@ class TaskQueue:
                     reset_context(t_token, task_id_var)
                     self._active_gpu_id = None
                     self._gpu_queue.task_done()
+                    await self._maybe_flush_all_models()
         finally:
             reset_context(w_token, worker_var)
 

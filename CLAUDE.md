@@ -5,7 +5,7 @@
 ## 架构
 
 ```
-Electron (MPP.exe) / CLI (mpp) / HTTP
+CLI (mpp) / HTTP
         ↓
   FastAPI Daemon (:18000)  ← 同时 serve 前端静态文件
   ├─ TaskQueue    asyncio.Queue, 单 worker (GPU 瓶颈)
@@ -14,7 +14,6 @@ Electron (MPP.exe) / CLI (mpp) / HTTP
   └─ Services    ASR, UVR, LLM (不变)
 
   Frontend: Vite + React 19 + shadcn/ui (web/)
-  Desktop:  Electron portable exe (electron/)
 ```
 
 ## 开发规范
@@ -28,7 +27,8 @@ Electron (MPP.exe) / CLI (mpp) / HTTP
 - 所有 service 使用 singleton 模式，通过 `get_xxx_service()` 获取
 - 核心模块在 `app.core/`: settings, database, events, queue, pipeline
 - Runtime settings 定义在 `app.core.settings`，API route 是薄 wrapper
-- LLM 调用统一走 LiteLLM，支持 anthropic / openai / custom (OpenAI compatible)
+- LLM 调用通过 `openai` SDK（指到各 provider 的 OpenAI 兼容端点），支持 anthropic / openai / deepseek / custom / local HF
+- DeepSeek 原生 provider 支持 v4 的 `thinking` 控制：按阶段（analyze/polish/summary/mindmap）独立配置 model + thinking 开关 + reasoning_effort，通过 `extra_body` 透传
 - ASR 后端支持 WhisperX 和 Qwen3-ASR，通过 runtime settings 切换
 - UVR5 人声分离保留——工作场景多样，不止访谈，可能有背景音乐等复杂音频
 
@@ -61,7 +61,7 @@ Electron (MPP.exe) / CLI (mpp) / HTTP
 ## Git 提交规范
 
 - **提交前询问用户是否需要变更版本号**
-- 版本号位置: `pyproject.toml` + `electron/package.json`
+- 版本号位置: `pyproject.toml`
 - SemVer: PATCH=bug fix, MINOR=新功能, MAJOR=破坏性变更 / 产品 ready
 - 当前阶段 0.x，到知识库 + Agent API 完成后考虑 1.0
 
