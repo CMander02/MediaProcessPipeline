@@ -17,7 +17,7 @@
 
 ### 1.3 文件上传
 - 通过 `POST /api/pipeline/upload` 端点上传本地文件
-- 文件保存到 `{data_root}/uploads/` 目录
+- 文件直接保存到本任务目录 `{data_root}/{title}/`
 
 ---
 
@@ -51,20 +51,19 @@
 │     │                                                                       │
 │     └─ 音频时长 > 30分钟 → VAD 静音点分片 → 分段转录 → 合并 SRT              │
 │                                                                             │
-│  ④ ANALYZE (内容分析)                                                        │
+│  ④ VOICEPRINT (声纹识别)                                                    │
 │     │                                                                       │
-│     └─ LLM 分析 (输入: 转录文本 + 视频元数据)                                │
-│           → 提取语言/类型/话题/关键词/专有名词                               │
+│     └─ 基于 diarization 结果提取声纹并匹配人物库                             │
 │                                                                             │
 │  ⑤ POLISH (字幕润色) - 并行处理                                              │
 │     │                                                                       │
 │     └─ LLM 并行润色 (64段/chunk, 16段重叠, 最多8并发)                        │
 │           → 修正错误/添加标点/移除填充词                                     │
 │                                                                             │
-│  ⑥ SUMMARIZE (生成摘要)                                                      │
+│  ⑥ ANALYZE (分析+摘要+脑图)                                                  │
 │     │                                                                       │
+│     ├─ LLM 分析语言/类型/话题/关键词/专有名词                                │
 │     ├─ LLM 生成 TLDR/关键要点/待办事项                                       │
-│     │                                                                       │
 │     └─ LLM 生成思维导图 (限制3层深度)                                        │
 │                                                                             │
 │  ⑦ ARCHIVE (归档保存)                                                        │
@@ -225,44 +224,11 @@ if diarize and rt.enable_diarization:
 
 ---
 
-### 3.4 Step 4: ANALYZE (内容分析)
+### 3.4 Step 4: VOICEPRINT (声纹识别)
 
-**代码位置**: `backend/app/services/analysis/llm.py`
-**Prompt 位置**: `backend/app/services/analysis/prompts/analyze.py`
+如果启用声纹功能且 ASR 产生了说话人标签，系统会在清理 vocals/segments 临时音频前提取各说话人的 embedding，并尝试匹配本地声纹库。匹配结果会回写到转录分段与 SRT，供后续润色、归档和前端展示使用。
 
-**第一阶段 LLM 调用** - 结合视频元数据提取内容信息：
-
-```python
-# 传入视频元数据辅助分析
-video_metadata = {
-    "uploader": metadata.uploader,
-    "description": metadata.description,
-    "tags": metadata.tags,
-    "chapters": [{"title": ch.title, "start_time": ch.start_time} for ch in metadata.chapters],
-}
-analysis = await analyze_content(transcript, metadata.title, metadata=video_metadata)
-```
-
-**输入信息**:
-- 转录文本 (截取前 8000 字符)
-- 视频标题
-- 作者名
-- 视频简介 (截取前 1000 字符)
-- 标签列表 (最多 20 个)
-- 章节标记 (最多 30 个)
-
-**输出格式**:
-```json
-{
-    "language": "zh-CN",
-    "content_type": "技术讲座",
-    "main_topics": ["主题1", "主题2", "主题3"],
-    "keywords": ["关键词1", "关键词2", "关键词3"],
-    "proper_nouns": ["专有名词1", "专有名词2"],
-    "speakers_detected": 2,
-    "tone": "教学"
-}
-```
+平台字幕 fast path 没有 diarization 音频片段，因此该步骤会标记为完成但实际跳过。
 
 ---
 
@@ -318,18 +284,22 @@ prompt = get_polish_prompt(
 
 ---
 
-### 3.6 Step 6: SUMMARIZE (生成摘要)
+### 3.6 Step 6: ANALYZE (分析+摘要+脑图)
 
 **代码位置**: `backend/app/services/analysis/llm.py`
 **Prompt 位置**:
+- `backend/app/services/analysis/prompts/analyze.py`
 - `backend/app/services/analysis/prompts/summarize.py`
 - `backend/app/services/analysis/prompts/mindmap.py`
 
-**并行生成**:
+该步骤先运行内容分析，再基于润色后的文本并行生成摘要和脑图：
 ```python
-summary = await summarize_text(transcript)  # TLDR + 关键要点
-mindmap = await generate_mindmap(transcript)  # Markmap 格式
+analysis = await analyze_content(transcript, metadata.title, metadata=video_metadata)
+summary = await summarize_text(transcript)
+mindmap = await generate_mindmap(transcript)
 ```
+
+内容分析输入包括转录文本、视频标题、作者名、简介、标签和章节标记，输出 `language`、`content_type`、`main_topics`、`keywords`、`proper_nouns`、`speakers_detected`、`tone` 等结构化字段。
 
 **摘要输出格式**:
 ```json
@@ -373,10 +343,12 @@ data/{task_id_short}_{title}/
 │   └── {original_filename}
 ├── metadata.json                # 媒体元信息 (含 description, tags, chapters)
 ├── analysis.json                # LLM 内容分析结果
+├── summary.json                 # 结构化摘要，供断点恢复使用
 ├── transcript.srt               # 原始转录 SRT
 ├── transcript_polished.srt      # 润色后 SRT
 ├── transcript_polished.md       # 润色后 Markdown
-└── summary.md                   # 摘要 + 思维导图
+├── summary.md                   # 渲染后的摘要
+└── mindmap.md                   # Markmap 思维导图
 ```
 
 #### Obsidian 同步
@@ -520,5 +492,5 @@ pending → queued → processing → completed
 **进度计算**:
 ```python
 progress = completed_steps / total_steps
-# total_steps = 7 (download, separate, transcribe, analyze, polish, summarize, archive)
+# total_steps = 7 (download, separate, transcribe, voiceprint, polish, analyze, archive)
 ```

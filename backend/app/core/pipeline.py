@@ -50,6 +50,11 @@ PIPELINE_STEPS = [
 ]
 
 
+def pipeline_steps_schema() -> list[dict[str, str]]:
+    """Return the public pipeline step schema in execution order."""
+    return [{"id": str(s["id"]), "name": s["name"], "name_en": s["name_en"]} for s in PIPELINE_STEPS]
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -128,6 +133,53 @@ def write_metadata_json(task_dir: Path, metadata: MediaMetadata | dict, status: 
     data["status"] = status
     meta_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     return meta_path
+
+
+def update_metadata_status(task_dir: Path | None, status: str) -> None:
+    """Update only metadata.json status when a task ends outside the normal archive path."""
+    if task_dir is None:
+        return
+    meta_path = task_dir / "metadata.json"
+    if not meta_path.exists():
+        return
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        data["status"] = status
+        meta_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        logger.debug("Failed to update metadata.json status", exc_info=True)
+
+
+async def _raise_if_cancelled(task_id: UUID) -> None:
+    """Honor cancellation requests between blocking pipeline phases."""
+    task = get_task_store().get(task_id)
+    if task and task.status == TaskStatus.CANCELLED:
+        raise asyncio.CancelledError()
+
+
+async def _write_summary_files(
+    task: Task,
+    task_dir: Path,
+    metadata: MediaMetadata,
+    summary: dict[str, Any],
+) -> None:
+    """Persist structured and rendered summary outputs."""
+    summary_json_path = task_dir / "summary.json"
+    summary_json_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+    await _emit_file_ready(task, "summary.json", str(summary_json_path))
+
+    from app.services.archiving.archive import SUMMARY_TEMPLATE, get_archive_service
+    _svc = get_archive_service()
+    sum_path = task_dir / "summary.md"
+    sum_content = SUMMARY_TEMPLATE.format(
+        title=metadata.title,
+        source_url=metadata.source_url or "",
+        date=datetime.now().strftime("%Y-%m-%d"),
+        tldr=summary.get("tldr", ""),
+        key_facts=_svc._fmt_list(summary.get("key_facts", [])),
+    )
+    sum_path.write_text(sum_content, encoding="utf-8")
+    await _emit_file_ready(task, "summary.md", str(sum_path))
 
 
 async def _emit_file_ready(task: Task, filename: str, file_path: str) -> None:
@@ -510,9 +562,9 @@ async def _run_subtitle_fast_path(
     """
     from app.services.recognition.subtitle_processor import process_subtitles
     from app.services.analysis import polish_text, summarize_text, generate_mindmap, analyze_content
-    from app.services.archiving import archive_result
 
     # -- SEPARATE: skip (no audio to separate) --
+    await _raise_if_cancelled(task.id)
     await _update_step(task, PipelineStep.SEPARATE, completed=True)
 
     # -- TRANSCRIBE: process platform subtitle --
@@ -544,6 +596,7 @@ async def _run_subtitle_fast_path(
         subtitle_format=selected_track.get("format") or "srt",
         metadata=metadata,
     )
+    await _raise_if_cancelled(task.id)
     transcript = " ".join(s["text"] for s in sub_result.get("segments", []))
     srt = sub_result.get("srt", "")
     polished = sub_result.get("polished_srt", "")
@@ -590,6 +643,7 @@ async def _run_subtitle_fast_path(
 
     # -- POLISH: platform subtitle was polished by process_subtitles above. --
     await _update_step(task, PipelineStep.POLISH, completed=True)
+    await _raise_if_cancelled(task.id)
 
     # -- ANALYZE: analyze after polish so summary/mindmap use the cleaned text.
     # Analyze still runs first within this step (cheap, ~8k-char prompt) so the detected
@@ -617,6 +671,7 @@ async def _run_subtitle_fast_path(
     mindmap_text = polished or srt or transcript
 
     analysis = await analyze_content(analysis_text, metadata.title, metadata=video_metadata)
+    await _raise_if_cancelled(task.id)
     user_language = _user_language_hint(analysis)
 
     # Write analysis first so the frontend can surface language/topics early
@@ -630,20 +685,10 @@ async def _run_subtitle_fast_path(
         summarize_text(analysis_text, user_language=user_language),
         generate_mindmap(mindmap_text, metadata=mindmap_metadata, user_language=user_language),
     )
+    await _raise_if_cancelled(task.id)
 
     if summary:
-        from app.services.archiving.archive import SUMMARY_TEMPLATE, get_archive_service
-        _svc = get_archive_service()
-        sum_path = task_dir / "summary.md"
-        sum_content = SUMMARY_TEMPLATE.format(
-            title=metadata.title,
-            source_url=metadata.source_url or "",
-            date=datetime.now().strftime("%Y-%m-%d"),
-            tldr=summary.get("tldr", ""),
-            key_facts=_svc._fmt_list(summary.get("key_facts", [])),
-        )
-        sum_path.write_text(sum_content, encoding="utf-8")
-        await _emit_file_ready(task, "summary.md", str(sum_path))
+        await _write_summary_files(task, task_dir, metadata, summary)
     if mindmap:
         mm_path = task_dir / "mindmap.md"
         mm_path.write_text(mindmap, encoding="utf-8")
@@ -669,7 +714,7 @@ async def _run_subtitle_fast_path(
 # ---------------------------------------------------------------------------
 
 async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
-    """Run full pipeline: ingest → preprocess → recognize → analyze → archive.
+    """Run full pipeline: download → separate → transcribe → voiceprint → polish → analyze → archive.
 
     Supports:
     - Checkpoint resume: skips steps already in task.completed_steps and
@@ -708,6 +753,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
     done = set(task.completed_steps or [])
     logger.info(f"starting pipeline, already done: {done}")
+    await _raise_if_cancelled(task.id)
 
     # Variables that later steps depend on — populated either by running the
     # step or by reading back files written in a previous run.
@@ -737,19 +783,13 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         try:
             import json as _json
             raw = _json.loads(meta_path.read_text(encoding="utf-8"))
-            _valid_media_types = {"video", "audio", "podcast", "meeting", "other"}
-            _media_type = raw.get("media_type", "video")
-            if _media_type not in _valid_media_types:
-                _media_type = "video"
-            metadata = MediaMetadata(
-                title=raw.get("title", task_dir.name),
-                source_url=raw.get("source_url", ""),
-                media_type=_media_type,
-                file_path=raw.get("file_path"),
-                uploader=raw.get("uploader"),
-                description=raw.get("description"),
-                duration=raw.get("duration"),
-            )
+            raw.pop("status", None)
+            if "duration" in raw and "duration_seconds" not in raw:
+                raw["duration_seconds"] = raw.pop("duration")
+            if raw.get("media_type") == "unknown":
+                raw["media_type"] = "other"
+            raw.setdefault("title", task_dir.name)
+            metadata = MediaMetadata.model_validate(raw)
             return True
         except Exception as e:
             logger.warning(f"Failed to restore metadata: {e}")
@@ -812,8 +852,17 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         nonlocal summary
         if task_dir is None:
             return False
-        # summary is stored as formatted markdown; we can't fully restore the dict
-        # but returning True lets us skip re-running summarize_text
+        path = task_dir / "summary.json"
+        if path.exists():
+            try:
+                import json as _j
+                loaded = _j.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    summary = loaded
+                    return True
+            except Exception:
+                pass
+        # Backward compatibility for old archives that only have rendered markdown.
         return (task_dir / "summary.md").exists()
 
     def _restore_mindmap() -> bool:
@@ -852,6 +901,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         if fast_path_steps.issubset(done) and PipelineStep.ARCHIVE not in done:
             logger.info(f"fast-path resume — re-downloading video")
             ingest = await download_media(source, output_dir=task_dir)
+            await _raise_if_cancelled(task.id)
             audio_path = ingest.get("file_path")
             if not metadata:
                 metadata = MediaMetadata(**ingest.get("metadata", {"title": source}))
@@ -869,6 +919,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
             # Archive
             from app.services.archiving import archive_result
+            await _raise_if_cancelled(task.id)
             await _update_step(task, PipelineStep.ARCHIVE)
             archive = await archive_result(
                 metadata,
@@ -929,6 +980,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             if dest_source.suffix.lower() in video_exts:
                 audio_path = task_dir / f"{title}.wav"
                 await asyncio.to_thread(_extract_audio_from_video, dest_source, audio_path)
+                await _raise_if_cancelled(task.id)
                 audio_path = str(audio_path)
                 metadata = MediaMetadata(
                     title=title,
@@ -1068,6 +1120,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     async def _branch_video_download():
                         nonlocal audio_path
                         ingest = await download_media(source, output_dir=task_dir)
+                        await _raise_if_cancelled(task.id)
                         audio_path = ingest.get("file_path")
                         # Update metadata with file paths from download
                         if ingest.get("video_path"):
@@ -1079,6 +1132,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         _branch_video_download(),
                         return_exceptions=True,
                     )
+                    await _raise_if_cancelled(task.id)
                     text_result, video_result = results
 
                     # Text branch is the core output — if it fails, the task fails.
@@ -1094,6 +1148,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         metadata.file_path = None
 
                     # Archive
+                    await _raise_if_cancelled(task.id)
                     await _update_step(task, PipelineStep.ARCHIVE)
                     archive = await archive_result(
                         metadata,
@@ -1121,6 +1176,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             # ── FULL PIPELINE: no subtitle or force_asr ──
             # (existing code path, unchanged)
             ingest = await download_media(source, output_dir=task_dir)
+            await _raise_if_cancelled(task.id)
             audio_path = ingest.get("file_path")
             metadata = MediaMetadata(**ingest.get("metadata", {"title": source}))
             if ingest.get("video_path"):
@@ -1163,6 +1219,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             await _emit_file_ready(task, "metadata.json", str(meta_path))
 
         await _update_step(task, PipelineStep.DOWNLOAD, completed=True)
+        await _raise_if_cancelled(task.id)
     # end if DOWNLOAD not in done
 
     # Sanity: we must have a task_dir by now
@@ -1204,6 +1261,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     vocals_path = audio_path
                 else:
                     preprocess = await separate_vocals(audio_path, output_dir=task_dir)
+                    await _raise_if_cancelled(task.id)
                     vocals_path = preprocess.get("vocals_path", audio_path)
                 await _update_step(task, PipelineStep.SEPARATE, completed=True)
 
@@ -1245,6 +1303,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 else:
                     num_speakers = task.options.get("num_speakers")
                     recognition = await transcribe_audio(vocals_path, output_dir=task_dir, num_speakers=num_speakers)
+                    await _raise_if_cancelled(task.id)
                     transcript = " ".join(s["text"] for s in recognition.get("segments", []))
                     srt = recognition.get("srt", "")
                     polished = None
@@ -1285,6 +1344,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         polished_md_path.write_text(polished_md, encoding="utf-8")
 
                 await _update_step(task, PipelineStep.TRANSCRIBE, completed=True)
+                await _raise_if_cancelled(task.id)
             # end if TRANSCRIBE not in done
 
             # ── Voiceprint step: run while vocals files are still on disk ──
@@ -1379,6 +1439,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             elif hotwords:
                 analysis = {"proper_nouns": hotwords}
             polished = await polish_text(srt, context=analysis)
+            await _raise_if_cancelled(task.id)
         if not has_subtitle and polished:
             from app.services.analysis import srt_to_markdown
             polished_srt_path = task_dir / "transcript_polished.srt"
@@ -1389,6 +1450,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             polished_md_path.write_text(polished_md_content, encoding="utf-8")
             polish_ran = True
         await _update_step(task, PipelineStep.POLISH, completed=True)
+        await _raise_if_cancelled(task.id)
     # end if POLISH not in done
 
     # ── Step 5: Analyze + Summarize + Mindmap from polished text ─────────────
@@ -1430,20 +1492,10 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             summarize_text(analysis_text, user_language=user_language),
             generate_mindmap(mindmap_text, metadata=mindmap_metadata, user_language=user_language),
         )
+        await _raise_if_cancelled(task.id)
 
         if summary:
-            from app.services.archiving.archive import SUMMARY_TEMPLATE, get_archive_service
-            _svc = get_archive_service()
-            sum_path = task_dir / "summary.md"
-            sum_content = SUMMARY_TEMPLATE.format(
-                title=metadata.title,
-                source_url=metadata.source_url or "",
-                date=datetime.now().strftime("%Y-%m-%d"),
-                tldr=summary.get("tldr", ""),
-                key_facts=_svc._fmt_list(summary.get("key_facts", [])),
-            )
-            sum_path.write_text(sum_content, encoding="utf-8")
-            await _emit_file_ready(task, "summary.md", str(sum_path))
+            await _write_summary_files(task, task_dir, metadata, summary)
         if mindmap:
             mm_path = task_dir / "mindmap.md"
             mm_path.write_text(mindmap, encoding="utf-8")
@@ -1453,6 +1505,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     # end if ANALYZE not in done
 
     # Step 6: Archive (finalize — writes any missing files, sets status to completed)
+    await _raise_if_cancelled(task.id)
     await _update_step(task, PipelineStep.ARCHIVE)
     archive = await archive_result(
         metadata,
@@ -1493,7 +1546,7 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
                          runs DOWNLOAD, then advance_to_gpu(), returns
     GPU worker       → process_task(id, _download_worker_call=False)
                          DOWNLOAD already in completed_steps, skips it,
-                         runs SEPARATE → TRANSCRIBE → ANALYZE → POLISH → ARCHIVE
+                         runs SEPARATE → TRANSCRIBE → VOICEPRINT → POLISH → ANALYZE → ARCHIVE
     """
     from app.services.ingestion import download_media
     from app.services.preprocessing import separate_vocals
@@ -1554,23 +1607,29 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
             "output_dir": task.result.get("output_dir") if task.result else None,
         }))
 
+    except asyncio.CancelledError:
+        logger.info(f"Task {task_id} cancelled")
+        current = store.get(task_id) or task
+        output_dir = current.result.get("output_dir") if current.result else None
+        update_metadata_status(Path(output_dir) if output_dir else None, "cancelled")
+        store.update_status(
+            task_id,
+            TaskStatus.CANCELLED,
+            completed_at=datetime.now(),
+            message="已取消",
+        )
+        await bus.publish(TaskEvent(task_id, "cancelled"))
+        raise
+
     except Exception as e:
         logger.exception(f"Task {task_id} failed")
         task.status = TaskStatus.FAILED
         task.error = str(e)
 
         # Update metadata.json status to failed
-        output_dir = task.result.get("output_dir") if task.result else None
-        if output_dir:
-            meta_path = Path(output_dir) / "metadata.json"
-            if meta_path.exists():
-                try:
-                    import json as _json
-                    meta = _json.loads(meta_path.read_text(encoding="utf-8"))
-                    meta["status"] = "failed"
-                    meta_path.write_text(_json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
-                except Exception:
-                    pass
+        current = store.get(task_id) or task
+        output_dir = current.result.get("output_dir") if current.result else None
+        update_metadata_status(Path(output_dir) if output_dir else None, "failed")
 
         store.update_status(
             task_id,

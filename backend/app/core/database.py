@@ -260,3 +260,10 @@ def close_db() -> None:
         _connection.close()
         _connection = None
         logger.info("Task database closed")
+
+
+def reset_db_path(data_root: Path | None = None) -> None:
+    """Close the current connection and make the next access resolve a fresh DB path."""
+    global _db_path
+    close_db()
+    _db_path = Path(data_root).resolve() / "tasks.db" if data_root else None

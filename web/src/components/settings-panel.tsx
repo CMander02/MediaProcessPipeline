@@ -86,6 +86,7 @@ export function SettingsPanel() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [saving, setSaving] = useState<Record<string, boolean>>({})
   const [saved, setSaved] = useState<Record<string, boolean>>({})
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [darkMode, setDarkMode] = useState(
     () => document.documentElement.classList.contains("dark"),
   )
@@ -108,9 +109,12 @@ export function SettingsPanel() {
       try {
         const updated = await api.settings.patch({ [key]: value })
         setSettings(updated)
+        setSaveError(null)
         setSaved((s) => ({ ...s, [key]: true }))
         setTimeout(() => setSaved((s) => ({ ...s, [key]: false })), 1500)
-      } catch {}
+      } catch (e) {
+        setSaveError(e instanceof Error ? e.message : String(e))
+      }
       setSaving((s) => ({ ...s, [key]: false }))
     },
     [],
@@ -129,6 +133,11 @@ export function SettingsPanel() {
 
   return (
     <div className="max-w-3xl">
+      {saveError && (
+        <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {saveError}
+        </div>
+      )}
       <div className="flex gap-0 min-h-[400px]">
         {/* Left sidebar */}
         <nav className="w-[140px] shrink-0 pr-3 space-y-1">

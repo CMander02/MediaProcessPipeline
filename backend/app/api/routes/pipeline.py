@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 from app.core.settings import get_runtime_settings
 from app.core.database import get_task_store
 from app.core.pipeline import (
-    PIPELINE_STEPS, PipelineStep, _sanitize_filename,
+    PIPELINE_STEPS, PipelineStep, _sanitize_filename, pipeline_steps_schema,
     create_task_dir, write_metadata_json,
 )
 from app.core.queue import get_task_queue
@@ -78,6 +78,12 @@ _ALLOWED_MEDIA_EXTS = {
     ".mp4", ".mkv", ".avi", ".webm", ".mov", ".flv", ".wmv",
     ".mp3", ".wav", ".aac", ".flac", ".ogg", ".m4a", ".wma",
 }
+
+
+@router.get("/steps")
+async def get_pipeline_steps():
+    """Return canonical pipeline step ids, names, and order."""
+    return {"steps": pipeline_steps_schema()}
 
 
 def _sanitize_upload_name(raw_name: str) -> str:

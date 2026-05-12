@@ -1,6 +1,7 @@
 import { useState } from "react"
 import type { ArchiveItem } from "@/hooks/use-archives"
 import { formatDuration } from "@/lib/format"
+import { api } from "@/lib/api"
 import {
   ContextMenu,
   ContextMenuContent,
@@ -25,7 +26,7 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed }: ArchiveCa
 
   const showThumbnail = archive.has_video && !imgError
   const thumbnailUrl = archive.has_video
-    ? `/api/pipeline/archives/thumbnail?path=${encodeURIComponent(archive.path)}`
+    ? api.archives.thumbnailUrl(archive.path)
     : null
 
   return (

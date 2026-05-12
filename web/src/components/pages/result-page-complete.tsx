@@ -25,7 +25,7 @@ import { useTaskSSE, type FileReadyEvent, type StepEvent } from "@/hooks/use-tas
 import { parseSRT, subtitlesToSRT, type Subtitle } from "@/lib/srt"
 import { navigate } from "@/lib/router"
 import { api } from "@/lib/api"
-import { PIPELINE_STEPS } from "@/lib/constants"
+import { usePipelineSteps } from "@/lib/constants"
 import { MediaPlayer } from "@/components/result/media-player"
 import { SpeakerPanel } from "@/components/result/speaker-panel"
 import { TranscriptTab } from "@/components/result/transcript-tab"
@@ -48,6 +48,7 @@ interface Props {
 }
 
 export function ResultPageComplete({ archivePath, taskId }: Props) {
+  const pipelineSteps = usePipelineSteps()
   const { archives, refresh: refreshArchives } = useArchives()
   const [archive, setArchive] = useState<ArchiveItem | null>(null)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
@@ -187,7 +188,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
       setMediaUrl(null)
       return
     }
-    setMediaUrl(`/api/filesystem/media?path=${encodeURIComponent(arch.media_file)}`)
+    setMediaUrl(api.filesystem.mediaUrl(arch.media_file))
   }, [])
 
   useEffect(() => {
@@ -197,11 +198,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
   // --- Progressive file loading ---
   const loadFile = useCallback(async (filename: string): Promise<string> => {
     try {
-      const res = await fetch(
-        `/api/filesystem/read?path=${encodeURIComponent(archivePath + sep + filename)}`,
-      )
-      if (!res.ok) return ""
-      const data = await res.json()
+      const data = await api.filesystem.read(archivePath + sep + filename)
       return data.content ?? ""
     } catch {
       return ""
@@ -462,7 +459,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
       {/* Pipeline progress bar (visible when processing) */}
       {isProcessing && (
         <div className="shrink-0 flex items-center gap-1 px-4 py-1.5 border-b bg-muted/30">
-          {PIPELINE_STEPS.map((step, i) => {
+          {pipelineSteps.map((step, i) => {
             const isDone = completedSteps.includes(step.id)
             const isCurrent = currentStep === step.id
             return (
@@ -495,7 +492,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
                     {step.name}
                   </span>
                 </div>
-                {i < PIPELINE_STEPS.length - 1 && (
+                {i < pipelineSteps.length - 1 && (
                   <div
                     className={cn(
                       "h-px w-4 mx-0.5",

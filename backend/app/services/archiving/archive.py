@@ -85,6 +85,13 @@ class ArchiveService:
 
         # Summary (without mindmap)
         if summary:
+            summary_json_path = output_dir / "summary.json"
+            summary_json_path.write_text(
+                json.dumps(summary, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            files["summary_json"] = str(summary_json_path)
+
             sum_path = output_dir / "summary.md"
             content = SUMMARY_TEMPLATE.format(
                 title=metadata.title,

@@ -20,7 +20,7 @@ from fastapi.responses import StreamingResponse
 from app.core.database import get_task_store
 from app.core.events import get_event_bus
 from app.core.pipeline import (
-    PIPELINE_STEPS, PipelineStep, _detect_source_type, _looks_like_local_path,
+    PIPELINE_STEPS, PipelineStep, pipeline_steps_schema, _detect_source_type, _looks_like_local_path,
     _clean_source_path, create_task_dir, write_metadata_json,
 )
 from app.core.queue import get_task_queue
@@ -114,6 +114,12 @@ async def get_stats():
     """Get task count statistics."""
     store = get_task_store()
     return store.stats()
+
+
+@router.get("/steps")
+async def get_pipeline_steps():
+    """Return canonical pipeline step ids, names, and order."""
+    return {"steps": pipeline_steps_schema()}
 
 
 @router.get("/events")

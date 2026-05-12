@@ -88,10 +88,9 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
     setFailedFiles([])
     cancelledRef.current = false
 
-    fetch("/api/filesystem/drives")
-      .then((r) => r.json())
+    api.filesystem.drives()
       .then((data) => {
-        if (data.success) setDrives(data.drives ?? [])
+        if (data.success) setDrives((data.drives ?? []).map((d) => ({ ...d, size: d.size ?? null })))
       })
       .catch(() => {})
 
@@ -104,8 +103,7 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
     setSelectedFolder(null)
     setMediaFiles([])
     try {
-      const res = await fetch(`/api/filesystem/browse?path=${encodeURIComponent(path)}&mode=directory`)
-      const data = await res.json()
+      const data = await api.filesystem.browse(path, "directory")
       if (data.success) {
         setCurrentPath(data.path)
         setPathInput(data.path)

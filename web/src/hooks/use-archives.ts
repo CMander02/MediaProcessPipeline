@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
+import { api } from "@/lib/api"
 
 export interface ArchiveItem {
   title: string
@@ -33,10 +34,8 @@ export function useArchives() {
   const refresh = useCallback(async () => {
     try {
       setLoading(true)
-      const res = await fetch("/api/pipeline/archives")
-      if (!res.ok) throw new Error(`${res.status}`)
-      const data = await res.json()
-      setArchives(data.archives ?? [])
+      const data = await api.archives.list()
+      setArchives((data.archives ?? []) as ArchiveItem[])
       setError(null)
     } catch (e) {
       setError(String(e))

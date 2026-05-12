@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { subscribeTaskEvents, api, type Task } from "@/lib/api"
 import { navigate } from "@/lib/router"
-import { PIPELINE_STEPS, STEP_NAME } from "@/lib/constants"
+import { STEP_NAME, usePipelineSteps } from "@/lib/constants"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -14,6 +14,7 @@ interface LogEntry {
 }
 
 export function ResultPageLive({ taskId }: { taskId: string }) {
+  const pipelineSteps = usePipelineSteps()
   const [task, setTask] = useState<Task | null>(null)
   const [logs, setLogs] = useState<LogEntry[]>([])
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -131,7 +132,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
 
         {/* Pipeline steps - horizontal */}
         <div className="flex items-center gap-1">
-          {PIPELINE_STEPS.map((step, i) => {
+          {pipelineSteps.map((step, i) => {
             const isCompleted = task?.completed_steps?.includes(step.id)
             const isCurrent = task?.current_step === step.id
             const isFailed = task?.status === "failed" && isCurrent
@@ -169,7 +170,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
                     {step.name}
                   </span>
                 </div>
-                {i < PIPELINE_STEPS.length - 1 && (
+                {i < pipelineSteps.length - 1 && (
                   <div
                     className={cn(
                       "h-px w-6 mx-1",

@@ -1,13 +1,14 @@
 import { cn } from "@/lib/utils"
-import { PIPELINE_STEPS } from "@/lib/constants"
+import { usePipelineSteps } from "@/lib/constants"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Tick02Icon, Loading03Icon } from "@hugeicons/core-free-icons"
 import type { Task } from "@/lib/api"
 
 export function StepProgress({ task }: { task: Task }) {
+  const steps = usePipelineSteps()
   return (
     <div className="flex items-center gap-1">
-      {PIPELINE_STEPS.map((step, i) => {
+      {steps.map((step, i) => {
         const isCompleted = task.completed_steps.includes(step.id)
         const isCurrent = task.current_step === step.id
         return (

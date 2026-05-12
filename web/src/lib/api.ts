@@ -42,6 +42,12 @@ export interface Settings {
   [key: string]: unknown
 }
 
+export interface PipelineStep {
+  id: string
+  name: string
+  name_en?: string
+}
+
 // ---- Fetch helpers ----
 
 const API_TOKEN_STORAGE_KEY = "mpp_api_token"
@@ -79,9 +85,18 @@ function requestedHeaders(): HeadersInit {
   return { ...headers(false), "X-Requested-With": "fetch" }
 }
 
+async function parseError(res: Response): Promise<Error> {
+  try {
+    const data = await res.json()
+    return new Error(data.detail || data.error || `${res.status} ${res.statusText}`)
+  } catch {
+    return new Error(`${res.status} ${res.statusText}`)
+  }
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: headers() })
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  if (!res.ok) throw await parseError(res)
   return res.json()
 }
 
@@ -91,7 +106,7 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
     headers: requestedJsonHeaders(),
     body: body ? JSON.stringify(body) : undefined,
   })
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  if (!res.ok) throw await parseError(res)
   return res.json()
 }
 
@@ -101,7 +116,7 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
     headers: requestedJsonHeaders(),
     body: JSON.stringify(body),
   })
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  if (!res.ok) throw await parseError(res)
   return res.json()
 }
 
@@ -111,7 +126,7 @@ async function put<T>(path: string, body: unknown): Promise<T> {
     headers: requestedJsonHeaders(),
     body: JSON.stringify(body),
   })
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  if (!res.ok) throw await parseError(res)
   return res.json()
 }
 
@@ -121,7 +136,7 @@ async function httpDelete<T>(path: string, body?: unknown): Promise<T> {
     headers: requestedJsonHeaders(),
     body: body ? JSON.stringify(body) : undefined,
   })
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  if (!res.ok) throw await parseError(res)
   return res.json()
 }
 
@@ -156,15 +171,33 @@ export const api = {
   },
 
   archives: {
+    list: () => get<{ archives: unknown[] }>("/api/pipeline/archives"),
     delete: (path: string) =>
       httpDelete<{ message: string; path: string }>("/api/pipeline/archives", { path }),
     rename: (path: string, title: string) =>
       post<{ success: boolean; title: string }>("/api/pipeline/archives/rename", { path, title }),
+    thumbnailUrl: (path: string) => `/api/pipeline/archives/thumbnail?path=${encodeURIComponent(path)}`,
   },
 
   filesystem: {
+    read: (path: string) =>
+      get<{ success: boolean; content?: string; path?: string; error?: string }>(
+        `/api/filesystem/read?path=${encodeURIComponent(path)}`,
+      ),
     write: (path: string, content: string) =>
       post<{ success: boolean; error?: string }>("/api/filesystem/write", { path, content }),
+    mediaUrl: (path: string) => `/api/filesystem/media?path=${encodeURIComponent(path)}`,
+    drives: () =>
+      get<{ success: boolean; drives: Array<{ name: string; path: string; is_dir: boolean; size?: number | null }> }>(
+        "/api/filesystem/drives",
+      ),
+    browse: (path: string, mode: "file" | "directory" | "all" = "all") =>
+      get<{
+        success: boolean
+        path: string
+        error?: string
+        items: Array<{ name: string; path: string; is_dir: boolean; size: number | null }>
+      }>(`/api/filesystem/browse?path=${encodeURIComponent(path)}&mode=${mode}`),
     scanFolder: (path: string, recursive = true) =>
       get<{ success: boolean; files: { path: string; name: string; size: number }[]; count: number }>(
         `/api/filesystem/scan-folder?path=${encodeURIComponent(path)}&recursive=${recursive}`,
@@ -172,6 +205,7 @@ export const api = {
   },
 
   pipeline: {
+    steps: () => get<{ steps: PipelineStep[] }>("/api/tasks/steps"),
     upload: async (file: File, options?: Record<string, unknown>, signal?: AbortSignal) => {
       const form = new FormData()
       form.append("file", file)
@@ -184,7 +218,7 @@ export const api = {
         body: form,
         signal,
       })
-      if (!res.ok) throw new Error("Upload failed")
+      if (!res.ok) throw await parseError(res)
       return res.json() as Promise<Task>
     },
     probe: (url: string) =>

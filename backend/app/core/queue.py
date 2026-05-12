@@ -85,6 +85,7 @@ class TaskQueue:
 
         self._active_download_ids: set[UUID] = set()
         self._active_gpu_id: UUID | None = None
+        self._running_tasks: dict[UUID, asyncio.Task] = {}
         self._running = False
 
         # Exposed so pipeline.py can acquire it around GPU-heavy steps.
@@ -132,11 +133,22 @@ class TaskQueue:
         task = store.get(task_id)
         if not task:
             return False
-        if task.status not in (TaskStatus.PENDING, TaskStatus.QUEUED):
+        if task.status not in (TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.PROCESSING):
             return False
         store.update_status(task_id, TaskStatus.CANCELLED, completed_at=datetime.now())
+        if task.result and task.result.get("output_dir"):
+            try:
+                from pathlib import Path
+                from app.core.pipeline import update_metadata_status
+                update_metadata_status(Path(task.result["output_dir"]), "cancelled")
+            except Exception:
+                logger.debug("Failed to update metadata.json on cancel", exc_info=True)
         bus = get_event_bus()
-        await bus.publish(TaskEvent(task_id, "cancelled"))
+        running = self._running_tasks.get(task_id)
+        if running:
+            running.cancel()
+        else:
+            await bus.publish(TaskEvent(task_id, "cancelled"))
         t_token = set_task_context(str(task_id))
         try:
             logger.info("task cancelled")
@@ -268,10 +280,15 @@ class TaskQueue:
 
                 try:
                     if self._pipeline_fn:
-                        await self._pipeline_fn(task_id, True)  # download-worker call
+                        running = asyncio.create_task(self._pipeline_fn(task_id, True))
+                        self._running_tasks[task_id] = running
+                        await running  # download-worker call
+                except asyncio.CancelledError:
+                    logger.info("Download step cancelled")
                 except Exception:
                     logger.exception("Download step failed")
                 finally:
+                    self._running_tasks.pop(task_id, None)
                     reset_context(t_token, task_id_var)
                     self._active_download_ids.discard(task_id)
                     self._download_queue.task_done()
@@ -313,10 +330,15 @@ class TaskQueue:
 
                 try:
                     if self._pipeline_fn:
-                        await self._pipeline_fn(task_id, False)  # gpu-worker call
+                        running = asyncio.create_task(self._pipeline_fn(task_id, False))
+                        self._running_tasks[task_id] = running
+                        await running  # gpu-worker call
+                except asyncio.CancelledError:
+                    logger.info("GPU/LLM steps cancelled")
                 except Exception:
                     logger.exception("GPU/LLM steps failed")
                 finally:
+                    self._running_tasks.pop(task_id, None)
                     reset_context(t_token, task_id_var)
                     self._active_gpu_id = None
                     self._gpu_queue.task_done()

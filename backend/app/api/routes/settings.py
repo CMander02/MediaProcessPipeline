@@ -1,9 +1,10 @@
 """Runtime settings API routes - thin wrapper over core.settings."""
 
 import re
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.core.settings import (
     RuntimeSettings,
@@ -66,6 +67,37 @@ def _restore_secrets(updates: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
+def _prepare_data_root_change(new_data_root: str | None) -> bool:
+    """Reject workspace switches while queued or processing tasks exist."""
+    if not new_data_root:
+        return False
+    current_root = Path(get_runtime_settings().data_root).resolve()
+    next_root = Path(new_data_root).resolve()
+    if next_root == current_root:
+        return False
+
+    from app.core.database import get_task_store
+    from app.core.queue import get_task_queue
+    from app.models import TaskStatus
+
+    queue = get_task_queue()
+    active = queue.active_task_ids or get_task_store().list_by_statuses([
+        TaskStatus.QUEUED,
+        TaskStatus.PROCESSING,
+    ])
+    if active:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot change data_root while queued or processing tasks exist.",
+        )
+    return True
+
+
+def _reopen_task_db(data_root: str) -> None:
+    from app.core.database import reset_db_path
+    reset_db_path(Path(data_root))
+
+
 @router.get("")
 async def get_settings():
     """Get current runtime settings (secrets masked)."""
@@ -80,15 +112,23 @@ async def update_settings(new_settings: RuntimeSettings):
     preserved from the current settings (not overwritten with the mask).
     """
     current = get_runtime_settings()
+    reopen_db = _prepare_data_root_change(new_settings.data_root)
     incoming = new_settings.model_dump()
     for field in _SECRET_FIELDS:
         if isinstance(incoming.get(field), str) and _is_masked(incoming[field]):
             incoming[field] = getattr(current, field)
-    return update_runtime_settings(RuntimeSettings(**incoming))
+    updated = update_runtime_settings(RuntimeSettings(**incoming))
+    if reopen_db:
+        _reopen_task_db(updated.data_root)
+    return updated
 
 
 @router.patch("")
 async def patch_settings(updates: dict[str, Any]):
     """Partially update runtime settings and persist to file."""
     cleaned = _restore_secrets(updates)
-    return _mask_settings(patch_runtime_settings(cleaned))
+    reopen_db = _prepare_data_root_change(cleaned.get("data_root"))
+    updated = patch_runtime_settings(cleaned)
+    if reopen_db:
+        _reopen_task_db(updated.data_root)
+    return _mask_settings(updated)
