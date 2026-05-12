@@ -44,8 +44,8 @@ PIPELINE_STEPS = [
     {"id": PipelineStep.SEPARATE, "name": "分离人声", "name_en": "Separating vocals"},
     {"id": PipelineStep.TRANSCRIBE, "name": "转录音频", "name_en": "Transcribing"},
     {"id": PipelineStep.VOICEPRINT, "name": "声纹识别", "name_en": "Matching voiceprints"},
-    {"id": PipelineStep.ANALYZE, "name": "分析+摘要+脑图", "name_en": "Analyzing & summarizing"},
     {"id": PipelineStep.POLISH, "name": "润色字幕", "name_en": "Polishing transcript"},
+    {"id": PipelineStep.ANALYZE, "name": "分析+摘要+脑图", "name_en": "Analyzing & summarizing"},
     {"id": PipelineStep.ARCHIVE, "name": "归档保存", "name_en": "Archiving"},
 ]
 
@@ -225,6 +225,15 @@ def _extract_internal_asr_error(recognition_segments: list[dict[str, Any]] | Non
         if text.startswith(prefixes):
             return text.strip("[]")
     return None
+
+
+def _plain_text_from_srt(srt_content: str) -> str:
+    """Extract readable transcript text from SRT content."""
+    return " ".join(
+        line.strip() for line in srt_content.splitlines()
+        if line.strip() and not line.strip().isdigit()
+        and "-->" not in line
+    )
 
 
 def _extract_audio_from_video(video_path: Path, output_path: Path) -> Path:
@@ -562,8 +571,8 @@ async def _run_subtitle_fast_path(
     # Guard: skip LLM if transcript is empty
     if not transcript or len(transcript.strip()) < 10:
         logger.warning(f"Fast path: transcript too short ({len(transcript)} chars), skipping LLM")
-        await _update_step(task, PipelineStep.ANALYZE, completed=True)
         await _update_step(task, PipelineStep.POLISH, completed=True)
+        await _update_step(task, PipelineStep.ANALYZE, completed=True)
         empty_analysis = {"language": "unknown", "content_type": "unknown", "main_topics": [],
                           "keywords": [], "proper_nouns": [], "speakers_detected": 0, "tone": "unknown"}
         empty_summary = {"tldr": "未检测到有效语音内容", "key_facts": [], "action_items": [], "topics": []}
@@ -579,7 +588,11 @@ async def _run_subtitle_fast_path(
             "subtitle_source": "platform",
         }
 
-    # -- ANALYZE: analyze first (cheap, ~8k-char prompt) so the detected
+    # -- POLISH: platform subtitle was polished by process_subtitles above. --
+    await _update_step(task, PipelineStep.POLISH, completed=True)
+
+    # -- ANALYZE: analyze after polish so summary/mindmap use the cleaned text.
+    # Analyze still runs first within this step (cheap, ~8k-char prompt) so the detected
     # language can be injected into the summarize+mindmap prompts. Running
     # analyze serially before the other two adds ~1-2s but prevents the
     # summarize/mindmap steps from collapsing multilingual transcripts into
@@ -600,7 +613,10 @@ async def _run_subtitle_fast_path(
                      for ch in metadata.chapters] if metadata.chapters else None,
     }
 
-    analysis = await analyze_content(transcript, metadata.title, metadata=video_metadata)
+    analysis_text = _plain_text_from_srt(polished) if polished else transcript
+    mindmap_text = polished or srt or transcript
+
+    analysis = await analyze_content(analysis_text, metadata.title, metadata=video_metadata)
     user_language = _user_language_hint(analysis)
 
     # Write analysis first so the frontend can surface language/topics early
@@ -611,8 +627,8 @@ async def _run_subtitle_fast_path(
         await _emit_file_ready(task, "analysis.json", str(analysis_path))
 
     summary, mindmap = await asyncio.gather(
-        summarize_text(transcript, user_language=user_language),
-        generate_mindmap(srt or transcript, metadata=mindmap_metadata, user_language=user_language),
+        summarize_text(analysis_text, user_language=user_language),
+        generate_mindmap(mindmap_text, metadata=mindmap_metadata, user_language=user_language),
     )
 
     if summary:
@@ -634,9 +650,6 @@ async def _run_subtitle_fast_path(
         await _emit_file_ready(task, "mindmap.md", str(mm_path))
 
     await _update_step(task, PipelineStep.ANALYZE, completed=True)
-
-    # -- POLISH: skip (platform subtitle already polished above) --
-    await _update_step(task, PipelineStep.POLISH, completed=True)
 
     return {
         "transcript": transcript,
@@ -777,11 +790,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             subtitle_source = "asr"
         if raw_path.exists():
             srt = raw_path.read_text(encoding="utf-8")
-            transcript = " ".join(
-                line.strip() for line in srt.splitlines()
-                if line.strip() and not line.strip().isdigit()
-                and "-->" not in line
-            )
+            transcript = _plain_text_from_srt(srt)
             return True
         return bool(polished)
 
@@ -1323,8 +1332,8 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     # Guard: skip LLM if transcript is empty or trivially short
     if not transcript or len(transcript.strip()) < 10:
         logger.warning(f"Transcript is empty or too short ({len(transcript)} chars), skipping LLM analysis")
-        await _update_step(task, PipelineStep.ANALYZE, completed=True)
         await _update_step(task, PipelineStep.POLISH, completed=True)
+        await _update_step(task, PipelineStep.ANALYZE, completed=True)
 
         await _update_step(task, PipelineStep.ARCHIVE)
         empty_analysis = {"language": "unknown", "content_type": "unknown", "main_topics": [],
@@ -1353,8 +1362,39 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         }
         return
 
-    # ── Step 4: Analyze + Summarize + Mindmap (parallel, CPU/network) ────────
-    if PipelineStep.ANALYZE in done:
+    # ── Step 4: Polish transcript (CPU/network) ────────────────────────────
+    polish_ran = False
+    if PipelineStep.POLISH in done:
+        logger.info(f"skipping POLISH, restoring from disk")
+        _restore_transcript()  # picks up polished if present
+    else:
+        await _update_step(task, PipelineStep.POLISH)
+        if has_subtitle:
+            logger.info("Skipping POLISH step (platform subtitle already polished)")
+        else:
+            hotwords = task.options.get("hotwords")
+            if hotwords and analysis:
+                existing = analysis.get("proper_nouns", []) or []
+                analysis["proper_nouns"] = list(set(existing + hotwords))
+            elif hotwords:
+                analysis = {"proper_nouns": hotwords}
+            polished = await polish_text(srt, context=analysis)
+        if not has_subtitle and polished:
+            from app.services.analysis import srt_to_markdown
+            polished_srt_path = task_dir / "transcript_polished.srt"
+            polished_srt_path.write_text(polished, encoding="utf-8")
+            await _emit_file_ready(task, "transcript_polished.srt", str(polished_srt_path))
+            polished_md_content = srt_to_markdown(polished, metadata.title)
+            polished_md_path = task_dir / "transcript_polished.md"
+            polished_md_path.write_text(polished_md_content, encoding="utf-8")
+            polish_ran = True
+        await _update_step(task, PipelineStep.POLISH, completed=True)
+    # end if POLISH not in done
+
+    # ── Step 5: Analyze + Summarize + Mindmap from polished text ─────────────
+    # If an older interrupted task already completed ANALYZE before POLISH,
+    # regenerate analysis outputs now so summary/mindmap reflect the polished SRT.
+    if PipelineStep.ANALYZE in done and not polish_ran:
         logger.info(f"skipping ANALYZE, restoring from disk")
         _restore_analysis()
         _restore_summary()
@@ -1367,17 +1407,17 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             "tags": metadata.tags,
             "chapters": [{"title": ch.title, "start_time": ch.start_time} for ch in metadata.chapters] if metadata.chapters else None,
         }
-        # Build mindmap metadata with title, chapters, description for map-reduce
         mindmap_metadata = {
             "title": metadata.title,
             "uploader": metadata.uploader,
             "description": metadata.description,
             "chapters": [{"title": ch.title, "start_time": ch.start_time} for ch in metadata.chapters] if metadata.chapters else None,
         }
-        # Run analyze first so its detected language can be injected into
-        # the summarize+mindmap prompts (prevents multilingual transcripts
-        # from being collapsed into a single output language).
-        analysis = await analyze_content(transcript, metadata.title, metadata=video_metadata)
+
+        analysis_text = _plain_text_from_srt(polished) if polished else transcript
+        mindmap_text = polished or srt or transcript
+
+        analysis = await analyze_content(analysis_text, metadata.title, metadata=video_metadata)
         user_language = _user_language_hint(analysis)
 
         import json as _json
@@ -1387,8 +1427,8 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             await _emit_file_ready(task, "analysis.json", str(analysis_path))
 
         summary, mindmap = await asyncio.gather(
-            summarize_text(transcript, user_language=user_language),
-            generate_mindmap(srt or transcript, metadata=mindmap_metadata, user_language=user_language),
+            summarize_text(analysis_text, user_language=user_language),
+            generate_mindmap(mindmap_text, metadata=mindmap_metadata, user_language=user_language),
         )
 
         if summary:
@@ -1411,31 +1451,6 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
         await _update_step(task, PipelineStep.ANALYZE, completed=True)
     # end if ANALYZE not in done
-
-    # ── Step 5: Polish transcript (CPU/network) ────────────────────────────
-    if PipelineStep.POLISH in done:
-        logger.info(f"skipping POLISH, restoring from disk")
-        _restore_transcript()  # picks up polished if present
-    else:
-        await _update_step(task, PipelineStep.POLISH)
-        if has_subtitle:
-            logger.info("Skipping POLISH step (platform subtitle already polished)")
-        else:
-            hotwords = task.options.get("hotwords")
-            if hotwords and analysis:
-                existing = analysis.get("proper_nouns", []) or []
-                analysis["proper_nouns"] = list(set(existing + hotwords))
-            polished = await polish_text(srt, context=analysis)
-        if not has_subtitle and polished:
-            from app.services.analysis import srt_to_markdown
-            polished_srt_path = task_dir / "transcript_polished.srt"
-            polished_srt_path.write_text(polished, encoding="utf-8")
-            await _emit_file_ready(task, "transcript_polished.srt", str(polished_srt_path))
-            polished_md_content = srt_to_markdown(polished, metadata.title)
-            polished_md_path = task_dir / "transcript_polished.md"
-            polished_md_path.write_text(polished_md_content, encoding="utf-8")
-        await _update_step(task, PipelineStep.POLISH, completed=True)
-    # end if POLISH not in done
 
     # Step 6: Archive (finalize — writes any missing files, sets status to completed)
     await _update_step(task, PipelineStep.ARCHIVE)

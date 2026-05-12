@@ -3,8 +3,8 @@ export const PIPELINE_STEPS = [
   { id: "separate", name: "分离人声" },
   { id: "transcribe", name: "转录音频" },
   { id: "voiceprint", name: "声纹识别" },
-  { id: "analyze", name: "分析+摘要" },
   { id: "polish", name: "润色字幕" },
+  { id: "analyze", name: "分析+摘要" },
   { id: "archive", name: "归档保存" },
 ] as const
 
