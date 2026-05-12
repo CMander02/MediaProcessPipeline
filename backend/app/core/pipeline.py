@@ -1500,10 +1500,13 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
             mindmap = await generate_mindmap(task.source)
             task.result = {"polished": polished, "summary": summary, "mindmap": mindmap}
 
-        # If this was the download-worker call, run_pipeline already returned
-        # early after advance_to_gpu() — don't mark COMPLETED yet.
+        # If this was the download-worker call, run_pipeline normally returned
+        # early after advance_to_gpu() — don't mark COMPLETED yet. The subtitle
+        # fast path is the exception: it can finish ARCHIVE inside the download
+        # worker, so it must fall through to the normal completion write below.
         if _download_worker_call and task.task_type == TaskType.PIPELINE:
-            return
+            if PipelineStep.ARCHIVE not in (task.completed_steps or []):
+                return
 
         task.status = TaskStatus.COMPLETED
         task.progress = 1.0
