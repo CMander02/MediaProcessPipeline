@@ -204,7 +204,7 @@ class Qwen3ASRService:
         if not getattr(torch.load, "_mpp_weights_only_patched", False):
             _orig_load = torch.load
             def _patched_load(*a, **kw):
-                kw.setdefault("weights_only", False)
+                kw["weights_only"] = False
                 return _orig_load(*a, **kw)
             _patched_load._mpp_weights_only_patched = True  # type: ignore[attr-defined]
             torch.load = _patched_load  # type: ignore[assignment]
