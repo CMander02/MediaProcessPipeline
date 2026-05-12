@@ -5,6 +5,7 @@ TaskStore + EventBus for state management instead of in-memory dicts.
 """
 
 import asyncio
+import json
 import logging
 import re
 import shutil
@@ -68,6 +69,20 @@ def _detect_source_type(source: str) -> str:
         return "local_audio"
     else:
         return "unknown"
+
+
+def _platform_prefer_subtitles(source_type: str) -> bool:
+    """Resolve subtitle preference with per-platform config fallback."""
+    rt = get_runtime_settings()
+    try:
+        configs = json.loads(rt.platform_configs or "{}")
+    except Exception:
+        configs = {}
+
+    platform_cfg = configs.get(source_type) if source_type in {"bilibili", "youtube"} else None
+    if isinstance(platform_cfg, dict) and "prefer_subtitle" in platform_cfg:
+        return bool(platform_cfg["prefer_subtitle"])
+    return bool(rt.prefer_platform_subtitles)
 
 
 def _sanitize_filename(name: str) -> str:
@@ -665,7 +680,11 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     rt = get_runtime_settings()
     source = _clean_source_path(task.source)
     platform_subtitle = None
-    use_platform_subtitles = rt.prefer_platform_subtitles and not task.options.get("force_asr", False)
+    source_type = _detect_source_type(source)
+    use_platform_subtitles = (
+        _platform_prefer_subtitles(source_type)
+        and not task.options.get("force_asr", False)
+    )
 
     # Resolve pre-created task dir
     task_dir = None
@@ -951,8 +970,6 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
         else:
             # ── URL source: probe metadata + subtitle first ──
-            source_type = _detect_source_type(source)
-
             # 1. Resolve title for task_dir naming
             if source_type == "bilibili":
                 bv_match = re.search(r'(BV[0-9A-Za-z]+)', source)

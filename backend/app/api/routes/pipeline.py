@@ -603,7 +603,5 @@ async def update_platform_config(platform_id: str, config: dict):
         updates["bilibili_preferred_quality"] = config["preferred_quality"]
     if platform_id == "youtube" and "preferred_quality" in config:
         updates["youtube_preferred_quality"] = config["preferred_quality"]
-    if platform_id == "bilibili" and "prefer_subtitle" in config:
-        updates["prefer_platform_subtitles"] = config["prefer_subtitle"]
     patch_runtime_settings(updates)
     return {"ok": True}
