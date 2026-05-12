@@ -22,7 +22,38 @@ _BBDOWN_EXE = _BBDOWN_DIR / "BBDown.exe"
 
 
 def _is_bilibili_url(url: str) -> bool:
-    return bool(re.search(r'bilibili\.com|b23\.tv|BV[0-9A-Za-z]+', url))
+    return bool(re.search(r'bilibili\.com|b23\.tv|BV[0-9A-Za-z]+|av\d+', url))
+
+
+def _extract_bilibili_bvid(url: str) -> str | None:
+    """Extract or resolve a Bilibili BV id from BV or av/aid URLs."""
+    bv_match = re.search(r'(BV[0-9A-Za-z]+)', url)
+    if bv_match:
+        return bv_match.group(1)
+
+    av_match = re.search(r'(?:/av|av)(\d+)', url, re.IGNORECASE)
+    if not av_match:
+        return None
+
+    aid = av_match.group(1)
+    try:
+        import json
+        import urllib.request
+
+        req = urllib.request.Request(
+            f"https://api.bilibili.com/x/web-interface/view?aid={aid}",
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": f"https://www.bilibili.com/video/av{aid}/",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read()).get("data", {})
+        bvid = data.get("bvid")
+        return str(bvid) if bvid else None
+    except Exception as e:
+        logger.warning(f"Bilibili aid->bvid resolve failed for av{aid}: {e}")
+        return None
 
 
 def ytdlp_auth_opts() -> dict[str, Any]:
@@ -220,13 +251,11 @@ class YtdlpService:
         import json
         import urllib.request
 
-        # Extract BV id from URL
-        bv_match = re.search(r'(BV[0-9A-Za-z]+)', url)
-        if not bv_match:
-            logger.warning(f"Cannot extract BV id from URL: {url}")
+        bvid = _extract_bilibili_bvid(url)
+        if not bvid:
+            logger.warning(f"Cannot extract Bilibili video id from URL: {url}")
             return {"webpage_url": url}
 
-        bvid = bv_match.group(1)
         info: dict[str, Any] = {"webpage_url": url}
 
         # Fetch video info
@@ -280,10 +309,9 @@ class YtdlpService:
             logger.warning("Bilibili: not logged in, forcing 360P (qn=16)")
             qn = 16
 
-        bv_match = re.search(r'(BV[0-9A-Za-z]+)', url)
-        if not bv_match:
-            raise RuntimeError(f"Cannot extract BV id from URL: {url}")
-        bvid = bv_match.group(1)
+        bvid = _extract_bilibili_bvid(url)
+        if not bvid:
+            raise RuntimeError(f"Cannot extract Bilibili video id from URL: {url}")
 
         logger.info(f"Downloading Bilibili video via DASH API: {bvid} qn={qn}")
         video_file, info = download_video(bvid, output_dir, qn=qn)
@@ -326,11 +354,10 @@ class YtdlpService:
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
-        bv_match = re.search(r'(BV[0-9A-Za-z]+)', url)
-        if not bv_match:
-            logger.warning(f"Cannot extract BV id from URL: {url}")
+        bvid = _extract_bilibili_bvid(url)
+        if not bvid:
+            logger.warning(f"Cannot extract Bilibili video id from URL: {url}")
             return empty
-        bvid = bv_match.group(1)
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
