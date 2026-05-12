@@ -892,8 +892,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 if not task_dir:
                     task_dir = create_task_dir(task.id, title)
                 dest_source = task_dir / source_path.name
-                # Move instead of copy — same partition is instant rename
-                shutil.move(str(source_path), str(dest_source))
+                shutil.copy2(str(source_path), str(dest_source))
 
             title = dest_source.stem
             video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov"}
