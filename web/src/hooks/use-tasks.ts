@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { api, subscribeAllEvents, type Task, type TaskStats } from "@/lib/api"
 
 export function useTasks() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [stats, setStats] = useState<TaskStats>({ total: 0 })
   const [loading, setLoading] = useState(true)
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hasActiveTasks = tasks.some((task) =>
     task.status === "pending" || task.status === "queued" || task.status === "processing",
   )
@@ -24,12 +25,19 @@ export function useTasks() {
     }
   }, [])
 
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimer.current) return
+    refreshTimer.current = setTimeout(() => {
+      refreshTimer.current = null
+      refresh()
+    }, 500)
+  }, [refresh])
+
   // SSE for real-time updates
   useEffect(() => {
     refresh()
     const unsub = subscribeAllEvents(() => {
-      // On any event, refresh the task list
-      refresh()
+      scheduleRefresh()
     })
 
     let interval: ReturnType<typeof setInterval> | null = null
@@ -41,8 +49,12 @@ export function useTasks() {
     return () => {
       unsub()
       if (interval) clearInterval(interval)
+      if (refreshTimer.current) {
+        clearTimeout(refreshTimer.current)
+        refreshTimer.current = null
+      }
     }
-  }, [hasActiveTasks, refresh])
+  }, [hasActiveTasks, refresh, scheduleRefresh])
 
   return { tasks, stats, loading, refresh }
 }

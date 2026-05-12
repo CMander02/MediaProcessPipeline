@@ -71,6 +71,7 @@ export function TaskQueueDropdown() {
   const [activeTasks, setActiveTasks] = useState<Task[]>([])
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -82,13 +83,28 @@ export function TaskQueueDropdown() {
     } catch {}
   }, [])
 
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimer.current) return
+    refreshTimer.current = setTimeout(() => {
+      refreshTimer.current = null
+      refresh()
+    }, 500)
+  }, [refresh])
+
   // Fetch on mount + SSE + polling while tasks are active
   useEffect(() => {
     refresh()
-    const unsub = subscribeAllEvents(() => refresh())
+    const unsub = subscribeAllEvents(() => scheduleRefresh())
     const interval = setInterval(refresh, 5000)
-    return () => { unsub(); clearInterval(interval) }
-  }, [refresh])
+    return () => {
+      unsub()
+      clearInterval(interval)
+      if (refreshTimer.current) {
+        clearTimeout(refreshTimer.current)
+        refreshTimer.current = null
+      }
+    }
+  }, [refresh, scheduleRefresh])
 
   const count = activeTasks.length
 
