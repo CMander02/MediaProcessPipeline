@@ -163,64 +163,48 @@ else:
 
 ### 3.3 Step 3: TRANSCRIBE (语音转录)
 
-**代码位置**: `backend/app/services/recognition/whisperx.py`
+**代码位置**:
+- Provider 入口: `backend/app/services/recognition/__init__.py`
+- 当前实现: `backend/app/services/recognition/qwen3_asr.py`
 
-#### WhisperX 配置
+#### ASR Provider
 | 设置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `whisper_model` | `large-v3-turbo` | Whisper 模型 |
-| `whisper_model_path` | 空 | 本地模型路径 |
-| `whisper_device` | `cuda` | 计算设备 |
-| `whisper_compute_type` | `float16` | 计算精度 |
-| `whisper_batch_size` | `16` | 批次大小 |
+| `asr_provider` | `qwen3` | ASR provider，目前只支持 `qwen3` |
+
+#### Qwen3-ASR 配置
+| 设置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `qwen3_asr_model_path` | 空 | 本地模型路径；空值使用 `Qwen/Qwen3-ASR-1.7B` |
+| `qwen3_aligner_model_path` | 空 | Qwen ForcedAligner 路径；配置后启用更稳定的时间戳 |
+| `qwen3_enable_timestamps` | `true` | 是否请求时间戳 |
+| `qwen3_batch_size` | `32` | Qwen3-ASR 推理批次大小 |
+| `qwen3_max_new_tokens` | `4096` | 单次生成 token 上限 |
+| `qwen3_device` | `cuda` | 计算设备 |
 | `enable_diarization` | `true` | 启用说话人分离 |
 
-#### 长音频自动分片
+#### 转录路径
 
-**代码位置**: `backend/app/services/preprocessing/vad_splitter.py`
+Qwen3-ASR 通过官方 `qwen-asr` 包加载：
 
-```
-音频时长判断:
-├─ ≤ 30分钟 → 直接转录
-└─ > 30分钟 → VAD 分片处理
-        │
-        ├─ 加载 Silero VAD 模型
-        ├─ 检测静音点 (语音间隔)
-        ├─ 在30分钟边界附近寻找最近静音点 (±2分钟)
-        ├─ 分割音频文件
-        ├─ 逐段转录
-        └─ 合并 SRT (修正时间戳偏移)
-```
-
-**分片参数**:
 ```python
-SPLIT_THRESHOLD_SECONDS = 30 * 60  # 30分钟阈值
-# 在目标时间±2分钟内寻找静音点
-if abs(closest - target_time) <= 120:
-    split_points.append(closest)
+from qwen_asr import Qwen3ASRModel
+model = Qwen3ASRModel.from_pretrained(model_path, **model_kwargs)
 ```
 
-#### 批次大小自动调整
-```python
-# 根据音频时长自动减小 batch_size 防止 OOM
-if audio_duration_min > 60:
-    batch_size = min(base_batch_size, 8)
-elif audio_duration_min > 30:
-    batch_size = min(base_batch_size, 12)
-else:
-    batch_size = base_batch_size
-```
+有 `qwen3_aligner_model_path` 时，使用 Qwen3-ASR 原生转录和 ForcedAligner
+时间戳。没有 ForcedAligner 时，为了保留分段时间，当前实现会用 Silero VAD
+切分语音片段，再逐片段调用 Qwen3-ASR。
 
 #### 说话人分离 (Diarization)
 ```python
 if diarize and rt.enable_diarization:
-    # 优先使用本地 pyannote 模型
     if rt.pyannote_model_path:
         self._diarize_model = self._load_diarization_model(...)
-    else:
-        # 使用 HuggingFace Token 下载
-        self._diarize_model = DiarizationPipeline(use_auth_token=rt.hf_token, ...)
 ```
+
+Voiceprint 通过 recognition provider 暴露的 diarization cache hook 复用最近一次
+pyannote 结果，不直接依赖具体 ASR 类。
 
 ---
 

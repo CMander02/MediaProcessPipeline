@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,9 @@ class RuntimeSettings(BaseModel):
     deepseek_mindmap_model: str = "deepseek-v4-flash"
     deepseek_mindmap_thinking: str = "disabled"
     deepseek_mindmap_effort: str = ""
+
+    # ASR
+    asr_provider: str = "qwen3"  # Currently supported: qwen3
 
     # Qwen3-ASR Settings
     qwen3_asr_model_path: str = ""  # Local path, empty = use HuggingFace
@@ -138,6 +141,14 @@ class RuntimeSettings(BaseModel):
 
     # Paths
     data_root: str = "D:/Video/MediaProcessPipeline"
+
+    @field_validator("asr_provider")
+    @classmethod
+    def _validate_asr_provider(cls, value: str) -> str:
+        provider = value.strip().lower()
+        if provider != "qwen3":
+            raise ValueError("asr_provider must be 'qwen3'")
+        return provider
 
 
 # Global runtime settings storage

@@ -1,25 +1,46 @@
-"""Recognition service - Qwen3-ASR transcription entrypoint."""
+"""Recognition service entrypoint.
+
+Qwen3-ASR is the only supported ASR provider today. The provider boundary keeps
+the rest of the pipeline from importing Qwen3 directly, so a future wholesale
+model switch has one clear integration point.
+"""
 
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any
 
-if TYPE_CHECKING:
-    from app.services.recognition.qwen3_asr import Qwen3ASRService
+from app.core.settings import get_runtime_settings
+from app.services.recognition.base import ASRService
 
 logger = logging.getLogger(__name__)
 
+SUPPORTED_ASR_PROVIDERS = {"qwen3"}
+
 __all__ = [
+    "SUPPORTED_ASR_PROVIDERS",
     "get_asr_service",
+    "release_asr_models",
     "transcribe_audio",
 ]
 
 
-def get_asr_service() -> "Qwen3ASRService":
-    """Get the singleton Qwen3-ASR service."""
-    from app.services.recognition.qwen3_asr import get_qwen3_service
-    return get_qwen3_service()
+def get_asr_service(provider: str | None = None) -> ASRService:
+    """Get the configured singleton ASR service."""
+    provider_id = (provider or get_runtime_settings().asr_provider).strip().lower()
+    if provider_id == "qwen3":
+        from app.services.recognition.qwen3_asr import get_qwen3_service
+
+        return get_qwen3_service()
+    supported = ", ".join(sorted(SUPPORTED_ASR_PROVIDERS))
+    raise ValueError(f"Unsupported ASR provider '{provider_id}'. Supported providers: {supported}")
+
+
+def release_asr_models() -> None:
+    """Release ASR-owned GPU resources without binding queue.py to a provider."""
+    from app.services.recognition.qwen3_asr import release_qwen3_service
+
+    release_qwen3_service()
 
 
 async def transcribe_audio(
@@ -28,7 +49,7 @@ async def transcribe_audio(
     output_dir: Path | None = None,
     num_speakers: int | None = None,
 ) -> dict[str, Any]:
-    """Transcribe audio with Qwen3-ASR and optionally write an SRT file."""
+    """Transcribe audio with the configured ASR provider and optionally write an SRT file."""
     service = get_asr_service()
     result = await asyncio.to_thread(service.transcribe, audio_path, language, num_speakers=num_speakers)
     segments = service.to_segments(result)

@@ -42,17 +42,9 @@ def _flush_gpu_models() -> None:
     except Exception as e:
         logger.warning(f"UVR release failed: {e}")
     try:
-        from app.services.recognition.qwen3_asr import get_qwen3_service
-        svc = get_qwen3_service()
-        if svc._model is not None:
-            logger.info("Releasing Qwen3-ASR model")
-            svc._model = None
-            svc._current_model_path = None
-            svc._current_aligner_path = None
-        if svc._diarize_pipeline is not None:
-            logger.info("Releasing diarization pipeline")
-            svc._diarize_pipeline = None
-            svc._diarize_model = None
+        from app.services.recognition import release_asr_models
+
+        release_asr_models()
     except Exception as e:
         logger.warning(f"ASR/Diarization release failed: {e}")
     try:

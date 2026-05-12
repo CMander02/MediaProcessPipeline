@@ -3,7 +3,39 @@
 # ModelScope 在国内访问更快，推荐优先使用
 
 # ============================================================================
-# WhisperX 语音识别模型
+# Qwen3-ASR 语音识别模型（当前产品默认）
+# ============================================================================
+qwen3-asr-1.7b:
+  description: Qwen3-ASR 官方 ASR 模型，当前后端默认通过 qwen-asr 包加载
+  size: ~4GB
+  huggingface: Qwen/Qwen3-ASR-1.7B
+  modelscope: Qwen/Qwen3-ASR-1.7B
+  package: qwen-asr
+  runtime_provider: qwen3
+  usage: |
+    from qwen_asr import Qwen3ASRModel
+    model = Qwen3ASRModel.from_pretrained(
+        "Qwen/Qwen3-ASR-1.7B",
+        dtype="bfloat16",
+        device_map="cuda",
+    )
+    result = model.transcribe(audio="audio.wav", language=None)
+
+qwen3-asr-forced-aligner:
+  description: Qwen3-ASR 时间戳对齐器；配置 qwen3_aligner_model_path 后启用
+  size: varies
+  huggingface: null
+  modelscope: null
+  package: qwen-asr
+  usage: |
+    model = Qwen3ASRModel.from_pretrained(
+        asr_model_path,
+        forced_aligner=aligner_model_path,
+        forced_aligner_kwargs={"device_map": "cuda"},
+    )
+
+# ============================================================================
+# WhisperX 语音识别模型（历史/备选记录，当前产品不再默认使用）
 # ============================================================================
 whisper-large-v3:
   description: OpenAI Whisper 大模型，支持多语言语音识别

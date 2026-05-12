@@ -32,6 +32,7 @@ export interface TaskStats {
 
 export interface Settings {
   llm_provider: string
+  asr_provider: string
   qwen3_asr_model_path: string
   qwen3_device: string
   local_llm_model_path: string

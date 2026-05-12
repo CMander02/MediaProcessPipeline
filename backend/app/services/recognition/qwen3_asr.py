@@ -76,6 +76,17 @@ class Qwen3ASRService:
         self._last_diarize_audio = None  # audio path used in last diarization
         self._load_error: str | None = None
 
+    def release(self) -> None:
+        """Release loaded model resources held by this provider."""
+        self._model = None
+        self._aligner = None
+        self._current_model_path = None
+        self._current_aligner_path = None
+        self._diarize_model = None
+        self._diarize_pipeline = None
+        self._last_diarize_df = None
+        self._last_diarize_audio = None
+
     def get_pyannote_pipeline(self):
         """Return the loaded pyannote SpeakerDiarization pipeline (unwrapped) or None."""
         return self._diarize_pipeline
@@ -808,3 +819,10 @@ def get_qwen3_service() -> Qwen3ASRService:
     if _service is None:
         _service = Qwen3ASRService()
     return _service
+
+
+def release_qwen3_service() -> None:
+    """Release the Qwen3-ASR singleton if it has been created."""
+    if _service is not None:
+        logger.info("Releasing Qwen3-ASR and diarization models")
+        _service.release()

@@ -802,6 +802,7 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "polish_provider",
     ],
     "asr": [
+        "asr_provider",
         "qwen3_asr_model_path", "qwen3_aligner_model_path",
         "qwen3_enable_timestamps", "qwen3_batch_size", "qwen3_max_new_tokens", "qwen3_device",
     ],

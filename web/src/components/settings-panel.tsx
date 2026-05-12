@@ -321,7 +321,7 @@ export function SettingsPanel() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <p className="text-sm text-muted-foreground">当前固定使用 Qwen3-ASR。</p>
+                  <p className="text-sm text-muted-foreground">当前 ASR provider 为 {String(settings.asr_provider ?? "qwen3")}，只支持 Qwen3-ASR。</p>
                   <Separator />
                   <div className="space-y-3">
                     <SettingRow
