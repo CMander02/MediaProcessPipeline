@@ -8,8 +8,10 @@ the /{task_id} catch-all, otherwise FastAPI tries to parse "events" as a UUID.
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
+from urllib.parse import urlparse
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
@@ -26,6 +28,27 @@ from app.models import Task, TaskCreate, TaskStatus
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 logger = logging.getLogger(__name__)
+
+
+def _validate_public_http_url(url: str) -> None:
+    """Validate URL task sources before they reach downloader backends."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(400, f"Unsupported URL scheme: {parsed.scheme!r}")
+
+    hostname = parsed.hostname or ""
+    if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+        raise HTTPException(400, "URL pointing to localhost is not allowed")
+
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+            raise HTTPException(400, "URL pointing to private/reserved IP is not allowed")
+    except ValueError:
+        pass
+
+    if hostname in ("169.254.169.254", "metadata.google.internal"):
+        raise HTTPException(400, "URL pointing to cloud metadata endpoint is not allowed")
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +74,9 @@ async def create_task(task_create: TaskCreate):
 
     # Create task directory immediately so frontend can navigate to result page
     source = _clean_source_path(task_create.source)
+    if source.startswith(("http://", "https://")):
+        _validate_public_http_url(source)
+
     if _looks_like_local_path(source):
         title = Path(source).stem
         media_type = "video" if Path(source).suffix.lower() in {".mp4", ".mkv", ".avi", ".webm", ".mov"} else "audio"
