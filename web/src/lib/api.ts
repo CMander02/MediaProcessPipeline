@@ -44,8 +44,43 @@ export interface Settings {
 
 // ---- Fetch helpers ----
 
+const API_TOKEN_STORAGE_KEY = "mpp_api_token"
+
+function getApiToken(): string {
+  if (typeof localStorage === "undefined") return ""
+  return localStorage.getItem(API_TOKEN_STORAGE_KEY) ?? ""
+}
+
+function persistApiToken(token: string) {
+  if (typeof localStorage === "undefined" || typeof document === "undefined") return
+  const trimmed = token.trim()
+  if (trimmed) {
+    localStorage.setItem(API_TOKEN_STORAGE_KEY, trimmed)
+    document.cookie = `${API_TOKEN_STORAGE_KEY}=${encodeURIComponent(trimmed)}; Path=/; SameSite=Strict`
+  } else {
+    localStorage.removeItem(API_TOKEN_STORAGE_KEY)
+    document.cookie = `${API_TOKEN_STORAGE_KEY}=; Path=/; Max-Age=0; SameSite=Strict`
+  }
+}
+
+function headers(json = false): HeadersInit {
+  const h: Record<string, string> = {}
+  if (json) h["Content-Type"] = "application/json"
+  const token = getApiToken()
+  if (token) h.Authorization = `Bearer ${token}`
+  return h
+}
+
+function requestedJsonHeaders(): HeadersInit {
+  return { ...headers(true), "X-Requested-With": "fetch" }
+}
+
+function requestedHeaders(): HeadersInit {
+  return { ...headers(false), "X-Requested-With": "fetch" }
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(path)
+  const res = await fetch(path, { headers: headers() })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   return res.json()
 }
@@ -53,7 +88,7 @@ async function get<T>(path: string): Promise<T> {
 async function post<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
+    headers: requestedJsonHeaders(),
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
@@ -63,7 +98,7 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
 async function patch<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
+    headers: requestedJsonHeaders(),
     body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
@@ -73,7 +108,7 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
 async function put<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: "PUT",
-    headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
+    headers: requestedJsonHeaders(),
     body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
@@ -83,7 +118,7 @@ async function put<T>(path: string, body: unknown): Promise<T> {
 async function httpDelete<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method: "DELETE",
-    headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
+    headers: requestedJsonHeaders(),
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
@@ -111,8 +146,13 @@ export const api = {
 
   settings: {
     get: () => get<Settings>("/api/settings"),
-    patch: (updates: Record<string, unknown>) =>
-      patch<Settings>("/api/settings", updates),
+    patch: async (updates: Record<string, unknown>) => {
+      const updated = await patch<Settings>("/api/settings", updates)
+      if (typeof updates.api_token === "string" && !updates.api_token.startsWith("***...")) {
+        persistApiToken(updates.api_token)
+      }
+      return updated
+    },
   },
 
   archives: {
@@ -140,7 +180,7 @@ export const api = {
       }
       const res = await fetch("/api/pipeline/upload", {
         method: "POST",
-        headers: { "X-Requested-With": "fetch" },
+        headers: requestedHeaders(),
         body: form,
         signal,
       })

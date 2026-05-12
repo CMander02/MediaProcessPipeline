@@ -233,6 +233,25 @@ export function SettingsPanel() {
                 </CardContent>
               </Card>
 
+              {/* Security */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">访问控制</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <SettingRow
+                    label="API Token"
+                    settingKey="api_token"
+                    value={String(settings.api_token ?? "")}
+                    onSave={updateSetting}
+                    saving={saving}
+                    saved={saved}
+                    masked
+                    placeholder="留空则不启用"
+                  />
+                </CardContent>
+              </Card>
+
               {/* Queue */}
               <Card>
                 <CardHeader className="pb-3">

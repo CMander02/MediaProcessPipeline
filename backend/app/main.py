@@ -93,7 +93,8 @@ async def auth_middleware(request: Request, call_next):
         token = rt.api_token
         if token:
             auth_header = request.headers.get("authorization", "")
-            if auth_header != f"Bearer {token}":
+            cookie_token = request.cookies.get("mpp_api_token", "")
+            if auth_header != f"Bearer {token}" and cookie_token != token:
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Unauthorized — invalid or missing Bearer token"},
