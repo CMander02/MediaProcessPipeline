@@ -380,6 +380,8 @@ def _save_all_tracks_as_transcripts(tracks: list[dict], task_dir: Path) -> list[
             "type": t.get("type") or "cc",
             "filename": dest.name,
             "polished": False,
+            "source_engine": t.get("source_engine"),
+            "validation": t.get("validation"),
         })
     return manifest
 
@@ -590,6 +592,8 @@ async def _run_subtitle_fast_path(
     # Attach tracks + detected language to metadata for archive/UI
     metadata.extra["subtitle_tracks"] = tracks_manifest
     metadata.extra["detected_language"] = detected_lang
+    metadata.extra["subtitle_engine"] = platform_subtitle.get("subtitle_engine")
+    metadata.extra["subtitle_diagnostics"] = platform_subtitle.get("diagnostics") or []
 
     sub_result = await process_subtitles(
         subtitle_path=selected_track["path"],
@@ -1072,6 +1076,11 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         sub_dir = task_dir / "subtitles"
                         probe_subtitle = await download_subtitles(source, sub_dir)
                         if not probe_subtitle or not probe_subtitle.get("subtitle_path"):
+                            if probe_metadata and probe_subtitle:
+                                probe_metadata.extra["subtitle_engine"] = probe_subtitle.get("subtitle_engine")
+                                probe_metadata.extra["subtitle_diagnostics"] = (
+                                    probe_subtitle.get("diagnostics") or []
+                                )
                             probe_subtitle = None
                             if sub_dir.exists() and not any(sub_dir.iterdir()):
                                 sub_dir.rmdir()
@@ -1205,6 +1214,8 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     if platform_subtitle.get("subtitle_path"):
                         logger.info(f"Downloaded platform subtitle: {platform_subtitle['subtitle_path']}")
                     else:
+                        metadata.extra["subtitle_engine"] = platform_subtitle.get("subtitle_engine")
+                        metadata.extra["subtitle_diagnostics"] = platform_subtitle.get("diagnostics") or []
                         platform_subtitle = None
                         if sub_dir.exists() and not any(sub_dir.iterdir()):
                             sub_dir.rmdir()
@@ -1288,6 +1299,8 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                             entry["polished"] = True
                     metadata.extra["subtitle_tracks"] = tracks_manifest
                     metadata.extra["detected_language"] = detected_lang
+                    metadata.extra["subtitle_engine"] = platform_subtitle.get("subtitle_engine")
+                    metadata.extra["subtitle_diagnostics"] = platform_subtitle.get("diagnostics") or []
 
                     sub_result = await process_subtitles(
                         subtitle_path=selected_track["path"],

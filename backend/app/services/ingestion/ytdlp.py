@@ -96,6 +96,78 @@ def _bili_json_to_srt(body: list[dict]) -> str:
     return "\n".join(out)
 
 
+def _parse_lang_priority(langs: list[str] | str | None = None) -> list[str]:
+    """Normalize subtitle language priority strings like 'zh,en'."""
+    if langs is None:
+        raw = get_runtime_settings().subtitle_languages
+        parts = raw.split(",") if raw else []
+    elif isinstance(langs, str):
+        parts = langs.split(",")
+    else:
+        parts = langs
+    return [p.strip().lower() for p in parts if p and p.strip()]
+
+
+def _lang_rank(lang: str, preferred: list[str]) -> int:
+    """Return the priority rank for a language code, or a large value."""
+    if not preferred:
+        return 0
+    normalized = (lang or "").lower()
+    for idx, want in enumerate(preferred):
+        if (
+            normalized == want
+            or normalized.startswith(want)
+            or want.startswith(normalized)
+            or want in normalized
+        ):
+            return idx
+    return 999
+
+
+def _subtitle_track_type(track: dict[str, Any]) -> int:
+    """Return Bilibili subtitle type, preserving 0 as manual CC."""
+    raw = track.get("type")
+    return int(raw) if raw is not None else 1
+
+
+def _filter_and_sort_subtitle_tracks(
+    tracks: list[dict[str, Any]],
+    preferred_langs: list[str],
+) -> list[dict[str, Any]]:
+    """Prefer configured languages first, then manual CC before AI."""
+    indexed = list(enumerate(tracks))
+
+    if preferred_langs:
+        matched = [
+            (i, t) for i, t in indexed
+            if _lang_rank(str(t.get("lan") or ""), preferred_langs) < 999
+        ]
+        if matched:
+            indexed = matched
+
+    indexed.sort(key=lambda item: (
+        _lang_rank(str(item[1].get("lan") or ""), preferred_langs),
+        _subtitle_track_type(item[1]),  # 0=CC, 1=AI
+        item[0],
+    ))
+    return [t for _, t in indexed]
+
+
+def _empty_subtitle_result(
+    *,
+    engine: str | None = None,
+    diagnostics: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "tracks": [],
+        "subtitle_path": None,
+        "subtitle_lang": None,
+        "subtitle_format": None,
+        "subtitle_engine": engine,
+        "diagnostics": diagnostics or [],
+    }
+
+
 def _run_subprocess_streamed(
     cmd: list[str],
     cwd: str | None,
@@ -331,7 +403,12 @@ class YtdlpService:
             "info": meta,
         }
 
-    def _download_bilibili_subtitle(self, url: str, output_dir: Path) -> dict[str, Any]:
+    def _download_bilibili_subtitle(
+        self,
+        url: str,
+        output_dir: Path,
+        langs: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Download ALL usable Bilibili subtitle tracks via the wbi-signed player/v2 API.
 
         Uses wbi-signed /x/player/wbi/v2 (authenticated via SESSDATA from settings or
@@ -349,7 +426,14 @@ class YtdlpService:
         import json
         import urllib.request
 
-        empty = {"tracks": [], "subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
+        rt = get_runtime_settings()
+        engine = rt.bilibili_subtitle_engine or "native_wbi"
+        strict_validation = bool(rt.bilibili_subtitle_strict_validation)
+        min_coverage = float(rt.bilibili_subtitle_min_coverage)
+        preferred_langs = _parse_lang_priority(langs)
+        diagnostics: list[dict[str, Any]] = []
+
+        empty = _empty_subtitle_result(engine=engine, diagnostics=diagnostics)
 
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
@@ -357,6 +441,7 @@ class YtdlpService:
         bvid = _extract_bilibili_bvid(url)
         if not bvid:
             logger.warning(f"Cannot extract Bilibili video id from URL: {url}")
+            diagnostics.append({"stage": "resolve", "status": "failed", "reason": "missing_bvid"})
             return empty
 
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -369,20 +454,31 @@ class YtdlpService:
                 subtitle_url_matches_video,
             )
         except ImportError as e:
-            logger.warning(f"bilibili.api import failed ({e}), falling back to unsigned player/v2")
-            return self._download_bilibili_subtitle_legacy(url, output_dir, bvid)
+            logger.warning(f"bilibili.api import failed ({e})")
+            diagnostics.append({
+                "stage": "import",
+                "status": "failed",
+                "reason": "native_api_import_failed",
+                "detail": str(e),
+            })
+            if not rt.bilibili_subtitle_allow_legacy_fallback:
+                return empty
+            logger.warning("Bilibili subtitle legacy fallback enabled; using unsigned player/v2")
+            return self._download_bilibili_subtitle_legacy(url, output_dir, bvid, preferred_langs)
 
         # --- Fetch video metadata (aid, cid, duration) ---
         try:
             view_data = bili_view(bvid)
         except Exception as e:
             logger.warning(f"Bilibili view API failed for {bvid}: {e}")
+            diagnostics.append({"stage": "view", "status": "failed", "reason": "api_error", "detail": str(e)})
             return empty
 
         aid = int(view_data.get("aid") or 0)
         pages = view_data.get("pages") or []
         if not pages:
             logger.warning(f"Bilibili: no pages for {bvid}")
+            diagnostics.append({"stage": "view", "status": "failed", "reason": "no_pages"})
             return empty
         page = pages[0]
         cid = int(page.get("cid") or 0)
@@ -390,6 +486,13 @@ class YtdlpService:
 
         if not aid or not cid:
             logger.warning(f"Bilibili: missing aid/cid for {bvid} (aid={aid}, cid={cid})")
+            diagnostics.append({
+                "stage": "view",
+                "status": "failed",
+                "reason": "missing_aid_or_cid",
+                "aid": aid,
+                "cid": cid,
+            })
             return empty
 
         # --- Fetch subtitle track list via wbi-signed endpoint ---
@@ -397,19 +500,31 @@ class YtdlpService:
             pv2_data = bili_player_v2(bvid, aid, cid)
         except Exception as e:
             logger.warning(f"Bilibili player/wbi/v2 failed for {bvid}: {e}")
+            diagnostics.append({
+                "stage": "player_wbi_v2",
+                "status": "failed",
+                "reason": "api_error",
+                "detail": str(e),
+            })
             return empty
 
         tracks = ((pv2_data.get("subtitle") or {}).get("subtitles")) or []
         if not tracks:
             logger.info(f"Bilibili: no subtitle tracks for {bvid}")
+            diagnostics.append({"stage": "track_list", "status": "empty", "reason": "no_tracks"})
             return empty
 
         usable = [t for t in tracks if t.get("subtitle_url")]
         if not usable:
             logger.info(f"Bilibili: {len(tracks)} track(s) but all empty url")
+            diagnostics.append({
+                "stage": "track_list",
+                "status": "empty",
+                "reason": "all_tracks_missing_url",
+                "track_count": len(tracks),
+            })
             return empty
-        # Sort: user CC (type 0) before AI (type 1) so the first good track is highest quality
-        usable.sort(key=lambda t: int(t.get("type") or 1))
+        usable = _filter_and_sort_subtitle_tracks(usable, preferred_langs)
 
         saved_tracks: list[dict[str, Any]] = []
         seen_langs: set[str] = set()
@@ -418,7 +533,7 @@ class YtdlpService:
             if sub_url.startswith("//"):
                 sub_url = "https:" + sub_url
             lan = track.get("lan", "unknown")
-            t_type = int(track.get("type") or 1)
+            t_type = _subtitle_track_type(track)
             t_label = "CC" if t_type == 0 else "AI"
 
             # Prefer CC over AI when same language has both
@@ -426,11 +541,22 @@ class YtdlpService:
                 continue
 
             # Validate that the blob URL encodes this video's aid+cid
-            if not subtitle_url_matches_video(sub_url, aid, cid):
+            matches_video = subtitle_url_matches_video(sub_url, aid, cid)
+            if strict_validation and not matches_video:
                 logger.warning(
                     f"Bilibili {t_label}/{lan}: subtitle URL does not match video "
                     f"(aid={aid}, cid={cid}) — skipping mismatched blob"
                 )
+                diagnostics.append({
+                    "stage": "validate_url",
+                    "status": "skipped",
+                    "reason": "aid_cid_mismatch",
+                    "lang": lan,
+                    "type": t_label.lower(),
+                    "aid": aid,
+                    "cid": cid,
+                    "url_tail": sub_url.split("/")[-1].split("?")[0],
+                })
                 continue
 
             try:
@@ -439,21 +565,49 @@ class YtdlpService:
                     sub_json = json.loads(resp.read())
             except Exception as e:
                 logger.warning(f"download {t_label}/{lan} failed: {e}")
+                diagnostics.append({
+                    "stage": "download",
+                    "status": "failed",
+                    "reason": "download_error",
+                    "lang": lan,
+                    "type": t_label.lower(),
+                    "detail": str(e),
+                })
                 continue
 
             body = sub_json.get("body") or []
             if len(body) < 3:
                 logger.info(f"Bilibili {t_label}/{lan}: only {len(body)} cues, skipping")
+                diagnostics.append({
+                    "stage": "validate_body",
+                    "status": "skipped",
+                    "reason": "too_few_cues",
+                    "lang": lan,
+                    "type": t_label.lower(),
+                    "cue_count": len(body),
+                })
                 continue
 
+            coverage = None
             if video_duration > 0:
                 last_t = float(body[-1].get("from") or 0)
                 coverage = last_t / video_duration
-                if coverage < 0.6:
+                if coverage < min_coverage:
                     logger.warning(
                         f"Bilibili {t_label}/{lan}: coverage {coverage:.0%} "
                         f"(last_cue={last_t:.0f}s vs video={video_duration:.0f}s) — skipping"
                     )
+                    diagnostics.append({
+                        "stage": "validate_body",
+                        "status": "skipped",
+                        "reason": "low_coverage",
+                        "lang": lan,
+                        "type": t_label.lower(),
+                        "coverage": round(coverage, 4),
+                        "min_coverage": min_coverage,
+                        "last_cue_seconds": last_t,
+                        "video_duration_seconds": video_duration,
+                    })
                     continue
 
             srt_path = output_dir / f"{bvid}.{lan}.srt"
@@ -464,6 +618,15 @@ class YtdlpService:
                 "lang": lan,
                 "format": "srt",
                 "type": "cc" if t_type == 0 else "ai",
+                "source_engine": engine,
+                "validation": {
+                    "strict_url_match": strict_validation,
+                    "url_matches_video": matches_video,
+                    "coverage": round(coverage, 4) if coverage is not None else None,
+                    "min_coverage": min_coverage,
+                    "aid": aid,
+                    "cid": cid,
+                },
             })
             seen_langs.add(lan)
 
@@ -477,16 +640,23 @@ class YtdlpService:
             "subtitle_path": first["path"],
             "subtitle_lang": first["lang"],
             "subtitle_format": first["format"],
+            "subtitle_engine": engine,
+            "diagnostics": diagnostics,
         }
 
     def _download_bilibili_subtitle_legacy(
-        self, url: str, output_dir: Path, bvid: str
+        self,
+        url: str,
+        output_dir: Path,
+        bvid: str,
+        preferred_langs: list[str] | None = None,
     ) -> dict[str, Any]:
         """Legacy fallback: unsigned /x/player/v2 (used only if new api.py fails to import)."""
         import json
         import urllib.request
 
-        empty = {"tracks": [], "subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
+        engine = "legacy_unsigned"
+        empty = _empty_subtitle_result(engine=engine)
 
         cookie_file = _BBDOWN_DIR / "BBDown.data"
         cookie = ""
@@ -532,7 +702,7 @@ class YtdlpService:
         usable = [t for t in tracks if t.get("subtitle_url")]
         if not usable:
             return empty
-        usable.sort(key=lambda t: int(t.get("type") or 1))
+        usable = _filter_and_sort_subtitle_tracks(usable, preferred_langs or [])
 
         saved_tracks: list[dict[str, Any]] = []
         seen_langs: set[str] = set()
@@ -541,7 +711,7 @@ class YtdlpService:
             if sub_url.startswith("//"):
                 sub_url = "https:" + sub_url
             lan = track.get("lan", "unknown")
-            t_type = int(track.get("type") or 1)
+            t_type = _subtitle_track_type(track)
             t_label = "CC" if t_type == 0 else "AI"
             if lan in seen_langs:
                 continue
@@ -566,6 +736,13 @@ class YtdlpService:
                 "lang": lan,
                 "format": "srt",
                 "type": "cc" if t_type == 0 else "ai",
+                "source_engine": engine,
+                "validation": {
+                    "strict_url_match": False,
+                    "url_matches_video": None,
+                    "coverage": round(last_t / video_duration, 4) if video_duration > 0 else None,
+                    "min_coverage": 0.6,
+                },
             })
             seen_langs.add(lan)
 
@@ -577,6 +754,8 @@ class YtdlpService:
             "subtitle_path": first["path"],
             "subtitle_lang": first["lang"],
             "subtitle_format": first["format"],
+            "subtitle_engine": engine,
+            "diagnostics": [],
         }
 
     def fetch_metadata(self, url: str) -> dict[str, Any]:
@@ -755,10 +934,11 @@ class YtdlpService:
         """
         import yt_dlp
 
-        empty = {"tracks": [], "subtitle_path": None, "subtitle_lang": None, "subtitle_format": None}
+        preferred_langs = _parse_lang_priority(langs)
+        empty = _empty_subtitle_result()
 
         if _is_bilibili_url(url):
-            return self._download_bilibili_subtitle(url, output_dir)
+            return self._download_bilibili_subtitle(url, output_dir, preferred_langs)
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -788,8 +968,8 @@ class YtdlpService:
                             out.append(k)
             return out
 
-        manual_langs = _filter(manual_subs, langs)
-        auto_langs = _filter(auto_subs, langs)
+        manual_langs = _filter(manual_subs, preferred_langs)
+        auto_langs = _filter(auto_subs, preferred_langs)
         # Skip auto-captions for languages where a manual track exists
         auto_langs = [l for l in auto_langs if l not in manual_langs]
 
@@ -845,6 +1025,8 @@ class YtdlpService:
             "subtitle_path": first["path"],
             "subtitle_lang": first["lang"],
             "subtitle_format": first["format"],
+            "subtitle_engine": "yt-dlp",
+            "diagnostics": [],
         }
 
     def _compute_hash(self, file_path: str) -> str:

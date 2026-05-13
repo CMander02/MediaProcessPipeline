@@ -556,6 +556,20 @@ async def get_platform_configs():
                 "auth_status": "logged_in" if bili_status else "not_logged_in",
                 "preferred_quality": bilibili_cfg.get("preferred_quality", rt.bilibili_preferred_quality),
                 "prefer_subtitle": bilibili_cfg.get("prefer_subtitle", rt.prefer_platform_subtitles),
+                "subtitle_engine": bilibili_cfg.get("subtitle_engine", rt.bilibili_subtitle_engine),
+                "subtitle_languages": bilibili_cfg.get("subtitle_languages", rt.subtitle_languages),
+                "subtitle_strict_validation": bilibili_cfg.get(
+                    "subtitle_strict_validation",
+                    rt.bilibili_subtitle_strict_validation,
+                ),
+                "subtitle_min_coverage": bilibili_cfg.get(
+                    "subtitle_min_coverage",
+                    rt.bilibili_subtitle_min_coverage,
+                ),
+                "subtitle_allow_legacy_fallback": bilibili_cfg.get(
+                    "subtitle_allow_legacy_fallback",
+                    rt.bilibili_subtitle_allow_legacy_fallback,
+                ),
             },
             {
                 "id": "youtube",
@@ -602,11 +616,22 @@ async def update_platform_config(platform_id: str, config: dict):
         stored = json.loads(rt.platform_configs or "{}")
     except Exception:
         stored = {}
-    stored[platform_id] = config
+    existing = stored.get(platform_id, {})
+    stored[platform_id] = {**existing, **config}
 
     updates: dict = {"platform_configs": json.dumps(stored)}
     if platform_id == "bilibili" and "preferred_quality" in config:
         updates["bilibili_preferred_quality"] = config["preferred_quality"]
+    if platform_id == "bilibili" and "subtitle_engine" in config:
+        updates["bilibili_subtitle_engine"] = config["subtitle_engine"]
+    if platform_id == "bilibili" and "subtitle_languages" in config:
+        updates["subtitle_languages"] = config["subtitle_languages"]
+    if platform_id == "bilibili" and "subtitle_strict_validation" in config:
+        updates["bilibili_subtitle_strict_validation"] = config["subtitle_strict_validation"]
+    if platform_id == "bilibili" and "subtitle_min_coverage" in config:
+        updates["bilibili_subtitle_min_coverage"] = config["subtitle_min_coverage"]
+    if platform_id == "bilibili" and "subtitle_allow_legacy_fallback" in config:
+        updates["bilibili_subtitle_allow_legacy_fallback"] = config["subtitle_allow_legacy_fallback"]
     if platform_id == "youtube" and "preferred_quality" in config:
         updates["youtube_preferred_quality"] = config["preferred_quality"]
     patch_runtime_settings(updates)

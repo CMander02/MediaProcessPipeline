@@ -791,10 +791,17 @@ function BilibiliCard({ onAuthChange }: BilibiliCardProps) {
   const [platformConfig, setPlatformConfig] = useState<{
     preferred_quality: number
     prefer_subtitle: boolean
+    subtitle_engine: string
+    subtitle_languages: string
+    subtitle_strict_validation: boolean
+    subtitle_min_coverage: number
+    subtitle_allow_legacy_fallback: boolean
   } | null>(null)
 
   const [savedQuality, setSavedQuality] = useState(false)
   const [savedSubtitle, setSavedSubtitle] = useState(false)
+  const [savingPlatform, setSavingPlatform] = useState<Record<string, boolean>>({})
+  const [savedPlatform, setSavedPlatform] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     api.bilibili.status()
@@ -809,7 +816,15 @@ function BilibiliCard({ onAuthChange }: BilibiliCardProps) {
     api.platforms.list().then((res) => {
       const bili = res.platforms.find((p) => p.id === "bilibili")
       if (bili) {
-        setPlatformConfig({ preferred_quality: Number(bili.preferred_quality ?? 64), prefer_subtitle: Boolean(bili.prefer_subtitle) })
+        setPlatformConfig({
+          preferred_quality: Number(bili.preferred_quality ?? 64),
+          prefer_subtitle: Boolean(bili.prefer_subtitle),
+          subtitle_engine: String(bili.subtitle_engine ?? "native_wbi"),
+          subtitle_languages: String(bili.subtitle_languages ?? "zh,en"),
+          subtitle_strict_validation: Boolean(bili.subtitle_strict_validation ?? true),
+          subtitle_min_coverage: Number(bili.subtitle_min_coverage ?? 0.6),
+          subtitle_allow_legacy_fallback: Boolean(bili.subtitle_allow_legacy_fallback ?? false),
+        })
       }
     }).catch(() => {})
   }, [])
@@ -832,6 +847,21 @@ function BilibiliCard({ onAuthChange }: BilibiliCardProps) {
       setSavedSubtitle(true)
       setTimeout(() => setSavedSubtitle(false), 1500)
     } catch {}
+  }
+
+  const updatePlatformSetting = async (key: string, value: unknown) => {
+    if (!platformConfig) return
+    setPlatformConfig((prev) => prev ? { ...prev, [key]: value } : prev)
+    setSavingPlatform((s) => ({ ...s, [key]: true }))
+    try {
+      await api.platforms.update("bilibili", { [key]: value })
+      setSavedPlatform((s) => ({ ...s, [key]: true }))
+      setTimeout(() => setSavedPlatform((s) => ({ ...s, [key]: false })), 1500)
+    } catch {
+      setPlatformConfig(platformConfig)
+    } finally {
+      setSavingPlatform((s) => ({ ...s, [key]: false }))
+    }
   }
 
   const loggedIn = status?.logged_in ?? false
@@ -904,6 +934,86 @@ function BilibiliCard({ onAuthChange }: BilibiliCardProps) {
                   <Switch
                     checked={platformConfig.prefer_subtitle}
                     onCheckedChange={handleSubtitleChange}
+                  />
+                </div>
+              </div>
+
+              <Separator />
+              <p className="text-xs font-medium text-muted-foreground">字幕下载与校验</p>
+
+              <div className="flex items-center gap-3">
+                <Label className="w-24 shrink-0 text-sm text-muted-foreground">字幕引擎</Label>
+                <select
+                  value={platformConfig.subtitle_engine}
+                  onChange={(e) => updatePlatformSetting("subtitle_engine", e.target.value)}
+                  className="flex-1 h-8 rounded-md border border-input bg-background px-2 text-sm"
+                >
+                  <option value="native_wbi">原生 WBI API（非 yt-dlp）</option>
+                </select>
+                {savedPlatform.subtitle_engine && (
+                  <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
+                )}
+              </div>
+
+              <SettingRow
+                label="语言优先级"
+                settingKey="subtitle_languages"
+                value={platformConfig.subtitle_languages}
+                onSave={updatePlatformSetting}
+                saving={savingPlatform}
+                saved={savedPlatform}
+                placeholder="zh,en,ja"
+              />
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label className="text-sm text-muted-foreground">严格防串字幕校验</Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    校验字幕 blob 文件名是否匹配当前视频 aid+cid，不匹配则跳过并回退 ASR。
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {savedPlatform.subtitle_strict_validation && (
+                    <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
+                  )}
+                  <Switch
+                    checked={platformConfig.subtitle_strict_validation}
+                    onCheckedChange={(v) => updatePlatformSetting("subtitle_strict_validation", Boolean(v))}
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <Label className="w-24 shrink-0 text-sm text-muted-foreground">最低覆盖率</Label>
+                <select
+                  value={String(platformConfig.subtitle_min_coverage)}
+                  onChange={(e) => updatePlatformSetting("subtitle_min_coverage", Number(e.target.value))}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+                >
+                  <option value="0.5">50%</option>
+                  <option value="0.6">60%（推荐）</option>
+                  <option value="0.7">70%</option>
+                  <option value="0.8">80%</option>
+                </select>
+                {savedPlatform.subtitle_min_coverage && (
+                  <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
+                )}
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label className="text-sm text-muted-foreground">允许旧接口回退</Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    仅在原生 WBI 模块不可用时启用；旧接口更容易出现串字幕，默认关闭。
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {savedPlatform.subtitle_allow_legacy_fallback && (
+                    <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
+                  )}
+                  <Switch
+                    checked={platformConfig.subtitle_allow_legacy_fallback}
+                    onCheckedChange={(v) => updatePlatformSetting("subtitle_allow_legacy_fallback", Boolean(v))}
                   />
                 </div>
               </div>

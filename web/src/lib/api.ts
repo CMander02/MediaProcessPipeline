@@ -279,9 +279,22 @@ export const api = {
           auth_status: string
           preferred_quality: number | string | null
           prefer_subtitle: boolean
+          subtitle_engine?: string
+          subtitle_languages?: string
+          subtitle_strict_validation?: boolean
+          subtitle_min_coverage?: number
+          subtitle_allow_legacy_fallback?: boolean
         }>
       }>("/api/pipeline/platforms"),
-    update: (id: string, config: { preferred_quality?: number | string; prefer_subtitle?: boolean }) =>
+    update: (id: string, config: {
+      preferred_quality?: number | string
+      prefer_subtitle?: boolean
+      subtitle_engine?: string
+      subtitle_languages?: string
+      subtitle_strict_validation?: boolean
+      subtitle_min_coverage?: number
+      subtitle_allow_legacy_fallback?: boolean
+    }) =>
       put<{ ok: boolean }>(`/api/pipeline/platforms/${id}`, config),
   },
 }

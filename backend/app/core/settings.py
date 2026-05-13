@@ -129,6 +129,10 @@ class RuntimeSettings(BaseModel):
     bilibili_bili_jct: str = ""
     bilibili_dede_user_id: str = ""
     bilibili_preferred_quality: int = 64   # qn: 16=360P 32=480P 64=720P 80=1080P
+    bilibili_subtitle_engine: str = "native_wbi"  # Bilibili subtitles use native WBI API, not yt-dlp
+    bilibili_subtitle_strict_validation: bool = True
+    bilibili_subtitle_min_coverage: float = 0.60
+    bilibili_subtitle_allow_legacy_fallback: bool = False
 
     # YouTube download quality (for DASH-based YouTube downloader parity)
     youtube_preferred_quality: str = "1080p"  # "720p" | "1080p" | "best"
@@ -149,6 +153,21 @@ class RuntimeSettings(BaseModel):
         if provider != "qwen3":
             raise ValueError("asr_provider must be 'qwen3'")
         return provider
+
+    @field_validator("bilibili_subtitle_engine")
+    @classmethod
+    def _validate_bilibili_subtitle_engine(cls, value: str) -> str:
+        engine = value.strip().lower()
+        if engine != "native_wbi":
+            raise ValueError("bilibili_subtitle_engine must be 'native_wbi'")
+        return engine
+
+    @field_validator("bilibili_subtitle_min_coverage")
+    @classmethod
+    def _validate_bilibili_subtitle_min_coverage(cls, value: float) -> float:
+        if not 0 <= value <= 1:
+            raise ValueError("bilibili_subtitle_min_coverage must be between 0 and 1")
+        return value
 
 
 # Global runtime settings storage
