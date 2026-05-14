@@ -137,6 +137,11 @@ class RuntimeSettings(BaseModel):
     # YouTube download quality (for DASH-based YouTube downloader parity)
     youtube_preferred_quality: str = "1080p"  # "720p" | "1080p" | "best"
 
+    # Xiaohongshu
+    # Optional raw Cookie header copied from a logged-in browser. Public notes
+    # often work without it, but some notes require a browser session.
+    xiaohongshu_cookie: str = ""
+
     # Per-platform configs (JSON string: {platform_id: {quality, prefer_subtitle, ...}})
     platform_configs: str = "{}"
 
