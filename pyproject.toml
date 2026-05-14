@@ -1,6 +1,6 @@
 [project]
 name = "MediaProcessPipeline"
-version = "0.3.0"
+version = "0.3.1"
 description = "Omni-Media Processing Pipeline - Convert audio/video to structured knowledge"
 requires-python = ">=3.11,<3.13"
 dependencies = [

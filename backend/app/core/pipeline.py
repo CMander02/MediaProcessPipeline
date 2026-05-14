@@ -66,6 +66,10 @@ def _detect_source_type(source: str) -> str:
         return "youtube"
     elif "bilibili.com" in source_lower or "b23.tv" in source_lower:
         return "bilibili"
+    elif "xiaoyuzhoufm.com/episode/" in source_lower:
+        return "xiaoyuzhou"
+    elif "xiaohongshu.com" in source_lower or "xhslink.com" in source_lower:
+        return "xiaohongshu"
     elif source_lower.startswith(("http://", "https://")):
         return "url"
     elif any(source_lower.endswith(ext) for ext in [".mp4", ".mkv", ".avi", ".webm", ".mov"]):
@@ -84,7 +88,8 @@ def _platform_prefer_subtitles(source_type: str) -> bool:
     except Exception:
         configs = {}
 
-    platform_cfg = configs.get(source_type) if source_type in {"bilibili", "youtube"} else None
+    supported_platforms = {"bilibili", "youtube", "xiaoyuzhou", "xiaohongshu"}
+    platform_cfg = configs.get(source_type) if source_type in supported_platforms else None
     if isinstance(platform_cfg, dict) and "prefer_subtitle" in platform_cfg:
         return bool(platform_cfg["prefer_subtitle"])
     return bool(rt.prefer_platform_subtitles)

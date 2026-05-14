@@ -25,6 +25,14 @@ def _is_bilibili_url(url: str) -> bool:
     return bool(re.search(r'bilibili\.com|b23\.tv|BV[0-9A-Za-z]+|av\d+', url))
 
 
+def _is_xiaoyuzhou_url(url: str) -> bool:
+    return bool(re.search(r'xiaoyuzhoufm\.com/episode/[0-9a-fA-F]+', url))
+
+
+def _is_xiaohongshu_url(url: str) -> bool:
+    return bool(re.search(r'xiaohongshu\.com|xhslink\.com', url))
+
+
 def _extract_bilibili_bvid(url: str) -> str | None:
     """Extract or resolve a Bilibili BV id from BV or av/aid URLs."""
     bv_match = re.search(r'(BV[0-9A-Za-z]+)', url)
@@ -236,6 +244,10 @@ class YtdlpService:
 
         if _is_bilibili_url(url):
             return self._download_bilibili(url, output_dir)
+        if _is_xiaoyuzhou_url(url):
+            return self._download_xiaoyuzhou(url, output_dir)
+        if _is_xiaohongshu_url(url):
+            return self._download_xiaohongshu(url, output_dir)
 
         import yt_dlp
         outtmpl = str(output_dir / "%(title)s.%(ext)s")
@@ -401,6 +413,43 @@ class YtdlpService:
             "file_path": str(audio_file),
             "video_path": str(video_file),
             "info": meta,
+        }
+
+    def _download_xiaoyuzhou(self, url: str, output_dir: Path) -> dict[str, Any]:
+        """Download a Xiaoyuzhou podcast episode via page metadata + audio URL."""
+        from app.services.ingestion.platform.xiaoyuzhou.api import (
+            download_audio,
+            fetch_metadata as fetch_xiaoyuzhou_metadata,
+        )
+
+        logger.info(f"Fetching Xiaoyuzhou episode metadata: {url}")
+        info = fetch_xiaoyuzhou_metadata(url)
+        audio_file, source_audio = download_audio(info, output_dir)
+        return {
+            "url": url,
+            "title": info.get("title", "xiaoyuzhou_episode"),
+            "file_path": str(audio_file),
+            "video_path": None,
+            "source_audio_path": str(source_audio) if source_audio else None,
+            "info": info,
+        }
+
+    def _download_xiaohongshu(self, url: str, output_dir: Path) -> dict[str, Any]:
+        """Download a Xiaohongshu video note and extract WAV audio."""
+        from app.services.ingestion.platform.xiaohongshu.api import (
+            download_video,
+            fetch_metadata as fetch_xiaohongshu_metadata,
+        )
+
+        logger.info(f"Fetching Xiaohongshu note metadata: {url}")
+        info = fetch_xiaohongshu_metadata(url)
+        video_file, audio_file = download_video(info, output_dir)
+        return {
+            "url": url,
+            "title": info.get("title", "xiaohongshu_video"),
+            "file_path": str(audio_file),
+            "video_path": str(video_file),
+            "info": info,
         }
 
     def _download_bilibili_subtitle(
@@ -767,6 +816,16 @@ class YtdlpService:
         if _is_bilibili_url(url):
             info = self._fetch_bilibili_metadata(url)
             return info
+        if _is_xiaoyuzhou_url(url):
+            from app.services.ingestion.platform.xiaoyuzhou.api import (
+                fetch_metadata as fetch_xiaoyuzhou_metadata,
+            )
+            return fetch_xiaoyuzhou_metadata(url)
+        if _is_xiaohongshu_url(url):
+            from app.services.ingestion.platform.xiaohongshu.api import (
+                fetch_metadata as fetch_xiaohongshu_metadata,
+            )
+            return fetch_xiaohongshu_metadata(url)
 
         import yt_dlp
         with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True, **ytdlp_auth_opts()}) as ydl:
@@ -871,6 +930,11 @@ class YtdlpService:
                 upload_date = datetime.strptime(info["upload_date"], "%Y%m%d")
             except ValueError:
                 pass
+        elif info.get("timestamp"):
+            try:
+                upload_date = datetime.fromtimestamp(int(info["timestamp"]))
+            except (TypeError, ValueError, OSError):
+                pass
 
         file_hash = None
         if file_path and Path(file_path).exists():
@@ -901,19 +965,36 @@ class YtdlpService:
         if description and len(description) > 5000:
             description = description[:5000] + "..."
 
-        return MediaMetadata(
+        media_type = MediaType.VIDEO
+        raw_media_type = str(info.get("media_type") or "").lower()
+        if raw_media_type == "podcast":
+            media_type = MediaType.PODCAST
+        elif (
+            raw_media_type == "audio"
+            or str(info.get("ext") or "").lower() in {"mp3", "m4a", "wav", "flac", "ogg"}
+        ):
+            media_type = MediaType.AUDIO
+        elif raw_media_type == "image":
+            media_type = MediaType.OTHER
+        elif raw_media_type == "video":
+            media_type = MediaType.VIDEO
+
+        metadata = MediaMetadata(
             title=info.get("title", "Unknown"),
             source_url=info.get("webpage_url") or info.get("original_url"),
             uploader=info.get("uploader") or info.get("channel") or info.get("uploader_id"),
             upload_date=upload_date,
             duration_seconds=info.get("duration"),
-            media_type=MediaType.VIDEO,
+            media_type=media_type,
             file_path=file_path,
             file_hash=file_hash,
             description=description,
             tags=unique_tags,
             chapters=chapters,
         )
+        if isinstance(info.get("extra"), dict):
+            metadata.extra.update(info["extra"])
+        return metadata
 
     def download_subtitles(
         self,
@@ -939,6 +1020,33 @@ class YtdlpService:
 
         if _is_bilibili_url(url):
             return self._download_bilibili_subtitle(url, output_dir, preferred_langs)
+        if _is_xiaoyuzhou_url(url):
+            try:
+                info = self.fetch_metadata(url)
+            except Exception as e:
+                logger.warning(f"Xiaoyuzhou subtitle probe failed: {e}")
+                return _empty_subtitle_result(
+                    engine="xiaoyuzhou-page",
+                    diagnostics=[{"stage": "metadata", "status": "failed", "detail": str(e)}],
+                )
+            return _empty_subtitle_result(
+                engine="xiaoyuzhou-page",
+                diagnostics=[{
+                    "stage": "transcript",
+                    "status": "skipped",
+                    "reason": "no_public_transcript_endpoint",
+                    "transcript_media_id": (info.get("extra") or {}).get("transcript_media_id"),
+                }],
+            )
+        if _is_xiaohongshu_url(url):
+            return _empty_subtitle_result(
+                engine="xiaohongshu-page",
+                diagnostics=[{
+                    "stage": "subtitle",
+                    "status": "skipped",
+                    "reason": "no_public_subtitle_endpoint",
+                }],
+            )
 
         output_dir.mkdir(parents=True, exist_ok=True)
 

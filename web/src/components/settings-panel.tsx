@@ -54,8 +54,8 @@ const TABS: TabDef[] = [
   { id: "ai", label: "AI 模型" },
   { id: "bilibili", label: "哔哩哔哩" },
   { id: "youtube", label: "YouTube" },
-  { id: "xiaoyuzhou", label: "小宇宙", comingSoon: true },
-  { id: "xiaohongshu", label: "小红书", comingSoon: true },
+  { id: "xiaoyuzhou", label: "小宇宙" },
+  { id: "xiaohongshu", label: "小红书" },
   { id: "zhihu", label: "知乎", comingSoon: true },
 ]
 
@@ -64,15 +64,16 @@ const TABS: TabDef[] = [
 interface PlaceholderSectionProps {
   title: string
   description: string
+  comingSoon?: boolean
 }
 
-function PlaceholderSection({ title, description }: PlaceholderSectionProps) {
+function PlaceholderSection({ title, description, comingSoon = true }: PlaceholderSectionProps) {
   return (
     <Card>
       <CardHeader className="pb-3">
         <CardTitle className="text-base flex items-center gap-2">
           {title}
-          <ComingSoonBadge />
+          {comingSoon ? <ComingSoonBadge /> : <Badge variant="outline" className="text-[10px] px-1.5 py-0">已支持</Badge>}
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -588,17 +589,19 @@ export function SettingsPanel() {
             <YoutubeCard settings={settings} updateSetting={updateSetting} saving={saving} saved={saved} />
           )}
 
-          {/* ── Coming soon platforms ── */}
+          {/* ── Other platforms ── */}
           {activeTab === "xiaoyuzhou" && (
             <PlaceholderSection
               title="小宇宙"
-              description="播客平台，支持 RSS 订阅下载"
+              description="已支持公开单集页面：提取页面元数据、下载 m4a，并转为本地 ASR 使用的 wav。"
+              comingSoon={false}
             />
           )}
           {activeTab === "xiaohongshu" && (
             <PlaceholderSection
               title="小红书"
-              description="短视频/笔记下载，需登录 Cookie"
+              description="已支持公开视频笔记：解析分享链接/短链、下载 mp4，并提取音频进入本地 ASR。私密或风控笔记可配置 Cookie 后重试。"
+              comingSoon={false}
             />
           )}
           {activeTab === "zhihu" && (

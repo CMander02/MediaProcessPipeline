@@ -190,20 +190,18 @@ async def probe_url(url: str):
     import asyncio
 
     def _probe(url: str) -> dict[str, Any]:
-        import yt_dlp
-        from app.services.ingestion.ytdlp import ytdlp_auth_opts
+        from app.services.ingestion.ytdlp import get_ytdlp_service
         try:
-            with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True, **ytdlp_auth_opts()}) as ydl:
-                info = ydl.extract_info(url, download=False)
-                if not info:
-                    return {}
-                return {
-                    "title": info.get("title"),
-                    "description": info.get("description"),
-                    "tags": info.get("tags") or [],
-                    "uploader": info.get("uploader"),
-                    "duration": info.get("duration"),
-                }
+            info = get_ytdlp_service().fetch_metadata(url)
+            if not info:
+                return {}
+            return {
+                "title": info.get("title"),
+                "description": info.get("description"),
+                "tags": info.get("tags") or [],
+                "uploader": info.get("uploader") or info.get("channel"),
+                "duration": info.get("duration"),
+            }
         except Exception as e:
             logger.warning(f"Probe failed for {url}: {e}")
             return {}
@@ -582,7 +580,7 @@ async def get_platform_configs():
             {
                 "id": "xiaoyuzhou",
                 "name": "小宇宙",
-                "status": "coming_soon",
+                "status": "active",
                 "auth_status": "not_applicable",
                 "preferred_quality": None,
                 "prefer_subtitle": False,
@@ -590,8 +588,8 @@ async def get_platform_configs():
             {
                 "id": "xiaohongshu",
                 "name": "小红书",
-                "status": "coming_soon",
-                "auth_status": "not_configured",
+                "status": "active",
+                "auth_status": "configured" if rt.xiaohongshu_cookie else "optional",
                 "preferred_quality": None,
                 "prefer_subtitle": False,
             },
