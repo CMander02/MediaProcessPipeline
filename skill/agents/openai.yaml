@@ -1,0 +1,3 @@
+interface:
+  display_name: "MPP CLI"
+  short_description: "Guide the MediaProcessPipeline CLI, task lifecycle, and runtime configuration"
