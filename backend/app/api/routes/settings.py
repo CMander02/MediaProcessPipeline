@@ -30,6 +30,8 @@ _SECRET_FIELDS = {
     "bilibili_bili_jct",
     "bilibili_dede_user_id",
     "xiaohongshu_cookie",
+    "vlm_api_key",
+    "kb_embedding_api_key",
 }
 
 _MASK_PATTERN = re.compile(r"^\*{3,}\.{3}.{0,4}$")  # matches "***...xxxx"

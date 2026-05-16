@@ -127,7 +127,12 @@ def create_task_dir(task_id: UUID, title: str | None = None) -> Path:
     return task_dir
 
 
-def write_metadata_json(task_dir: Path, metadata: MediaMetadata | dict, status: str = "processing") -> Path:
+def write_metadata_json(
+    task_dir: Path,
+    metadata: "MediaMetadata | dict",
+    status: str = "processing",
+    task_id: str | None = None,
+) -> Path:
     """Write or update metadata.json in the task directory."""
     import json
     meta_path = task_dir / "metadata.json"
@@ -136,8 +141,28 @@ def write_metadata_json(task_dir: Path, metadata: MediaMetadata | dict, status: 
     else:
         data = dict(metadata)
     data["status"] = status
+    if task_id:
+        data["task_id"] = task_id
+    elif meta_path.exists():
+        # Preserve existing task_id on update
+        try:
+            existing = json.loads(meta_path.read_text(encoding="utf-8"))
+            if existing.get("task_id"):
+                data["task_id"] = existing["task_id"]
+        except Exception:
+            pass
     meta_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     return meta_path
+
+
+def _sync_task_from_metadata(task: "Task", metadata: "MediaMetadata") -> None:
+    """Copy denormalized metadata fields onto the task object for DB + SSE exposure."""
+    if metadata.platform and task.platform is None:
+        task.platform = metadata.platform
+    if metadata.uploader_id and task.uploader_id is None:
+        task.uploader_id = metadata.uploader_id
+    if metadata.content_subtype and task.content_subtype is None:
+        task.content_subtype = metadata.content_subtype
 
 
 def update_metadata_status(task_dir: Path | None, status: str) -> None:
@@ -197,11 +222,24 @@ async def _emit_file_ready(task: Task, filename: str, file_path: str) -> None:
 
 
 def _clean_source_path(source: str) -> str:
-    """Clean up source path by removing quotes and whitespace."""
+    """Clean up source path by removing quotes and whitespace.
+
+    Also extracts the first URL from share-text blobs like the ones copied from
+    the Xiaohongshu mobile/web app:
+      '77 【标题 | 小红书】 😆 n7715oGO82X4J5v 😆 https://www.xiaohongshu.com/...'
+    """
+    import re as _re
     source = source.strip()
     if (source.startswith('"') and source.endswith('"')) or \
        (source.startswith("'") and source.endswith("'")):
         source = source[1:-1]
+    # If it doesn't look like a plain URL or local path, try to pull the first URL out.
+    if not source.startswith(("http://", "https://", "ftp://", "rtmp://")) and \
+       not (len(source) >= 2 and source[1] == ":") and \
+       not source.startswith("/"):
+        m = _re.search(r'https?://\S+', source)
+        if m:
+            source = m.group(0)
     return source
 
 
@@ -719,6 +757,164 @@ async def _run_subtitle_fast_path(
 
 
 # ---------------------------------------------------------------------------
+# Image-note pipeline (XHS image_note: VLM → summary/mindmap → archive)
+# ---------------------------------------------------------------------------
+
+async def _process_image_note(
+    task: Task,
+    metadata: "MediaMetadata",
+    task_dir: Path,
+    ingest_info: dict,
+) -> None:
+    """Process a Xiaohongshu image_note: download images, run VLM, summarize, archive."""
+    import asyncio as _aio
+    from app.services.analysis import summarize_text, generate_mindmap, analyze_content
+    from app.services.archiving import archive_result
+
+    # Mark all audio steps as skipped immediately
+    for step in (PipelineStep.SEPARATE, PipelineStep.TRANSCRIBE, PipelineStep.VOICEPRINT, PipelineStep.POLISH):
+        await _update_step(task, step, completed=True)
+    await _raise_if_cancelled(task.id)
+
+    await _update_step(task, PipelineStep.ANALYZE)
+
+    # Download images
+    from app.services.ingestion.platform.xiaohongshu.api import download_images
+    try:
+        image_paths = await _aio.get_event_loop().run_in_executor(
+            None, download_images, ingest_info, task_dir
+        )
+    except Exception as e:
+        logger.warning(f"XHS image download failed: {e}")
+        image_paths = []
+
+    await _raise_if_cancelled(task.id)
+
+    # Run VLM on each image (limited by vlm_concurrency)
+    rt = get_runtime_settings()
+    descriptions: list[dict] = []
+    if image_paths and rt.vlm_api_base:
+        from app.services.analysis.vlm import get_vlm_service
+        vlm = get_vlm_service()
+        sem = _aio.Semaphore(rt.vlm_concurrency)
+
+        async def _describe(idx: int, path: Path) -> dict:
+            async with sem:
+                try:
+                    result = await _aio.get_event_loop().run_in_executor(None, vlm.describe_image, path)
+                    return {"index": idx, "image_path": str(path), **result}
+                except Exception as e:
+                    logger.warning(f"VLM failed for image {idx} ({path.name}): {e}")
+                    return {"index": idx, "image_path": str(path), "kind": "content", "text": ""}
+
+        descriptions = list(await _aio.gather(*[_describe(i, p) for i, p in enumerate(image_paths)]))
+    else:
+        for i, p in enumerate(image_paths):
+            descriptions.append({"index": i, "image_path": str(p), "kind": "content", "text": ""})
+        if image_paths and not rt.vlm_api_base:
+            logger.warning("VLM not configured (vlm_api_base empty); image descriptions will be empty")
+
+    await _raise_if_cancelled(task.id)
+
+    # Write per-image description files
+    desc_dir = task_dir / "descriptions"
+    desc_dir.mkdir(exist_ok=True)
+    for d in descriptions:
+        if d.get("text"):
+            desc_path = desc_dir / f"{d['index']:02d}.md"
+            desc_path.write_text(d["text"], encoding="utf-8")
+
+    # Combine all descriptions into a pseudo-transcript
+    combined_parts = []
+    for d in descriptions:
+        if d.get("text"):
+            label = f"图片 {d['index'] + 1}"
+            combined_parts.append(f"### {label}\n{d['text']}")
+    if metadata.description:
+        combined_parts.insert(0, f"### 笔记正文\n{metadata.description}")
+    combined_text = "\n\n".join(combined_parts)
+    if combined_text:
+        combined_path = desc_dir / "combined.md"
+        combined_path.write_text(combined_text, encoding="utf-8")
+
+    # Write descriptions/ into task result early
+    task.result = task.result or {}
+    task.result["image_descriptions"] = descriptions
+    task.result["output_dir"] = str(task_dir)
+    get_task_store().update_status(task.id, task.status, result=task.result)
+
+    # Analyze + summarize + mindmap using combined text
+    video_metadata = {
+        "uploader": metadata.uploader,
+        "description": metadata.description,
+        "tags": metadata.tags,
+        "chapters": None,
+    }
+    mindmap_metadata = {
+        "title": metadata.title,
+        "uploader": metadata.uploader,
+        "description": metadata.description,
+        "chapters": None,
+    }
+
+    analysis = None
+    summary: dict = {}
+    mindmap = ""
+
+    if combined_text and len(combined_text.strip()) >= 10:
+        import json as _json
+        analysis = await analyze_content(combined_text, metadata.title, metadata=video_metadata)
+        await _raise_if_cancelled(task.id)
+        user_language = _user_language_hint(analysis)
+
+        if analysis:
+            analysis_path = task_dir / "analysis.json"
+            analysis_path.write_text(_json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
+            await _emit_file_ready(task, "analysis.json", str(analysis_path))
+
+        summary, mindmap = await _aio.gather(
+            summarize_text(combined_text, user_language=user_language),
+            generate_mindmap(combined_text, metadata=mindmap_metadata, user_language=user_language),
+        )
+        await _raise_if_cancelled(task.id)
+
+        if summary:
+            await _write_summary_files(task, task_dir, metadata, summary)
+        if mindmap:
+            mm_path = task_dir / "mindmap.md"
+            mm_path.write_text(mindmap, encoding="utf-8")
+            await _emit_file_ready(task, "mindmap.md", str(mm_path))
+    else:
+        logger.warning("Image note: combined text too short or empty — skipping LLM analysis")
+
+    await _update_step(task, PipelineStep.ANALYZE, completed=True)
+
+    await _update_step(task, PipelineStep.ARCHIVE)
+    archive = await archive_result(
+        metadata,
+        polished_srt=None,
+        summary=summary,
+        mindmap=mindmap,
+        work_dir=task_dir,
+        analysis=analysis,
+    )
+    write_metadata_json(task_dir, metadata, status="completed")
+    await _update_step(task, PipelineStep.ARCHIVE, completed=True)
+
+    task.result = {
+        "metadata": metadata.model_dump(mode="json"),
+        "image_descriptions": descriptions,
+        "archive": archive,
+        "output_dir": str(task_dir),
+        "analysis": analysis,
+        "content_subtype": "image_note",
+    }
+
+    # Async KB indexing (fail-soft)
+    _schedule_kb_index(str(task.id), str(task_dir))
+
+
+# ---------------------------------------------------------------------------
 # Pipeline runner
 # ---------------------------------------------------------------------------
 
@@ -995,6 +1191,8 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     title=title,
                     source_url=str(source_path),
                     media_type="video",
+                    platform="local",
+                    content_subtype="video",
                     file_path=str(dest_source),
                 )
 
@@ -1020,6 +1218,12 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                             metadata.upload_date = nfo_meta["upload_date"]
                         if nfo_meta.get("source_url"):
                             metadata.source_url = nfo_meta["source_url"]
+                            # Try to infer platform from NFO source_url
+                            su = nfo_meta["source_url"]
+                            if "bilibili.com" in su:
+                                metadata.platform = "bilibili"
+                            elif "youtube.com" in su or "youtu.be" in su:
+                                metadata.platform = "youtube"
 
             elif dest_source.suffix.lower() in audio_exts:
                 audio_path = str(dest_source)
@@ -1027,6 +1231,8 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     title=title,
                     source_url=str(source_path),
                     media_type="audio",
+                    platform="local",
+                    content_subtype="audio",
                     file_path=str(dest_source),
                 )
             else:
@@ -1035,6 +1241,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             has_subtitle = platform_subtitle is not None
 
             # Write metadata.json immediately after local file processing
+            _sync_task_from_metadata(task, metadata)
             meta_path = write_metadata_json(task_dir, metadata, status="processing")
             await _emit_file_ready(task, "metadata.json", str(meta_path))
 
@@ -1053,6 +1260,11 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     with yt_dlp.YoutubeDL({"quiet": True, **ytdlp_auth_opts()}) as ydl:
                         info = ydl.extract_info(source, download=False)
                         title = info.get("title", "unknown") if info else "unknown"
+            elif source_type in ("xiaohongshu", "xiaoyuzhou"):
+                # Use our own API — yt-dlp XiaoHongShu extractor fails on image notes
+                # and xiaoyuzhou is not supported by yt-dlp at all.
+                # Title will be resolved during the actual download step; use task id as placeholder.
+                title = None
             else:
                 import yt_dlp
                 from app.services.ingestion.ytdlp import ytdlp_auth_opts
@@ -1066,7 +1278,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             # 2. Decide whether to attempt fast path
             force_asr = rt.force_asr or task.options.get("force_asr", False)
 
-            if use_platform_subtitles and not force_asr:
+            if use_platform_subtitles and not force_asr and source_type not in ("xiaohongshu", "xiaoyuzhou"):
                 # Probe: fetch metadata + subtitle (lightweight, no video download)
                 from app.services.ingestion.ytdlp import fetch_metadata as _fetch_meta
                 try:
@@ -1120,6 +1332,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     logger.info(f"Downloaded platform subtitle: {probe_subtitle['subtitle_path']}")
 
                     # Write metadata.json
+                    _sync_task_from_metadata(task, metadata)
                     meta_path = write_metadata_json(task_dir, metadata, status="processing")
                     await _emit_file_ready(task, "metadata.json", str(meta_path))
 
@@ -1211,6 +1424,22 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 else:
                     logger.warning(f"Cannot rename to {new_dir} (already exists), keeping {task_dir}")
 
+            # Image notes take a different branch entirely — no GPU, no audio.
+            if metadata.content_subtype == "image_note":
+                _sync_task_from_metadata(task, metadata)
+                meta_path = write_metadata_json(task_dir, metadata, status="processing")
+                await _emit_file_ready(task, "metadata.json", str(meta_path))
+                await _update_step(task, PipelineStep.DOWNLOAD, completed=True)
+                await _raise_if_cancelled(task.id)
+                # Store ingest_info (contains extra.image_urls) so it survives the hand-off
+                task.result = {"output_dir": str(task_dir), "_image_ingest_info": ingest.get("info") or ingest}
+                get_task_store().update_status(task.id, task.status, result=task.result)
+                if _download_worker_call:
+                    await get_task_queue().advance_to_gpu(task.id)
+                    return
+                await _process_image_note(task, metadata, task_dir, ingest.get("info") or ingest)
+                return
+
             # Try to download platform subtitles (for full pipeline, still useful)
             if use_platform_subtitles:
                 try:
@@ -1231,6 +1460,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             has_subtitle = platform_subtitle is not None
 
             # Write metadata.json immediately after download
+            _sync_task_from_metadata(task, metadata)
             meta_path = write_metadata_json(task_dir, metadata, status="processing")
             await _emit_file_ready(task, "metadata.json", str(meta_path))
 
@@ -1241,6 +1471,12 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     # Sanity: we must have a task_dir by now
     if task_dir is None or metadata is None:
         raise RuntimeError("task_dir or metadata missing after DOWNLOAD step — cannot continue")
+
+    # Image-note GPU-worker re-entry: DOWNLOAD is done, route directly to VLM branch.
+    if metadata.content_subtype == "image_note" and not _download_worker_call:
+        ingest_info = (task.result or {}).get("_image_ingest_info") or {}
+        await _process_image_note(task, metadata, task_dir, ingest_info)
+        return
 
     # Hand off to GPU queue if we were called from a download worker.
     # The GPU worker will call process_task again; at that point DOWNLOAD is
@@ -1551,6 +1787,27 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         "analysis": analysis,
         "subtitle_source": subtitle_source,
     }
+
+    # Async KB indexing (fail-soft)
+    _schedule_kb_index(str(task.id), str(task_dir))
+
+
+def _schedule_kb_index(task_id: str, archive_path: str) -> None:
+    """Fire-and-forget KB indexing after archive completes."""
+    import asyncio
+
+    async def _do_index():
+        try:
+            from app.core.settings import get_runtime_settings
+            rt = get_runtime_settings()
+            if not rt.kb_enabled or not rt.kb_embedding_api_base:
+                return
+            from app.services.kb.indexer import index_task
+            await asyncio.to_thread(index_task, task_id, archive_path)
+        except Exception as e:
+            logger.warning(f"KB auto-index failed for task {task_id}: {e}")
+
+    asyncio.ensure_future(_do_index())
 
 
 # ---------------------------------------------------------------------------

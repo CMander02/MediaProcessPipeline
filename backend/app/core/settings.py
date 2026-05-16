@@ -145,6 +145,22 @@ class RuntimeSettings(BaseModel):
     # Per-platform configs (JSON string: {platform_id: {quality, prefer_subtitle, ...}})
     platform_configs: str = "{}"
 
+    # VLM (image understanding) — OpenAI-Compatible API
+    vlm_api_base: str = ""
+    vlm_api_key: str = ""
+    vlm_model: str = "qwen2.5-vl-7b-instruct"
+    vlm_max_tokens: int = 1024
+    vlm_concurrency: int = 3
+
+    # Knowledge base — sqlite-vec vector search over subtitles + summaries
+    kb_enabled: bool = True
+    kb_embedding_api_base: str = ""
+    kb_embedding_api_key: str = ""
+    kb_embedding_model: str = "qwen3-embedding-0.6b"
+    kb_embedding_dim: int = 1024
+    kb_chunk_size_chars: int = 400
+    kb_chunk_overlap_chars: int = 50
+
     # Security
     api_token: str = ""  # Bearer token for API auth; empty = auth disabled
 

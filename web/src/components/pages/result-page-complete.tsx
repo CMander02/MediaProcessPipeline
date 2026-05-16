@@ -31,6 +31,7 @@ import { SpeakerPanel } from "@/components/result/speaker-panel"
 import { TranscriptTab } from "@/components/result/transcript-tab"
 import { SummaryTab } from "@/components/result/summary-tab"
 import { MindmapViewer } from "@/components/result/mindmap-viewer"
+import { ImageNoteViewer, type ImageDescription } from "@/components/result/image-note-viewer"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { ArrowLeft01Icon, Tick02Icon, Copy01Icon, Download01Icon, Loading03Icon, MoreHorizontalIcon, PencilEdit01Icon, Delete01Icon, Link01Icon, Gps01Icon } from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
@@ -47,11 +48,16 @@ interface Props {
   taskId?: string | null
 }
 
-export function ResultPageComplete({ archivePath, taskId }: Props) {
+export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const pipelineSteps = usePipelineSteps()
   const { archives, refresh: refreshArchives } = useArchives()
   const [archive, setArchive] = useState<ArchiveItem | null>(null)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  // Resolve taskId: prefer prop (from URL), fall back to archive list lookup.
+  // undefined = not yet resolved; null = confirmed no taskId; string = resolved
+  const [resolvedTaskId, setResolvedTaskId] = useState<string | null | undefined>(
+    taskIdProp !== undefined ? taskIdProp : undefined
+  )
 
   // Per-file content state (null = not yet available)
   const [summary, setSummary] = useState<string | null>(null)
@@ -65,6 +71,11 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
   const [polishedLang, setPolishedLang] = useState<string | null>(null)
   const [subtitleSourceType, setSubtitleSourceType] = useState<"platform" | "asr" | null>(null)
   const [sourceUrl, setSourceUrl] = useState<string | null>(null)
+  const [platform, setPlatform] = useState<string | null>(null)
+  const [uploader, setUploader] = useState<string | null>(null)
+  const [contentSubtype, setContentSubtype] = useState<string | null>(null)
+  const [imageDescriptions, setImageDescriptions] = useState<ImageDescription[]>([])
+  const [activeImageIdx, setActiveImageIdx] = useState(0)
 
   // Pipeline progress state
   const [taskStatus, setTaskStatus] = useState<string | null>(null)
@@ -108,13 +119,13 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
   )
 
   const handleRenameSpeaker = async (oldName: string, newName: string) => {
-    if (!taskId) {
+    if (!resolvedTaskId) {
       // Legacy archive without taskId — fall back to local-only rename
       await applyRenameLocally(oldName, newName)
       return
     }
     try {
-      const res = await api.voiceprints.renameTaskSpeaker(taskId, oldName, newName, "ask")
+      const res = await api.voiceprints.renameTaskSpeaker(resolvedTaskId, oldName, newName, "ask")
       if (res.status === "conflict") {
         setMergeInfo({
           oldName,
@@ -135,7 +146,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
   }
 
   const resolveMerge = async (choice: "merge" | "new" | "cancel") => {
-    if (!mergeInfo || !taskId) {
+    if (!mergeInfo || !resolvedTaskId) {
       setMergeInfo(null)
       return
     }
@@ -145,7 +156,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
     }
     try {
       const res = await api.voiceprints.renameTaskSpeaker(
-        taskId,
+        resolvedTaskId,
         mergeInfo.oldName,
         mergeInfo.newName,
         choice,
@@ -165,6 +176,9 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
       setArchive(found)
       const meta = (found.metadata || {}) as Record<string, unknown>
       setSourceUrl((meta.source_url as string | null) ?? null)
+      setPlatform((meta.platform as string | null) ?? null)
+      setUploader((meta.uploader as string | null) ?? null)
+      setContentSubtype((meta.content_subtype as string | null) ?? null)
       const extra = (meta.extra || {}) as Record<string, unknown>
       const tracks = (extra.subtitle_tracks as SubtitleTrackInfo[] | undefined) ?? []
       setSubtitleTracks(tracks)
@@ -173,14 +187,18 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
       if (polished && !activeTrackLang) setActiveTrackLang(polished.lang)
       if (tracks.some((t) => t.type === "asr")) setSubtitleSourceType("asr")
       else if (tracks.length > 0) setSubtitleSourceType("platform")
+      // Resolve taskId from archive list if not already known from URL
+      if (resolvedTaskId === undefined) {
+        setResolvedTaskId(found.task_id ?? null)
+      }
       // Determine initial task status from archive
       if (found.processing) {
         setTaskStatus("processing")
-      } else if (!taskId) {
+      } else if (!taskIdProp) {
         setTaskStatus("completed")
       }
     }
-  }, [archives, archivePath, taskId])
+  }, [archives, archivePath, taskIdProp])
 
   // Resolve media URL
   const resolveMediaUrl = useCallback((arch: ArchiveItem | null) => {
@@ -204,6 +222,41 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
       return ""
     }
   }, [archivePath, sep])
+
+  // Load image descriptions for image_note content type
+  const loadImageDescriptions = useCallback(async () => {
+    if (!archivePath) return
+    // Preferred: read image_descriptions directly from task result (set by pipeline)
+    if (resolvedTaskId) {
+      try {
+        const task = await api.tasks.get(resolvedTaskId)
+        const descs = task.result?.image_descriptions as ImageDescription[] | undefined
+        if (descs && descs.length > 0) {
+          setImageDescriptions(descs)
+          return
+        }
+      } catch {}
+    }
+    // Fall back: probe numbered image files on disk (count limited by images/ directory)
+    const descs: ImageDescription[] = []
+    for (let i = 0; i < 30; i++) {
+      const imgPath = archivePath + sep + "images" + sep + `${String(i).padStart(2, "0")}.jpg`
+      const descPath = archivePath + sep + "descriptions" + sep + `${String(i).padStart(2, "0")}.md`
+      try {
+        const check = await api.filesystem.read(imgPath)
+        if (!check || !check.success) break
+        let text = ""
+        try { text = (await api.filesystem.read(descPath)).content ?? "" } catch {}
+        descs.push({ index: i, image_path: imgPath, kind: "content", text })
+      } catch { break }
+    }
+    if (descs.length > 0) setImageDescriptions(descs)
+  }, [archivePath, sep, resolvedTaskId])
+
+  useEffect(() => {
+    // Wait until resolvedTaskId is known (undefined = not yet resolved, null/string = resolved)
+    if (contentSubtype === "image_note" && resolvedTaskId !== undefined) loadImageDescriptions()
+  }, [contentSubtype, loadImageDescriptions, resolvedTaskId])
 
   // Load files independently on mount
   useEffect(() => {
@@ -233,7 +286,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
   }, [archivePath, loadFile])
 
   // --- SSE subscription for in-progress tasks ---
-  useTaskSSE(taskId, {
+  useTaskSSE(resolvedTaskId, {
     // Snapshot is sent immediately on (re)connect — rebuilds pipeline state
     // when the user navigates back to the result page mid-processing.
     onSnapshot(data) {
@@ -273,14 +326,12 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
       } else if (file === "mindmap.md") {
         loadFile("mindmap.md").then((c) => { if (c) setMindmap(c) })
       } else if (file === "metadata.json") {
-        // Refresh archive list to pick up updated metadata
-        refreshArchives()
+        refreshArchives(true)
       }
     },
     onCompleted() {
       setTaskStatus("completed")
-      // Refresh archive list — media URL may have changed (source/ deleted)
-      refreshArchives()
+      refreshArchives(true)
     },
     onFailed(data) {
       setTaskStatus("failed")
@@ -336,7 +387,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
     try {
       await api.archives.rename(archivePath, trimmed)
       setDisplayTitle(trimmed)
-      refreshArchives()
+      refreshArchives(true)
     } catch {
       // ignore, revert
     }
@@ -414,6 +465,14 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
               >
                 <HugeiconsIcon icon={Link01Icon} className="h-3.5 w-3.5" />
               </a>
+            )}
+            {platform && (
+              <span
+                className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                title={uploader ? `上传者：${uploader}` : platform}
+              >
+                {platform}
+              </span>
             )}
             {subtitleSourceType && (
               <span
@@ -513,16 +572,25 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
         </div>
       )}
 
-      {/* Main content area */}
+      {/* Main content area — three-column layout */}
       <div className="flex-1 min-h-0 relative">
         <ResizablePanelGroup
           orientation="horizontal"
           className="absolute inset-0"
         >
-          {/* Left panel — media + info */}
-          <ResizablePanel defaultSize="50%" minSize="20%" maxSize="60%">
+          {/* Center panel — media preview */}
+          <ResizablePanel defaultSize="50%" minSize="20%" maxSize="70%">
             <div className="h-full overflow-y-auto p-4 space-y-3">
-              {mediaUrl ? (
+              {contentSubtype === "image_note" ? (
+                <div className="h-full">
+                  <ImageNoteViewer
+                    archivePath={archivePath}
+                    descriptions={imageDescriptions}
+                    onImageIndexChange={setActiveImageIdx}
+                    isProcessing={isProcessing}
+                  />
+                </div>
+              ) : mediaUrl ? (
                 <div className="sticky top-0 z-10 bg-background pb-2">
                   <MediaPlayer
                     src={mediaUrl}
@@ -539,7 +607,7 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
                   </div>
                 </div>
               ) : null}
-              {subtitles.length > 0 && (
+              {contentSubtype !== "image_note" && subtitles.length > 0 && (
                 <SpeakerPanel
                   subtitles={subtitles}
                   duration={duration}
@@ -561,8 +629,8 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
                   <TabsList>
                     <TabsTrigger value="summary">摘要</TabsTrigger>
                     <TabsTrigger value="transcript">
-                      字幕
-                      {transcript && !isPolished && isProcessing && (
+                      {contentSubtype === "image_note" ? "图片" : "字幕"}
+                      {contentSubtype !== "image_note" && transcript && !isPolished && isProcessing && (
                         <span className="ml-1 text-[10px] text-amber-600">(原始)</span>
                       )}
                     </TabsTrigger>
@@ -616,6 +684,44 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
 
                 <TabsContent value="transcript" className="mt-3 relative flex-1">
                   <div className="absolute inset-0 rounded-md border flex flex-col">
+                    {contentSubtype === "image_note" ? (
+                      imageDescriptions.length > 0 ? (
+                        <div className="overflow-y-auto flex-1 p-3 space-y-3">
+                          {imageDescriptions.map((d) => (
+                            <div
+                              key={d.index}
+                              className={cn(
+                                "rounded-md border p-2 cursor-pointer transition-colors text-sm",
+                                activeImageIdx === d.index ? "border-primary bg-primary/5" : "hover:bg-muted/30",
+                              )}
+                              onClick={() => setActiveImageIdx(d.index)}
+                            >
+                              <div className="flex items-center gap-1.5 mb-1">
+                                <span className="text-[10px] font-medium text-muted-foreground tabular-nums">
+                                  图片 {d.index + 1}
+                                </span>
+                                {d.kind === "text" && (
+                                  <span className="rounded bg-sky-500/10 px-1 text-[9px] text-sky-600 dark:text-sky-400">文字</span>
+                                )}
+                              </div>
+                              {d.text ? (
+                                <p className="text-xs leading-relaxed whitespace-pre-wrap">{d.text}</p>
+                              ) : (
+                                <p className="text-xs text-muted-foreground italic">无描述</p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : isProcessing ? (
+                        <div className="flex items-center justify-center h-full text-muted-foreground">
+                          <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
+                          <span className="text-sm">正在分析图片...</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center h-full text-muted-foreground text-sm">无图片数据</div>
+                      )
+                    ) : (
+                    <>
                     {subtitleTracks.length > 1 && (
                       <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b bg-muted/20 overflow-x-auto">
                         <span className="text-[10px] text-muted-foreground shrink-0">语言：</span>
@@ -663,6 +769,8 @@ export function ResultPageComplete({ archivePath, taskId }: Props) {
                       <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
                         无字幕数据
                       </div>
+                    )}
+                    </>
                     )}
                   </div>
                 </TabsContent>

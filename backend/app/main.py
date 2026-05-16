@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from app.api.routes import tasks, pipeline, filesystem, voiceprints
 from app.api.routes import settings as settings_router
+from app.api.routes import kb as kb_router
 from app.core.settings import get_runtime_settings, SETTINGS_FILE
 from app.core.config import get_settings
 from app.core.database import init_db, close_db
@@ -119,6 +120,7 @@ app.include_router(pipeline.router, prefix="/api")
 app.include_router(settings_router.router, prefix="/api")
 app.include_router(filesystem.router, prefix="/api")
 app.include_router(voiceprints.router, prefix="/api")
+app.include_router(kb_router.router, prefix="/api")
 
 
 @app.get("/health")

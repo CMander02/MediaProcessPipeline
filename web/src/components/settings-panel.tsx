@@ -576,6 +576,111 @@ export function SettingsPanel() {
 
               {/* Voiceprint */}
               <VoiceprintCard settings={settings} updateSetting={updateSetting} />
+
+              {/* Knowledge base */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">知识库 Embedding</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-xs text-muted-foreground">OpenAI-Compatible 嵌入 API，用于任务完成后自动索引字幕+摘要。</p>
+                  <div className="flex items-center gap-3">
+                    <Label className="text-sm min-w-max">自动索引</Label>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(settings.kb_enabled ?? true)}
+                      onChange={(e) => updateSetting("kb_enabled", e.target.checked)}
+                      className="h-4 w-4 accent-primary cursor-pointer"
+                    />
+                  </div>
+                  <SettingRow
+                    label="API Base"
+                    settingKey="kb_embedding_api_base"
+                    value={String(settings.kb_embedding_api_base ?? "")}
+                    onSave={updateSetting}
+                    saving={saving}
+                    saved={saved}
+                    placeholder="http://localhost:8080/v1"
+                  />
+                  <SettingRow
+                    label="API Key"
+                    settingKey="kb_embedding_api_key"
+                    value={String(settings.kb_embedding_api_key ?? "")}
+                    onSave={updateSetting}
+                    saving={saving}
+                    saved={saved}
+                    masked
+                  />
+                  <SettingRow
+                    label="模型"
+                    settingKey="kb_embedding_model"
+                    value={String(settings.kb_embedding_model ?? "qwen3-embedding-0.6b")}
+                    onSave={updateSetting}
+                    saving={saving}
+                    saved={saved}
+                  />
+                  <SettingRow
+                    label="向量维度"
+                    settingKey="kb_embedding_dim"
+                    value={String(settings.kb_embedding_dim ?? 1024)}
+                    onSave={updateSetting}
+                    saving={saving}
+                    saved={saved}
+                  />
+                </CardContent>
+              </Card>
+
+              {/* VLM — image understanding */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">视觉模型（图文笔记）</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-xs text-muted-foreground">OpenAI-Compatible API，用于小红书图文笔记的图片 OCR / 场景描述。</p>
+                  <SettingRow
+                    label="API Base"
+                    settingKey="vlm_api_base"
+                    value={String(settings.vlm_api_base ?? "")}
+                    onSave={updateSetting}
+                    saving={saving}
+                    saved={saved}
+                    placeholder="http://localhost:8080/v1"
+                  />
+                  <SettingRow
+                    label="API Key"
+                    settingKey="vlm_api_key"
+                    value={String(settings.vlm_api_key ?? "")}
+                    onSave={updateSetting}
+                    saving={saving}
+                    saved={saved}
+                    masked
+                  />
+                  <SettingRow
+                    label="模型"
+                    settingKey="vlm_model"
+                    value={String(settings.vlm_model ?? "qwen2.5-vl-7b-instruct")}
+                    onSave={updateSetting}
+                    saving={saving}
+                    saved={saved}
+                  />
+                  <SettingRow
+                    label="Max Tokens"
+                    settingKey="vlm_max_tokens"
+                    value={String(settings.vlm_max_tokens ?? 1024)}
+                    onSave={updateSetting}
+                    saving={saving}
+                    saved={saved}
+                  />
+                  <SettingRow
+                    label="并发数"
+                    settingKey="vlm_concurrency"
+                    value={String(settings.vlm_concurrency ?? 3)}
+                    onSave={updateSetting}
+                    saving={saving}
+                    saved={saved}
+                  />
+                </CardContent>
+              </Card>
             </>
           )}
 
