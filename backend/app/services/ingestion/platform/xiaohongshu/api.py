@@ -99,12 +99,17 @@ def fetch_metadata(value: str) -> dict[str, Any]:
     user = note.get("user") or note.get("userInfo") or {}
     published = _parse_xhs_timestamp(note.get("time") or note.get("lastUpdateTime"))
 
+    content_subtype = "video_note" if is_video else "image_note"
+    uploader_id = user.get("userId") or user.get("id")
+
     return {
         "id": info.post_id,
         "title": str(title),
         "description": str(description) if description else None,
         "uploader": user.get("nickname") or user.get("name"),
-        "uploader_id": user.get("userId") or user.get("id"),
+        "uploader_id": str(uploader_id) if uploader_id else None,
+        "platform": "xiaohongshu",
+        "content_subtype": content_subtype,
         "duration": _extract_duration(note),
         "upload_date": published.strftime("%Y%m%d") if published else None,
         "timestamp": int(published.timestamp()) if published else None,
@@ -172,6 +177,39 @@ def download_video(info: dict[str, Any], output_dir: Path) -> tuple[Path, Path]:
         stderr = result.stderr.decode("utf-8", errors="replace")
         raise RuntimeError(f"ffmpeg audio extraction failed: {stderr[-500:]}")
     return video_path, wav_path
+
+
+def download_images(info: dict[str, Any], output_dir: Path) -> list[Path]:
+    """Download all images from an image_note and return their local paths."""
+    image_urls: list[str] = (info.get("extra") or {}).get("image_urls") or []
+    if not image_urls:
+        raise RuntimeError("Xiaohongshu note has no image URLs — is it really an image_note?")
+
+    images_dir = output_dir / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    referer = str(info.get("webpage_url") or "https://www.xiaohongshu.com/")
+    paths: list[Path] = []
+    for idx, url in enumerate(image_urls):
+        ext = _guess_image_ext(url)
+        dest = images_dir / f"{idx:02d}.{ext}"
+        if dest.exists():
+            paths.append(dest)
+            continue
+        try:
+            _download_file(url, dest, referer=referer)
+            paths.append(dest)
+        except Exception as e:
+            logger.warning(f"Failed to download XHS image {idx}: {e}")
+    return paths
+
+
+def _guess_image_ext(url: str) -> str:
+    match = re.search(r"\.([a-zA-Z0-9]{2,5})(?:[?#!]|$)", url.split("?")[0])
+    if match:
+        ext = match.group(1).lower()
+        if ext in ("jpg", "jpeg", "png", "webp", "gif"):
+            return ext
+    return "jpg"
 
 
 def _canonical_note_url(info: PostInfo) -> str:

@@ -356,11 +356,14 @@ class YtdlpService:
                 "title": data.get("title"),
                 "description": data.get("desc"),
                 "uploader": owner.get("name"),
-                "uploader_id": str(owner.get("mid", "")),
+                "uploader_id": str(owner.get("mid", "")) if owner.get("mid") else None,
+                "platform": "bilibili",
+                "content_subtype": "video",
                 "duration": data.get("duration"),
                 "upload_date": datetime.fromtimestamp(data["pubdate"]).strftime("%Y%m%d") if data.get("pubdate") else None,
                 "webpage_url": f"https://www.bilibili.com/video/{bvid}",
                 "thumbnail": data.get("pic"),
+                "extra": {"platform": "bilibili"},
             })
         except Exception as e:
             logger.warning(f"Bilibili view API failed: {e}")
@@ -435,7 +438,8 @@ class YtdlpService:
         }
 
     def _download_xiaohongshu(self, url: str, output_dir: Path) -> dict[str, Any]:
-        """Download a Xiaohongshu video note and extract WAV audio."""
+        """Download a Xiaohongshu note. Video notes are downloaded + WAV extracted;
+        image notes return metadata only (images are fetched later by the pipeline)."""
         from app.services.ingestion.platform.xiaohongshu.api import (
             download_video,
             fetch_metadata as fetch_xiaohongshu_metadata,
@@ -443,6 +447,18 @@ class YtdlpService:
 
         logger.info(f"Fetching Xiaohongshu note metadata: {url}")
         info = fetch_xiaohongshu_metadata(url)
+        is_video = (info.get("extra") or {}).get("is_video", False)
+
+        if not is_video:
+            # Image note: return metadata only; pipeline will download images + run VLM
+            return {
+                "url": url,
+                "title": info.get("title", "xiaohongshu_image"),
+                "file_path": None,
+                "video_path": None,
+                "info": info,
+            }
+
         video_file, audio_file = download_video(info, output_dir)
         return {
             "url": url,
@@ -979,13 +995,54 @@ class YtdlpService:
         elif raw_media_type == "video":
             media_type = MediaType.VIDEO
 
+        # Derive platform slug from extractor key
+        extractor_key = str(info.get("extractor_key") or info.get("extractor") or "").lower()
+        platform_map = {
+            "bilibili": "bilibili",
+            "youtube": "youtube",
+            "youtubeTab": "youtube",
+            "twitter": "twitter",
+            "douyin": "douyin",
+            "tiktok": "douyin",
+            "weibo": "weibo",
+            "zhihu": "zhihu",
+        }
+        platform = next(
+            (v for k, v in platform_map.items() if k.lower() in extractor_key),
+            "generic" if extractor_key else None,
+        )
+        # Prefer explicit top-level platform field (set by custom ingestors like xhs/xiaoyuzhou/bilibili)
+        if info.get("platform"):
+            platform = info["platform"]
+        elif isinstance(info.get("extra"), dict) and info["extra"].get("platform"):
+            platform = info["extra"]["platform"]
+
+        uploader_id = (
+            info.get("uploader_id")
+            or info.get("channel_id")
+            or info.get("uploader_url")  # last resort
+        )
+        # Infer content_subtype from media_type
+        subtype_map = {
+            MediaType.PODCAST: "podcast_episode",
+            MediaType.AUDIO: "audio",
+            MediaType.VIDEO: "video",
+            MediaType.MEETING: "meeting",
+        }
+        content_subtype = subtype_map.get(media_type, "video")
+        if info.get("content_subtype"):
+            content_subtype = info["content_subtype"]
+
         metadata = MediaMetadata(
             title=info.get("title", "Unknown"),
             source_url=info.get("webpage_url") or info.get("original_url"),
             uploader=info.get("uploader") or info.get("channel") or info.get("uploader_id"),
+            uploader_id=str(uploader_id) if uploader_id else None,
+            platform=platform,
             upload_date=upload_date,
             duration_seconds=info.get("duration"),
             media_type=media_type,
+            content_subtype=content_subtype,
             file_path=file_path,
             file_hash=file_hash,
             description=description,
@@ -1164,6 +1221,7 @@ async def download_media(url: str, output_dir: Path | None = None) -> dict[str, 
         "file_path": result.get("file_path"),
         "video_path": result.get("video_path"),
         "metadata": metadata.model_dump(mode="json"),
+        "info": result.get("info"),  # raw ingest info (needed for image-note pipeline)
     }
 
 

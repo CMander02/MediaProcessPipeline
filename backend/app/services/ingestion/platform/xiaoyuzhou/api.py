@@ -89,11 +89,15 @@ def fetch_metadata(url: str) -> dict[str, Any]:
     if podcast_title:
         tags.append(str(podcast_title))
 
+    podcast_id = podcast.get("pid")
     info: dict[str, Any] = {
         "id": episode_id or episode.get("eid") or episode.get("id"),
         "title": title or episode_id or "xiaoyuzhou_episode",
         "description": description,
         "uploader": podcast_title or podcast.get("author"),
+        "uploader_id": str(podcast_id) if podcast_id else None,
+        "platform": "xiaoyuzhou",
+        "content_subtype": "podcast_episode",
         "channel": podcast_title,
         "duration": duration,
         "upload_date": _format_upload_date(published),
@@ -109,7 +113,7 @@ def fetch_metadata(url: str) -> dict[str, Any]:
         "extra": {
             "platform": "xiaoyuzhou",
             "episode_id": episode_id or episode.get("eid") or episode.get("id"),
-            "podcast_id": podcast.get("pid"),
+            "podcast_id": podcast_id,
             "podcast_title": podcast_title,
             "podcast_author": podcast.get("author"),
             "podcast_description": podcast.get("description") or podcast.get("brief"),

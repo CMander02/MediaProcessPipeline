@@ -92,6 +92,11 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed }: ArchiveCa
                   <HugeiconsIcon icon={Note01Icon} className="h-3 w-3" />摘要
                 </span>
               )}
+              {typeof archive.metadata?.platform === "string" && (
+                <span className="rounded bg-emerald-500/15 px-1 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
+                  {archive.metadata.platform as string}
+                </span>
+              )}
             </div>
           </div>
         </button>

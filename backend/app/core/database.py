@@ -48,6 +48,14 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
 """
 
+# Columns added after initial schema — applied idempotently via ALTER TABLE
+_MIGRATIONS = [
+    "ALTER TABLE tasks ADD COLUMN platform TEXT",
+    "ALTER TABLE tasks ADD COLUMN uploader_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN content_subtype TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_tasks_platform ON tasks(platform)",
+]
+
 
 def _get_db_path() -> Path:
     """Get the database path, resolving from settings if needed."""
@@ -71,12 +79,37 @@ def _get_conn() -> sqlite3.Connection:
         _connection.execute("PRAGMA journal_mode=WAL")
         _connection.execute("PRAGMA foreign_keys=ON")
         _connection.executescript(SCHEMA)
+        _apply_migrations(_connection)
         logger.info(f"SQLite task store opened at {db_path}")
     return _connection
 
 
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    """Apply schema migrations idempotently (ALTER TABLE ignores duplicate-column errors)."""
+    for stmt in _MIGRATIONS:
+        try:
+            conn.execute(stmt)
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                raise
+
+
 def _task_to_row(task: Task) -> dict:
     """Convert a Task model to a dict of column values."""
+    # Derive denormalized metadata columns from result JSON if not already set on task
+    platform = task.platform
+    uploader_id = task.uploader_id
+    content_subtype = task.content_subtype
+    if task.result and isinstance(task.result.get("metadata"), dict):
+        meta = task.result["metadata"]
+        if platform is None:
+            platform = meta.get("platform") or (meta.get("extra") or {}).get("platform")
+        if uploader_id is None:
+            uploader_id = meta.get("uploader_id")
+        if content_subtype is None:
+            content_subtype = meta.get("content_subtype")
+
     return {
         "id": str(task.id),
         "task_type": task.task_type,
@@ -94,11 +127,15 @@ def _task_to_row(task: Task) -> dict:
         "current_step": task.current_step,
         "steps": json.dumps(task.steps, ensure_ascii=False),
         "completed_steps": json.dumps(task.completed_steps, ensure_ascii=False),
+        "platform": platform,
+        "uploader_id": uploader_id,
+        "content_subtype": content_subtype,
     }
 
 
 def _row_to_task(row: sqlite3.Row) -> Task:
     """Convert a database row to a Task model."""
+    keys = row.keys()
     return Task(
         id=UUID(row["id"]),
         task_type=TaskType(row["task_type"]),
@@ -116,6 +153,9 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         current_step=row["current_step"],
         steps=json.loads(row["steps"]),
         completed_steps=json.loads(row["completed_steps"]),
+        platform=row["platform"] if "platform" in keys else None,
+        uploader_id=row["uploader_id"] if "uploader_id" in keys else None,
+        content_subtype=row["content_subtype"] if "content_subtype" in keys else None,
     )
 
 

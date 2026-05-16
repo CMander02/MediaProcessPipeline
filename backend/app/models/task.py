@@ -44,9 +44,12 @@ class MediaMetadata(BaseModel):
     title: str
     source_url: str | None = None
     uploader: str | None = None
+    uploader_id: str | None = None  # platform UID (bili mid, xhs userId, yt channel_id, …)
+    platform: str | None = None     # bilibili / youtube / xiaohongshu / xiaoyuzhou / local / generic
     upload_date: datetime | None = None
     duration_seconds: float | None = None
     media_type: MediaType = MediaType.OTHER
+    content_subtype: str | None = None  # video / audio / image_note / podcast_episode / local_file …
     file_path: str | None = None
     file_hash: str | None = None
     # Extended metadata from yt-dlp
@@ -89,3 +92,7 @@ class Task(BaseModel):
     current_step: str | None = None
     steps: list[str] = Field(default_factory=list)
     completed_steps: list[str] = Field(default_factory=list)
+    # Denormalized media metadata columns (mirrors tasks DB columns)
+    platform: str | None = None
+    uploader_id: str | None = None
+    content_subtype: str | None = None
