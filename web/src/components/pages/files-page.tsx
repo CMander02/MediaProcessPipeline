@@ -43,7 +43,7 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
   const anyProcessing = archives.some((a) => a.processing)
   useEffect(() => {
     if (!anyProcessing) return
-    const id = window.setInterval(() => { refresh() }, 3000)
+    const id = window.setInterval(() => { refresh(true) }, 3000)
     return () => window.clearInterval(id)
   }, [anyProcessing, refresh])
 
@@ -51,9 +51,10 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
   const safePage = Math.min(page, totalPages)
   const paged = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
 
-  const handleOpen = (path: string) => {
+  const handleOpen = (path: string, taskId?: string) => {
     updatePrefs({ lastArchivePath: path })
-    navigate(`#/result/archive?path=${encodeURIComponent(path)}`)
+    const tid = taskId ? `&taskId=${encodeURIComponent(taskId)}` : ""
+    navigate(`#/result/archive?path=${encodeURIComponent(path)}${tid}`)
   }
 
   if (loading) {
@@ -73,9 +74,9 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
             <ArchiveCard
               key={a.path}
               archive={a}
-              onClick={() => handleOpen(a.path)}
+              onClick={() => handleOpen(a.path, a.task_id)}
               onDelete={() => setDeleteTarget({ title: a.title, path: a.path })}
-              onRenamed={refresh}
+              onRenamed={() => refresh(true)}
             />
           ))}
         </div>

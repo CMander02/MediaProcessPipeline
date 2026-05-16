@@ -120,6 +120,20 @@ class ArchiveService:
         if not data_root.exists():
             return []
 
+        # Build output_dir → task_id map from DB in one query
+        dir_to_task: dict[str, str] = {}
+        try:
+            from app.core.database import get_task_store
+            import json as _json
+            store = get_task_store()
+            for task in store.list(limit=10000):
+                result = task.result or {}
+                out_dir = result.get("output_dir") or (result.get("archive") or {}).get("output_dir")
+                if out_dir:
+                    dir_to_task[str(Path(out_dir).resolve())] = str(task.id)
+        except Exception:
+            pass
+
         archives = []
         # Iterate through data/{task_id}/ directories
         for task_dir in sorted(data_root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -182,9 +196,12 @@ class ArchiveService:
             meta_status = metadata.get("status", "completed")  # backward compat
             processing = meta_status in ("queued", "processing")
 
-            # Extract task_id from directory name prefix
-            dir_name = task_dir.name
-            task_id = dir_name.split("_")[0] if "_" in dir_name else dir_name
+            # Resolve task_id: prefer DB lookup, fallback to metadata.json, then dir name heuristic
+            task_id = (
+                dir_to_task.get(str(task_dir.resolve()))
+                or metadata.get("task_id")
+                or (task_dir.name.split("_")[0] if "_" in task_dir.name else None)
+            )
 
             # Extract duration from metadata, fallback to SRT last timestamp
             duration_seconds = metadata.get("duration_seconds") or metadata.get("duration")

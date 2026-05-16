@@ -31,16 +31,16 @@ export function useArchives() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (silent = false) => {
     try {
-      setLoading(true)
+      if (!silent) setLoading(true)
       const data = await api.archives.list()
       setArchives((data.archives ?? []) as ArchiveItem[])
       setError(null)
     } catch (e) {
       setError(String(e))
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [])
 
