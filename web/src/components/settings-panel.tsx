@@ -322,26 +322,99 @@ export function SettingsPanel() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <p className="text-sm text-muted-foreground">当前 ASR provider 为 {String(settings.asr_provider ?? "qwen3")}，只支持 Qwen3-ASR。</p>
+                  <RadioGroup
+                    value={String(settings.asr_provider ?? "qwen3")}
+                    onValueChange={(v) => updateSetting("asr_provider", v)}
+                    className="flex flex-wrap gap-4"
+                  >
+                    <div className="flex items-center gap-2">
+                      <RadioGroupItem value="qwen3" id="asr-qwen3" />
+                      <Label htmlFor="asr-qwen3">Qwen3-ASR（本地）</Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <RadioGroupItem value="siliconflow" id="asr-siliconflow" />
+                      <Label htmlFor="asr-siliconflow" className="flex items-center gap-1.5">SiliconFlow API <NewBadge /></Label>
+                    </div>
+                  </RadioGroup>
                   <Separator />
-                  <div className="space-y-3">
-                    <SettingRow
-                      label="模型路径"
-                      settingKey="qwen3_asr_model_path"
-                      value={String(settings.qwen3_asr_model_path ?? "")}
-                      onSave={updateSetting}
-                      saving={saving}
-                      saved={saved}
-                    />
-                    <SettingRow
-                      label="设备"
-                      settingKey="qwen3_device"
-                      value={String(settings.qwen3_device ?? "cuda")}
-                      onSave={updateSetting}
-                      saving={saving}
-                      saved={saved}
-                    />
-                  </div>
+                  {String(settings.asr_provider ?? "qwen3") === "siliconflow" ? (
+                    <div className="space-y-3">
+                      <p className="text-xs text-muted-foreground">
+                        通过 OpenAI 兼容的 /audio/transcriptions 接口调用。本地 Silero VAD 切片后串行上传，时间戳由 VAD 边界给出。
+                      </p>
+                      <SettingRow
+                        label="API Base"
+                        settingKey="siliconflow_api_base"
+                        value={String(settings.siliconflow_api_base ?? "https://api.siliconflow.cn/v1")}
+                        onSave={updateSetting}
+                        saving={saving}
+                        saved={saved}
+                        placeholder="https://api.siliconflow.cn/v1"
+                      />
+                      <SettingRow
+                        label="API Key"
+                        settingKey="siliconflow_api_key"
+                        value={String(settings.siliconflow_api_key ?? "")}
+                        onSave={updateSetting}
+                        saving={saving}
+                        saved={saved}
+                        masked
+                      />
+                      <SettingRow
+                        label="模型"
+                        settingKey="siliconflow_asr_model"
+                        value={String(settings.siliconflow_asr_model ?? "FunAudioLLM/SenseVoiceSmall")}
+                        onSave={updateSetting}
+                        saving={saving}
+                        saved={saved}
+                        placeholder="FunAudioLLM/SenseVoiceSmall"
+                      />
+                      <SettingRow
+                        label="语言（空=自动）"
+                        settingKey="siliconflow_asr_language"
+                        value={String(settings.siliconflow_asr_language ?? "")}
+                        onSave={updateSetting}
+                        saving={saving}
+                        saved={saved}
+                        placeholder="zh / en / 留空自动"
+                      />
+                      <SettingRow
+                        label="切片上限（秒）"
+                        settingKey="siliconflow_asr_max_chunk_sec"
+                        value={String(settings.siliconflow_asr_max_chunk_sec ?? 30)}
+                        onSave={(key, val) => updateSetting(key, Number(val))}
+                        saving={saving}
+                        saved={saved}
+                      />
+                      <SettingRow
+                        label="单段超时（秒）"
+                        settingKey="siliconflow_asr_timeout_sec"
+                        value={String(settings.siliconflow_asr_timeout_sec ?? 120)}
+                        onSave={(key, val) => updateSetting(key, Number(val))}
+                        saving={saving}
+                        saved={saved}
+                      />
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <SettingRow
+                        label="模型路径"
+                        settingKey="qwen3_asr_model_path"
+                        value={String(settings.qwen3_asr_model_path ?? "")}
+                        onSave={updateSetting}
+                        saving={saving}
+                        saved={saved}
+                      />
+                      <SettingRow
+                        label="设备"
+                        settingKey="qwen3_device"
+                        value={String(settings.qwen3_device ?? "cuda")}
+                        onSave={updateSetting}
+                        saving={saving}
+                        saved={saved}
+                      />
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 

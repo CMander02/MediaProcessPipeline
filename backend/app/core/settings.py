@@ -59,7 +59,7 @@ class RuntimeSettings(BaseModel):
     deepseek_mindmap_effort: str = ""
 
     # ASR
-    asr_provider: str = "qwen3"  # Currently supported: qwen3
+    asr_provider: str = "qwen3"  # Supported: qwen3 (local), siliconflow (OpenAI-compatible API)
 
     # Qwen3-ASR Settings
     qwen3_asr_model_path: str = ""  # Local path, empty = use HuggingFace
@@ -68,6 +68,15 @@ class RuntimeSettings(BaseModel):
     qwen3_batch_size: int = 32
     qwen3_max_new_tokens: int = 4096
     qwen3_device: str = "cuda"
+
+    # SiliconFlow ASR (OpenAI-compatible /audio/transcriptions)
+    # Local Silero VAD splits audio into chunks; each chunk is uploaded serially.
+    siliconflow_api_base: str = "https://api.siliconflow.cn/v1"
+    siliconflow_api_key: str = ""
+    siliconflow_asr_model: str = "FunAudioLLM/SenseVoiceSmall"
+    siliconflow_asr_language: str = ""  # "" = auto; e.g. "zh", "en"
+    siliconflow_asr_max_chunk_sec: float = 30.0
+    siliconflow_asr_timeout_sec: float = 120.0
 
     # Speaker Diarization
     enable_diarization: bool = True
@@ -171,8 +180,8 @@ class RuntimeSettings(BaseModel):
     @classmethod
     def _validate_asr_provider(cls, value: str) -> str:
         provider = value.strip().lower()
-        if provider != "qwen3":
-            raise ValueError("asr_provider must be 'qwen3'")
+        if provider not in {"qwen3", "siliconflow"}:
+            raise ValueError("asr_provider must be one of: qwen3, siliconflow")
         return provider
 
     @field_validator("bilibili_subtitle_engine")

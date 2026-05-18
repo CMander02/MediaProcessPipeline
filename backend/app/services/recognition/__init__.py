@@ -15,7 +15,7 @@ from app.services.recognition.base import ASRService
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_ASR_PROVIDERS = {"qwen3"}
+SUPPORTED_ASR_PROVIDERS = {"qwen3", "siliconflow"}
 
 __all__ = [
     "SUPPORTED_ASR_PROVIDERS",
@@ -32,6 +32,10 @@ def get_asr_service(provider: str | None = None) -> ASRService:
         from app.services.recognition.qwen3_asr import get_qwen3_service
 
         return get_qwen3_service()
+    if provider_id == "siliconflow":
+        from app.services.recognition.siliconflow_asr import get_siliconflow_service
+
+        return get_siliconflow_service()
     supported = ", ".join(sorted(SUPPORTED_ASR_PROVIDERS))
     raise ValueError(f"Unsupported ASR provider '{provider_id}'. Supported providers: {supported}")
 
@@ -39,8 +43,10 @@ def get_asr_service(provider: str | None = None) -> ASRService:
 def release_asr_models() -> None:
     """Release ASR-owned GPU resources without binding queue.py to a provider."""
     from app.services.recognition.qwen3_asr import release_qwen3_service
+    from app.services.recognition.siliconflow_asr import release_siliconflow_service
 
     release_qwen3_service()
+    release_siliconflow_service()
 
 
 async def transcribe_audio(
