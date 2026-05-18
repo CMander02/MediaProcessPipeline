@@ -54,7 +54,8 @@ export function SubmitForm({ onSubmitted }: { onSubmitted?: () => void }) {
     setSubmitting(true)
     setMsg("")
     try {
-      const task = await api.pipeline.upload(file, buildOptions())
+      const staged = await api.pipeline.stage(file)
+      const task = await api.tasks.create(staged.path, buildOptions())
       setMsg(`\u2713 已上传并提交 ${task.id.slice(0, 8)}`)
       onSubmitted?.()
     } catch (err) {

@@ -19,8 +19,8 @@ interface QueuedFile {
   name: string
   size: number
   duration: number | null
-  taskId: string
-  outputDir: string
+  stagingId: string
+  stagingPath: string
   uploading: boolean
   error: string
 }
@@ -81,16 +81,17 @@ export function SubmitPage() {
     abortControllers.current.set(id, controller)
     setQueuedFiles((prev) => [...prev, {
       id, name: file.name, size: file.size, duration: null,
-      taskId: "", outputDir: "", uploading: true, error: "",
+      stagingId: "", stagingPath: "", uploading: true, error: "",
     }])
     try {
-      const [duration, task] = await Promise.all([
+      const [duration, staged] = await Promise.all([
         getMediaDuration(file),
-        api.pipeline.upload(file, buildOptionsRef.current(), controller.signal),
+        api.pipeline.stage(file, controller.signal),
       ])
-      const outputDir = (task.result as Record<string, unknown> | null)?.output_dir as string || ""
       setQueuedFiles((prev) => prev.map((f) =>
-        f.id === id ? { ...f, duration, taskId: task.id, outputDir, uploading: false } : f
+        f.id === id
+          ? { ...f, duration, stagingId: staged.staging_id, stagingPath: staged.path, uploading: false }
+          : f
       ))
     } catch (err) {
       if (controller.signal.aborted) {
@@ -112,17 +113,27 @@ export function SubmitPage() {
   const removeQueued = (id: string) => {
     abortControllers.current.get(id)?.abort()
     abortControllers.current.delete(id)
-    setQueuedFiles((prev) => prev.filter((f) => f.id !== id))
+    setQueuedFiles((prev) => {
+      const target = prev.find((f) => f.id === id)
+      if (target?.stagingId) {
+        api.pipeline.deleteStaged(target.stagingId).catch(() => {})
+      }
+      return prev.filter((f) => f.id !== id)
+    })
   }
   const clearAll = () => {
     for (const controller of abortControllers.current.values()) controller.abort()
     abortControllers.current.clear()
-    setQueuedFiles([])
+    setQueuedFiles((prev) => {
+      for (const f of prev) {
+        if (f.stagingId) api.pipeline.deleteStaged(f.stagingId).catch(() => {})
+      }
+      return []
+    })
   }
 
   const handleSubmitAll = async () => {
-    // Uploaded files already have tasks — only URL/path sources need creation
-    const readyFiles = queuedFiles.filter((f) => f.taskId && !f.uploading && !f.error)
+    const readyFiles = queuedFiles.filter((f) => f.stagingPath && !f.uploading && !f.error)
     const urlSource = source.trim()
     if (!urlSource && !readyFiles.length) return
     if (submitting) return
@@ -132,11 +143,13 @@ export function SubmitPage() {
     try {
       const opts = buildOptions()
 
-      // URL source needs task creation; file tasks already exist (created on upload)
+      // Options are captured here, at submit time — so users editing
+      // advanced options after dropping files still gets their picks applied.
+      for (const f of readyFiles) {
+        await api.tasks.create(f.stagingPath, opts)
+      }
       if (urlSource) await api.tasks.create(urlSource, opts)
 
-      // Unified navigation: all submissions land on the files/queue view
-      // where in-progress tasks are surfaced alongside archives.
       navigate("#/files")
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交失败")
@@ -168,7 +181,7 @@ export function SubmitPage() {
   const { isDragging, dropZoneProps } = useDropZone({ accept: ["video/*", "audio/*"], onDrop: handleFileSelect })
 
   const anyUploading = queuedFiles.some((f) => f.uploading)
-  const readyCount = queuedFiles.filter((f) => f.taskId && !f.error).length
+  const readyCount = queuedFiles.filter((f) => f.stagingPath && !f.error).length
   const uploadingCount = queuedFiles.filter((f) => f.uploading).length
   const totalCount = (source.trim() ? 1 : 0) + readyCount
   const canSubmit = totalCount > 0 && !submitting && !anyUploading

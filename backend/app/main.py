@@ -52,6 +52,15 @@ async def lifespan(app: FastAPI):
     queue.set_pipeline(process_task)
     await queue.start()
 
+    # Sweep stale upload staging dirs (>24h old, never confirmed by user)
+    try:
+        from app.api.routes.pipeline import sweep_stale_staging
+        removed = sweep_stale_staging()
+        if removed:
+            logger.info(f"Swept {removed} stale staging dir(s)")
+    except Exception as e:
+        logger.warning(f"Staging sweep failed: {e}")
+
     yield
 
     # Shutdown

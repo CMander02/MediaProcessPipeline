@@ -21,13 +21,7 @@ import ipaddress
 from urllib.parse import urlparse
 
 from app.core.settings import get_runtime_settings
-from app.core.database import get_task_store
-from app.core.pipeline import (
-    PIPELINE_STEPS, PipelineStep, _sanitize_filename, pipeline_steps_schema,
-    create_task_dir, write_metadata_json,
-)
-from app.core.queue import get_task_queue
-from app.models import Task, TaskCreate as TaskCreateModel, TaskStatus
+from app.core.pipeline import pipeline_steps_schema
 
 logger = logging.getLogger(__name__)
 
@@ -101,19 +95,34 @@ def _sanitize_upload_name(raw_name: str) -> str:
     return safe or "uploaded_file"
 
 
-@router.post("/upload")
-async def upload_file(
-    file: UploadFile = File(...),
-    options: str = Form("{}"),
-):
-    """Upload a local media file, create task directory & task atomically.
+def _staging_root() -> Path:
+    rt = get_runtime_settings()
+    return Path(rt.data_root) / "_staging"
 
-    Saves the file directly into data/{title}/ — no intermediate uploads/ dir.
-    Returns the created Task object so the frontend needs only one request.
+
+def _resolve_staging_dir(staging_id: str) -> Path:
+    """Resolve a staging dir path and verify it stays inside the staging root."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", staging_id):
+        raise HTTPException(400, "invalid staging_id")
+    root = _staging_root().resolve()
+    candidate = (root / staging_id).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        raise HTTPException(400, "invalid staging_id")
+    return candidate
+
+
+@router.post("/stage")
+async def stage_file(file: UploadFile = File(...)):
+    """Save an uploaded media file into a staging directory without creating
+    a task. The frontend later calls POST /api/tasks with the returned `path`
+    when the user clicks "开始处理" — that's when options are captured.
+
+    Returns: {staging_id, path, filename, title, size, media_type}
     """
     raw_name = file.filename or "uploaded_file"
 
-    # Validate extension
     ext = Path(raw_name).suffix.lower()
     if ext not in _ALLOWED_MEDIA_EXTS:
         raise HTTPException(
@@ -127,31 +136,13 @@ async def upload_file(
     video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov", ".flv", ".wmv"}
     media_type = "video" if ext in video_exts else "audio"
 
-    # Parse options JSON from form field
-    import json as _json
-    try:
-        task_options = _json.loads(options) if options else {}
-    except (ValueError, TypeError):
-        task_options = {}
-
-    # Create task + directory
     from uuid import uuid4
-    task = Task(
-        task_type="pipeline",
-        source=f"upload://{safe_name}",
-        options=task_options,
-        status=TaskStatus.QUEUED,
-        current_step=PipelineStep.DOWNLOAD,
-        message="等待处理...",
-        steps=[s["id"] for s in PIPELINE_STEPS],
-        completed_steps=[],
-    )
+    staging_id = uuid4().hex
+    staging_dir = _staging_root() / staging_id
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = staging_dir / safe_name
 
-    task_dir = create_task_dir(task.id, title)
-    dest_path = task_dir / safe_name
-
-    # Stream file to task_dir with size limit (10 GB)
-    max_size = 10 * 1024 * 1024 * 1024
+    max_size = 10 * 1024 * 1024 * 1024  # 10 GB
     written = 0
     try:
         with open(dest_path, "wb") as f:
@@ -161,26 +152,44 @@ async def upload_file(
                     raise HTTPException(413, "File too large (limit: 10 GB)")
                 f.write(chunk)
     except Exception:
-        # Clean up task_dir on failure
-        shutil.rmtree(task_dir, ignore_errors=True)
+        shutil.rmtree(staging_dir, ignore_errors=True)
         raise
 
-    # Write initial metadata
-    write_metadata_json(task_dir, {
+    return {
+        "staging_id": staging_id,
+        "path": str(dest_path),
+        "filename": safe_name,
         "title": title,
-        "source_url": f"upload://{safe_name}",
+        "size": written,
         "media_type": media_type,
-    }, status="queued")
+    }
 
-    task.result = {"output_dir": str(task_dir)}
 
-    store = get_task_store()
-    store.save(task)
+@router.delete("/stage/{staging_id}")
+async def delete_staged(staging_id: str):
+    """Delete a staged file directory (called when user removes a queued file)."""
+    staging_dir = _resolve_staging_dir(staging_id)
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir, ignore_errors=True)
+    return {"deleted": True}
 
-    queue = get_task_queue()
-    await queue.submit(task.id)
 
-    return task
+def sweep_stale_staging(max_age_hours: float = 24.0) -> int:
+    """Remove staging directories older than max_age_hours. Called at daemon startup."""
+    import time
+    root = _staging_root()
+    if not root.exists():
+        return 0
+    cutoff = time.time() - max_age_hours * 3600
+    removed = 0
+    for entry in root.iterdir():
+        try:
+            if entry.is_dir() and entry.stat().st_mtime < cutoff:
+                shutil.rmtree(entry, ignore_errors=True)
+                removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 @router.get("/probe")

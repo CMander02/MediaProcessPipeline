@@ -207,21 +207,27 @@ export const api = {
 
   pipeline: {
     steps: () => get<{ steps: PipelineStep[] }>("/api/tasks/steps"),
-    upload: async (file: File, options?: Record<string, unknown>, signal?: AbortSignal) => {
+    stage: async (file: File, signal?: AbortSignal) => {
       const form = new FormData()
       form.append("file", file)
-      if (options && Object.keys(options).length > 0) {
-        form.append("options", JSON.stringify(options))
-      }
-      const res = await fetch("/api/pipeline/upload", {
+      const res = await fetch("/api/pipeline/stage", {
         method: "POST",
         headers: requestedHeaders(),
         body: form,
         signal,
       })
       if (!res.ok) throw await parseError(res)
-      return res.json() as Promise<Task>
+      return res.json() as Promise<{
+        staging_id: string
+        path: string
+        filename: string
+        title: string
+        size: number
+        media_type: string
+      }>
     },
+    deleteStaged: (stagingId: string) =>
+      httpDelete<{ deleted: boolean }>(`/api/pipeline/stage/${stagingId}`),
     probe: (url: string) =>
       get<{ title?: string; description?: string; tags?: string[]; uploader?: string; duration?: number }>(
         `/api/pipeline/probe?url=${encodeURIComponent(url)}`,

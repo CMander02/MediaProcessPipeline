@@ -1176,7 +1176,23 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 if not task_dir:
                     task_dir = create_task_dir(task.id, title)
                 dest_source = task_dir / source_path.name
-                shutil.copy2(str(source_path), str(dest_source))
+                # If the source lives in the upload staging area, move it
+                # (cheap on same volume) and drop the empty staging dir.
+                # Otherwise copy so user's original file is preserved.
+                staging_root = (Path(get_runtime_settings().data_root) / "_staging").resolve()
+                try:
+                    source_path.resolve().relative_to(staging_root)
+                    is_staged = True
+                except ValueError:
+                    is_staged = False
+                if is_staged:
+                    shutil.move(str(source_path), str(dest_source))
+                    try:
+                        source_path.parent.rmdir()
+                    except OSError:
+                        pass
+                else:
+                    shutil.copy2(str(source_path), str(dest_source))
 
             title = dest_source.stem
             video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov"}
@@ -1601,35 +1617,15 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 await _raise_if_cancelled(task.id)
             # end if TRANSCRIBE not in done
 
-            # ── Voiceprint step: run while vocals files are still on disk ──
-            # Must run inside the GPU semaphore block (pyannote pipeline is loaded),
-            # and before _cleanup_vocals() wipes the WAV files we just transcribed.
+            # ── Voiceprint step: temporarily disabled ──
+            # The matcher/library work is currently being reconsidered.
+            # Mark the step complete so the UI progress bar still advances,
+            # but skip the embedding extraction + person registration.
+            # Re-enable by reverting this block (see git history for the
+            # original _run_voiceprint_step call + SRT speaker-name rewrite).
             if PipelineStep.VOICEPRINT not in done:
                 await _update_step(task, PipelineStep.VOICEPRINT)
-                try:
-                    recognition_segments = await _run_voiceprint_step(
-                        task=task,
-                        recognition_segments=recognition_segments,
-                        task_dir=task_dir,
-                    )
-                    # Rewrite SRT so downstream consumers see canonical names
-                    if recognition_segments and subtitle_source == "asr":
-                        from app.services.recognition import get_asr_service
-                        service = get_asr_service()
-                        if hasattr(service, "to_srt"):
-                            from app.models import TranscriptSegment
-                            segs_models = [
-                                TranscriptSegment(**{k: v for k, v in s.items() if k in {"start", "end", "text", "speaker"}})
-                                for s in recognition_segments
-                            ]
-                            new_srt = service.to_srt(segs_models)
-                            if new_srt:
-                                srt = new_srt
-                                srt_path = task_dir / "transcript.srt"
-                                srt_path.write_text(srt, encoding="utf-8")
-                                await _emit_file_ready(task, "transcript.srt", str(srt_path))
-                except Exception as e:
-                    logger.warning(f"Voiceprint step failed (non-fatal): {e}", exc_info=True)
+                logger.info("Voiceprint step disabled — skipping")
                 await _update_step(task, PipelineStep.VOICEPRINT, completed=True)
         # end async with gpu_sem
 
