@@ -66,19 +66,21 @@ def _extract_bilibili_bvid(url: str) -> str | None:
 
 def ytdlp_base_opts() -> dict[str, Any]:
     """Shared yt-dlp options: fail fast on network errors instead of retrying
-    forever. Without this, a dead local proxy or DNS issue produces ~9 retries
+    forever. Without this, a dead proxy or DNS issue produces ~9 retries
     × multiple clients (tv/android/web) × ~3 socket retries each = looks like
     an infinite loop in the log.
+
+    Proxy handling: we deliberately do NOT override `proxy` — yt-dlp will pick
+    up HTTP(S)_PROXY env vars / WinINET on its own. Users in regions where
+    YouTube needs a proxy can run their proxy normally and the daemon will
+    inherit it. If their proxy is down, that's a user environment issue, not
+    something this code should paper over.
     """
     return {
         "retries": 3,                 # video-data retries
         "fragment_retries": 3,        # DASH fragment retries
         "extractor_retries": 3,       # extractor-level retries
         "socket_timeout": 15,         # cap each TCP attempt
-        # Explicitly disable proxy. yt-dlp would otherwise honour
-        # HTTP(S)_PROXY env vars; WinINET Windows system proxy is bypassed
-        # via NO_PROXY=* set at daemon launch in cli/serve.py.
-        "proxy": "",
     }
 
 

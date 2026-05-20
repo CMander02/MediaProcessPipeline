@@ -3,39 +3,12 @@
 from __future__ import annotations
 
 import ctypes
-import os
 import signal
 import socket
 import sys
 import threading
 import time
 import uvicorn
-
-
-_PROXY_ENV_VARS = (
-    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
-    "http_proxy", "https_proxy", "all_proxy",
-)
-
-
-def _strip_proxy_env() -> list[str]:
-    """Remove HTTP(S)_PROXY env vars AND force NO_PROXY=* so neither env-var
-    nor WinINET (Windows system proxy registry) routing is used by yt-dlp /
-    requests / urllib3.
-
-    Without this, a dead local proxy (clash/v2ray on 127.0.0.1:7890/7897)
-    causes WinError 10061 'connection refused' even when env vars are clean,
-    because Python's `requests` library reads WinINET when env vars are absent.
-    """
-    removed: list[str] = []
-    for var in _PROXY_ENV_VARS:
-        if os.environ.pop(var, None) is not None:
-            removed.append(var)
-    # NO_PROXY=* tells requests/urllib3 to bypass proxies for ALL hosts,
-    # which also disables WinINET proxy resolution on Windows.
-    os.environ["NO_PROXY"] = "*"
-    os.environ["no_proxy"] = "*"
-    return removed
 
 
 def _setup_win32_job_object() -> None:
@@ -134,17 +107,8 @@ def run_server(host: str = "127.0.0.1", port: int = 18000, reload: bool = False)
     # Ensure child processes (ffmpeg, BBDown, etc.) die when we exit
     _setup_win32_job_object()
 
-    # Drop HTTP(S)_PROXY env vars + force NO_PROXY=* so a dead local proxy
-    # (clash/v2ray) or WinINET system proxy can't break yt-dlp downloads.
-    _stripped = _strip_proxy_env()
-
     from rich.console import Console
     console = Console()
-
-    if _stripped:
-        console.print(f"[dim]Cleared proxy env vars: {', '.join(_stripped)}; NO_PROXY=*[/dim]")
-    else:
-        console.print(f"[dim]NO_PROXY=* set (no proxy env vars to clear)[/dim]")
 
     # Check if port is already in use
     if _port_in_use(host, port):
@@ -205,9 +169,6 @@ def start_daemon_background(host: str = "127.0.0.1", port: int = 18000, timeout:
     if _port_in_use(host, port):
         _bg_started_by_cli = False
         return True
-
-    # Same proxy cleanup as foreground serve
-    _strip_proxy_env()
 
     def _run() -> None:
         # Suppress uvicorn startup banner — the CLI prints its own message
