@@ -58,6 +58,10 @@ def _global_options(
     plain: bool = typer.Option(False, "--plain", help="纯文本输出，无颜色，无 Unicode 图标（ASCII）"),
     no_color: bool = typer.Option(False, "--no-color", help="去掉颜色，保留格式结构"),
     json_out: bool = typer.Option(False, "--json", help="机器可读 JSON 输出（stdout）"),
+    skip_version_check: bool = typer.Option(
+        False, "--skip-version-check", help="跳过 yt-dlp 版本检查",
+        envvar="MPP_SKIP_VERSION_CHECK",
+    ),
 ) -> None:
     global _plain_mode, _json_mode
     _plain_mode = plain or (os.environ.get("MPP_PLAIN_OUTPUT") == "1")
@@ -70,6 +74,54 @@ def _global_options(
     elif no_color:
         from app.cli.display import set_no_color
         set_no_color(True)
+
+    # Offer to upgrade yt-dlp if behind PyPI. Only on interactive commands that
+    # actually need yt-dlp; skip for json/quiet/scripted invocations and serve.
+    if (
+        not skip_version_check
+        and not _json_mode
+        and ctx.invoked_subcommand in ("run", "submit", "retry", "serve")
+    ):
+        _maybe_prompt_ytdlp_upgrade()
+
+
+def _maybe_prompt_ytdlp_upgrade() -> None:
+    """Check yt-dlp version; if stale, ask user if they want to upgrade now."""
+    try:
+        from app.services.ingestion.ytdlp_version import check_version, upgrade
+        from app.cli.display import console
+        info = check_version()
+    except Exception:
+        return  # network down or import error — silent
+
+    if not info or not info.is_stale:
+        return
+
+    console.print(
+        f"[yellow]![/yellow] yt-dlp 已过期: [bold]{info.installed}[/bold] → "
+        f"PyPI 最新 [bold]{info.latest}[/bold]"
+    )
+    console.print("  YouTube/抖音 等平台经常需要最新版本才能下载。")
+    try:
+        ans = input("  现在升级？[Y/n] ").strip().lower()
+    except (EOFError, OSError):
+        return
+
+    if ans and ans not in ("y", "yes", "是"):
+        console.print("  [dim]已跳过。可设置 MPP_SKIP_VERSION_CHECK=1 永久跳过此提示。[/dim]")
+        return
+
+    console.print("  [dim]运行 pip install -U yt-dlp …[/dim]")
+    result = upgrade()
+    if result.get("ok"):
+        console.print(
+            f"  [green]✓[/green] 已升级到 [bold]{result.get('new')}[/bold]"
+            f"  [dim](原: {result.get('old')})[/dim]"
+        )
+        if result.get("restart_recommended"):
+            console.print("  [yellow]提示：daemon 已加载旧版本 yt-dlp，重启后生效。[/yellow]")
+    else:
+        console.print(f"  [red]✗[/red] 升级失败:\n{result.get('output', '')}")
 
 
 # ---------------------------------------------------------------------------

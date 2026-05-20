@@ -19,7 +19,7 @@ dependencies = [
     "youtube-transcript-api>=1.2.4",
     "sqlite-vec>=0.1.6",
     # Media pipeline runtime dependencies
-    "yt-dlp>=2024.0.0",
+    "yt-dlp>=2026.3.17",
     # PyTorch GPU - CUDA 12.8 (cu128 索引)
     "torch~=2.8.0",
     "torchaudio~=2.8.0",

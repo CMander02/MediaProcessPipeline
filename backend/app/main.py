@@ -61,6 +61,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Staging sweep failed: {e}")
 
+    # Check yt-dlp version against PyPI (non-blocking; warns on staleness)
+    import asyncio
+    from app.services.ingestion.ytdlp_version import warn_if_stale
+    asyncio.create_task(asyncio.to_thread(warn_if_stale))
+
     yield
 
     # Shutdown
