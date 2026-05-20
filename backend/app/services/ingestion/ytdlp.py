@@ -64,6 +64,20 @@ def _extract_bilibili_bvid(url: str) -> str | None:
         return None
 
 
+def ytdlp_base_opts() -> dict[str, Any]:
+    """Shared yt-dlp options: fail fast on network errors instead of retrying
+    forever. Without this, a dead local proxy or DNS issue produces ~9 retries
+    × multiple clients (tv/android/web) × ~3 socket retries each = looks like
+    an infinite loop in the log.
+    """
+    return {
+        "retries": 3,                 # video-data retries
+        "fragment_retries": 3,        # DASH fragment retries
+        "extractor_retries": 3,       # extractor-level retries
+        "socket_timeout": 15,         # cap each TCP attempt
+    }
+
+
 def ytdlp_auth_opts() -> dict[str, Any]:
     """yt-dlp options for YouTube (and other sites) auth cookies.
 
@@ -265,6 +279,7 @@ class YtdlpService:
             "outtmpl": outtmpl,
             "writeinfojson": False,
             "quiet": not self._settings.debug,
+            **ytdlp_base_opts(),
             **ytdlp_auth_opts(),
         }
 
@@ -285,6 +300,7 @@ class YtdlpService:
                 "outtmpl": outtmpl,
                 "skip_download": True,
                 "quiet": True,
+                **ytdlp_base_opts(),
                 **ytdlp_auth_opts(),
             }
             with yt_dlp.YoutubeDL(meta_opts) as ydl:
@@ -844,7 +860,7 @@ class YtdlpService:
             return fetch_xiaohongshu_metadata(url)
 
         import yt_dlp
-        with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True, **ytdlp_auth_opts()}) as ydl:
+        with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True, **ytdlp_base_opts(), **ytdlp_auth_opts()}) as ydl:
             info = ydl.extract_info(url, download=False)
         if info is None:
             raise RuntimeError(f"Failed to extract metadata: {url}")
@@ -864,6 +880,7 @@ class YtdlpService:
                 "preferredcodec": "wav",
                 "preferredquality": "192",
             }],
+            **ytdlp_base_opts(),
             **ytdlp_auth_opts(),
         }
 
@@ -1109,7 +1126,7 @@ class YtdlpService:
 
         # Probe all available subtitle languages via yt-dlp metadata
         try:
-            with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True, **ytdlp_auth_opts()}) as ydl:
+            with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True, **ytdlp_base_opts(), **ytdlp_auth_opts()}) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as e:
             logger.warning(f"yt-dlp probe failed: {e}")
@@ -1151,6 +1168,7 @@ class YtdlpService:
                 "subtitlesformat": "json3/srt/best",
                 "outtmpl": str(output_dir / "%(id)s"),
                 "quiet": True,
+                **ytdlp_base_opts(),
                 **ytdlp_auth_opts(),
             }
             try:

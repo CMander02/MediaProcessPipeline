@@ -3,12 +3,34 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import signal
 import socket
 import sys
 import threading
 import time
 import uvicorn
+
+
+_PROXY_ENV_VARS = (
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "all_proxy",
+)
+
+
+def _strip_proxy_env() -> list[str]:
+    """Remove HTTP(S)_PROXY env vars so child processes (yt-dlp, BBDown, ffmpeg)
+    don't try to tunnel through a possibly-dead local proxy (clash/v2ray).
+
+    Users running with a system proxy that's intermittently up cause WinError
+    10061 'connection refused' from yt-dlp. Strip them at daemon launch; users
+    who genuinely need a proxy can set it inside settings.json instead.
+    """
+    removed: list[str] = []
+    for var in _PROXY_ENV_VARS:
+        if os.environ.pop(var, None) is not None:
+            removed.append(var)
+    return removed
 
 
 def _setup_win32_job_object() -> None:
@@ -107,8 +129,16 @@ def run_server(host: str = "127.0.0.1", port: int = 18000, reload: bool = False)
     # Ensure child processes (ffmpeg, BBDown, etc.) die when we exit
     _setup_win32_job_object()
 
+    # Drop HTTP(S)_PROXY env vars — a dead local proxy (clash/v2ray on
+    # 127.0.0.1:7890/7897) is the most common cause of yt-dlp 'connection
+    # refused' failures.
+    _stripped = _strip_proxy_env()
+
     from rich.console import Console
     console = Console()
+
+    if _stripped:
+        console.print(f"[dim]Cleared proxy env vars: {', '.join(_stripped)}[/dim]")
 
     # Check if port is already in use
     if _port_in_use(host, port):
@@ -169,6 +199,9 @@ def start_daemon_background(host: str = "127.0.0.1", port: int = 18000, timeout:
     if _port_in_use(host, port):
         _bg_started_by_cli = False
         return True
+
+    # Same proxy cleanup as foreground serve
+    _strip_proxy_env()
 
     def _run() -> None:
         # Suppress uvicorn startup banner — the CLI prints its own message
