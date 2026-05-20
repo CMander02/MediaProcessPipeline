@@ -75,6 +75,10 @@ def ytdlp_base_opts() -> dict[str, Any]:
         "fragment_retries": 3,        # DASH fragment retries
         "extractor_retries": 3,       # extractor-level retries
         "socket_timeout": 15,         # cap each TCP attempt
+        # Explicitly disable proxy. yt-dlp would otherwise honour
+        # HTTP(S)_PROXY env vars; WinINET Windows system proxy is bypassed
+        # via NO_PROXY=* set at daemon launch in cli/serve.py.
+        "proxy": "",
     }
 
 
