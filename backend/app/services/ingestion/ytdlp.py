@@ -75,12 +75,19 @@ def ytdlp_base_opts() -> dict[str, Any]:
     YouTube needs a proxy can run their proxy normally and the daemon will
     inherit it. If their proxy is down, that's a user environment issue, not
     something this code should paper over.
+
+    EJS solver: YouTube's n-parameter signature challenge now requires a JS
+    runtime via yt-dlp's EJS subsystem. Without it, extraction succeeds for
+    metadata but all video/audio formats are filtered out (only images remain).
+    `ejs:github` fetches the solver from the official yt-dlp release on demand
+    and caches it; first call may take a few extra seconds.
     """
     return {
         "retries": 3,                 # video-data retries
         "fragment_retries": 3,        # DASH fragment retries
         "extractor_retries": 3,       # extractor-level retries
         "socket_timeout": 15,         # cap each TCP attempt
+        "remote_components": ["ejs:github"],
     }
 
 
