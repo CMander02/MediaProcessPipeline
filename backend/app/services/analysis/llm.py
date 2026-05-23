@@ -397,6 +397,92 @@ class LLMService:
             result.append(f"{seg['index']}\n{seg['timestamp']}\n{seg['text']}")
         return '\n\n'.join(result)
 
+    def _parse_polish_response(
+        self, response: str, fallback_segments: list[dict]
+    ) -> list[dict]:
+        """Parse an LLM polish response into segments.
+
+        Tries, in order:
+        1. JSON array of {index, timestamp, text} (the prompt-requested format),
+           tolerating markdown fences and leading/trailing prose.
+        2. Raw SRT blocks (legacy / when the model insists on SRT).
+        3. Empty list — caller will align/fallback to input segments.
+        """
+        # Strip markdown code fences first
+        text = response.strip()
+        fence_match = re.match(
+            r"^```(?:json|JSON)?\s*\n(.*?)\n```\s*$",
+            text,
+            flags=re.DOTALL,
+        )
+        if fence_match:
+            text = fence_match.group(1).strip()
+
+        # Try JSON: find the first '[' and the matching last ']' so we
+        # tolerate leading/trailing junk like "好的，这是结果："
+        try:
+            start = text.find("[")
+            end = text.rfind("]")
+            if start >= 0 and end > start:
+                arr = json.loads(text[start : end + 1])
+                if isinstance(arr, list):
+                    segs: list[dict] = []
+                    for item in arr:
+                        if not isinstance(item, dict):
+                            continue
+                        idx = item.get("index")
+                        ts = item.get("timestamp")
+                        txt = item.get("text")
+                        if idx is None or not ts or txt is None:
+                            continue
+                        segs.append(
+                            {
+                                "index": int(idx),
+                                "timestamp": str(ts).strip(),
+                                "text": str(txt).strip(),
+                            }
+                        )
+                    if segs:
+                        return segs
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            logger.debug(f"Polish response not valid JSON ({e}); trying SRT parse")
+
+        # Fall back to SRT block parse
+        srt_segs = self._parse_srt(text)
+        if srt_segs:
+            return srt_segs
+
+        # Nothing usable
+        return []
+
+    def _align_polished_to_input(
+        self, polished: list[dict], original: list[dict]
+    ) -> list[dict]:
+        """Align polished segments back to the original cue list.
+
+        Guarantees one output per input cue, preserving every original
+        index+timestamp. For each input cue, picks the polished segment with
+        the matching timestamp if present, else matching index, else falls
+        back to the original text. This way we never lose cues even if the
+        LLM dropped or duplicated some.
+        """
+        by_ts = {seg.get("timestamp"): seg for seg in polished if seg.get("timestamp")}
+        by_idx = {seg.get("index"): seg for seg in polished if seg.get("index") is not None}
+        aligned: list[dict] = []
+        for orig in original:
+            match = by_ts.get(orig["timestamp"]) or by_idx.get(orig["index"])
+            if match and match.get("text"):
+                aligned.append(
+                    {
+                        "index": orig["index"],
+                        "timestamp": orig["timestamp"],
+                        "text": match["text"],
+                    }
+                )
+            else:
+                aligned.append(dict(orig))
+        return aligned
+
     async def polish_with_context_parallel(
         self,
         srt_content: str,
@@ -470,12 +556,16 @@ class LLMService:
                 # Call LLM
                 polished_chunk = await self._call(prompt, provider_override=provider_override, stage="polish")
 
-                # Parse polished result
-                polished_segs = self._parse_srt(polished_chunk)
+                # Try JSON first (preferred output format), then fall back to SRT
+                polished_segs = self._parse_polish_response(polished_chunk, chunk_segments)
 
-                if not polished_segs:
-                    logger.warning(f"Chunk {idx}: invalid response, keeping original")
-                    polished_segs = chunk_segments
+                if len(polished_segs) != len(chunk_segments):
+                    logger.warning(
+                        f"Chunk {idx}: cue count mismatch (input {len(chunk_segments)}, "
+                        f"output {len(polished_segs)}); aligning by index and falling back to original "
+                        f"text for missing cues"
+                    )
+                    polished_segs = self._align_polished_to_input(polished_segs, chunk_segments)
                 else:
                     logger.info(
                         f"Chunk {idx}: input {len(chunk_segments)} segments, "
@@ -513,12 +603,22 @@ class LLMService:
         return self._segments_to_srt(polished_segments)
 
     async def polish(self, text: str, context: dict[str, Any] | None = None) -> str:
-        """Polish text, optionally with context from analysis phase."""
+        """Polish text, optionally with context from analysis phase.
+
+        Routing: if the input parses as multi-cue SRT, always use the chunked
+        path. The chunked path enforces per-cue structure and falls back to
+        original cues on parse failure — much safer than the simple flat
+        prompt, which is prone to returning prose and destroying timestamps.
+        The simple prompt is only safe for short, single-block text.
+        """
         rt = get_runtime_settings()
-        # polish_provider="" means follow global llm_provider (no override)
         provider_override = rt.polish_provider
-        if context:
-            return await self.polish_with_context_parallel(text, context, provider_override=provider_override)
+        if not context:
+            context = {}
+        if len(self._parse_srt(text)) >= 2:
+            return await self.polish_with_context_parallel(
+                text, context, provider_override=provider_override
+            )
         prompt = get_simple_polish_prompt(text)
         return await self._call(prompt, provider_override=provider_override, stage="polish")
 

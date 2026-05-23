@@ -29,7 +29,7 @@ def get_polish_prompt(
     keywords_str = ", ".join(keywords) if keywords else "未知"
     nouns_str = ", ".join(proper_nouns) if proper_nouns else "未知"
 
-    return f"""你是专业的字幕校对编辑。请根据以下上下文信息润色字幕片段。
+    return f"""你是专业的字幕校对编辑。请根据上下文信息润色下面的字幕片段。
 
 ## 内容分析
 - 语言: {language}
@@ -43,14 +43,22 @@ def get_polish_prompt(
 2. 添加适当的标点符号
 3. 移除口语填充词（如"呃"、"那个"、"就是说"、"然后"等）
 4. 保持原意和说话者风格
-5. **重要**: 保持 [SPEAKER_XX] 标记不变
-6. 保持 SRT 时间戳格式不变
-7. 不要合并或拆分字幕条目，保持原有的分段
+5. **必须**保留每条字幕的 index、timestamp、[SPEAKER_XX] 标记
+6. **不要**合并或拆分字幕条目；输入有 N 条，输出就必须有 N 条
+7. **不要**改写 timestamp，必须原样保留
+
+## 输出格式（严格遵守）
+直接输出 JSON 数组，**不要**任何前后解释/markdown 代码块/废话引导句。
+每个元素是一个对象：{{"index": <整数>, "timestamp": "<原时间戳>", "text": "<润色后的文本，包含 [SPEAKER_XX] 前缀>"}}
+
+示例输出（仅示例，请勿照抄）：
+[{{"index": 1, "timestamp": "00:00:00,800 --> 00:00:06,719", "text": "[SPEAKER_04] 大家好。"}},
+ {{"index": 2, "timestamp": "00:00:07,440 --> 00:00:17,519", "text": "[SPEAKER_04] 今天我们聊一聊。"}}]
 
 ## 待润色的字幕片段
 {text}
 
-请输出润色后的完整 SRT 片段，保持格式不变:"""
+请直接输出 JSON 数组（以 [ 开始，以 ] 结束），不要任何其它内容："""
 
 
 def get_simple_polish_prompt(text: str) -> str:
