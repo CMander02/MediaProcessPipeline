@@ -10,6 +10,7 @@ export interface ArchiveItem {
   has_mindmap: boolean
   has_video: boolean
   has_audio: boolean
+  has_image: boolean
   media_file: string | null
   processing?: boolean
   task_id?: string

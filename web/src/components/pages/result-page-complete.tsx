@@ -17,6 +17,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
+import { PlatformIcon } from "@/components/platform-icon"
 import { SpeakerMergeDialog, type SpeakerMergeInfo } from "@/components/speaker-merge-dialog"
 import { useArchives, type ArchiveItem } from "@/hooks/use-archives"
 import { useMediaSync } from "@/hooks/use-media-sync"
@@ -467,12 +468,11 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
               </a>
             )}
             {platform && (
-              <span
-                className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                title={uploader ? `上传者：${uploader}` : platform}
-              >
-                {platform}
-              </span>
+              <PlatformIcon
+                platform={platform}
+                uploader={uploader}
+                className="h-4 w-4 shrink-0"
+              />
             )}
             {subtitleSourceType && (
               <span

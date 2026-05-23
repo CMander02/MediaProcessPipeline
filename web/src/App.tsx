@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils"
 export default function App() {
   const route = useRoute()
   const [search, setSearch] = useState("")
-  const [mediaFilter, setMediaFilter] = useState<"all" | "video" | "audio">("all")
+  const [mediaFilter, setMediaFilter] = useState<"all" | "video" | "audio" | "image">("all")
 
   // Startup page routing
   useEffect(() => {
@@ -73,7 +73,7 @@ export default function App() {
               />
             </div>
             <div className="flex rounded-md border text-xs">
-              {(["all", "video", "audio"] as const).map((f) => (
+              {(["all", "video", "audio", "image"] as const).map((f) => (
                 <button
                   key={f}
                   onClick={() => { setMediaFilter(f); if (route.page !== "files") navigate("#/files") }}
@@ -83,10 +83,10 @@ export default function App() {
                       ? "bg-primary text-primary-foreground"
                       : "text-muted-foreground hover:text-foreground",
                     f === "all" && "rounded-l-md",
-                    f === "audio" && "rounded-r-md",
+                    f === "image" && "rounded-r-md",
                   )}
                 >
-                  {f === "all" ? "全部" : f === "video" ? "视频" : "音频"}
+                  {f === "all" ? "全部" : f === "video" ? "视频" : f === "audio" ? "音频" : "图文"}
                 </button>
               ))}
             </div>

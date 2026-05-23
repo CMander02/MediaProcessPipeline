@@ -10,8 +10,9 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { RenameDialog } from "@/components/rename-dialog"
+import { PlatformIcon } from "@/components/platform-icon"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { Video01Icon, MusicNote01Icon, Note01Icon, FolderOpenIcon, PencilEdit01Icon, Delete01Icon, Loading03Icon } from "@hugeicons/core-free-icons"
+import { Video01Icon, MusicNote01Icon, Note01Icon, Image01Icon, ListTreeIcon, FolderOpenIcon, PencilEdit01Icon, Delete01Icon, Loading03Icon } from "@hugeicons/core-free-icons"
 
 interface ArchiveCardProps {
   archive: ArchiveItem
@@ -24,10 +25,11 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed }: ArchiveCa
   const [imgError, setImgError] = useState(false)
   const [showRename, setShowRename] = useState(false)
 
-  const showThumbnail = archive.has_video && !imgError
-  const thumbnailUrl = archive.has_video
-    ? api.archives.thumbnailUrl(archive.path)
-    : null
+  // Always try the thumbnail endpoint — for audio podcasts it serves the
+  // cover art saved at ingestion time; for video it extracts a frame.
+  // If the request 404s (no cover, no video), we fall back to a placeholder.
+  const showThumbnail = !imgError
+  const thumbnailUrl = api.archives.thumbnailUrl(archive.path)
 
   return (
     <>
@@ -54,7 +56,10 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed }: ArchiveCa
             ) : (
               <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-primary/5 to-primary/15">
                 <div className="rounded-full bg-primary/10 p-3">
-                  <HugeiconsIcon icon={MusicNote01Icon} className="h-6 w-6 text-primary/40" />
+                  <HugeiconsIcon
+                    icon={archive.has_image ? Image01Icon : MusicNote01Icon}
+                    className="h-6 w-6 text-primary/40"
+                  />
                 </div>
               </div>
             )}
@@ -78,24 +83,36 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed }: ArchiveCa
 
           {/* Info */}
           <div className="flex flex-col gap-1 pt-2 px-0.5">
-            <h3 className="line-clamp-2 text-sm font-medium leading-snug group-hover:text-primary transition-colors">
+            <h3 className="line-clamp-2 min-h-[2lh] text-sm font-medium leading-snug group-hover:text-primary transition-colors">
               {archive.title}
             </h3>
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <span>{archive.date}</span>
-              <span className="flex items-center gap-0.5">
-                {archive.has_video ? <HugeiconsIcon icon={Video01Icon} className="h-3 w-3" /> : <HugeiconsIcon icon={MusicNote01Icon} className="h-3 w-3" />}
-                {archive.has_video ? "视频" : "音频"}
+              <span className="flex items-center" title={archive.has_video ? "视频" : archive.has_image ? "图文" : "音频"}>
+                {archive.has_video ? (
+                  <HugeiconsIcon icon={Video01Icon} className="h-3.5 w-3.5" strokeWidth={1.75} />
+                ) : archive.has_image ? (
+                  <HugeiconsIcon icon={Image01Icon} className="h-3.5 w-3.5" strokeWidth={1.75} />
+                ) : (
+                  <HugeiconsIcon icon={MusicNote01Icon} className="h-3.5 w-3.5" strokeWidth={1.75} />
+                )}
               </span>
               {archive.has_summary && (
-                <span className="flex items-center gap-0.5">
-                  <HugeiconsIcon icon={Note01Icon} className="h-3 w-3" />摘要
+                <span className="flex items-center" title="摘要">
+                  <HugeiconsIcon icon={Note01Icon} className="h-3.5 w-3.5" strokeWidth={1.75} />
+                </span>
+              )}
+              {archive.has_mindmap && (
+                <span className="flex items-center" title="总结树">
+                  <HugeiconsIcon icon={ListTreeIcon} className="h-3.5 w-3.5" strokeWidth={1.75} />
                 </span>
               )}
               {typeof archive.metadata?.platform === "string" && (
-                <span className="rounded bg-emerald-500/15 px-1 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
-                  {archive.metadata.platform as string}
-                </span>
+                <PlatformIcon
+                  platform={archive.metadata.platform as string}
+                  uploader={typeof archive.metadata?.uploader === "string" ? (archive.metadata.uploader as string) : null}
+                  className="h-3.5 w-3.5 shrink-0"
+                />
               )}
             </div>
           </div>

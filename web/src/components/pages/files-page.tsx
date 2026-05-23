@@ -12,7 +12,7 @@ const PAGE_SIZE = 18
 
 interface FilesPageProps {
   search: string
-  mediaFilter: "all" | "video" | "audio"
+  mediaFilter: "all" | "video" | "audio" | "image"
 }
 
 export function FilesPage({ search, mediaFilter }: FilesPageProps) {
@@ -24,7 +24,8 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
   const filtered = useMemo(() => {
     let list = archives
     if (mediaFilter === "video") list = list.filter((a) => a.has_video)
-    if (mediaFilter === "audio") list = list.filter((a) => !a.has_video && a.has_audio)
+    if (mediaFilter === "audio") list = list.filter((a) => !a.has_video && !a.has_image && a.has_audio)
+    if (mediaFilter === "image") list = list.filter((a) => a.has_image)
     if (search.trim()) {
       const q = search.toLowerCase()
       list = list.filter((a) => a.title.toLowerCase().includes(q))
