@@ -45,7 +45,7 @@ class MediaMetadata(BaseModel):
     source_url: str | None = None
     uploader: str | None = None
     uploader_id: str | None = None  # platform UID (bili mid, xhs userId, yt channel_id, …)
-    platform: str | None = None     # bilibili / youtube / xiaohongshu / xiaoyuzhou / local / generic
+    platform: str | None = None     # bilibili / youtube / xiaohongshu / xiaoyuzhou / apple_podcast / local / generic
     upload_date: datetime | None = None
     duration_seconds: float | None = None
     media_type: MediaType = MediaType.OTHER

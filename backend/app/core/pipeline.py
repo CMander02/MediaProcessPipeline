@@ -68,6 +68,8 @@ def _detect_source_type(source: str) -> str:
         return "bilibili"
     elif "xiaoyuzhoufm.com/episode/" in source_lower:
         return "xiaoyuzhou"
+    elif "podcasts.apple.com" in source_lower:
+        return "apple_podcast"
     elif "xiaohongshu.com" in source_lower or "xhslink.com" in source_lower:
         return "xiaohongshu"
     elif source_lower.startswith(("http://", "https://")):
@@ -88,7 +90,7 @@ def _platform_prefer_subtitles(source_type: str) -> bool:
     except Exception:
         configs = {}
 
-    supported_platforms = {"bilibili", "youtube", "xiaoyuzhou", "xiaohongshu"}
+    supported_platforms = {"bilibili", "youtube", "xiaoyuzhou", "xiaohongshu", "apple_podcast"}
     platform_cfg = configs.get(source_type) if source_type in supported_platforms else None
     if isinstance(platform_cfg, dict) and "prefer_subtitle" in platform_cfg:
         return bool(platform_cfg["prefer_subtitle"])
@@ -1276,7 +1278,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     with yt_dlp.YoutubeDL({"quiet": True, **ytdlp_auth_opts()}) as ydl:
                         info = ydl.extract_info(source, download=False)
                         title = info.get("title", "unknown") if info else "unknown"
-            elif source_type in ("xiaohongshu", "xiaoyuzhou"):
+            elif source_type in ("xiaohongshu", "xiaoyuzhou", "apple_podcast"):
                 # Use our own API — yt-dlp XiaoHongShu extractor fails on image notes
                 # and xiaoyuzhou is not supported by yt-dlp at all.
                 # Title will be resolved during the actual download step; use task id as placeholder.
@@ -1294,7 +1296,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             # 2. Decide whether to attempt fast path
             force_asr = rt.force_asr or task.options.get("force_asr", False)
 
-            if use_platform_subtitles and not force_asr and source_type not in ("xiaohongshu", "xiaoyuzhou"):
+            if use_platform_subtitles and not force_asr and source_type not in ("xiaohongshu", "xiaoyuzhou", "apple_podcast"):
                 # Probe: fetch metadata + subtitle (lightweight, no video download)
                 from app.services.ingestion.ytdlp import fetch_metadata as _fetch_meta
                 try:

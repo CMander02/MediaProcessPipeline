@@ -33,6 +33,10 @@ def _is_xiaohongshu_url(url: str) -> bool:
     return bool(re.search(r'xiaohongshu\.com|xhslink\.com', url))
 
 
+def _is_apple_podcast_url(url: str) -> bool:
+    return bool(re.search(r'podcasts\.apple\.com/(?:[a-z]{2}/)?podcast/[^?#/]*/id\d+', url, re.IGNORECASE))
+
+
 def _extract_bilibili_bvid(url: str) -> str | None:
     """Extract or resolve a Bilibili BV id from BV or av/aid URLs."""
     bv_match = re.search(r'(BV[0-9A-Za-z]+)', url)
@@ -273,6 +277,8 @@ class YtdlpService:
             return self._download_bilibili(url, output_dir)
         if _is_xiaoyuzhou_url(url):
             return self._download_xiaoyuzhou(url, output_dir)
+        if _is_apple_podcast_url(url):
+            return self._download_apple_podcast(url, output_dir)
         if _is_xiaohongshu_url(url):
             return self._download_xiaohongshu(url, output_dir)
 
@@ -460,6 +466,25 @@ class YtdlpService:
         return {
             "url": url,
             "title": info.get("title", "xiaoyuzhou_episode"),
+            "file_path": str(audio_file),
+            "video_path": None,
+            "source_audio_path": str(source_audio) if source_audio else None,
+            "info": info,
+        }
+
+    def _download_apple_podcast(self, url: str, output_dir: Path) -> dict[str, Any]:
+        """Download an Apple Podcasts episode by resolving RSS enclosure URL."""
+        from app.services.ingestion.platform.apple_podcast.api import (
+            download_audio,
+            fetch_metadata as fetch_apple_metadata,
+        )
+
+        logger.info(f"Fetching Apple Podcasts episode metadata: {url}")
+        info = fetch_apple_metadata(url)
+        audio_file, source_audio = download_audio(info, output_dir)
+        return {
+            "url": url,
+            "title": info.get("title", "apple_podcast_episode"),
             "file_path": str(audio_file),
             "video_path": None,
             "source_audio_path": str(source_audio) if source_audio else None,
@@ -866,6 +891,11 @@ class YtdlpService:
                 fetch_metadata as fetch_xiaoyuzhou_metadata,
             )
             return fetch_xiaoyuzhou_metadata(url)
+        if _is_apple_podcast_url(url):
+            from app.services.ingestion.platform.apple_podcast.api import (
+                fetch_metadata as fetch_apple_metadata,
+            )
+            return fetch_apple_metadata(url)
         if _is_xiaohongshu_url(url):
             from app.services.ingestion.platform.xiaohongshu.api import (
                 fetch_metadata as fetch_xiaohongshu_metadata,
@@ -1123,6 +1153,15 @@ class YtdlpService:
                     "status": "skipped",
                     "reason": "no_public_transcript_endpoint",
                     "transcript_media_id": (info.get("extra") or {}).get("transcript_media_id"),
+                }],
+            )
+        if _is_apple_podcast_url(url):
+            return _empty_subtitle_result(
+                engine="apple-podcast-rss",
+                diagnostics=[{
+                    "stage": "subtitle",
+                    "status": "skipped",
+                    "reason": "no_public_transcript_in_rss",
                 }],
             )
         if _is_xiaohongshu_url(url):

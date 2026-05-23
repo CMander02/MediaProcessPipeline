@@ -595,6 +595,14 @@ async def get_platform_configs():
                 "prefer_subtitle": False,
             },
             {
+                "id": "apple_podcast",
+                "name": "Apple Podcasts",
+                "status": "active",
+                "auth_status": "not_applicable",
+                "preferred_quality": None,
+                "prefer_subtitle": False,
+            },
+            {
                 "id": "xiaohongshu",
                 "name": "小红书",
                 "status": "active",
