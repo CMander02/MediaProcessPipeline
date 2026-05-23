@@ -175,8 +175,10 @@ class ArchiveService:
             # Check for media files in archive directory
             video_exts = {'.mp4', '.mkv', '.avi', '.webm', '.mov'}
             audio_exts = {'.mp3', '.wav', '.flac', '.m4a', '.ogg'}
+            image_exts = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'}
             has_video = False
             has_audio = False
+            has_image = metadata.get("content_subtype") == "image_note"
             media_file = None
             media_is_external = False
 
@@ -191,6 +193,10 @@ class ArchiveService:
                 elif ext in audio_exts:
                     has_audio = True
                     media_file = str(f)
+                elif ext in image_exts and f.stem.lower() not in ("cover", "thumbnail"):
+                    # Real image-note content; covers/thumbnails are just artwork
+                    # for audio/video archives and shouldn't change the type.
+                    has_image = True
 
             # Determine processing status
             meta_status = metadata.get("status", "completed")  # backward compat
@@ -217,6 +223,7 @@ class ArchiveService:
                 "has_mindmap": (task_dir / "mindmap.md").exists(),
                 "has_video": has_video,
                 "has_audio": has_audio,
+                "has_image": has_image,
                 "media_file": media_file,
                 "media_is_external": media_is_external,
                 "processing": processing,

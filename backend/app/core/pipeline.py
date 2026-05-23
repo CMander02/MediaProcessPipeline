@@ -462,18 +462,42 @@ def _cleanup_vocals(task_dir: Path, audio_path: str | None, vocals_path: str | N
 
 
 def _cleanup_extracted_audio(task_dir: Path, audio_path: str | None, media_type: str | None) -> None:
-    """Clean up the extracted WAV from video in the final archive step.
+    """Clean up the working WAV when a compressed source is preserved.
 
-    Only deletes the ffmpeg-extracted WAV for video files. Audio-only files
-    keep their source since it IS the original media.
+    Two cases:
+    1. Video sources — pipeline always extracts a WAV for ASR; the source mp4
+       is kept, so the WAV is disposable.
+    2. Podcast / audio sources where the platform downloader saved both the
+       original compressed file (.m4a/.mp3/...) and a derived working WAV.
+       The original is the canonical media — delete the WAV.
+
+    A bare .wav source (no sibling compressed file) is the only copy of the
+    media and must be kept.
     """
-    if media_type != "video" or not audio_path:
+    if not audio_path:
         return
     audio_file = Path(audio_path)
-    if audio_file.exists() and audio_file.suffix.lower() == ".wav":
-        size = audio_file.stat().st_size
-        audio_file.unlink()
-        logger.info(f"Cleaned up extracted audio ({size / (1024*1024):.1f} MB): {audio_file.name}")
+    if not audio_file.exists() or audio_file.suffix.lower() != ".wav":
+        return
+
+    # Always safe to delete the WAV when we came from a video source.
+    can_delete = media_type == "video"
+
+    # For audio sources, only delete the WAV if a sibling compressed source
+    # exists in the same archive dir (same stem, lossy/lossless container).
+    if not can_delete:
+        sibling_exts = {".m4a", ".mp3", ".flac", ".ogg", ".opus", ".aac"}
+        stem = audio_file.stem
+        parent = audio_file.parent
+        if any((parent / f"{stem}{ext}").exists() for ext in sibling_exts):
+            can_delete = True
+
+    if not can_delete:
+        return
+
+    size = audio_file.stat().st_size
+    audio_file.unlink()
+    logger.info(f"Cleaned up working WAV ({size / (1024*1024):.1f} MB): {audio_file.name}")
 
 
 
