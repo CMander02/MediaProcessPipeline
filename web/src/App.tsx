@@ -3,12 +3,13 @@ import { useRoute, navigate } from "@/lib/router"
 import { getPreferences } from "@/hooks/use-preferences"
 import { FilesPage } from "@/components/pages/files-page"
 import { SubmitPage } from "@/components/pages/submit-page"
+import { BackendPage } from "@/components/pages/backend-page"
 import { ResultPageWrapper } from "@/components/pages/result-page-wrapper"
 import { SettingsPage } from "@/components/pages/settings-page"
 import { TaskQueueDropdown } from "@/components/task-queue-dropdown"
 import { Input } from "@/components/ui/input"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { AudioWave01Icon, FolderOpenIcon, PlusSignIcon, Settings01Icon, Search01Icon } from "@hugeicons/core-free-icons"
+import { AudioWave01Icon, ComputerTerminal01Icon, FolderOpenIcon, PlusSignIcon, Settings01Icon, Search01Icon } from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
 
 export default function App() {
@@ -30,6 +31,7 @@ export default function App() {
   const navItems = [
     { page: "files" as const, icon: FolderOpenIcon, label: "文件" },
     { page: "submit" as const, icon: PlusSignIcon, label: "处理" },
+    { page: "backend" as const, icon: ComputerTerminal01Icon, label: "后端" },
   ]
 
   return (
@@ -115,6 +117,7 @@ export default function App() {
       <main className="flex-1 min-h-0">
         {route.page === "files" && <FilesPage search={search} mediaFilter={mediaFilter} />}
         {route.page === "submit" && <SubmitPage />}
+        {route.page === "backend" && <BackendPage />}
         {route.page === "result" && <ResultPageWrapper />}
         {route.page === "settings" && <SettingsPage />}
       </main>

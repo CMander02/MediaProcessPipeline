@@ -1,14 +1,17 @@
-import { useState, useMemo, useEffect } from "react"
+import { useState, useMemo, useEffect, useLayoutEffect, useRef } from "react"
 import { useArchives } from "@/hooks/use-archives"
 import { usePreferences } from "@/hooks/use-preferences"
 import { navigate } from "@/lib/router"
 import { ArchiveCard } from "@/components/archive-card"
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Loading03Icon, FolderOpenIcon, ArrowLeft01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons"
 
 const PAGE_SIZE = 18
+const MIN_PAGE_SIZE = 1
+const COMPACT_HEIGHT = 620
 
 interface FilesPageProps {
   search: string
@@ -19,7 +22,10 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
   const { archives, loading, refresh } = useArchives()
   const { update: updatePrefs } = usePreferences()
   const [page, setPage] = useState(1)
+  const [pageInput, setPageInput] = useState("1")
+  const [pageSize, setPageSize] = useState(PAGE_SIZE)
   const [deleteTarget, setDeleteTarget] = useState<{ title: string; path: string } | null>(null)
+  const gridRef = useRef<HTMLDivElement>(null)
 
   const filtered = useMemo(() => {
     let list = archives
@@ -48,14 +54,51 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
     return () => window.clearInterval(id)
   }, [anyProcessing, refresh])
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
   const safePage = Math.min(page, totalPages)
-  const paged = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
+  const paged = filtered.slice((safePage - 1) * pageSize, safePage * pageSize)
+
+  useLayoutEffect(() => {
+    const grid = gridRef.current
+    if (!grid) return
+
+    const updatePageSize = () => {
+      const styles = window.getComputedStyle(grid)
+      const columns = styles.gridTemplateColumns.split(" ").filter(Boolean).length || 1
+      const rows = window.innerHeight < COMPACT_HEIGHT ? 2 : 3
+      const nextPageSize = Math.max(MIN_PAGE_SIZE, columns * rows)
+      setPageSize((current) => (current === nextPageSize ? current : nextPageSize))
+    }
+
+    updatePageSize()
+    const observer = new ResizeObserver(updatePageSize)
+    observer.observe(grid)
+    window.addEventListener("resize", updatePageSize)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener("resize", updatePageSize)
+    }
+  }, [paged.length, filtered.length])
+
+  useEffect(() => {
+    setPageInput(String(safePage))
+  }, [safePage])
 
   const handleOpen = (path: string, taskId?: string) => {
     updatePrefs({ lastArchivePath: path })
     const tid = taskId ? `&taskId=${encodeURIComponent(taskId)}` : ""
     navigate(`#/result/archive?path=${encodeURIComponent(path)}${tid}`)
+  }
+
+  const commitPageInput = () => {
+    const parsed = Number.parseInt(pageInput, 10)
+    if (!Number.isFinite(parsed)) {
+      setPageInput(String(safePage))
+      return
+    }
+    const nextPage = Math.min(Math.max(parsed, 1), totalPages)
+    setPage(nextPage)
+    setPageInput(String(nextPage))
   }
 
   if (loading) {
@@ -70,7 +113,7 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
     <div className="flex h-full min-h-0 flex-col gap-3 p-4 pb-2">
       {/* Grid */}
       {filtered.length > 0 ? (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4 overflow-y-auto flex-1 min-h-0 content-start">
+        <div ref={gridRef} className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4 overflow-hidden flex-1 min-h-0 content-start">
           {paged.map((a) => (
             <ArchiveCard
               key={a.path}
@@ -94,7 +137,7 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="shrink-0 flex items-center justify-center gap-1 py-1">
+        <div className="shrink-0 flex items-center justify-center gap-2 py-1">
           <Button
             variant="ghost"
             size="icon-sm"
@@ -103,17 +146,23 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
           >
             <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4" />
           </Button>
-          {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
-            <Button
-              key={p}
-              variant={p === safePage ? "default" : "ghost"}
-              size="sm"
-              className="min-w-8 h-8"
-              onClick={() => setPage(p)}
-            >
-              {p}
-            </Button>
-          ))}
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Input
+              value={pageInput}
+              onChange={(e) => setPageInput(e.target.value.replace(/[^\d]/g, ""))}
+              onBlur={commitPageInput}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.currentTarget.blur()
+                }
+              }}
+              inputMode="numeric"
+              className="h-8 w-14 px-2 text-center text-sm text-foreground"
+              aria-label="页码"
+            />
+            <span>/</span>
+            <span className="min-w-6 text-foreground">{totalPages}</span>
+          </div>
           <Button
             variant="ghost"
             size="icon-sm"

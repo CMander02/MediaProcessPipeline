@@ -1,11 +1,11 @@
 /**
  * Minimal hash-based router.
- * Routes: #/files, #/submit, #/result/archive?path=..., #/result/task/<id>
+ * Routes: #/files, #/submit, #/backend, #/result/archive?path=..., #/result/task/<id>
  */
 import { useSyncExternalStore } from "react"
 
 export interface Route {
-  page: "files" | "submit" | "result" | "settings"
+  page: "files" | "submit" | "backend" | "result" | "settings"
   /** For result page: "archive" or "task" */
   resultType?: "archive" | "task"
   /** archive path or task id */
@@ -18,6 +18,7 @@ function parseHash(hash: string): Route {
   const raw = hash.replace(/^#\/?/, "")
 
   if (raw.startsWith("submit")) return { page: "submit" }
+  if (raw.startsWith("backend")) return { page: "backend" }
   if (raw.startsWith("settings")) return { page: "settings" }
 
   if (raw.startsWith("result/archive")) {
