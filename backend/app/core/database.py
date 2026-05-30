@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+from app.core.logging_setup import log_event
 from app.models.task import Task, TaskStatus, TaskType
 
 logger = logging.getLogger(__name__)
@@ -80,7 +81,7 @@ def _get_conn() -> sqlite3.Connection:
         _connection.execute("PRAGMA foreign_keys=ON")
         _connection.executescript(SCHEMA)
         _apply_migrations(_connection)
-        logger.info(f"SQLite task store opened at {db_path}")
+        log_event(logger, logging.INFO, "database.opened", path=db_path)
     return _connection
 
 
@@ -290,7 +291,7 @@ def init_db(data_root: Path | None = None) -> None:
         _db_path = Path(data_root).resolve() / "tasks.db"
     # Force connection creation + schema init
     _get_conn()
-    logger.info("Task database initialized")
+    log_event(logger, logging.INFO, "database.initialized", path=_get_db_path())
 
 
 def close_db() -> None:
@@ -299,7 +300,7 @@ def close_db() -> None:
     if _connection:
         _connection.close()
         _connection = None
-        logger.info("Task database closed")
+        log_event(logger, logging.INFO, "database.closed")
 
 
 def reset_db_path(data_root: Path | None = None) -> None:

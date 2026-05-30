@@ -2,7 +2,7 @@
 
 Header format (every line, same shape for first/third-party/uvicorn):
 
-    HH:MM:SS.mmm +ZZZZ LEVEL [t:taskid8 w:worker] logger  (file:line) message
+    HH:MM:SS.mmm +ZZZZ LEVEL [t:taskid8 w:worker] logger  event=name key=value
 
 Conventions:
   - Local time + numeric offset (UTC+8 shows `+0800`) so logs align with
@@ -12,10 +12,13 @@ Conventions:
   - task_id and worker are injected from contextvars. No manual prefixes.
   - file:line only shown for WARNING and above, to keep INFO rows tight.
   - `app.` prefix is stripped from logger names.
+  - Application logs should prefer `log_event(...)` so message text is stable
+    enough for grep, filtering, and future UI surfaces.
 """
 from __future__ import annotations
 
 import logging
+import math
 import sys
 import time
 from contextvars import ContextVar
@@ -25,13 +28,13 @@ from pathlib import Path
 
 # ---- Context vars ---------------------------------------------------------
 
-# 8-char task id, or "-" when no task is active
-task_id_var: ContextVar[str] = ContextVar("task_id", default="-")
-# worker name e.g. "dl-1", "gpu-1", or "-"
-worker_var: ContextVar[str] = ContextVar("worker", default="-")
-
 NO_TASK_DISPLAY = "--------"
 NO_WORKER_DISPLAY = "----"
+
+# 8-char task id, or -------- when no task is active
+task_id_var: ContextVar[str] = ContextVar("task_id", default=NO_TASK_DISPLAY)
+# worker name e.g. "dl-1", "gpu-1", or ----
+worker_var: ContextVar[str] = ContextVar("worker", default=NO_WORKER_DISPLAY)
 
 
 def set_task_context(task_id: str | None) -> object:
@@ -53,6 +56,59 @@ def reset_context(token: object, var: ContextVar) -> None:
         var.reset(token)  # type: ignore[arg-type]
     except Exception:
         pass
+
+
+# ---- Structured message helper ------------------------------------------
+
+_SAFE_VALUE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-/:+@%")
+
+
+def _format_log_value(value: object) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return f"{value:.3f}".rstrip("0").rstrip(".")
+        return str(value)
+    text = str(value).replace("\r", "\\r").replace("\n", "\\n")
+    if text == "":
+        return '""'
+    if all(ch in _SAFE_VALUE_CHARS for ch in text):
+        return text
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def format_event(event: str, **fields: object) -> str:
+    """Return a stable `event=name key=value` log message."""
+    parts = [f"event={event}"]
+    for key, value in fields.items():
+        if value is None:
+            continue
+        parts.append(f"{key}={_format_log_value(value)}")
+    return " ".join(parts)
+
+
+def log_event(
+    logger: logging.Logger,
+    level: int,
+    event: str,
+    *,
+    exc_info: object = None,
+    stack_info: bool = False,
+    **fields: object,
+) -> None:
+    """Emit a structured application log record."""
+    logger.log(
+        level,
+        format_event(event, **fields),
+        exc_info=exc_info,
+        stack_info=stack_info,
+        stacklevel=2,
+    )
 
 
 # ---- Filter: inject context into record ----------------------------------
@@ -104,6 +160,8 @@ class ConsoleFormatter(logging.Formatter):
         logger_name = getattr(record, "logger_short", record.name)
 
         msg = record.getMessage()
+        if not msg.startswith("event="):
+            msg = format_event("log", message=msg)
 
         if record.levelno >= logging.WARNING:
             src = f" ({record.filename}:{record.lineno})"
@@ -136,6 +194,8 @@ _NOISY = {
     "httpx": logging.WARNING,
     "httpcore": logging.WARNING,
     "openai": logging.WARNING,
+    "litellm": logging.WARNING,
+    "LiteLLM": logging.WARNING,
     "uvicorn.access": logging.WARNING,
     "speechbrain": logging.INFO,
     "speechbrain.utils.checkpoints": logging.WARNING,
@@ -199,7 +259,12 @@ def setup_logging(log_dir: Path | None = None) -> Path | None:
     if log_dir is not None:
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / time.strftime("mpp_%Y%m%d_%H%M%S.log", time.localtime())
-        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
         file_handler.setFormatter(formatter)
         file_handler.addFilter(ctx_filter)
         root.addHandler(file_handler)

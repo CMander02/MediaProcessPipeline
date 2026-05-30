@@ -10,6 +10,7 @@ import logging
 import re
 import shutil
 import subprocess
+import time
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -19,6 +20,7 @@ from uuid import UUID
 from app.core.database import get_task_store
 from app.core.events import TaskEvent, get_event_bus
 from app.core.settings import get_runtime_settings
+from app.core.logging_setup import log_event
 from app.models import MediaMetadata, Task, TaskStatus, TaskType
 
 logger = logging.getLogger(__name__)
@@ -179,7 +181,7 @@ def update_metadata_status(task_dir: Path | None, status: str) -> None:
         data["status"] = status
         meta_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception:
-        logger.debug("Failed to update metadata.json status", exc_info=True)
+        log_event(logger, logging.DEBUG, "metadata_status.update_failed", status=status, path=meta_path, exc_info=True)
 
 
 async def _raise_if_cancelled(task_id: UUID) -> None:
@@ -383,20 +385,26 @@ async def _select_polish_track(
         try:
             sample = Path(tracks[0]["path"]).read_text(encoding="utf-8", errors="ignore")
         except Exception as e:
-            logger.warning(f"Failed to read sample track for lang detection: {e}")
+            log_event(logger, logging.WARNING, "subtitle.lang_detect.sample_read_failed", error=e)
             return tracks[0], tracks[0].get("lang") or "unknown"
 
     detected = await detect_transcript_language(srt=sample)
     if detected == "unknown":
-        logger.info("Language detection returned unknown, using first track for polish")
+        log_event(logger, logging.INFO, "subtitle.track.select_default", reason="unknown_language")
         return tracks[0], detected
 
     matched = match_track_by_language(tracks, detected)
     if matched:
-        logger.info(f"Polish track selected: lang={matched.get('lang')} (detected={detected})")
+        log_event(
+            logger,
+            logging.INFO,
+            "subtitle.track.selected",
+            lang=matched.get("lang"),
+            detected_lang=detected,
+        )
         return matched, detected
 
-    logger.info(f"Detected lang '{detected}' has no matching track, using first")
+    log_event(logger, logging.INFO, "subtitle.track.select_default", reason="no_match", detected_lang=detected)
     return tracks[0], detected
 
 
@@ -418,7 +426,7 @@ def _save_all_tracks_as_transcripts(tracks: list[dict], task_dir: Path) -> list[
             if str(src.resolve()) != str(dest.resolve()):
                 copyfile(src, dest)
         except Exception as e:
-            logger.warning(f"Failed to copy track {src} → {dest}: {e}")
+            log_event(logger, logging.WARNING, "subtitle.track.copy_failed", src=src, dest=dest, error=e)
             continue
         manifest.append({
             "lang": lang,
@@ -458,7 +466,13 @@ def _cleanup_vocals(task_dir: Path, audio_path: str | None, vocals_path: str | N
 
     if cleaned_files:
         size_mb = cleaned_size / (1024 * 1024)
-        logger.info(f"Cleaned up vocals/segments ({size_mb:.1f} MB): {cleaned_files}")
+        log_event(
+            logger,
+            logging.INFO,
+            "cleanup.vocals.done",
+            files=len(cleaned_files),
+            size_mb=round(size_mb, 1),
+        )
 
 
 def _cleanup_extracted_audio(task_dir: Path, audio_path: str | None, media_type: str | None) -> None:
@@ -497,7 +511,13 @@ def _cleanup_extracted_audio(task_dir: Path, audio_path: str | None, media_type:
 
     size = audio_file.stat().st_size
     audio_file.unlink()
-    logger.info(f"Cleaned up working WAV ({size / (1024*1024):.1f} MB): {audio_file.name}")
+    log_event(
+        logger,
+        logging.INFO,
+        "cleanup.working_audio.done",
+        file=audio_file.name,
+        size_mb=round(size / (1024 * 1024), 1),
+    )
 
 
 
@@ -568,19 +588,19 @@ async def _run_voiceprint_step(
     # Only run if diarization produced speaker labels
     has_speakers = any(s.get("speaker") for s in recognition_segments)
     if not has_speakers:
-        logger.info("Voiceprint: no speaker labels in segments, skipping")
+        log_event(logger, logging.INFO, "voiceprint.skipped", reason="no_speaker_labels")
         return recognition_segments
 
     from app.services.recognition import get_asr_service
     service = get_asr_service()
     pipeline_obj = service.get_pyannote_pipeline() if hasattr(service, "get_pyannote_pipeline") else None
     if pipeline_obj is None:
-        logger.info("Voiceprint: pyannote pipeline not loaded, skipping")
+        log_event(logger, logging.INFO, "voiceprint.skipped", reason="pyannote_not_loaded")
         return recognition_segments
 
     diarize_df, audio_path = service.get_last_diarization() if hasattr(service, "get_last_diarization") else (None, None)
     if diarize_df is None or audio_path is None:
-        logger.info("Voiceprint: no cached diarization, skipping")
+        log_event(logger, logging.INFO, "voiceprint.skipped", reason="no_cached_diarization")
         return recognition_segments
 
     from app.services.voiceprint import get_voiceprint_store
@@ -598,7 +618,7 @@ async def _run_voiceprint_step(
         sample_id_prefix=f"{task.id}_",
     )
     if not voiceprints:
-        logger.info("Voiceprint: no voiceprints extracted, skipping")
+        log_event(logger, logging.INFO, "voiceprint.skipped", reason="no_voiceprints")
         return recognition_segments
 
     resolutions = resolve_speakers(
@@ -609,7 +629,7 @@ async def _run_voiceprint_step(
         suggest_threshold=float(getattr(rt, "voiceprint_suggest_threshold", 0.60)),
     )
     recognition_segments = apply_to_segments(recognition_segments, resolutions)
-    logger.info(f"Voiceprint: resolved {len(resolutions)} speaker(s)")
+    log_event(logger, logging.INFO, "voiceprint.resolved", speakers=len(resolutions))
     return recognition_segments
 
 
@@ -696,7 +716,13 @@ async def _run_subtitle_fast_path(
 
     # Guard: skip LLM if transcript is empty
     if not transcript or len(transcript.strip()) < 10:
-        logger.warning(f"Fast path: transcript too short ({len(transcript)} chars), skipping LLM")
+        log_event(
+            logger,
+            logging.WARNING,
+            "pipeline.llm.skipped",
+            reason="fast_path_transcript_too_short",
+            chars=len(transcript),
+        )
         await _update_step(task, PipelineStep.POLISH, completed=True)
         await _update_step(task, PipelineStep.ANALYZE, completed=True)
         empty_analysis = {"language": "unknown", "content_type": "unknown", "main_topics": [],
@@ -811,7 +837,7 @@ async def _process_image_note(
             None, download_images, ingest_info, task_dir
         )
     except Exception as e:
-        logger.warning(f"XHS image download failed: {e}")
+        log_event(logger, logging.WARNING, "xhs.images.download_failed", error=e)
         image_paths = []
 
     await _raise_if_cancelled(task.id)
@@ -830,7 +856,7 @@ async def _process_image_note(
                     result = await _aio.get_event_loop().run_in_executor(None, vlm.describe_image, path)
                     return {"index": idx, "image_path": str(path), **result}
                 except Exception as e:
-                    logger.warning(f"VLM failed for image {idx} ({path.name}): {e}")
+                    log_event(logger, logging.WARNING, "vlm.image.failed", index=idx, file=path.name, error=e)
                     return {"index": idx, "image_path": str(path), "kind": "content", "text": ""}
 
         descriptions = list(await _aio.gather(*[_describe(i, p) for i, p in enumerate(image_paths)]))
@@ -838,7 +864,7 @@ async def _process_image_note(
         for i, p in enumerate(image_paths):
             descriptions.append({"index": i, "image_path": str(p), "kind": "content", "text": ""})
         if image_paths and not rt.vlm_api_base:
-            logger.warning("VLM not configured (vlm_api_base empty); image descriptions will be empty")
+            log_event(logger, logging.WARNING, "vlm.skipped", reason="not_configured", images=len(image_paths))
 
     await _raise_if_cancelled(task.id)
 
@@ -911,7 +937,7 @@ async def _process_image_note(
             mm_path.write_text(mindmap, encoding="utf-8")
             await _emit_file_ready(task, "mindmap.md", str(mm_path))
     else:
-        logger.warning("Image note: combined text too short or empty — skipping LLM analysis")
+        log_event(logger, logging.WARNING, "image_note.llm.skipped", reason="combined_text_too_short")
 
     await _update_step(task, PipelineStep.ANALYZE, completed=True)
 
@@ -956,8 +982,16 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     - GPU semaphore: UVR + ASR are protected by gpu_semaphore so concurrent
       workers never fight over VRAM.
     """
+    import yt_dlp
+
     from app.services.ingestion import download_media
-    from app.services.ingestion.ytdlp import download_subtitles
+    from app.services.ingestion.ytdlp import (
+        YoutubeNetworkError,
+        download_subtitles,
+        fetch_metadata as fetch_ytdlp_metadata,
+        ytdlp_auth_opts,
+        ytdlp_base_opts,
+    )
     from app.services.ingestion.local import find_local_subtitle, parse_nfo
     from app.services.preprocessing import separate_vocals
     from app.services.recognition import transcribe_audio
@@ -983,7 +1017,14 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             task_dir = candidate
 
     done = set(task.completed_steps or [])
-    logger.info(f"starting pipeline, already done: {done}")
+    log_event(
+        logger,
+        logging.INFO,
+        "pipeline.started",
+        source_type=source_type,
+        completed_steps=",".join(sorted(str(s) for s in done)) or "none",
+        download_worker_call=_download_worker_call,
+    )
     await _raise_if_cancelled(task.id)
 
     # Variables that later steps depend on — populated either by running the
@@ -1023,7 +1064,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             metadata = MediaMetadata.model_validate(raw)
             return True
         except Exception as e:
-            logger.warning(f"Failed to restore metadata: {e}")
+            log_event(logger, logging.WARNING, "pipeline.restore.metadata_failed", error=e)
             return False
 
     def _restore_audio_paths() -> bool:
@@ -1108,7 +1149,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
     # ── Step 1: DOWNLOAD ───────────────────────────────────────────────────
     if PipelineStep.DOWNLOAD in done:
-        logger.info(f"skipping DOWNLOAD (already done), restoring from disk")
+        log_event(logger, logging.INFO, "pipeline.step.skipped", step=PipelineStep.DOWNLOAD, reason="already_done")
         _restore_metadata()
         _restore_audio_paths()
         # Restore has_subtitle + platform_subtitle from disk
@@ -1130,7 +1171,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         # Fast-path resume: LLM steps done, just need video + archive
         fast_path_steps = {PipelineStep.TRANSCRIBE, PipelineStep.ANALYZE, PipelineStep.POLISH}
         if fast_path_steps.issubset(done) and PipelineStep.ARCHIVE not in done:
-            logger.info(f"fast-path resume — re-downloading video")
+            log_event(logger, logging.INFO, "pipeline.fast_path.redownload")
             ingest = await download_media(source, output_dir=task_dir)
             await _raise_if_cancelled(task.id)
             audio_path = ingest.get("file_path")
@@ -1243,7 +1284,12 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 if not is_browser_upload and use_platform_subtitles:
                     platform_subtitle = find_local_subtitle(source_path)
                     if platform_subtitle:
-                        logger.info(f"Found local subtitle: {platform_subtitle['subtitle_path']}")
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "subtitle.local.found",
+                            path=platform_subtitle["subtitle_path"],
+                        )
 
                 if not is_browser_upload:
                     nfo_meta = parse_nfo(source_path)
@@ -1297,9 +1343,8 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 yt_match = re.search(r'(?:v=|youtu\.be/)([\w-]{11})', source)
                 title = yt_match.group(1) if yt_match else None
                 if not title:
-                    import yt_dlp
-                    from app.services.ingestion.ytdlp import ytdlp_auth_opts
-                    with yt_dlp.YoutubeDL({"quiet": True, **ytdlp_auth_opts()}) as ydl:
+                    ydl_opts = {"quiet": True, **ytdlp_base_opts(), **ytdlp_auth_opts()}
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(source, download=False)
                         title = info.get("title", "unknown") if info else "unknown"
             elif source_type in ("xiaohongshu", "xiaoyuzhou", "apple_podcast"):
@@ -1308,9 +1353,8 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 # Title will be resolved during the actual download step; use task id as placeholder.
                 title = None
             else:
-                import yt_dlp
-                from app.services.ingestion.ytdlp import ytdlp_auth_opts
-                with yt_dlp.YoutubeDL({"quiet": True, **ytdlp_auth_opts()}) as ydl:
+                ydl_opts = {"quiet": True, **ytdlp_base_opts(), **ytdlp_auth_opts()}
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(source, download=False)
                     title = info.get("title", "unknown") if info else "unknown"
 
@@ -1322,11 +1366,12 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
             if use_platform_subtitles and not force_asr and source_type not in ("xiaohongshu", "xiaoyuzhou", "apple_podcast"):
                 # Probe: fetch metadata + subtitle (lightweight, no video download)
-                from app.services.ingestion.ytdlp import fetch_metadata as _fetch_meta
                 try:
-                    probe_metadata = await _fetch_meta(source)
+                    probe_metadata = await fetch_ytdlp_metadata(source)
+                except YoutubeNetworkError:
+                    raise
                 except Exception as e:
-                    logger.warning(f"Metadata probe failed: {e}, falling back to full pipeline")
+                    log_event(logger, logging.WARNING, "metadata.probe.failed", error=e, fallback="full_pipeline")
                     probe_metadata = None
 
                 probe_subtitle = None
@@ -1344,12 +1389,19 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                             if sub_dir.exists() and not any(sub_dir.iterdir()):
                                 sub_dir.rmdir()
                     except Exception as e:
-                        logger.warning(f"Subtitle probe failed: {e}")
+                        if isinstance(e, YoutubeNetworkError):
+                            raise
+                        log_event(logger, logging.WARNING, "subtitle.probe.failed", error=e)
                         probe_subtitle = None
 
                 if probe_metadata and probe_subtitle:
                     # ── FAST PATH: subtitle + video download in parallel ──
-                    logger.info(f"fast path — subtitle found, running parallel")
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "pipeline.fast_path.started",
+                        subtitle_path=probe_subtitle.get("subtitle_path"),
+                    )
                     metadata = probe_metadata
 
                     # Rename task_dir to real title
@@ -1367,11 +1419,17 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                             if probe_subtitle.get("subtitle_path"):
                                 old_sub_path = Path(probe_subtitle["subtitle_path"])
                                 probe_subtitle["subtitle_path"] = str(new_sub_dir / old_sub_path.name)
-                            logger.info(f"Renamed task dir to: {new_dir}")
+                            log_event(logger, logging.INFO, "task_dir.renamed", path=new_dir)
                         else:
-                            logger.warning(f"Cannot rename to {new_dir} (already exists), keeping {task_dir}")
+                            log_event(logger, logging.WARNING, "task_dir.rename_skipped", reason="exists", path=new_dir)
 
-                    logger.info(f"Downloaded platform subtitle: {probe_subtitle['subtitle_path']}")
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "subtitle.downloaded",
+                        path=probe_subtitle["subtitle_path"],
+                        engine=probe_subtitle.get("subtitle_engine"),
+                    )
 
                     # Write metadata.json
                     _sync_task_from_metadata(task, metadata)
@@ -1410,9 +1468,12 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     # Video branch is auxiliary: log but don't fail the task.
                     # The transcript/summary/mindmap are already produced.
                     if isinstance(video_result, BaseException):
-                        logger.warning(
-                            f"Video download branch failed (transcript still OK): "
-                            f"{type(video_result).__name__}: {video_result}"
+                        log_event(
+                            logger,
+                            logging.WARNING,
+                            "pipeline.fast_path.video_failed",
+                            error_type=type(video_result).__name__,
+                            error=video_result,
                         )
                         metadata.file_path = None
 
@@ -1462,9 +1523,9 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         audio_path = str(new_dir / Path(audio_path).name)
                     if metadata.file_path:
                         metadata.file_path = str(new_dir / Path(metadata.file_path).name)
-                    logger.info(f"Renamed task dir to: {new_dir}")
+                    log_event(logger, logging.INFO, "task_dir.renamed", path=new_dir)
                 else:
-                    logger.warning(f"Cannot rename to {new_dir} (already exists), keeping {task_dir}")
+                    log_event(logger, logging.WARNING, "task_dir.rename_skipped", reason="exists", path=new_dir)
 
             # Image notes take a different branch entirely — no GPU, no audio.
             if metadata.content_subtype == "image_note":
@@ -1488,7 +1549,13 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     sub_dir = task_dir / "subtitles"
                     platform_subtitle = await download_subtitles(source, sub_dir)
                     if platform_subtitle.get("subtitle_path"):
-                        logger.info(f"Downloaded platform subtitle: {platform_subtitle['subtitle_path']}")
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "subtitle.downloaded",
+                            path=platform_subtitle["subtitle_path"],
+                            engine=platform_subtitle.get("subtitle_engine"),
+                        )
                     else:
                         metadata.extra["subtitle_engine"] = platform_subtitle.get("subtitle_engine")
                         metadata.extra["subtitle_diagnostics"] = platform_subtitle.get("diagnostics") or []
@@ -1496,7 +1563,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         if sub_dir.exists() and not any(sub_dir.iterdir()):
                             sub_dir.rmdir()
                 except Exception as e:
-                    logger.warning(f"Subtitle download failed: {e}")
+                    log_event(logger, logging.WARNING, "subtitle.download_failed", error=e)
                     platform_subtitle = None
 
             has_subtitle = platform_subtitle is not None
@@ -1537,16 +1604,16 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     gpu_sem = get_task_queue().gpu_semaphore
 
     if PipelineStep.SEPARATE in done and PipelineStep.TRANSCRIBE in done:
-        logger.info(f"skipping SEPARATE+TRANSCRIBE (already done), restoring transcript")
+        log_event(logger, logging.INFO, "pipeline.step.skipped", step="separate,transcribe", reason="already_done")
         _restore_transcript()
         _restore_audio_paths()
     else:
         async with gpu_sem:
-            logger.info(f"acquired GPU semaphore")
+            log_event(logger, logging.INFO, "gpu.semaphore.acquired")
 
             # Step 2: Separate vocals
             if PipelineStep.SEPARATE in done:
-                logger.info(f"skipping SEPARATE, restoring audio paths")
+                log_event(logger, logging.INFO, "pipeline.step.skipped", step=PipelineStep.SEPARATE, reason="already_done")
                 _restore_audio_paths()
             else:
                 await _update_step(task, PipelineStep.SEPARATE)
@@ -1561,12 +1628,12 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
             # Step 3: Transcribe
             if PipelineStep.TRANSCRIBE in done:
-                logger.info(f"skipping TRANSCRIBE, restoring transcript")
+                log_event(logger, logging.INFO, "pipeline.step.skipped", step=PipelineStep.TRANSCRIBE, reason="already_done")
                 _restore_transcript()
             else:
                 await _update_step(task, PipelineStep.TRANSCRIBE)
                 if has_subtitle:
-                    logger.info("Using platform subtitle path (skipping ASR)")
+                    log_event(logger, logging.INFO, "asr.skipped", reason="platform_subtitle")
                     pst_tracks = platform_subtitle.get("tracks") or []
                     if not pst_tracks and platform_subtitle.get("subtitle_path"):
                         pst_tracks = [{
@@ -1624,7 +1691,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                                 "polished": True,  # polish step will populate
                             }]
                         except Exception as e:
-                            logger.warning(f"ASR language detection failed: {e}")
+                            log_event(logger, logging.WARNING, "asr.lang_detect.failed", error=e)
 
                 # Write transcript.srt immediately
                 if srt:
@@ -1651,7 +1718,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             # original _run_voiceprint_step call + SRT speaker-name rewrite).
             if PipelineStep.VOICEPRINT not in done:
                 await _update_step(task, PipelineStep.VOICEPRINT)
-                logger.info("Voiceprint step disabled — skipping")
+                log_event(logger, logging.INFO, "voiceprint.skipped", reason="disabled")
                 await _update_step(task, PipelineStep.VOICEPRINT, completed=True)
         # end async with gpu_sem
 
@@ -1667,7 +1734,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
     # Guard: skip LLM if transcript is empty or trivially short
     if not transcript or len(transcript.strip()) < 10:
-        logger.warning(f"Transcript is empty or too short ({len(transcript)} chars), skipping LLM analysis")
+        log_event(logger, logging.WARNING, "pipeline.llm.skipped", reason="transcript_too_short", chars=len(transcript))
         await _update_step(task, PipelineStep.POLISH, completed=True)
         await _update_step(task, PipelineStep.ANALYZE, completed=True)
 
@@ -1701,12 +1768,12 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     # ── Step 4: Polish transcript (CPU/network) ────────────────────────────
     polish_ran = False
     if PipelineStep.POLISH in done:
-        logger.info(f"skipping POLISH, restoring from disk")
+        log_event(logger, logging.INFO, "pipeline.step.skipped", step=PipelineStep.POLISH, reason="already_done")
         _restore_transcript()  # picks up polished if present
     else:
         await _update_step(task, PipelineStep.POLISH)
         if has_subtitle:
-            logger.info("Skipping POLISH step (platform subtitle already polished)")
+            log_event(logger, logging.INFO, "pipeline.step.skipped", step=PipelineStep.POLISH, reason="platform_subtitle_prepolished")
         else:
             hotwords = task.options.get("hotwords")
             if hotwords and analysis:
@@ -1733,7 +1800,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     # If an older interrupted task already completed ANALYZE before POLISH,
     # regenerate analysis outputs now so summary/mindmap reflect the polished SRT.
     if PipelineStep.ANALYZE in done and not polish_ran:
-        logger.info(f"skipping ANALYZE, restoring from disk")
+        log_event(logger, logging.INFO, "pipeline.step.skipped", step=PipelineStep.ANALYZE, reason="already_done")
         _restore_analysis()
         _restore_summary()
         _restore_mindmap()
@@ -1825,9 +1892,11 @@ def _schedule_kb_index(task_id: str, archive_path: str) -> None:
             if not rt.kb_enabled or not rt.kb_embedding_api_base:
                 return
             from app.services.kb.indexer import index_task
+            log_event(logger, logging.INFO, "kb.index.started", archive_path=archive_path)
             await asyncio.to_thread(index_task, task_id, archive_path)
+            log_event(logger, logging.INFO, "kb.index.completed", archive_path=archive_path)
         except Exception as e:
-            logger.warning(f"KB auto-index failed for task {task_id}: {e}")
+            log_event(logger, logging.WARNING, "kb.index.failed", task_id=task_id, error=e)
 
     asyncio.ensure_future(_do_index())
 
@@ -1865,6 +1934,14 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
 
     # Re-read from DB to get latest completed_steps
     task = store.get(task_id)
+    started_at = time.perf_counter()
+    log_event(
+        logger,
+        logging.INFO,
+        "task.started",
+        task_type=task.task_type,
+        download_worker_call=_download_worker_call,
+    )
 
     try:
         if task.task_type == TaskType.PIPELINE:
@@ -1903,9 +1980,22 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
         await bus.publish(TaskEvent(task_id, "completed", {
             "output_dir": task.result.get("output_dir") if task.result else None,
         }))
+        log_event(
+            logger,
+            logging.INFO,
+            "task.completed",
+            task_type=task.task_type,
+            duration_ms=round((time.perf_counter() - started_at) * 1000),
+            output_dir=task.result.get("output_dir") if task.result else None,
+        )
 
     except asyncio.CancelledError:
-        logger.info(f"Task {task_id} cancelled")
+        log_event(
+            logger,
+            logging.INFO,
+            "task.cancelled",
+            duration_ms=round((time.perf_counter() - started_at) * 1000),
+        )
         current = store.get(task_id) or task
         output_dir = current.result.get("output_dir") if current.result else None
         update_metadata_status(Path(output_dir) if output_dir else None, "cancelled")
@@ -1919,7 +2009,15 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
         raise
 
     except Exception as e:
-        logger.exception(f"Task {task_id} failed")
+        log_event(
+            logger,
+            logging.ERROR,
+            "task.failed",
+            task_type=task.task_type,
+            duration_ms=round((time.perf_counter() - started_at) * 1000),
+            error=e,
+            exc_info=True,
+        )
         task.status = TaskStatus.FAILED
         task.error = str(e)
 

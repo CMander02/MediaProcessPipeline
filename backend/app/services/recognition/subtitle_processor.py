@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app.core.logging_setup import log_event
 from app.models import MediaMetadata
 
 logger = logging.getLogger(__name__)
@@ -386,14 +387,20 @@ async def process_subtitles(
     """
     from app.services.analysis.llm import get_llm_service
 
-    logger.info(f"Processing platform subtitle: {subtitle_path} (format={subtitle_format})")
+    log_event(
+        logger,
+        logging.INFO,
+        "subtitle.process.started",
+        path=subtitle_path,
+        format=subtitle_format,
+    )
 
     # Step 1: Parse subtitle file
     segments = parse_subtitle_file(subtitle_path, subtitle_format)
     if not segments:
         raise ValueError(f"No segments found in subtitle file: {subtitle_path}")
 
-    logger.info(f"Parsed {len(segments)} raw segments from subtitle")
+    log_event(logger, logging.INFO, "subtitle.parse.completed", segments=len(segments))
 
     # Build original SRT from raw segments
     original_srt = _segments_to_original_srt(segments)
@@ -409,7 +416,15 @@ async def process_subtitles(
         chunks.append(segments[i:end])
         i += CHUNK_SIZE - CHUNK_OVERLAP
 
-    logger.info(f"Processing {len(segments)} segments in {len(chunks)} chunks")
+    log_event(
+        logger,
+        logging.INFO,
+        "subtitle.chunks.started",
+        segments=len(segments),
+        chunks=len(chunks),
+        chunk_size=CHUNK_SIZE,
+        overlap=CHUNK_OVERLAP,
+    )
 
     llm_service = get_llm_service()
     all_paragraphs = []
@@ -418,7 +433,17 @@ async def process_subtitles(
     for idx, chunk in enumerate(chunks):
         ts_start = _fmt_ts(chunk[0]["start_ms"])
         ts_end = _fmt_ts(chunk[-1]["end_ms"])
-        logger.info(f"Chunk {idx+1}/{len(chunks)} [{ts_start} -> {ts_end}] ({len(chunk)} segs)")
+        chunk_t0 = time.perf_counter()
+        log_event(
+            logger,
+            logging.INFO,
+            "subtitle.chunk.started",
+            chunk=idx + 1,
+            chunks=len(chunks),
+            start=ts_start,
+            end=ts_end,
+            segments=len(chunk),
+        )
 
         prompt = _build_transcript_prompt(context_header, chunk, known_speakers or None)
 
@@ -446,20 +471,46 @@ async def process_subtitles(
                             all_paragraphs.append(p)
 
                 dt = time.time() - t0
-                logger.info(f"Chunk {idx+1}: {len(paras)} paras in {dt:.1f}s, speakers={known_speakers}")
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "subtitle.chunk.completed",
+                    chunk=idx + 1,
+                    paragraphs=len(paras),
+                    speakers=",".join(known_speakers) if known_speakers else "none",
+                    duration_ms=round((time.perf_counter() - chunk_t0) * 1000),
+                )
             else:
-                dt = time.time() - t0
-                logger.warning(f"Chunk {idx+1}: empty result in {dt:.1f}s")
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "subtitle.chunk.empty",
+                    chunk=idx + 1,
+                    duration_ms=round((time.perf_counter() - chunk_t0) * 1000),
+                )
 
         except Exception as e:
-            logger.error(f"Chunk {idx+1} failed: {e}")
+            log_event(
+                logger,
+                logging.ERROR,
+                "subtitle.chunk.failed",
+                chunk=idx + 1,
+                duration_ms=round((time.perf_counter() - chunk_t0) * 1000),
+                error=e,
+            )
 
         # Report progress
         if on_progress:
             progress = (idx + 1) / len(chunks)
             await on_progress(progress)
 
-    logger.info(f"Subtitle processing complete: {len(all_paragraphs)} paragraphs, speakers={known_speakers}")
+    log_event(
+        logger,
+        logging.INFO,
+        "subtitle.process.completed",
+        paragraphs=len(all_paragraphs),
+        speakers=",".join(known_speakers) if known_speakers else "none",
+    )
 
     # Step 4: Convert to output formats
     polished_srt = _paragraphs_to_srt(all_paragraphs)

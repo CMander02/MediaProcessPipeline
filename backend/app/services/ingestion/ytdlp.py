@@ -2,8 +2,10 @@
 
 import hashlib
 import logging
+import os
 import re
 import subprocess
+import sys
 import threading
 from collections import deque
 from datetime import datetime
@@ -11,8 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
+from app.core.logging_setup import log_event
 from app.core.settings import get_runtime_settings
-from app.models import MediaMetadata, MediaType, ChapterInfo
+from app.models import ChapterInfo, MediaMetadata, MediaType
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,10 @@ def _is_xiaohongshu_url(url: str) -> bool:
 
 def _is_apple_podcast_url(url: str) -> bool:
     return bool(re.search(r'podcasts\.apple\.com/(?:[a-z]{2}/)?podcast/[^?#/]*/id\d+', url, re.IGNORECASE))
+
+
+def _is_youtube_url(url: str) -> bool:
+    return bool(re.search(r'(?:youtube\.com|youtu\.be)', url, re.IGNORECASE))
 
 
 def _extract_bilibili_bvid(url: str) -> str | None:
@@ -64,8 +71,106 @@ def _extract_bilibili_bvid(url: str) -> str | None:
         bvid = data.get("bvid")
         return str(bvid) if bvid else None
     except Exception as e:
-        logger.warning(f"Bilibili aid->bvid resolve failed for av{aid}: {e}")
+        log_event(logger, logging.WARNING, "bilibili.bvid.resolve_failed", aid=aid, error=e)
         return None
+
+
+class YoutubeNetworkError(RuntimeError):
+    """Raised when YouTube is unreachable after yt-dlp's bounded retries."""
+
+
+_YTDLP_NETWORK_ERROR_MARKERS = (
+    "failed to establish a new connection",
+    "connection refused",
+    "actively refused",
+    "winerror 10061",
+    "nameresolutionerror",
+    "getaddrinfo failed",
+    "temporary failure in name resolution",
+    "no route to host",
+    "network is unreachable",
+    "connection reset by peer",
+    "connect timeout",
+    "connecttimeout",
+    "read timed out",
+    "timed out",
+    "proxyerror",
+    "unable to connect to proxy",
+    "unable to download api page",
+)
+
+
+def _normalize_proxy_url(raw: str) -> str:
+    proxy = raw.strip()
+    if not proxy:
+        return ""
+    if "://" not in proxy:
+        proxy = f"http://{proxy}"
+    return proxy
+
+
+def _proxy_from_windows_user_settings() -> str:
+    """Return the current Windows user proxy as a yt-dlp-compatible URL."""
+    if sys.platform != "win32":
+        return ""
+    try:
+        import winreg
+
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+            enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
+            if not enabled:
+                return ""
+            proxy_server, _ = winreg.QueryValueEx(key, "ProxyServer")
+    except OSError:
+        return ""
+
+    raw = str(proxy_server or "").strip()
+    if not raw:
+        return ""
+    if ";" not in raw and "=" not in raw:
+        return _normalize_proxy_url(raw)
+
+    entries: dict[str, str] = {}
+    for part in raw.split(";"):
+        if "=" not in part:
+            continue
+        scheme, value = part.split("=", 1)
+        entries[scheme.strip().lower()] = value.strip()
+
+    for scheme in ("https", "http"):
+        if entries.get(scheme):
+            return _normalize_proxy_url(entries[scheme])
+    if entries.get("socks"):
+        socks_proxy = entries["socks"]
+        if "://" not in socks_proxy:
+            socks_proxy = f"socks5://{socks_proxy}"
+        return socks_proxy
+    return ""
+
+
+def youtube_proxy_url() -> str | None:
+    """Resolve proxy for YouTube yt-dlp calls.
+
+    Returns:
+        str: explicit or auto-detected proxy URL.
+        None: no proxy option should be set.
+        "": explicitly disable proxy use in yt-dlp.
+    """
+    rt = get_runtime_settings()
+    configured = (rt.youtube_proxy or "").strip()
+    if configured:
+        if configured.lower() in {"direct", "none", "off", "false", "0"}:
+            return ""
+        return _normalize_proxy_url(configured)
+
+    for key in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return _normalize_proxy_url(value)
+
+    detected = _proxy_from_windows_user_settings()
+    return detected or None
 
 
 def ytdlp_base_opts() -> dict[str, Any]:
@@ -74,11 +179,10 @@ def ytdlp_base_opts() -> dict[str, Any]:
     × multiple clients (tv/android/web) × ~3 socket retries each = looks like
     an infinite loop in the log.
 
-    Proxy handling: we deliberately do NOT override `proxy` — yt-dlp will pick
-    up HTTP(S)_PROXY env vars / WinINET on its own. Users in regions where
-    YouTube needs a proxy can run their proxy normally and the daemon will
-    inherit it. If their proxy is down, that's a user environment issue, not
-    something this code should paper over.
+    Proxy handling: YouTube requests may run inside the cmd-launched daemon,
+    which often does not inherit PowerShell-scoped proxy variables. Resolve a
+    dedicated runtime setting first, then process/env proxy, then the Windows
+    user proxy, and pass it explicitly to yt-dlp.
 
     EJS solver: YouTube's n-parameter signature challenge now requires a JS
     runtime via yt-dlp's EJS subsystem. Without it, extraction succeeds for
@@ -86,13 +190,35 @@ def ytdlp_base_opts() -> dict[str, Any]:
     `ejs:github` fetches the solver from the official yt-dlp release on demand
     and caches it; first call may take a few extra seconds.
     """
-    return {
+    opts: dict[str, Any] = {
         "retries": 3,                 # video-data retries
         "fragment_retries": 3,        # DASH fragment retries
         "extractor_retries": 3,       # extractor-level retries
         "socket_timeout": 15,         # cap each TCP attempt
         "remote_components": ["ejs:github"],
     }
+    proxy = youtube_proxy_url()
+    if proxy is not None:
+        opts["proxy"] = proxy
+    return opts
+
+
+def is_youtube_network_error(error: BaseException | str, url: str | None = None) -> bool:
+    if url and not _is_youtube_url(url):
+        return False
+    text = str(error).lower()
+    if not text:
+        return False
+    return any(marker in text for marker in _YTDLP_NETWORK_ERROR_MARKERS)
+
+
+def _youtube_network_error(url: str, error: BaseException) -> YoutubeNetworkError:
+    return YoutubeNetworkError(
+        "YouTube is unreachable after limited yt-dlp retries. "
+        "Check Settings > YouTube > Proxy, or set youtube_proxy to your local proxy "
+        "(for example http://127.0.0.1:7897). "
+        f"Last error: {error}"
+    )
 
 
 def ytdlp_auth_opts() -> dict[str, Any]:
@@ -111,7 +237,7 @@ def ytdlp_auth_opts() -> dict[str, Any]:
         if p.exists():
             opts["cookiefile"] = str(p)
         else:
-            logger.warning(f"youtube_cookies_file does not exist: {cookie_file}")
+            log_event(logger, logging.WARNING, "youtube.cookies.missing", path=cookie_file)
     elif cookie_browser:
         # yt-dlp expects a tuple (browser, profile, keyring, container)
         opts["cookiesfrombrowser"] = (cookie_browser,)
@@ -243,7 +369,7 @@ def _run_subprocess_streamed(
             if not line:
                 continue
             buf.append(line)
-            logger.info(f"{log_prefix} | {line}")
+            log_event(logger, logging.INFO, "subprocess.output", prefix=log_prefix, line=line)
         proc.stdout.close()
 
     t = threading.Thread(target=_reader, daemon=True)
@@ -306,12 +432,14 @@ class YtdlpService:
         video_file = None
         info = None
 
-        logger.info(f"Downloading video: {url}")
+        log_event(logger, logging.INFO, "download.video.started", url=url)
         try:
             with yt_dlp.YoutubeDL(video_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
         except Exception as e:
-            logger.warning(f"Video download failed ({e}), falling back to audio-only")
+            if is_youtube_network_error(e, url):
+                raise _youtube_network_error(url, e) from e
+            log_event(logger, logging.WARNING, "download.video.failed", url=url, fallback="audio_only", error=e)
 
         if info is None:
             # Video download failed entirely — get metadata + audio only
@@ -322,8 +450,13 @@ class YtdlpService:
                 **ytdlp_base_opts(),
                 **ytdlp_auth_opts(),
             }
-            with yt_dlp.YoutubeDL(meta_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+            try:
+                with yt_dlp.YoutubeDL(meta_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+            except Exception as e:
+                if is_youtube_network_error(e, url):
+                    raise _youtube_network_error(url, e) from e
+                raise
             if info is None:
                 raise RuntimeError(f"Failed to extract info: {url}")
 
@@ -336,7 +469,7 @@ class YtdlpService:
         # Step 2: Extract audio from video using ffmpeg
         audio_file = output_dir / f"{title}.wav"
         if video_file and video_file.exists():
-            logger.info(f"Extracting audio: {video_file.name} -> {audio_file.name}")
+            log_event(logger, logging.INFO, "audio.extract.started", input=video_file.name, output=audio_file.name)
             try:
                 subprocess.run(
                     ["ffmpeg", "-i", str(video_file), "-vn",
@@ -345,10 +478,11 @@ class YtdlpService:
                     capture_output=True, check=True,
                 )
             except subprocess.CalledProcessError as e:
-                logger.error(f"ffmpeg audio extraction failed: {e.stderr.decode()[:500]}")
+                stderr = e.stderr.decode(errors="replace")[:500] if e.stderr else ""
+                log_event(logger, logging.ERROR, "audio.extract.failed", stderr=stderr)
                 audio_file = self._download_audio_only(url, output_dir, title)
         else:
-            logger.warning("Video file not found, downloading audio-only")
+            log_event(logger, logging.WARNING, "download.video.missing", fallback="audio_only")
             audio_file = self._download_audio_only(url, output_dir, title)
             video_file = None
 
@@ -372,7 +506,7 @@ class YtdlpService:
 
         bvid = _extract_bilibili_bvid(url)
         if not bvid:
-            logger.warning(f"Cannot extract Bilibili video id from URL: {url}")
+            log_event(logger, logging.WARNING, "bilibili.bvid.missing", url=url)
             return {"webpage_url": url}
 
         info: dict[str, Any] = {"webpage_url": url}
@@ -401,7 +535,7 @@ class YtdlpService:
                 "extra": {"platform": "bilibili"},
             })
         except Exception as e:
-            logger.warning(f"Bilibili view API failed: {e}")
+            log_event(logger, logging.WARNING, "bilibili.view.failed", bvid=bvid, error=e)
 
         # Fetch tags
         try:
@@ -413,7 +547,7 @@ class YtdlpService:
                 tag_data = json.loads(resp.read()).get("data", [])
             info["tags"] = [t["tag_name"] for t in tag_data if t.get("tag_name")]
         except Exception as e:
-            logger.warning(f"Bilibili tags API failed: {e}")
+            log_event(logger, logging.WARNING, "bilibili.tags.failed", bvid=bvid, error=e)
 
         return info
 
@@ -428,14 +562,14 @@ class YtdlpService:
         rt = get_runtime_settings()
         qn = rt.bilibili_preferred_quality if is_logged_in() else 16
         if not is_logged_in() and qn > 16:
-            logger.warning("Bilibili: not logged in, forcing 360P (qn=16)")
+            log_event(logger, logging.WARNING, "bilibili.quality.forced", reason="not_logged_in", qn=16)
             qn = 16
 
         bvid = _extract_bilibili_bvid(url)
         if not bvid:
             raise RuntimeError(f"Cannot extract Bilibili video id from URL: {url}")
 
-        logger.info(f"Downloading Bilibili video via DASH API: {bvid} qn={qn}")
+        log_event(logger, logging.INFO, "bilibili.download.started", bvid=bvid, qn=qn)
         video_file, info = download_video(bvid, output_dir, qn=qn)
 
         title = video_file.stem
@@ -460,7 +594,7 @@ class YtdlpService:
             fetch_metadata as fetch_xiaoyuzhou_metadata,
         )
 
-        logger.info(f"Fetching Xiaoyuzhou episode metadata: {url}")
+        log_event(logger, logging.INFO, "xiaoyuzhou.metadata.fetch_started", url=url)
         info = fetch_xiaoyuzhou_metadata(url)
         audio_file, source_audio = download_audio(info, output_dir)
         return {
@@ -479,7 +613,7 @@ class YtdlpService:
             fetch_metadata as fetch_apple_metadata,
         )
 
-        logger.info(f"Fetching Apple Podcasts episode metadata: {url}")
+        log_event(logger, logging.INFO, "apple_podcast.metadata.fetch_started", url=url)
         info = fetch_apple_metadata(url)
         audio_file, source_audio = download_audio(info, output_dir)
         return {
@@ -499,7 +633,7 @@ class YtdlpService:
             fetch_metadata as fetch_xiaohongshu_metadata,
         )
 
-        logger.info(f"Fetching Xiaohongshu note metadata: {url}")
+        log_event(logger, logging.INFO, "xiaohongshu.metadata.fetch_started", url=url)
         info = fetch_xiaohongshu_metadata(url)
         is_video = (info.get("extra") or {}).get("is_video", False)
 
@@ -559,7 +693,7 @@ class YtdlpService:
 
         bvid = _extract_bilibili_bvid(url)
         if not bvid:
-            logger.warning(f"Cannot extract Bilibili video id from URL: {url}")
+            log_event(logger, logging.WARNING, "bilibili.bvid.missing", url=url)
             diagnostics.append({"stage": "resolve", "status": "failed", "reason": "missing_bvid"})
             return empty
 
@@ -573,7 +707,7 @@ class YtdlpService:
                 subtitle_url_matches_video,
             )
         except ImportError as e:
-            logger.warning(f"bilibili.api import failed ({e})")
+            log_event(logger, logging.WARNING, "bilibili.api.import_failed", error=e)
             diagnostics.append({
                 "stage": "import",
                 "status": "failed",
@@ -582,21 +716,21 @@ class YtdlpService:
             })
             if not rt.bilibili_subtitle_allow_legacy_fallback:
                 return empty
-            logger.warning("Bilibili subtitle legacy fallback enabled; using unsigned player/v2")
+            log_event(logger, logging.WARNING, "bilibili.subtitle.legacy_fallback")
             return self._download_bilibili_subtitle_legacy(url, output_dir, bvid, preferred_langs)
 
         # --- Fetch video metadata (aid, cid, duration) ---
         try:
             view_data = bili_view(bvid)
         except Exception as e:
-            logger.warning(f"Bilibili view API failed for {bvid}: {e}")
+            log_event(logger, logging.WARNING, "bilibili.view.failed", bvid=bvid, error=e)
             diagnostics.append({"stage": "view", "status": "failed", "reason": "api_error", "detail": str(e)})
             return empty
 
         aid = int(view_data.get("aid") or 0)
         pages = view_data.get("pages") or []
         if not pages:
-            logger.warning(f"Bilibili: no pages for {bvid}")
+            log_event(logger, logging.WARNING, "bilibili.view.no_pages", bvid=bvid)
             diagnostics.append({"stage": "view", "status": "failed", "reason": "no_pages"})
             return empty
         page = pages[0]
@@ -604,7 +738,7 @@ class YtdlpService:
         video_duration = float(page.get("duration") or view_data.get("duration") or 0)
 
         if not aid or not cid:
-            logger.warning(f"Bilibili: missing aid/cid for {bvid} (aid={aid}, cid={cid})")
+            log_event(logger, logging.WARNING, "bilibili.view.missing_ids", bvid=bvid, aid=aid, cid=cid)
             diagnostics.append({
                 "stage": "view",
                 "status": "failed",
@@ -618,7 +752,7 @@ class YtdlpService:
         try:
             pv2_data = bili_player_v2(bvid, aid, cid)
         except Exception as e:
-            logger.warning(f"Bilibili player/wbi/v2 failed for {bvid}: {e}")
+            log_event(logger, logging.WARNING, "bilibili.player_wbi.failed", bvid=bvid, error=e)
             diagnostics.append({
                 "stage": "player_wbi_v2",
                 "status": "failed",
@@ -629,13 +763,13 @@ class YtdlpService:
 
         tracks = ((pv2_data.get("subtitle") or {}).get("subtitles")) or []
         if not tracks:
-            logger.info(f"Bilibili: no subtitle tracks for {bvid}")
+            log_event(logger, logging.INFO, "bilibili.subtitle.empty", bvid=bvid, reason="no_tracks")
             diagnostics.append({"stage": "track_list", "status": "empty", "reason": "no_tracks"})
             return empty
 
         usable = [t for t in tracks if t.get("subtitle_url")]
         if not usable:
-            logger.info(f"Bilibili: {len(tracks)} track(s) but all empty url")
+            log_event(logger, logging.INFO, "bilibili.subtitle.empty", bvid=bvid, reason="all_tracks_missing_url", tracks=len(tracks))
             diagnostics.append({
                 "stage": "track_list",
                 "status": "empty",
@@ -662,9 +796,16 @@ class YtdlpService:
             # Validate that the blob URL encodes this video's aid+cid
             matches_video = subtitle_url_matches_video(sub_url, aid, cid)
             if strict_validation and not matches_video:
-                logger.warning(
-                    f"Bilibili {t_label}/{lan}: subtitle URL does not match video "
-                    f"(aid={aid}, cid={cid}) — skipping mismatched blob"
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "bilibili.subtitle.validation_failed",
+                    bvid=bvid,
+                    lang=lan,
+                    type=t_label.lower(),
+                    reason="aid_cid_mismatch",
+                    aid=aid,
+                    cid=cid,
                 )
                 diagnostics.append({
                     "stage": "validate_url",
@@ -683,7 +824,7 @@ class YtdlpService:
                 with urllib.request.urlopen(req, timeout=15) as resp:
                     sub_json = json.loads(resp.read())
             except Exception as e:
-                logger.warning(f"download {t_label}/{lan} failed: {e}")
+                log_event(logger, logging.WARNING, "bilibili.subtitle.download_failed", bvid=bvid, lang=lan, type=t_label.lower(), error=e)
                 diagnostics.append({
                     "stage": "download",
                     "status": "failed",
@@ -696,7 +837,7 @@ class YtdlpService:
 
             body = sub_json.get("body") or []
             if len(body) < 3:
-                logger.info(f"Bilibili {t_label}/{lan}: only {len(body)} cues, skipping")
+                log_event(logger, logging.INFO, "bilibili.subtitle.validation_skipped", bvid=bvid, lang=lan, type=t_label.lower(), reason="too_few_cues", cues=len(body))
                 diagnostics.append({
                     "stage": "validate_body",
                     "status": "skipped",
@@ -712,9 +853,18 @@ class YtdlpService:
                 last_t = float(body[-1].get("from") or 0)
                 coverage = last_t / video_duration
                 if coverage < min_coverage:
-                    logger.warning(
-                        f"Bilibili {t_label}/{lan}: coverage {coverage:.0%} "
-                        f"(last_cue={last_t:.0f}s vs video={video_duration:.0f}s) — skipping"
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "bilibili.subtitle.validation_failed",
+                        bvid=bvid,
+                        lang=lan,
+                        type=t_label.lower(),
+                        reason="low_coverage",
+                        coverage=round(coverage, 4),
+                        min_coverage=min_coverage,
+                        last_cue_seconds=round(last_t),
+                        video_duration_seconds=round(video_duration),
                     )
                     diagnostics.append({
                         "stage": "validate_body",
@@ -731,7 +881,7 @@ class YtdlpService:
 
             srt_path = output_dir / f"{bvid}.{lan}.srt"
             srt_path.write_text(_bili_json_to_srt(body), encoding="utf-8")
-            logger.info(f"Bilibili subtitle OK: {t_label}/{lan}, {len(body)} cues")
+            log_event(logger, logging.INFO, "bilibili.subtitle.saved", bvid=bvid, lang=lan, type=t_label.lower(), cues=len(body), path=srt_path)
             saved_tracks.append({
                 "path": str(srt_path),
                 "lang": lan,
@@ -750,7 +900,7 @@ class YtdlpService:
             seen_langs.add(lan)
 
         if not saved_tracks:
-            logger.info(f"Bilibili: all {len(usable)} subtitle track(s) failed validation")
+            log_event(logger, logging.INFO, "bilibili.subtitle.empty", bvid=bvid, reason="all_validation_failed", tracks=len(usable))
             return empty
 
         first = saved_tracks[0]
@@ -783,7 +933,7 @@ class YtdlpService:
             try:
                 cookie = cookie_file.read_text(encoding="utf-8", errors="ignore").strip()
             except Exception as e:
-                logger.warning(f"Failed to read BBDown.data: {e}")
+                log_event(logger, logging.WARNING, "bbdown.cookie.read_failed", path=cookie_file, error=e)
 
         headers = {
             "User-Agent": "Mozilla/5.0",
@@ -798,7 +948,7 @@ class YtdlpService:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     return json.loads(resp.read())
             except Exception as e:
-                logger.warning(f"bili API {api_url[:60]}... failed: {e}")
+                log_event(logger, logging.WARNING, "bilibili.legacy_api.failed", api=api_url[:60], error=e)
                 return None
 
         view_resp = _get_json(f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}")
@@ -839,7 +989,7 @@ class YtdlpService:
                 with urllib.request.urlopen(req, timeout=15) as resp:
                     sub_json = json.loads(resp.read())
             except Exception as e:
-                logger.warning(f"download {t_label}/{lan} failed: {e}")
+                log_event(logger, logging.WARNING, "bilibili.subtitle.download_failed", bvid=bvid, lang=lan, type=t_label.lower(), engine=engine, error=e)
                 continue
             body = sub_json.get("body") or []
             if len(body) < 3:
@@ -903,8 +1053,20 @@ class YtdlpService:
             return fetch_xiaohongshu_metadata(url)
 
         import yt_dlp
-        with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True, **ytdlp_base_opts(), **ytdlp_auth_opts()}) as ydl:
-            info = ydl.extract_info(url, download=False)
+
+        ydl_opts = {
+            "quiet": True,
+            "skip_download": True,
+            **ytdlp_base_opts(),
+            **ytdlp_auth_opts(),
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as e:
+            if is_youtube_network_error(e, url):
+                raise _youtube_network_error(url, e) from e
+            raise
         if info is None:
             raise RuntimeError(f"Failed to extract metadata: {url}")
         return info
@@ -927,9 +1089,14 @@ class YtdlpService:
             **ytdlp_auth_opts(),
         }
 
-        logger.info(f"Downloading audio-only: {url}")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.extract_info(url, download=True)
+        log_event(logger, logging.INFO, "download.audio_only.started", url=url)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.extract_info(url, download=True)
+        except Exception as e:
+            if is_youtube_network_error(e, url):
+                raise _youtube_network_error(url, e) from e
+            raise
 
         audio_file = output_dir / f"{title}.wav"
         if not audio_file.exists():
@@ -992,9 +1159,9 @@ class YtdlpService:
             if is_temp:
                 try:
                     file.unlink()
-                    logger.info(f"Cleaned up temp file: {file}")
+                    log_event(logger, logging.INFO, "cleanup.temp_file.deleted", path=file)
                 except Exception as e:
-                    logger.warning(f"Failed to delete temp file {file}: {e}")
+                    log_event(logger, logging.WARNING, "cleanup.temp_file.delete_failed", path=file, error=e)
 
     def extract_metadata(self, info: dict[str, Any], file_path: str | None = None) -> MediaMetadata:
         """
@@ -1141,7 +1308,7 @@ class YtdlpService:
             try:
                 info = self.fetch_metadata(url)
             except Exception as e:
-                logger.warning(f"Xiaoyuzhou subtitle probe failed: {e}")
+                log_event(logger, logging.WARNING, "xiaoyuzhou.subtitle.probe_failed", error=e)
                 return _empty_subtitle_result(
                     engine="xiaoyuzhou-page",
                     diagnostics=[{"stage": "metadata", "status": "failed", "detail": str(e)}],
@@ -1177,11 +1344,19 @@ class YtdlpService:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Probe all available subtitle languages via yt-dlp metadata
+        metadata_opts = {
+            "quiet": True,
+            "skip_download": True,
+            **ytdlp_base_opts(),
+            **ytdlp_auth_opts(),
+        }
         try:
-            with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True, **ytdlp_base_opts(), **ytdlp_auth_opts()}) as ydl:
+            with yt_dlp.YoutubeDL(metadata_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as e:
-            logger.warning(f"yt-dlp probe failed: {e}")
+            if is_youtube_network_error(e, url):
+                raise _youtube_network_error(url, e) from e
+            log_event(logger, logging.WARNING, "ytdlp.subtitle.probe_failed", url=url, error=e)
             return empty
         if not info:
             return empty
@@ -1227,7 +1402,14 @@ class YtdlpService:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
             except Exception as e:
-                logger.warning(f"Subtitle download failed (auto={use_auto}, langs={target_langs}): {e}")
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "ytdlp.subtitle.download_failed",
+                    auto=use_auto,
+                    langs=",".join(target_langs),
+                    error=e,
+                )
                 return
             for lang in target_langs:
                 # Find the file yt-dlp wrote for this lang
@@ -1250,10 +1432,17 @@ class YtdlpService:
         _try_download(True, auto_langs, "ai")
 
         if not tracks:
-            logger.info(f"No subtitles found for {url}")
+            log_event(logger, logging.INFO, "subtitle.empty", url=url, engine="yt-dlp")
             return empty
 
-        logger.info(f"Downloaded {len(tracks)} subtitle track(s): {[t['lang'] for t in tracks]}")
+        log_event(
+            logger,
+            logging.INFO,
+            "subtitle.downloaded",
+            engine="yt-dlp",
+            tracks=len(tracks),
+            langs=",".join(t["lang"] for t in tracks),
+        )
         first = tracks[0]
         return {
             "tracks": tracks,

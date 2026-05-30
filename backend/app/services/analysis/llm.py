@@ -5,11 +5,13 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any
 
 os.environ.setdefault("LITELLM_LOG", "WARNING")
 
 from app.core.config import get_settings
+from app.core.logging_setup import log_event
 from app.core.settings import get_runtime_settings
 from app.services.analysis.prompts import (
     get_analyze_prompt,
@@ -78,7 +80,7 @@ def _load_local_llm(model_path: str, device: str = "cuda", dtype: str = "bfloat1
             "uv sync"
         ) from e
 
-    logger.info(f"Loading local HF model: {model_path} (device={device}, dtype={dtype})")
+    log_event(logger, logging.INFO, "llm.local.load_started", model_path=model_path, device=device, dtype=dtype)
 
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     torch_dtype = _resolve_dtype(dtype)
@@ -109,7 +111,7 @@ def _load_local_llm(model_path: str, device: str = "cuda", dtype: str = "bfloat1
         trust_remote_code=True,
     )
     model.eval()
-    logger.info(f"Local HF model loaded: {model.__class__.__name__} on {device}")
+    log_event(logger, logging.INFO, "llm.local.load_completed", model_class=model.__class__.__name__, device=device)
     return {"model": model, "tokenizer": tokenizer, "is_vl": is_vl}
 
 
@@ -117,7 +119,7 @@ def offload_local_llm() -> None:
     """Release the local HF model and free VRAM. Safe to call multiple times."""
     global _local_llm, _local_llm_path
     if _local_llm is not None:
-        logger.info("Offloading local HF model from VRAM")
+        log_event(logger, logging.INFO, "llm.local.offload_started")
         _local_llm = None
         _local_llm_path = ""
         try:
@@ -221,7 +223,7 @@ class LLMService:
         model_path = rt.local_llm_model_path
 
         if not model_path:
-            logger.warning("Local LLM: model path not configured")
+            log_event(logger, logging.WARNING, "llm.local.not_configured")
             return "[Local LLM not configured]"
 
         loop = asyncio.get_running_loop()
@@ -292,26 +294,47 @@ class LLMService:
         # Local HF path — unchanged, no LiteLLM involved
         if provider == "local":
             if rt.local_llm_model_path:
-                logger.info("Calling local HF model")
+                log_event(logger, logging.INFO, "llm.local.call_started")
                 return await self._call_local(prompt)
-            logger.warning("polish_provider=local but local_llm_model_path is empty, falling back to llm_provider")
+            log_event(logger, logging.WARNING, "llm.local.fallback", reason="model_path_empty")
             provider = rt.llm_provider
             provider_override = ""
 
         params = _get_litellm_params(provider_override=provider_override, stage=stage)
         if params is None:
-            logger.warning(f"LLM not configured for provider={provider!r}")
+            log_event(logger, logging.WARNING, "llm.not_configured", provider=provider)
             return "[LLM not configured]"
 
         params["messages"] = [{"role": "user", "content": prompt}]
 
-        logger.info(f"LiteLLM call: model={params.get('model')} stage={stage}")
+        model = params.get("model")
+        t0 = time.perf_counter()
+        log_event(logger, logging.INFO, "llm.call.started", provider=provider, model=model, stage=stage)
         try:
             response = await litellm.acompletion(**params)
             content = response.choices[0].message.content or ""
+            log_event(
+                logger,
+                logging.INFO,
+                "llm.call.completed",
+                provider=provider,
+                model=model,
+                stage=stage,
+                duration_ms=round((time.perf_counter() - t0) * 1000),
+                chars=len(content),
+            )
             return content
         except Exception as e:
-            logger.error(f"LiteLLM error (provider={provider}, stage={stage}): {e}")
+            log_event(
+                logger,
+                logging.ERROR,
+                "llm.call.failed",
+                provider=provider,
+                model=model,
+                stage=stage,
+                duration_ms=round((time.perf_counter() - t0) * 1000),
+                error=e,
+            )
             raise
 
     async def analyze_content(
@@ -355,7 +378,7 @@ class LLMService:
             if start >= 0 and end > start:
                 return json.loads(resp[start:end])
         except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse analysis JSON: {e}")
+            log_event(logger, logging.WARNING, "llm.analysis.parse_failed", error=e)
 
         # Return default structure on failure
         return {
@@ -445,7 +468,7 @@ class LLMService:
                     if segs:
                         return segs
         except (json.JSONDecodeError, ValueError, TypeError) as e:
-            logger.debug(f"Polish response not valid JSON ({e}); trying SRT parse")
+            log_event(logger, logging.DEBUG, "llm.polish.parse_json_failed", error=e)
 
         # Fall back to SRT block parse
         srt_segs = self._parse_srt(text)
@@ -525,9 +548,15 @@ class LLMService:
             # Move forward by (chunk_size - overlap) to create overlap
             i += chunk_size - overlap
 
-        logger.info(
-            f"Polishing {len(segments)} segments in {len(chunks)} chunks, "
-            f"chunk_size={chunk_size}, overlap={overlap}, max_concurrency={max_concurrency}"
+        log_event(
+            logger,
+            logging.INFO,
+            "llm.polish.started",
+            segments=len(segments),
+            chunks=len(chunks),
+            chunk_size=chunk_size,
+            overlap=overlap,
+            max_concurrency=max_concurrency,
         )
 
         # Create semaphore to limit concurrency
@@ -538,7 +567,17 @@ class LLMService:
         ) -> tuple[int, list[dict]]:
             """Process a single chunk with semaphore control."""
             async with semaphore:
-                logger.info(f"Processing chunk {idx}: segments {start+1}-{end} of {len(segments)}")
+                chunk_t0 = time.perf_counter()
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "llm.polish.chunk_started",
+                    chunk=idx,
+                    start_segment=start + 1,
+                    end_segment=end,
+                    total_segments=len(segments),
+                    segments=len(chunk_segments),
+                )
 
                 # Convert chunk to SRT text
                 chunk_srt = self._segments_to_srt(chunk_segments)
@@ -560,16 +599,24 @@ class LLMService:
                 polished_segs = self._parse_polish_response(polished_chunk, chunk_segments)
 
                 if len(polished_segs) != len(chunk_segments):
-                    logger.warning(
-                        f"Chunk {idx}: cue count mismatch (input {len(chunk_segments)}, "
-                        f"output {len(polished_segs)}); aligning by index and falling back to original "
-                        f"text for missing cues"
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "llm.polish.chunk_mismatch",
+                        chunk=idx,
+                        input_segments=len(chunk_segments),
+                        output_segments=len(polished_segs),
                     )
                     polished_segs = self._align_polished_to_input(polished_segs, chunk_segments)
                 else:
-                    logger.info(
-                        f"Chunk {idx}: input {len(chunk_segments)} segments, "
-                        f"output {len(polished_segs)} segments"
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "llm.polish.chunk_completed",
+                        chunk=idx,
+                        input_segments=len(chunk_segments),
+                        output_segments=len(polished_segs),
+                        duration_ms=round((time.perf_counter() - chunk_t0) * 1000),
                     )
 
                 return (idx, polished_segs)
@@ -599,7 +646,13 @@ class LLMService:
         for idx, seg in enumerate(polished_segments, 1):
             seg['index'] = idx
 
-        logger.info(f"Polish complete: {len(segments)} -> {len(polished_segments)} segments")
+        log_event(
+            logger,
+            logging.INFO,
+            "llm.polish.completed",
+            input_segments=len(segments),
+            output_segments=len(polished_segments),
+        )
         return self._segments_to_srt(polished_segments)
 
     async def polish(self, text: str, context: dict[str, Any] | None = None) -> str:
@@ -735,7 +788,7 @@ class LLMService:
         global_context = self._build_global_context(metadata, chapters)
 
         # --- Map phase: parallel ---
-        logger.info(f"Mindmap map-reduce: {len(chapter_texts)} chapters")
+        log_event(logger, logging.INFO, "llm.mindmap.map_reduce_started", chapters=len(chapter_texts))
         map_concurrency = 1 if self._effective_provider() == "local" else 8
         semaphore = asyncio.Semaphore(map_concurrency)
 
@@ -753,9 +806,12 @@ class LLMService:
             if content.strip()
         ])
         chapter_summaries = dict(map_results)
-        logger.info(
-            f"Mindmap map done: {len(chapter_summaries)} chapters, "
-            f"total {sum(len(v) for v in chapter_summaries.values())} chars"
+        log_event(
+            logger,
+            logging.INFO,
+            "llm.mindmap.map_completed",
+            chapters=len(chapter_summaries),
+            chars=sum(len(v) for v in chapter_summaries.values()),
         )
 
         # --- Reduce phase: group into batches to stay within output limits ---
@@ -787,7 +843,7 @@ class LLMService:
 
         global_context = self._build_global_context(metadata, [])
 
-        logger.info(f"Mindmap auto map-reduce: {len(chapter_texts)} chunks")
+        log_event(logger, logging.INFO, "llm.mindmap.auto_map_reduce_started", chunks=len(chapter_texts))
         map_concurrency = 1 if self._effective_provider() == "local" else 8
         semaphore = asyncio.Semaphore(map_concurrency)
 
@@ -822,7 +878,7 @@ class LLMService:
             label = f"{batch_names[0]} ~ {batch_names[-1]}"
             groups.append((label, batch_names))
 
-        logger.info(f"Mindmap reduce: {len(groups)} groups from {len(names)} chapters")
+        log_event(logger, logging.INFO, "llm.mindmap.reduce_started", groups=len(groups), chapters=len(names))
 
         # Reduce each group (can be parallel for small groups)
         reduce_concurrency = 1 if self._effective_provider() == "local" else 4
@@ -845,7 +901,7 @@ class LLMService:
         ])
 
         final = "\n".join(results)
-        logger.info(f"Mindmap reduce done: {len(final)} chars")
+        log_event(logger, logging.INFO, "llm.mindmap.reduce_completed", chars=len(final))
         return final
 
     def _split_segments_by_chapters(

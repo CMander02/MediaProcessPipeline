@@ -20,6 +20,7 @@ from uuid import UUID
 from app.core.database import get_task_store
 from app.core.events import TaskEvent, get_event_bus
 from app.core.logging_setup import (
+    log_event,
     set_task_context, set_worker_context, reset_context,
     task_id_var, worker_var,
 )
@@ -35,28 +36,28 @@ def _flush_gpu_models() -> None:
         from app.services.preprocessing.uvr import get_uvr_service
         svc = get_uvr_service()
         if svc._separator is not None:
-            logger.info("Releasing UVR model")
+            log_event(logger, logging.INFO, "gpu.uvr.release")
             svc._separator = None
             svc._current_model = None
             svc._current_model_dir = None
     except Exception as e:
-        logger.warning(f"UVR release failed: {e}")
+        log_event(logger, logging.WARNING, "gpu.uvr.release_failed", error=e)
     try:
         from app.services.recognition import release_asr_models
 
         release_asr_models()
     except Exception as e:
-        logger.warning(f"ASR/Diarization release failed: {e}")
+        log_event(logger, logging.WARNING, "gpu.asr.release_failed", error=e)
     try:
         import torch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            logger.info("CUDA cache cleared")
+            log_event(logger, logging.INFO, "gpu.cuda_cache.cleared")
     except Exception as e:
-        logger.warning(f"CUDA cache clear failed: {e}")
+        log_event(logger, logging.WARNING, "gpu.cuda_cache.clear_failed", error=e)
     try:
         gc.collect()
-        logger.info("GC collected")
+        log_event(logger, logging.INFO, "runtime.gc.collected")
     except Exception:
         pass
 
@@ -116,7 +117,12 @@ class TaskQueue:
         t_token = set_task_context(str(task_id))
         try:
             await self._download_queue.put(task_id)
-            logger.info(f"queued → download (depth={self._download_queue.qsize()})")
+            log_event(
+                logger,
+                logging.INFO,
+                "queue.download.enqueued",
+                depth=self._download_queue.qsize(),
+            )
         finally:
             reset_context(t_token, task_id_var)
 
@@ -134,7 +140,7 @@ class TaskQueue:
                 from app.core.pipeline import update_metadata_status
                 update_metadata_status(Path(task.result["output_dir"]), "cancelled")
             except Exception:
-                logger.debug("Failed to update metadata.json on cancel", exc_info=True)
+                log_event(logger, logging.DEBUG, "task.metadata_status.update_failed", status="cancelled", exc_info=True)
         bus = get_event_bus()
         running = self._running_tasks.get(task_id)
         if running:
@@ -143,7 +149,7 @@ class TaskQueue:
             await bus.publish(TaskEvent(task_id, "cancelled"))
         t_token = set_task_context(str(task_id))
         try:
-            logger.info("task cancelled")
+            log_event(logger, logging.INFO, "task.cancelled")
         finally:
             reset_context(t_token, task_id_var)
         return True
@@ -180,17 +186,35 @@ class TaskQueue:
                 try:
                     if fast_path_done.issubset(completed) and PipelineStep.ARCHIVE not in completed:
                         await self._download_queue.put(task.id)
-                        logger.info("restored (fast-path) → download queue for re-download")
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "queue.download.restored",
+                            reason="fast_path_redownload",
+                            depth=self._download_queue.qsize(),
+                        )
                     else:
                         await self._gpu_queue.put(task.id)
-                        logger.info("restored → gpu queue (download already done)")
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "queue.gpu.restored",
+                            reason="download_done",
+                            depth=self._gpu_queue.qsize(),
+                        )
                 finally:
                     reset_context(t_token, task_id_var)
             else:
                 t_token = set_task_context(str(task.id))
                 try:
                     await self._download_queue.put(task.id)
-                    logger.info("restored → download queue")
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "queue.download.restored",
+                        reason="restart",
+                        depth=self._download_queue.qsize(),
+                    )
                 finally:
                     reset_context(t_token, task_id_var)
 
@@ -206,7 +230,7 @@ class TaskQueue:
             self._gpu_worker(), name="gpu-worker"
         )
 
-        logger.info(f"TaskQueue started: {n_dl} download workers + 1 GPU worker")
+        log_event(logger, logging.INFO, "queue.started", download_workers=n_dl, gpu_workers=1)
 
     async def stop(self) -> None:
         self._running = False
@@ -226,7 +250,7 @@ class TaskQueue:
                 pass
             self._gpu_worker_task = None
 
-        logger.info("TaskQueue stopped")
+        log_event(logger, logging.INFO, "queue.stopped")
 
     # ------------------------------------------------------------------
     # VRAM flush
@@ -240,7 +264,7 @@ class TaskQueue:
             and not self._active_download_ids
             and self._active_gpu_id is None
         ):
-            logger.info("Queue drained — releasing all GPU models")
+            log_event(logger, logging.INFO, "queue.drained", action="release_gpu_models")
             await asyncio.to_thread(_flush_gpu_models)
 
     # ------------------------------------------------------------------
@@ -268,7 +292,7 @@ class TaskQueue:
 
                 self._active_download_ids.add(task_id)
                 t_token = set_task_context(str(task_id))
-                logger.info("Download worker picked up task")
+                log_event(logger, logging.INFO, "queue.download.started")
 
                 try:
                     if self._pipeline_fn:
@@ -276,9 +300,9 @@ class TaskQueue:
                         self._running_tasks[task_id] = running
                         await running  # download-worker call
                 except asyncio.CancelledError:
-                    logger.info("Download step cancelled")
+                    log_event(logger, logging.INFO, "queue.download.cancelled")
                 except Exception:
-                    logger.exception("Download step failed")
+                    log_event(logger, logging.ERROR, "queue.download.failed", exc_info=True)
                 finally:
                     self._running_tasks.pop(task_id, None)
                     reset_context(t_token, task_id_var)
@@ -312,13 +336,18 @@ class TaskQueue:
                     waited = 0
                     while self._active_download_ids and self._running:
                         if waited == 0:
-                            logger.info("Serial mode: waiting for downloads to finish before GPU step")
+                            log_event(
+                                logger,
+                                logging.INFO,
+                                "queue.gpu.waiting_for_downloads",
+                                active_downloads=len(self._active_download_ids),
+                            )
                         await asyncio.sleep(0.5)
                         waited += 1
 
                 self._active_gpu_id = task_id
                 t_token = set_task_context(str(task_id))
-                logger.info("GPU worker picked up task")
+                log_event(logger, logging.INFO, "queue.gpu.started")
 
                 try:
                     if self._pipeline_fn:
@@ -326,9 +355,9 @@ class TaskQueue:
                         self._running_tasks[task_id] = running
                         await running  # gpu-worker call
                 except asyncio.CancelledError:
-                    logger.info("GPU/LLM steps cancelled")
+                    log_event(logger, logging.INFO, "queue.gpu.cancelled")
                 except Exception:
-                    logger.exception("GPU/LLM steps failed")
+                    log_event(logger, logging.ERROR, "queue.gpu.failed", exc_info=True)
                 finally:
                     self._running_tasks.pop(task_id, None)
                     reset_context(t_token, task_id_var)
@@ -345,7 +374,7 @@ class TaskQueue:
     async def advance_to_gpu(self, task_id: UUID) -> None:
         """Move a task from download stage to the GPU queue."""
         await self._gpu_queue.put(task_id)
-        logger.info(f"→ gpu queue (depth={self._gpu_queue.qsize()})")
+        log_event(logger, logging.INFO, "queue.gpu.enqueued", depth=self._gpu_queue.qsize())
 
     # ------------------------------------------------------------------
     # Inspection

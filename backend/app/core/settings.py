@@ -11,6 +11,8 @@ from typing import Any
 
 from pydantic import BaseModel, field_validator
 
+from app.core.logging_setup import log_event
+
 logger = logging.getLogger(__name__)
 
 # Settings file path - stored in project root data directory
@@ -132,6 +134,9 @@ class RuntimeSettings(BaseModel):
     # One of: "", "chrome", "firefox", "edge", "brave", "opera", "vivaldi", "safari".
     # Chrome locks its cookie DB while running — prefer firefox/edge or close Chrome.
     youtube_cookies_browser: str = ""
+    # Optional proxy for yt-dlp YouTube requests. Empty = auto-detect process/env
+    # or Windows user proxy; "direct"/"none" disables proxy use explicitly.
+    youtube_proxy: str = ""
 
     # Bilibili
     bilibili_sessdata: str = ""
@@ -209,10 +214,10 @@ def _load_settings_from_file() -> RuntimeSettings:
     if SETTINGS_FILE.exists():
         try:
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-            logger.info(f"Loaded settings from {SETTINGS_FILE}")
+            log_event(logger, logging.INFO, "settings.loaded", path=SETTINGS_FILE)
             return RuntimeSettings(**data)
         except Exception as e:
-            logger.warning(f"Failed to load settings file: {e}")
+            log_event(logger, logging.WARNING, "settings.load_failed", path=SETTINGS_FILE, error=e)
     return RuntimeSettings()
 
 
@@ -224,9 +229,9 @@ def _save_settings_to_file(settings: RuntimeSettings) -> None:
             json.dumps(settings.model_dump(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-        logger.info(f"Saved settings to {SETTINGS_FILE}")
+        log_event(logger, logging.INFO, "settings.saved", path=SETTINGS_FILE)
     except Exception as e:
-        logger.warning(f"Failed to save settings file: {e}")
+        log_event(logger, logging.WARNING, "settings.save_failed", path=SETTINGS_FILE, error=e)
 
 
 def get_runtime_settings() -> RuntimeSettings:

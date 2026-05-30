@@ -8,6 +8,8 @@ when multiple language tracks are available.
 import logging
 import re
 
+from app.core.logging_setup import log_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -118,11 +120,11 @@ async def detect_transcript_language(
         llm = get_llm_service()
         response = await llm._call(prompt)
     except Exception as e:
-        logger.warning(f"Language detection LLM call failed: {e}")
+        log_event(logger, logging.WARNING, "language_detect.failed", error=e)
         return "unknown"
 
     lang = _parse_response(response)
-    logger.info(f"Detected transcript language: {lang} (raw='{response.strip()[:80]}')")
+    log_event(logger, logging.INFO, "language_detect.completed", lang=lang, raw=response.strip()[:80])
     return lang
 
 

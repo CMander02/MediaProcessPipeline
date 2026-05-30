@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from app.core.logging_setup import log_event
+
 logger = logging.getLogger(__name__)
 
 # Built-in prompt: binary-classify (text-heavy vs content) then extract/describe.
@@ -92,7 +94,14 @@ class VLMService:
         )
         raw = response.choices[0].message.content or ""
         result = _parse_response(raw)
-        logger.debug(f"VLM {image_path.name}: kind={result['kind']}, chars={len(result['text'])}")
+        log_event(
+            logger,
+            logging.DEBUG,
+            "vlm.image.completed",
+            file=image_path.name,
+            kind=result["kind"],
+            chars=len(result["text"]),
+        )
         return result
 
 
