@@ -74,6 +74,7 @@ def _load_local_llm(model_path: str, device: str = "cuda", dtype: str = "bfloat1
     try:
         import torch
         from transformers import AutoConfig, AutoTokenizer
+        from transformers.utils import logging as hf_logging
     except ImportError as e:
         raise RuntimeError(
             "transformers/torch not installed. Sync the project environment first: "
@@ -81,6 +82,8 @@ def _load_local_llm(model_path: str, device: str = "cuda", dtype: str = "bfloat1
         ) from e
 
     log_event(logger, logging.INFO, "llm.local.load_started", model_path=model_path, device=device, dtype=dtype)
+    # tqdm can fail when the daemon is launched by Electron with hidden stdio on Windows.
+    hf_logging.disable_progress_bar()
 
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     torch_dtype = _resolve_dtype(dtype)

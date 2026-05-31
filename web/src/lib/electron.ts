@@ -28,3 +28,7 @@ export interface MppBackendBridge {
 export function getBackendBridge(): MppBackendBridge | undefined {
   return window.mppBackend
 }
+
+export function getDialogBridge() {
+  return window.mppDialog
+}

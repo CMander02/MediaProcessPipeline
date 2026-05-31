@@ -36,6 +36,8 @@ class RuntimeSettings(BaseModel):
     custom_api_base: str = ""
     custom_model: str = ""
     custom_name: str = "Custom"
+    custom_llm_profiles: list[dict[str, str]] = []
+    custom_active_profile_id: str = "default"
 
     # DeepSeek (native v4 API with thinking control)
     # Shared credentials — per-stage model/thinking/effort below.
@@ -155,6 +157,11 @@ class RuntimeSettings(BaseModel):
     # Optional raw Cookie header copied from a logged-in browser. Public notes
     # often work without it, but some notes require a browser session.
     xiaohongshu_cookie: str = ""
+
+    # Zhihu
+    # Headless Chromium can be blocked on answer pages; the fallback uses a real
+    # browser window. "background" starts it minimized, "foreground" leaves it visible.
+    zhihu_browser_mode: str = "background"
 
     # Per-platform configs (JSON string: {platform_id: {quality, prefer_subtitle, ...}})
     platform_configs: str = "{}"

@@ -74,6 +74,8 @@ def _detect_source_type(source: str) -> str:
         return "apple_podcast"
     elif "xiaohongshu.com" in source_lower or "xhslink.com" in source_lower:
         return "xiaohongshu"
+    elif "zhihu.com" in source_lower:
+        return "zhihu"
     elif source_lower.startswith(("http://", "https://")):
         return "url"
     elif any(source_lower.endswith(ext) for ext in [".mp4", ".mkv", ".avi", ".webm", ".mov"]):
@@ -92,7 +94,7 @@ def _platform_prefer_subtitles(source_type: str) -> bool:
     except Exception:
         configs = {}
 
-    supported_platforms = {"bilibili", "youtube", "xiaoyuzhou", "xiaohongshu", "apple_podcast"}
+    supported_platforms = {"bilibili", "youtube", "xiaoyuzhou", "xiaohongshu", "zhihu", "apple_podcast"}
     platform_cfg = configs.get(source_type) if source_type in supported_platforms else None
     if isinstance(platform_cfg, dict) and "prefer_subtitle" in platform_cfg:
         return bool(platform_cfg["prefer_subtitle"])
@@ -809,7 +811,7 @@ async def _run_subtitle_fast_path(
 
 
 # ---------------------------------------------------------------------------
-# Image-note pipeline (XHS image_note: VLM → summary/mindmap → archive)
+# Note pipeline (XHS/Zhihu notes: optional VLM → summary/mindmap → archive)
 # ---------------------------------------------------------------------------
 
 async def _process_image_note(
@@ -818,7 +820,7 @@ async def _process_image_note(
     task_dir: Path,
     ingest_info: dict,
 ) -> None:
-    """Process a Xiaohongshu image_note: download images, run VLM, summarize, archive."""
+    """Process a note-style source: download images when present, summarize, archive."""
     import asyncio as _aio
     from app.services.analysis import summarize_text, generate_mindmap, analyze_content
     from app.services.archiving import archive_result
@@ -830,15 +832,21 @@ async def _process_image_note(
 
     await _update_step(task, PipelineStep.ANALYZE)
 
-    # Download images
-    from app.services.ingestion.platform.xiaohongshu.api import download_images
-    try:
-        image_paths = await _aio.get_event_loop().run_in_executor(
-            None, download_images, ingest_info, task_dir
-        )
-    except Exception as e:
-        log_event(logger, logging.WARNING, "xhs.images.download_failed", error=e)
+    # Download images when the note actually has image media.
+    if metadata.content_subtype == "text_note":
         image_paths = []
+    else:
+        if metadata.platform == "zhihu":
+            from app.services.ingestion.platform.zhihu.api import download_images
+        else:
+            from app.services.ingestion.platform.xiaohongshu.api import download_images
+        try:
+            image_paths = await _aio.get_event_loop().run_in_executor(
+                None, download_images, ingest_info, task_dir
+            )
+        except Exception as e:
+            log_event(logger, logging.WARNING, "note.images.download_failed", error=e)
+            image_paths = []
 
     await _raise_if_cancelled(task.id)
 
@@ -959,7 +967,7 @@ async def _process_image_note(
         "archive": archive,
         "output_dir": str(task_dir),
         "analysis": analysis,
-        "content_subtype": "image_note",
+        "content_subtype": metadata.content_subtype,
     }
 
     # Async KB indexing (fail-soft)
@@ -1347,7 +1355,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(source, download=False)
                         title = info.get("title", "unknown") if info else "unknown"
-            elif source_type in ("xiaohongshu", "xiaoyuzhou", "apple_podcast"):
+            elif source_type in ("xiaohongshu", "zhihu", "xiaoyuzhou", "apple_podcast"):
                 # Use our own API — yt-dlp XiaoHongShu extractor fails on image notes
                 # and xiaoyuzhou is not supported by yt-dlp at all.
                 # Title will be resolved during the actual download step; use task id as placeholder.
@@ -1364,7 +1372,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             # 2. Decide whether to attempt fast path
             force_asr = rt.force_asr or task.options.get("force_asr", False)
 
-            if use_platform_subtitles and not force_asr and source_type not in ("xiaohongshu", "xiaoyuzhou", "apple_podcast"):
+            if use_platform_subtitles and not force_asr and source_type not in ("xiaohongshu", "zhihu", "xiaoyuzhou", "apple_podcast"):
                 # Probe: fetch metadata + subtitle (lightweight, no video download)
                 try:
                     probe_metadata = await fetch_ytdlp_metadata(source)
@@ -1527,8 +1535,8 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 else:
                     log_event(logger, logging.WARNING, "task_dir.rename_skipped", reason="exists", path=new_dir)
 
-            # Image notes take a different branch entirely — no GPU, no audio.
-            if metadata.content_subtype == "image_note":
+            # Notes take a different branch entirely — no GPU, no audio.
+            if metadata.content_subtype in {"image_note", "text_note"}:
                 _sync_task_from_metadata(task, metadata)
                 meta_path = write_metadata_json(task_dir, metadata, status="processing")
                 await _emit_file_ready(task, "metadata.json", str(meta_path))
@@ -1581,8 +1589,8 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     if task_dir is None or metadata is None:
         raise RuntimeError("task_dir or metadata missing after DOWNLOAD step — cannot continue")
 
-    # Image-note GPU-worker re-entry: DOWNLOAD is done, route directly to VLM branch.
-    if metadata.content_subtype == "image_note" and not _download_worker_call:
+    # Note GPU-worker re-entry: DOWNLOAD is done, route directly to note branch.
+    if metadata.content_subtype in {"image_note", "text_note"} and not _download_worker_call:
         ingest_info = (task.result or {}).get("_image_ingest_info") or {}
         await _process_image_note(task, metadata, task_dir, ingest_info)
         return

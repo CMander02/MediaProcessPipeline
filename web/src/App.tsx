@@ -16,6 +16,7 @@ export default function App() {
   const route = useRoute()
   const [search, setSearch] = useState("")
   const [mediaFilter, setMediaFilter] = useState<"all" | "video" | "audio" | "image">("all")
+  const showLibraryTools = route.page === "files"
 
   // Startup page routing
   useEffect(() => {
@@ -61,38 +62,40 @@ export default function App() {
             ))}
           </nav>
 
-          {/* Search + filter — always visible */}
-          <div className="flex items-center gap-2 ml-6 flex-1">
-            <div className="relative max-w-xs flex-1">
-              <HugeiconsIcon icon={Search01Icon} className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="搜索标题、话题、关键词..."
-                className="pl-8 h-8 text-sm"
-                autoComplete="off"
-                onFocus={() => { if (route.page !== "files") navigate("#/files") }}
-              />
+          {showLibraryTools ? (
+            <div className="flex items-center gap-2 ml-6 flex-1">
+              <div className="relative max-w-xs flex-1">
+                <HugeiconsIcon icon={Search01Icon} className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="搜索标题、话题、关键词..."
+                  className="pl-8 h-8 text-sm"
+                  autoComplete="off"
+                />
+              </div>
+              <div className="flex rounded-md border text-xs">
+                {(["all", "video", "audio", "image"] as const).map((f) => (
+                  <button
+                    key={f}
+                    onClick={() => setMediaFilter(f)}
+                    className={cn(
+                      "px-2.5 py-1 transition-colors",
+                      mediaFilter === f
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                      f === "all" && "rounded-l-md",
+                      f === "image" && "rounded-r-md",
+                    )}
+                  >
+                    {f === "all" ? "全部" : f === "video" ? "视频" : f === "audio" ? "音频" : "图文"}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="flex rounded-md border text-xs">
-              {(["all", "video", "audio", "image"] as const).map((f) => (
-                <button
-                  key={f}
-                  onClick={() => { setMediaFilter(f); if (route.page !== "files") navigate("#/files") }}
-                  className={cn(
-                    "px-2.5 py-1 transition-colors",
-                    mediaFilter === f
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:text-foreground",
-                    f === "all" && "rounded-l-md",
-                    f === "image" && "rounded-r-md",
-                  )}
-                >
-                  {f === "all" ? "全部" : f === "video" ? "视频" : f === "audio" ? "音频" : "图文"}
-                </button>
-              ))}
-            </div>
-          </div>
+          ) : (
+            <div className="ml-6 flex-1" />
+          )}
 
           {/* Task queue dropdown */}
           <TaskQueueDropdown />

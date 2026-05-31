@@ -135,3 +135,24 @@ async def patch_settings(updates: dict[str, Any]):
     if reopen_db:
         _reopen_task_db(updated.data_root)
     return _mask_settings(updated)
+
+
+@router.get("/uvr/local")
+async def detect_local_uvr():
+    """Detect a locally installed UVR model directory."""
+    from app.services.preprocessing.uvr import find_local_uvr_model_dir
+
+    model_dir = find_local_uvr_model_dir()
+    if not model_dir:
+        return {"found": False, "path": "", "models": []}
+
+    models: list[str] = []
+    for subdir in ("MDX_Net_Models", "VR_Models", "Demucs_Models"):
+        folder = model_dir / subdir
+        if not folder.exists():
+            continue
+        for item in folder.iterdir():
+            if item.is_file() and item.suffix.lower() in {".onnx", ".pth", ".yaml", ".th"}:
+                models.append(item.stem)
+
+    return {"found": True, "path": str(model_dir), "models": sorted(set(models))}

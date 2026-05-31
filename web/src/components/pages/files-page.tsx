@@ -11,7 +11,6 @@ import { Loading03Icon, FolderOpenIcon, ArrowLeft01Icon, ArrowRight01Icon } from
 
 const PAGE_SIZE = 18
 const MIN_PAGE_SIZE = 1
-const COMPACT_HEIGHT = 620
 
 interface FilesPageProps {
   search: string
@@ -31,7 +30,12 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
     let list = archives
     if (mediaFilter === "video") list = list.filter((a) => a.has_video)
     if (mediaFilter === "audio") list = list.filter((a) => !a.has_video && !a.has_image && a.has_audio)
-    if (mediaFilter === "image") list = list.filter((a) => a.has_image)
+    if (mediaFilter === "image") {
+      list = list.filter((a) => {
+        const subtype = a.metadata?.content_subtype
+        return a.has_image || subtype === "image_note" || subtype === "text_note"
+      })
+    }
     if (search.trim()) {
       const q = search.toLowerCase()
       list = list.filter((a) => a.title.toLowerCase().includes(q))
@@ -63,9 +67,16 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
     if (!grid) return
 
     const updatePageSize = () => {
+      const firstCard = grid.firstElementChild
+      if (!(firstCard instanceof HTMLElement)) return
+
       const styles = window.getComputedStyle(grid)
       const columns = styles.gridTemplateColumns.split(" ").filter(Boolean).length || 1
-      const rows = window.innerHeight < COMPACT_HEIGHT ? 2 : 3
+      const rowGap = Number.parseFloat(styles.rowGap) || 0
+      const cardHeight = firstCard.getBoundingClientRect().height
+      if (cardHeight <= 0) return
+
+      const rows = Math.max(1, Math.floor((grid.clientHeight + rowGap) / (cardHeight + rowGap)))
       const nextPageSize = Math.max(MIN_PAGE_SIZE, columns * rows)
       setPageSize((current) => (current === nextPageSize ? current : nextPageSize))
     }
@@ -118,6 +129,7 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
             <ArchiveCard
               key={a.path}
               archive={a}
+              compact
               onClick={() => handleOpen(a.path, a.task_id)}
               onDelete={() => setDeleteTarget({ title: a.title, path: a.path })}
               onRenamed={() => refresh(true)}

@@ -178,7 +178,7 @@ class ArchiveService:
             image_exts = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'}
             has_video = False
             has_audio = False
-            has_image = metadata.get("content_subtype") == "image_note"
+            has_image = False
             media_file = None
             media_is_external = False
 

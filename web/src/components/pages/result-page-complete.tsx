@@ -34,7 +34,23 @@ import { SummaryTab } from "@/components/result/summary-tab"
 import { MindmapViewer } from "@/components/result/mindmap-viewer"
 import { ImageNoteViewer, type ImageDescription } from "@/components/result/image-note-viewer"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { ArrowLeft01Icon, Tick02Icon, Copy01Icon, Download01Icon, Loading03Icon, MoreHorizontalIcon, PencilEdit01Icon, Delete01Icon, Link01Icon, Gps01Icon } from "@hugeicons/core-free-icons"
+import {
+  ArrowLeft01Icon,
+  Tick02Icon,
+  Copy01Icon,
+  Download01Icon,
+  Loading03Icon,
+  MoreHorizontalIcon,
+  PencilEdit01Icon,
+  Delete01Icon,
+  Link01Icon,
+  Gps01Icon,
+  Video01Icon,
+  MusicNote01Icon,
+  Image01Icon,
+  Note01Icon,
+  ListTreeIcon,
+} from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
 
 interface SubtitleTrackInfo {
@@ -75,6 +91,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const [platform, setPlatform] = useState<string | null>(null)
   const [uploader, setUploader] = useState<string | null>(null)
   const [contentSubtype, setContentSubtype] = useState<string | null>(null)
+  const [noteText, setNoteText] = useState<string | null>(null)
   const [imageDescriptions, setImageDescriptions] = useState<ImageDescription[]>([])
   const [activeImageIdx, setActiveImageIdx] = useState(0)
 
@@ -180,6 +197,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
       setPlatform((meta.platform as string | null) ?? null)
       setUploader((meta.uploader as string | null) ?? null)
       setContentSubtype((meta.content_subtype as string | null) ?? null)
+      setNoteText((meta.description as string | null) ?? null)
       const extra = (meta.extra || {}) as Record<string, unknown>
       const tracks = (extra.subtitle_tracks as SubtitleTrackInfo[] | undefined) ?? []
       setSubtitleTracks(tracks)
@@ -362,6 +380,24 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   }, [subtitleTracks, loadFile])
 
   const mediaType = archive?.has_video ? "video" : "audio"
+  const sourceHref = sourceUrl && /^https?:\/\//i.test(sourceUrl) ? sourceUrl : null
+  const isImageNote = contentSubtype === "image_note"
+  const isTextNote = contentSubtype === "text_note"
+  const isNoteContent = isImageNote || isTextNote
+  const headerMediaIcon = isImageNote || archive?.has_image
+    ? Image01Icon
+    : isTextNote
+      ? Note01Icon
+    : mediaType === "video"
+      ? Video01Icon
+      : MusicNote01Icon
+  const headerMediaLabel = isImageNote || archive?.has_image
+    ? "图文"
+    : isTextNote
+      ? "正文"
+    : mediaType === "video"
+      ? "视频"
+      : "音频"
   const [displayTitle, setDisplayTitle] = useState<string>("")
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState("")
@@ -399,6 +435,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
 
   const getTabContent = () => {
     if (activeTab === "summary") return { content: summary, suffix: "摘要", ext: "md" }
+    if (activeTab === "transcript" && isTextNote) return { content: noteText, suffix: "正文", ext: "md" }
     if (activeTab === "transcript") return { content: transcript, suffix: "字幕", ext: "srt" }
     if (activeTab === "mindmap") return { content: mindmap, suffix: "导图", ext: "md" }
     return null
@@ -456,39 +493,66 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
               <span className="truncate">{displayTitle}</span>
               <HugeiconsIcon icon={PencilEdit01Icon} className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-50 transition-opacity" />
             </button>
-            {sourceUrl && /^https?:\/\//i.test(sourceUrl) && (
-              <a
-                href={sourceUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="shrink-0 p-1 rounded text-muted-foreground hover:text-primary hover:bg-muted transition-colors"
-                title="打开原始链接"
-              >
-                <HugeiconsIcon icon={Link01Icon} className="h-3.5 w-3.5" />
-              </a>
-            )}
-            {platform && (
-              <PlatformIcon
-                platform={platform}
-                uploader={uploader}
-                className="h-4 w-4 shrink-0"
-              />
-            )}
-            {subtitleSourceType && (
-              <span
-                className={cn(
-                  "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
-                  subtitleSourceType === "platform"
-                    ? "bg-sky-500/10 text-sky-700 dark:text-sky-300"
-                    : "bg-violet-500/10 text-violet-700 dark:text-violet-300",
-                )}
-                title={subtitleSourceType === "platform" ? "字幕来自平台" : "字幕由 ASR 生成"}
-              >
-                {subtitleSourceType === "platform"
-                  ? (isPolished ? "Platform+润色" : "Platform")
-                  : (isPolished ? "ASR+润色" : "ASR")}
+            <div className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
+              {platform ? (
+                sourceHref ? (
+                  <a
+                    href={sourceHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="rounded p-1 transition-colors hover:bg-muted hover:text-primary"
+                    title={uploader ? `打开 ${uploader}` : "打开原始来源"}
+                  >
+                    <PlatformIcon platform={platform} uploader={uploader} className="h-4 w-4" />
+                  </a>
+                ) : (
+                  <span className="p-1" title={uploader ?? platform}>
+                    <PlatformIcon platform={platform} uploader={uploader} className="h-4 w-4" />
+                  </span>
+                )
+              ) : sourceHref ? (
+                <a
+                  href={sourceHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rounded p-1 transition-colors hover:bg-muted hover:text-primary"
+                  title="打开原始链接"
+                >
+                  <HugeiconsIcon icon={Link01Icon} className="h-3.5 w-3.5" />
+                </a>
+              ) : null}
+              <span className="rounded p-1" title={headerMediaLabel}>
+                <HugeiconsIcon icon={headerMediaIcon} className="h-3.5 w-3.5" strokeWidth={1.75} />
               </span>
-            )}
+              {summary && (
+                <span className="rounded p-1" title="摘要">
+                  <HugeiconsIcon icon={Note01Icon} className="h-3.5 w-3.5" strokeWidth={1.75} />
+                </span>
+              )}
+              {mindmap && (
+                <span className="rounded p-1" title="导图">
+                  <HugeiconsIcon icon={ListTreeIcon} className="h-3.5 w-3.5" strokeWidth={1.75} />
+                </span>
+              )}
+              {subtitleSourceType && (
+                <span
+                  className={cn(
+                    "rounded px-1.5 py-0.5 text-[10px] font-medium",
+                    subtitleSourceType === "platform"
+                      ? "text-sky-700 dark:text-sky-300"
+                      : "text-violet-700 dark:text-violet-300",
+                  )}
+                  title={subtitleSourceType === "platform" ? "字幕来自平台" : "字幕由 ASR 生成"}
+                >
+                  {subtitleSourceType === "platform" ? "平台" : "ASR"}
+                </span>
+              )}
+              {isPolished && (
+                <span className="rounded p-1 text-primary" title="已润色">
+                  <HugeiconsIcon icon={PencilEdit01Icon} className="h-3.5 w-3.5" strokeWidth={1.75} />
+                </span>
+              )}
+            </div>
           </div>
         )}
         {isProcessing && (
@@ -581,7 +645,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
           {/* Center panel — media preview */}
           <ResizablePanel defaultSize="50%" minSize="20%" maxSize="70%">
             <div className="h-full overflow-y-auto p-4 space-y-3">
-              {contentSubtype === "image_note" ? (
+              {isImageNote ? (
                 <div className="h-full">
                   <ImageNoteViewer
                     archivePath={archivePath}
@@ -589,6 +653,10 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                     onImageIndexChange={setActiveImageIdx}
                     isProcessing={isProcessing}
                   />
+                </div>
+              ) : isTextNote ? (
+                <div className="flex h-full min-h-40 items-center justify-center rounded-lg border bg-muted/20 text-sm text-muted-foreground">
+                  文本内容，无媒体预览
                 </div>
               ) : mediaUrl ? (
                 <div className="sticky top-0 z-10 bg-background pb-2">
@@ -607,7 +675,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                   </div>
                 </div>
               ) : null}
-              {contentSubtype !== "image_note" && subtitles.length > 0 && (
+              {!isNoteContent && subtitles.length > 0 && (
                 <SpeakerPanel
                   subtitles={subtitles}
                   duration={duration}
@@ -629,8 +697,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                   <TabsList>
                     <TabsTrigger value="summary">摘要</TabsTrigger>
                     <TabsTrigger value="transcript">
-                      {contentSubtype === "image_note" ? "图片" : "字幕"}
-                      {contentSubtype !== "image_note" && transcript && !isPolished && isProcessing && (
+                      {isImageNote ? "图片" : isTextNote ? "正文" : "字幕"}
+                      {!isNoteContent && transcript && !isPolished && isProcessing && (
                         <span className="ml-1 text-[10px] text-amber-600">(原始)</span>
                       )}
                     </TabsTrigger>
@@ -684,7 +752,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
 
                 <TabsContent value="transcript" className="mt-3 relative flex-1">
                   <div className="absolute inset-0 rounded-md border flex flex-col">
-                    {contentSubtype === "image_note" ? (
+                    {isImageNote ? (
                       imageDescriptions.length > 0 ? (
                         <div className="overflow-y-auto flex-1 p-3 space-y-3">
                           {imageDescriptions.map((d) => (
@@ -719,6 +787,16 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                         </div>
                       ) : (
                         <div className="flex items-center justify-center h-full text-muted-foreground text-sm">无图片数据</div>
+                      )
+                    ) : isTextNote ? (
+                      noteText ? (
+                        <div className="overflow-y-auto flex-1 p-5 text-sm leading-7 whitespace-pre-wrap">
+                          {noteText}
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+                          暂无正文
+                        </div>
                       )
                     ) : (
                     <>

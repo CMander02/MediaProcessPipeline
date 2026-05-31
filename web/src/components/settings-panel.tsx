@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback } from "react"
 import React from "react"
-import { isNewModel } from "@/lib/model-releases"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Input } from "@/components/ui/input"
@@ -11,17 +10,10 @@ import { Switch } from "@/components/ui/switch"
 import { Slider } from "@/components/ui/slider"
 import { Badge } from "@/components/ui/badge"
 import { api, type Settings } from "@/lib/api"
+import { getDialogBridge } from "@/lib/electron"
 import { usePreferences } from "@/hooks/use-preferences"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { FloppyDiskIcon, Tick02Icon, Moon02Icon, Sun01Icon } from "@hugeicons/core-free-icons"
-
-function NewBadge() {
-  return (
-    <Badge className="rounded-sm border-transparent bg-gradient-to-r from-indigo-500 to-pink-500 [background-size:105%] bg-center text-white text-[10px] px-1.5 py-0 leading-4 shrink-0">
-      NEW!
-    </Badge>
-  )
-}
+import { FloppyDiskIcon, Tick02Icon, Moon02Icon, Sun01Icon, FolderOpenIcon, PlusSignIcon, Delete01Icon } from "@hugeicons/core-free-icons"
 
 function ComingSoonBadge() {
   return (
@@ -30,11 +22,9 @@ function ComingSoonBadge() {
 }
 
 function ModelLabel({ name }: { name: string }) {
-  const isNew = isNewModel(name)
   return (
     <span className="flex items-center gap-1.5">
       {name}
-      {isNew && <NewBadge />}
     </span>
   )
 }
@@ -56,7 +46,7 @@ const TABS: TabDef[] = [
   { id: "youtube", label: "YouTube" },
   { id: "xiaoyuzhou", label: "小宇宙" },
   { id: "xiaohongshu", label: "小红书" },
-  { id: "zhihu", label: "知乎", comingSoon: true },
+  { id: "zhihu", label: "知乎" },
 ]
 
 // --- Placeholder section for coming-soon platforms ---
@@ -83,6 +73,215 @@ function PlaceholderSection({ title, description, comingSoon = true }: Placehold
   )
 }
 
+type DeviceValue = "cuda" | "cpu"
+
+function DeviceChoice({
+  value,
+  onChange,
+  labels = { cuda: "CUDA", cpu: "内存" },
+}: {
+  value: string
+  onChange: (value: DeviceValue) => void
+  labels?: Record<DeviceValue, string>
+}) {
+  const current: DeviceValue = value === "cpu" ? "cpu" : "cuda"
+  return (
+    <div className="flex items-center gap-3">
+      <Label className="w-24 shrink-0 text-sm text-muted-foreground">设备</Label>
+      <div className="flex items-center gap-1">
+        {(["cuda", "cpu"] as const).map((device) => (
+          <button
+            key={device}
+            type="button"
+            onClick={() => onChange(device)}
+            className={[
+              "h-8 px-3 text-sm transition-colors",
+              current === device
+                ? "text-primary font-medium border-b-2 border-primary"
+                : "text-muted-foreground hover:text-foreground",
+            ].join(" ")}
+          >
+            {labels[device]}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function PathPickerRow({
+  label,
+  settingKey,
+  value,
+  onSave,
+  saving,
+  saved,
+  placeholder,
+  title,
+}: SettingRowProps & { title?: string }) {
+  const [editValue, setEditValue] = useState(value)
+
+  useEffect(() => setEditValue(value), [value])
+
+  const pickDirectory = async () => {
+    const selected = await getDialogBridge()?.selectDirectory({
+      title: title ?? "选择模型文件夹",
+      defaultPath: editValue || undefined,
+    })
+    if (selected) {
+      setEditValue(selected)
+      await onSave(settingKey, selected)
+      return
+    }
+    if (!getDialogBridge()) {
+      const manual = window.prompt("输入文件夹路径", editValue)
+      if (manual !== null) {
+        setEditValue(manual)
+        await onSave(settingKey, manual)
+      }
+    }
+  }
+
+  const isDirty = editValue !== value
+  const isSaving = saving[settingKey]
+  const isSaved = saved[settingKey]
+
+  return (
+    <div className="flex items-center gap-3">
+      <Label className="w-24 shrink-0 text-sm text-muted-foreground">{label}</Label>
+      <Input
+        value={editValue}
+        onChange={(e) => setEditValue(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && onSave(settingKey, editValue)}
+        className="h-8 flex-1 text-sm"
+        autoComplete="off"
+        placeholder={placeholder}
+      />
+      <Button size="sm" variant="ghost" onClick={pickDirectory} className="h-8 gap-1.5 px-2">
+        <HugeiconsIcon icon={FolderOpenIcon} className="h-3.5 w-3.5" />
+        选择
+      </Button>
+      {isDirty && (
+        <Button size="sm" variant="ghost" onClick={() => onSave(settingKey, editValue)} disabled={isSaving} className="h-8 px-2">
+          {isSaved ? <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5" /> : <HugeiconsIcon icon={FloppyDiskIcon} className="h-3.5 w-3.5" />}
+        </Button>
+      )}
+      {!isDirty && isSaved && (
+        <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
+      )}
+    </div>
+  )
+}
+
+interface CustomProfile {
+  id: string
+  name: string
+  api_base: string
+  model: string
+  api_key: string
+}
+
+function getCustomProfiles(settings: Settings): CustomProfile[] {
+  const raw = settings.custom_llm_profiles
+  const profiles = Array.isArray(raw) ? raw : []
+  if (profiles.length > 0) {
+    return profiles.map((item, index) => {
+      const data = item as Record<string, unknown>
+      return {
+        id: String(data.id ?? `custom-${index}`),
+        name: String(data.name ?? data.custom_name ?? `Custom ${index + 1}`),
+        api_base: String(data.api_base ?? data.custom_api_base ?? ""),
+        model: String(data.model ?? data.custom_model ?? ""),
+        api_key: String(data.api_key ?? data.custom_api_key ?? ""),
+      }
+    })
+  }
+  return [{
+    id: "default",
+    name: String(settings.custom_name ?? "Custom"),
+    api_base: String(settings.custom_api_base ?? ""),
+    model: String(settings.custom_model ?? ""),
+    api_key: String(settings.custom_api_key ?? ""),
+  }]
+}
+
+function CustomProfilesEditor({
+  settings,
+  updateSetting,
+}: {
+  settings: Settings
+  updateSetting: (key: string, value: unknown) => Promise<void>
+}) {
+  const profiles = getCustomProfiles(settings)
+  const activeId = String(settings.custom_active_profile_id ?? profiles[0]?.id ?? "default")
+  const activeProfile = profiles.find((profile) => profile.id === activeId) ?? profiles[0]
+
+  const saveProfiles = async (next: CustomProfile[], nextActive = activeId) => {
+    const active = next.find((profile) => profile.id === nextActive) ?? next[0]
+    await updateSetting("custom_llm_profiles", next)
+    await updateSetting("custom_active_profile_id", active.id)
+    await updateSetting("custom_name", active.name)
+    await updateSetting("custom_api_base", active.api_base)
+    await updateSetting("custom_model", active.model)
+    await updateSetting("custom_api_key", active.api_key)
+  }
+
+  const updateProfile = (field: keyof CustomProfile, value: string) => {
+    const next = profiles.map((profile) =>
+      profile.id === activeProfile.id ? { ...profile, [field]: value } : profile,
+    )
+    void saveProfiles(next, activeProfile.id)
+  }
+
+  const addProfile = () => {
+    const nextProfile: CustomProfile = {
+      id: `custom-${Date.now()}`,
+      name: `Custom ${profiles.length + 1}`,
+      api_base: "",
+      model: "",
+      api_key: "",
+    }
+    void saveProfiles([...profiles, nextProfile], nextProfile.id)
+  }
+
+  const removeProfile = () => {
+    if (profiles.length <= 1) return
+    const next = profiles.filter((profile) => profile.id !== activeProfile.id)
+    void saveProfiles(next, next[0].id)
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-3">
+        <Label className="w-24 shrink-0 text-sm text-muted-foreground">配置</Label>
+        <select
+          value={activeProfile.id}
+          onChange={(e) => void saveProfiles(profiles, e.target.value)}
+          className="h-8 min-w-52 rounded-md border border-input bg-background px-3 text-sm"
+        >
+          {profiles.map((profile) => (
+            <option key={profile.id} value={profile.id}>{profile.name || profile.id}</option>
+          ))}
+        </select>
+        <Button size="sm" variant="ghost" onClick={addProfile} className="h-8 gap-1.5 px-2">
+          <HugeiconsIcon icon={PlusSignIcon} className="h-3.5 w-3.5" />
+          新增
+        </Button>
+        <Button size="sm" variant="ghost" onClick={removeProfile} disabled={profiles.length <= 1} className="h-8 gap-1.5 px-2 text-destructive hover:text-destructive">
+          <HugeiconsIcon icon={Delete01Icon} className="h-3.5 w-3.5" />
+          删除
+        </Button>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <SettingRow label="名称" settingKey="custom_profile_name" value={activeProfile.name} onSave={async (_key, value) => updateProfile("name", String(value))} saving={{}} saved={{}} />
+        <SettingRow label="模型" settingKey="custom_profile_model" value={activeProfile.model} onSave={async (_key, value) => updateProfile("model", String(value))} saving={{}} saved={{}} />
+        <SettingRow label="API Base" settingKey="custom_profile_base" value={activeProfile.api_base} onSave={async (_key, value) => updateProfile("api_base", String(value))} saving={{}} saved={{}} />
+        <SettingRow label="API Key" settingKey="custom_profile_key" value={activeProfile.api_key} onSave={async (_key, value) => updateProfile("api_key", String(value))} saving={{}} saved={{}} masked />
+      </div>
+    </div>
+  )
+}
+
 export function SettingsPanel() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [saving, setSaving] = useState<Record<string, boolean>>({})
@@ -93,6 +292,8 @@ export function SettingsPanel() {
   )
   const { prefs, update: updatePrefs } = usePreferences()
   const [activeTab, setActiveTab] = useState<TabId>("general")
+  const [uvrDetecting, setUvrDetecting] = useState(false)
+  const [uvrDetection, setUvrDetection] = useState<string | null>(null)
 
   // Bilibili auth status (needed for sidebar dot indicator)
   const [biliLoggedIn, setBiliLoggedIn] = useState<boolean | null>(null)
@@ -132,16 +333,40 @@ export function SettingsPanel() {
     return <p className="text-sm text-muted-foreground">加载中...</p>
   }
 
+  const detectLocalUvr = async () => {
+    setUvrDetecting(true)
+    try {
+      const result = await api.settings.detectLocalUvr()
+      if (result.found && result.path) {
+        await updateSetting("uvr_model_dir", result.path)
+        if (result.models.length > 0 && !result.models.includes(String(settings?.uvr_model ?? ""))) {
+          await updateSetting("uvr_model", result.models[0])
+        }
+        setUvrDetection(`已找到：${result.path}`)
+      } else {
+        setUvrDetection("未找到本机 UVR 模型目录")
+      }
+    } catch (e) {
+      setUvrDetection(e instanceof Error ? e.message : String(e))
+    } finally {
+      setUvrDetecting(false)
+    }
+  }
+
+  const visibleLlmProvider = ["local", "deepseek", "custom"].includes(settings.llm_provider)
+    ? settings.llm_provider
+    : "deepseek"
+
   return (
-    <div className="max-w-3xl">
+    <div className="w-full">
       {saveError && (
-        <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {saveError}
         </div>
       )}
-      <div className="flex gap-0 min-h-[400px]">
+      <div className="flex min-h-[calc(100vh-170px)] gap-5">
         {/* Left sidebar */}
-        <nav className="w-[140px] shrink-0 pr-3 space-y-1">
+        <nav className="sticky top-5 h-fit w-[220px] shrink-0 space-y-1 rounded-lg border bg-card p-2">
           {TABS.map((tab, idx) => {
             const isActive = activeTab === tab.id
             // Insert a separator before the coming-soon group
@@ -154,9 +379,9 @@ export function SettingsPanel() {
                 <button
                   onClick={() => setActiveTab(tab.id)}
                   className={[
-                    "w-full text-left flex items-center gap-1.5 px-2 py-1.5 rounded-md text-sm transition-colors",
+                    "w-full text-left flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors",
                     isActive
-                      ? "bg-accent text-accent-foreground font-medium"
+                      ? "bg-primary/10 text-primary font-medium"
                       : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
                   ].join(" ")}
                 >
@@ -176,11 +401,8 @@ export function SettingsPanel() {
           })}
         </nav>
 
-        {/* Vertical divider */}
-        <Separator orientation="vertical" className="self-stretch" />
-
         {/* Right content */}
-        <div className="flex-1 pl-5 space-y-4 min-w-0">
+        <div className="min-w-0 flex-1 space-y-4 [&_[data-slot=card]]:rounded-none [&_[data-slot=card]]:bg-transparent [&_[data-slot=card]]:py-0 [&_[data-slot=card]]:ring-0 [&_[data-slot=card]]:border-b [&_[data-slot=card]]:border-border/70 [&_[data-slot=card]]:pb-4 [&_[data-slot=card-header]]:px-0 [&_[data-slot=card-header]]:pb-1.5 [&_[data-slot=card-content]]:px-0">
           {/* ── 通用 ── */}
           {activeTab === "general" && (
             <>
@@ -318,7 +540,6 @@ export function SettingsPanel() {
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base flex items-center gap-2">
                     ASR
-                    {isNewModel(String(settings?.qwen3_asr_model_path || "Qwen/Qwen3-ASR-1.7B")) && <NewBadge />}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -333,7 +554,7 @@ export function SettingsPanel() {
                     </div>
                     <div className="flex items-center gap-2">
                       <RadioGroupItem value="siliconflow" id="asr-siliconflow" />
-                      <Label htmlFor="asr-siliconflow" className="flex items-center gap-1.5">SiliconFlow API <NewBadge /></Label>
+                      <Label htmlFor="asr-siliconflow">SiliconFlow API</Label>
                     </div>
                   </RadioGroup>
                   <Separator />
@@ -397,21 +618,19 @@ export function SettingsPanel() {
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      <SettingRow
+                      <PathPickerRow
                         label="模型路径"
                         settingKey="qwen3_asr_model_path"
                         value={String(settings.qwen3_asr_model_path ?? "")}
                         onSave={updateSetting}
                         saving={saving}
                         saved={saved}
+                        placeholder="留空使用 HuggingFace，或选择本地模型目录"
+                        title="选择 Qwen3-ASR 模型目录"
                       />
-                      <SettingRow
-                        label="设备"
-                        settingKey="qwen3_device"
+                      <DeviceChoice
                         value={String(settings.qwen3_device ?? "cuda")}
-                        onSave={updateSetting}
-                        saving={saving}
-                        saved={saved}
+                        onChange={(value) => updateSetting("qwen3_device", value)}
                       />
                     </div>
                   )}
@@ -425,21 +644,13 @@ export function SettingsPanel() {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <RadioGroup
-                    value={settings.llm_provider}
+                    value={visibleLlmProvider}
                     onValueChange={(v) => updateSetting("llm_provider", v)}
                     className="flex flex-wrap gap-4"
                   >
                     <div className="flex items-center gap-2">
-                      <RadioGroupItem value="anthropic" id="llm-anthropic" />
-                      <Label htmlFor="llm-anthropic" className="flex items-center gap-1.5">Anthropic <NewBadge /></Label>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <RadioGroupItem value="openai" id="llm-openai" />
-                      <Label htmlFor="llm-openai">OpenAI</Label>
-                    </div>
-                    <div className="flex items-center gap-2">
                       <RadioGroupItem value="deepseek" id="llm-deepseek" />
-                      <Label htmlFor="llm-deepseek" className="flex items-center gap-1.5">DeepSeek <NewBadge /></Label>
+                      <Label htmlFor="llm-deepseek">DeepSeek</Label>
                     </div>
                     <div className="flex items-center gap-2">
                       <RadioGroupItem value="custom" id="llm-custom" />
@@ -453,9 +664,9 @@ export function SettingsPanel() {
 
                   <Separator />
 
-                  {settings.llm_provider === "local" ? (
+                  {visibleLlmProvider === "local" ? (
                     <div className="space-y-3">
-                      <SettingRow
+                      <PathPickerRow
                         label="模型目录"
                         settingKey="local_llm_model_path"
                         value={String(settings.local_llm_model_path ?? "")}
@@ -463,19 +674,12 @@ export function SettingsPanel() {
                         saving={saving}
                         saved={saved}
                         placeholder="包含 config.json 和 *.safetensors 的目录"
+                        title="选择本地 LLM 模型目录"
                       />
-                      <div className="flex items-center gap-3">
-                        <Label className="w-24 shrink-0 text-sm text-muted-foreground">设备</Label>
-                        <select
-                          value={String(settings.local_llm_device ?? "cuda")}
-                          onChange={(e) => updateSetting("local_llm_device", e.target.value)}
-                          className="h-8 rounded-md border border-input bg-background px-3 text-sm"
-                        >
-                          <option value="cuda">cuda</option>
-                          <option value="cpu">cpu</option>
-                          <option value="auto">auto</option>
-                        </select>
-                      </div>
+                      <DeviceChoice
+                        value={String(settings.local_llm_device ?? "cuda")}
+                        onChange={(value) => updateSetting("local_llm_device", value)}
+                      />
                       <div className="flex items-center gap-3">
                         <Label className="w-24 shrink-0 text-sm text-muted-foreground">精度</Label>
                         <select
@@ -498,43 +702,9 @@ export function SettingsPanel() {
                         saved={saved}
                       />
                     </div>
-                  ) : settings.llm_provider === "custom" ? (
-                    <div className="space-y-3">
-                      <SettingRow
-                        label="名称"
-                        settingKey="custom_name"
-                        value={String(settings.custom_name ?? "")}
-                        onSave={updateSetting}
-                        saving={saving}
-                        saved={saved}
-                      />
-                      <SettingRow
-                        label="API Base"
-                        settingKey="custom_api_base"
-                        value={String(settings.custom_api_base ?? "")}
-                        onSave={updateSetting}
-                        saving={saving}
-                        saved={saved}
-                      />
-                      <SettingRow
-                        label="模型"
-                        settingKey="custom_model"
-                        value={String(settings.custom_model ?? "")}
-                        onSave={updateSetting}
-                        saving={saving}
-                        saved={saved}
-                      />
-                      <SettingRow
-                        label="API Key"
-                        settingKey="custom_api_key"
-                        value={String(settings.custom_api_key ?? "")}
-                        onSave={updateSetting}
-                        saving={saving}
-                        saved={saved}
-                        masked
-                      />
-                    </div>
-                  ) : settings.llm_provider === "deepseek" ? (
+                  ) : visibleLlmProvider === "custom" ? (
+                    <CustomProfilesEditor settings={settings} updateSetting={updateSetting} />
+                  ) : visibleLlmProvider === "deepseek" ? (
                     <DeepSeekConfig
                       settings={settings}
                       updateSetting={updateSetting}
@@ -544,7 +714,7 @@ export function SettingsPanel() {
                   ) : settings.llm_provider === "anthropic" ? (
                     <div className="space-y-3">
                       <SettingRow
-                        label={<span className="flex items-center gap-1.5">模型{isNewModel(String(settings.anthropic_model ?? "")) && <NewBadge />}</span>}
+                        label="模型"
                         settingKey="anthropic_model"
                         value={String(settings.anthropic_model ?? "")}
                         onSave={updateSetting}
@@ -588,7 +758,7 @@ export function SettingsPanel() {
                   <div className="space-y-2">
                     <Label className="text-sm text-muted-foreground">润色阶段使用</Label>
                     <RadioGroup
-                      value={settings.polish_provider ?? "local"}
+                      value={["", "local", "deepseek", "custom"].includes(String(settings.polish_provider ?? "local")) ? String(settings.polish_provider ?? "local") : ""}
                       onValueChange={(v) => updateSetting("polish_provider", v)}
                       className="flex flex-wrap gap-4"
                     >
@@ -599,14 +769,6 @@ export function SettingsPanel() {
                       <div className="flex items-center gap-2">
                         <RadioGroupItem value="local" id="polish-local" />
                         <Label htmlFor="polish-local">本地 HF</Label>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <RadioGroupItem value="anthropic" id="polish-anthropic" />
-                        <Label htmlFor="polish-anthropic">Anthropic</Label>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <RadioGroupItem value="openai" id="polish-openai" />
-                        <Label htmlFor="polish-openai">OpenAI</Label>
                       </div>
                       <div className="flex items-center gap-2">
                         <RadioGroupItem value="deepseek" id="polish-deepseek" />
@@ -627,22 +789,47 @@ export function SettingsPanel() {
                   <CardTitle className="text-base">UVR 人声分离</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <SettingRow
-                    label="模型"
-                    settingKey="uvr_model"
-                    value={String(settings.uvr_model ?? "")}
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Button size="sm" variant="outline" onClick={detectLocalUvr} disabled={uvrDetecting} className="h-8">
+                      {uvrDetecting ? "检查中..." : "检查本机 UVR"}
+                    </Button>
+                    {uvrDetection && <span className="text-xs text-muted-foreground">{uvrDetection}</span>}
+                  </div>
+                  <PathPickerRow
+                    label="模型目录"
+                    settingKey="uvr_model_dir"
+                    value={String(settings.uvr_model_dir ?? "")}
                     onSave={updateSetting}
                     saving={saving}
                     saved={saved}
-                    placeholder="模型名或绝对路径"
+                    placeholder="选择本机 UVR models 目录；留空则自动扫描/下载"
+                    title="选择 UVR 模型目录"
                   />
-                  <SettingRow
-                    label="设备"
-                    settingKey="uvr_device"
-                    value={String(settings.uvr_device ?? "cuda")}
+                  <div className="flex items-center gap-3">
+                    <Label className="w-24 shrink-0 text-sm text-muted-foreground">模型</Label>
+                    <select
+                      value={String(settings.uvr_model ?? "UVR-MDX-NET-Inst_HQ_3")}
+                      onChange={(e) => updateSetting("uvr_model", e.target.value)}
+                      className="h-8 min-w-64 rounded-md border border-input bg-background px-3 text-sm"
+                    >
+                      {["UVR-MDX-NET-Inst_HQ_3", "1_HP-UVR", "UVR-DeNoise-Lite", "Kim_Vocal_2", "UVR-DeEcho-DeReverb", "htdemucs"].map((model) => (
+                        <option key={model} value={model}>{model}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <PathPickerRow
+                    label="模型"
+                    settingKey="uvr_mdx_inst_hq3_path"
+                    value={String(settings.uvr_mdx_inst_hq3_path ?? "")}
                     onSave={updateSetting}
                     saving={saving}
                     saved={saved}
+                    placeholder="可选：直接指定当前模型文件所在目录"
+                    title="选择 UVR 模型文件夹"
+                  />
+                  <DeviceChoice
+                    value={String(settings.uvr_device ?? "cuda")}
+                    onChange={(value) => updateSetting("uvr_device", value)}
                   />
                 </CardContent>
               </Card>
@@ -783,14 +970,52 @@ export function SettingsPanel() {
             />
           )}
           {activeTab === "zhihu" && (
-            <PlaceholderSection
-              title="知乎"
-              description="视频/专栏内容下载"
-            />
+            <ZhihuCard settings={settings} updateSetting={updateSetting} saving={saving} saved={saved} />
           )}
         </div>
       </div>
     </div>
+  )
+}
+
+interface ZhihuCardProps {
+  settings: Settings
+  updateSetting: (key: string, value: unknown) => Promise<void>
+  saving: Record<string, boolean>
+  saved: Record<string, boolean>
+}
+
+function ZhihuCard({ settings, updateSetting, saving, saved }: ZhihuCardProps) {
+  const mode = String(settings.zhihu_browser_mode ?? "background")
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          知乎
+          <Badge variant="outline" className="text-[10px] px-1.5 py-0">已支持</Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <p className="text-sm text-muted-foreground">
+          支持想法和回答链接。知乎反爬较重，优先使用 headless 浏览器；回答页被拦截时会自动用真实浏览器兜底。
+        </p>
+
+        <div className="flex items-center gap-3">
+          <Label className="w-24 shrink-0 text-sm text-muted-foreground">浏览器兜底</Label>
+          <select
+            value={mode}
+            onChange={(e) => updateSetting("zhihu_browser_mode", e.target.value)}
+            className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+          >
+            <option value="background">后台最小化</option>
+            <option value="foreground">前台可见</option>
+          </select>
+          {saving.zhihu_browser_mode && <span className="text-xs text-muted-foreground">保存中</span>}
+          {saved.zhihu_browser_mode && <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-green-600" />}
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -814,8 +1039,18 @@ function YoutubeCard({ settings, updateSetting, saving, saved }: YoutubeCardProp
         <p className="text-xs text-muted-foreground">
           YouTube 频繁要求登录验证才能下载。任选一种方式提供 cookies：
           指定导出的 cookies.txt，或让 yt-dlp 直接读取浏览器 cookies（Chrome 运行时会锁数据库，建议用 Firefox/Edge 或关闭 Chrome）。
-          两者都填则优先使用文件。
+          两者都填则优先使用文件。代理留空时后端会尝试读取系统代理。
         </p>
+
+        <SettingRow
+          label="代理"
+          settingKey="youtube_proxy"
+          value={String(settings.youtube_proxy ?? "")}
+          onSave={updateSetting}
+          saving={saving}
+          saved={saved}
+          placeholder="http://127.0.0.1:7897"
+        />
 
         <SettingRow
           label="Cookies 文件"
@@ -899,7 +1134,7 @@ function VoiceprintCard({ settings, updateSetting }: VoiceprintCardProps) {
       <CardHeader className="pb-3">
         <CardTitle className="text-base">声纹识别</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-5">
+      <CardContent className="space-y-4">
         <div className="flex items-center justify-between">
           <Label>启用声纹识别</Label>
           <Switch
@@ -911,7 +1146,7 @@ function VoiceprintCard({ settings, updateSetting }: VoiceprintCardProps) {
         {enabled && (
           <>
             <Separator />
-            <div className="space-y-2">
+            <div className="max-w-xl space-y-2">
               <div className="flex items-center justify-between">
                 <Label className="text-sm text-muted-foreground">匹配阈值（自动合并）</Label>
                 <span className="text-sm tabular-nums">{match.toFixed(2)}</span>
@@ -929,7 +1164,7 @@ function VoiceprintCard({ settings, updateSetting }: VoiceprintCardProps) {
               </p>
             </div>
 
-            <div className="space-y-2">
+            <div className="max-w-xl space-y-2">
               <div className="flex items-center justify-between">
                 <Label className="text-sm text-muted-foreground">待确认下限</Label>
                 <span className="text-sm tabular-nums">{suggest.toFixed(2)}</span>
@@ -1286,7 +1521,7 @@ function DeepSeekStageBlock({
         <span className="text-xs text-muted-foreground">{hint}</span>
       </div>
       <SettingRow
-        label={<span className="flex items-center gap-1.5">模型{isNewModel(String(settings[modelKey] ?? "")) && <NewBadge />}</span>}
+        label="模型"
         settingKey={modelKey}
         value={String(settings[modelKey] ?? "")}
         onSave={updateSetting}

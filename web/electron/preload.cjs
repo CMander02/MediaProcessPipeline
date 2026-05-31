@@ -15,3 +15,7 @@ contextBridge.exposeInMainWorld("mppBackend", {
   onStatus: (callback) => subscribe("mpp-backend:status", callback),
   onLog: (callback) => subscribe("mpp-backend:log", callback),
 })
+
+contextBridge.exposeInMainWorld("mppDialog", {
+  selectDirectory: (options) => ipcRenderer.invoke("mpp-dialog:select-directory", options),
+})

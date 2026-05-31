@@ -36,6 +36,10 @@ def _is_xiaohongshu_url(url: str) -> bool:
     return bool(re.search(r'xiaohongshu\.com|xhslink\.com', url))
 
 
+def _is_zhihu_url(url: str) -> bool:
+    return bool(re.search(r'zhihu\.com/(?:pin/\d+|question/\d+/answer/\d+)', url, re.IGNORECASE))
+
+
 def _is_apple_podcast_url(url: str) -> bool:
     return bool(re.search(r'podcasts\.apple\.com/(?:[a-z]{2}/)?podcast/[^?#/]*/id\d+', url, re.IGNORECASE))
 
@@ -407,6 +411,8 @@ class YtdlpService:
             return self._download_apple_podcast(url, output_dir)
         if _is_xiaohongshu_url(url):
             return self._download_xiaohongshu(url, output_dir)
+        if _is_zhihu_url(url):
+            return self._download_zhihu(url, output_dir)
 
         import yt_dlp
         outtmpl = str(output_dir / "%(title)s.%(ext)s")
@@ -653,6 +659,20 @@ class YtdlpService:
             "title": info.get("title", "xiaohongshu_video"),
             "file_path": str(audio_file),
             "video_path": str(video_file),
+            "info": info,
+        }
+
+    def _download_zhihu(self, url: str, output_dir: Path) -> dict[str, Any]:
+        """Fetch a Zhihu pin/answer as a text note. No media file is downloaded."""
+        from app.services.ingestion.platform.zhihu.api import fetch_metadata as fetch_zhihu_metadata
+
+        log_event(logger, logging.INFO, "zhihu.metadata.fetch_started", url=url)
+        info = fetch_zhihu_metadata(url)
+        return {
+            "url": url,
+            "title": info.get("title", "zhihu_note"),
+            "file_path": None,
+            "video_path": None,
             "info": info,
         }
 
@@ -1051,6 +1071,11 @@ class YtdlpService:
                 fetch_metadata as fetch_xiaohongshu_metadata,
             )
             return fetch_xiaohongshu_metadata(url)
+        if _is_zhihu_url(url):
+            from app.services.ingestion.platform.zhihu.api import (
+                fetch_metadata as fetch_zhihu_metadata,
+            )
+            return fetch_zhihu_metadata(url)
 
         import yt_dlp
 
@@ -1338,6 +1363,15 @@ class YtdlpService:
                     "stage": "subtitle",
                     "status": "skipped",
                     "reason": "no_public_subtitle_endpoint",
+                }],
+            )
+        if _is_zhihu_url(url):
+            return _empty_subtitle_result(
+                engine="zhihu-page",
+                diagnostics=[{
+                    "stage": "subtitle",
+                    "status": "skipped",
+                    "reason": "text_note_no_subtitle_endpoint",
                 }],
             )
 

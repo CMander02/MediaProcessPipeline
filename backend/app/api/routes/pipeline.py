@@ -613,8 +613,8 @@ async def get_platform_configs():
             {
                 "id": "zhihu",
                 "name": "知乎",
-                "status": "coming_soon",
-                "auth_status": "not_configured",
+                "status": "active",
+                "auth_status": "not_applicable",
                 "preferred_quality": None,
                 "prefer_subtitle": False,
             },

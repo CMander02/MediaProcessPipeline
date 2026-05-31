@@ -19,16 +19,20 @@ interface ArchiveCardProps {
   onClick: () => void
   onDelete?: () => void
   onRenamed?: (newTitle: string) => void
+  compact?: boolean
 }
 
-export function ArchiveCard({ archive, onClick, onDelete, onRenamed }: ArchiveCardProps) {
+export function ArchiveCard({ archive, onClick, onDelete, onRenamed, compact = false }: ArchiveCardProps) {
   const [imgError, setImgError] = useState(false)
   const [showRename, setShowRename] = useState(false)
+  const contentSubtype = typeof archive.metadata?.content_subtype === "string"
+    ? archive.metadata.content_subtype
+    : null
+  const isImageNote = archive.has_image || contentSubtype === "image_note"
+  const isTextNote = contentSubtype === "text_note"
+  const mediaLabel = archive.has_video ? "视频" : isImageNote ? "图文" : isTextNote ? "正文" : "音频"
 
-  // Always try the thumbnail endpoint — for audio podcasts it serves the
-  // cover art saved at ingestion time; for video it extracts a frame.
-  // If the request 404s (no cover, no video), we fall back to a placeholder.
-  const showThumbnail = !imgError
+  const showThumbnail = !imgError && !isTextNote
   const thumbnailUrl = api.archives.thumbnailUrl(archive.path)
 
   return (
@@ -40,7 +44,7 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed }: ArchiveCa
           className="group flex flex-col text-left w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-lg"
         >
           {/* Thumbnail */}
-          <div className="relative aspect-video w-full rounded-lg overflow-hidden bg-muted">
+          <div className={compact ? "relative aspect-[16/8] w-full rounded-lg overflow-hidden bg-muted" : "relative aspect-video w-full rounded-lg overflow-hidden bg-muted"}>
             {showThumbnail && thumbnailUrl ? (
               <img
                 src={thumbnailUrl}
@@ -57,7 +61,7 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed }: ArchiveCa
               <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-primary/5 to-primary/15">
                 <div className="rounded-full bg-primary/10 p-3">
                   <HugeiconsIcon
-                    icon={archive.has_image ? Image01Icon : MusicNote01Icon}
+                    icon={isImageNote ? Image01Icon : isTextNote ? Note01Icon : MusicNote01Icon}
                     className="h-6 w-6 text-primary/40"
                   />
                 </div>
@@ -82,17 +86,19 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed }: ArchiveCa
           </div>
 
           {/* Info */}
-          <div className="flex flex-col gap-1 pt-2 px-0.5">
-            <h3 className="line-clamp-2 min-h-[2lh] text-sm font-medium leading-snug group-hover:text-primary transition-colors">
+          <div className={compact ? "flex flex-col gap-0.5 pt-1.5 px-0.5" : "flex flex-col gap-1 pt-2 px-0.5"}>
+            <h3 className={compact ? "line-clamp-2 min-h-[2lh] text-[13px] font-medium leading-tight group-hover:text-primary transition-colors" : "line-clamp-2 min-h-[2lh] text-sm font-medium leading-snug group-hover:text-primary transition-colors"}>
               {archive.title}
             </h3>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <div className={compact ? "flex items-center gap-1.5 text-[11px] text-muted-foreground" : "flex items-center gap-2 text-xs text-muted-foreground"}>
               <span>{archive.date}</span>
-              <span className="flex items-center" title={archive.has_video ? "视频" : archive.has_image ? "图文" : "音频"}>
+              <span className="flex items-center" title={mediaLabel}>
                 {archive.has_video ? (
                   <HugeiconsIcon icon={Video01Icon} className="h-3.5 w-3.5" strokeWidth={1.75} />
-                ) : archive.has_image ? (
+                ) : isImageNote ? (
                   <HugeiconsIcon icon={Image01Icon} className="h-3.5 w-3.5" strokeWidth={1.75} />
+                ) : isTextNote ? (
+                  <HugeiconsIcon icon={Note01Icon} className="h-3.5 w-3.5" strokeWidth={1.75} />
                 ) : (
                   <HugeiconsIcon icon={MusicNote01Icon} className="h-3.5 w-3.5" strokeWidth={1.75} />
                 )}

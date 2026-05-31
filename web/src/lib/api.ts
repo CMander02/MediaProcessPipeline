@@ -169,6 +169,7 @@ export const api = {
       }
       return updated
     },
+    detectLocalUvr: () => get<{ found: boolean; path: string; models: string[] }>("/api/settings/uvr/local"),
   },
 
   archives: {

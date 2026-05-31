@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require("electron")
+const { app, BrowserWindow, dialog, ipcMain } = require("electron")
 const { spawn } = require("node:child_process")
 const path = require("node:path")
 
@@ -78,6 +78,7 @@ async function startBackend() {
 
   if (await isBackendHealthy()) {
     backendOwned = false
+    appendLog("system", "Detected an existing backend on 127.0.0.1:18000; Electron will reuse it.")
     return setStatus({
       state: "external",
       pid: null,
@@ -91,7 +92,7 @@ async function startBackend() {
   setStatus({ state: "starting", pid: null, message: "正在启动后端..." })
 
   backendOwned = true
-  backendProcess = spawn("uv", ["run", "python", "-m", "app.cli", "serve"], {
+  backendProcess = spawn("uv", ["run", "python", "-u", "-m", "app.cli", "serve"], {
     cwd: backendCwd,
     windowsHide: true,
     shell: process.platform === "win32",
@@ -99,6 +100,7 @@ async function startBackend() {
       ...process.env,
       PYTHONUTF8: "1",
       PYTHONIOENCODING: "utf-8",
+      PYTHONUNBUFFERED: "1",
       NO_COLOR: "1",
     },
   })
@@ -133,6 +135,7 @@ async function startBackend() {
   waitForBackend().then((ready) => {
     if (!backendProcess) return
     if (ready) {
+      appendLog("system", "Backend health check passed.")
       setStatus({
         state: "running",
         pid: backendProcess.pid ?? null,
@@ -145,6 +148,7 @@ async function startBackend() {
       pid: backendProcess.pid ?? null,
       message: "后端仍在启动，日志里可能有模型加载或依赖初始化信息。",
     })
+    appendLog("system", "Backend health check did not pass within the initial wait window.")
   })
 
   return backendStatus
@@ -192,6 +196,7 @@ async function createWindow() {
     minHeight: 560,
     title: "Media Process Pipeline",
     backgroundColor: "#ffffff",
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -199,6 +204,7 @@ async function createWindow() {
       sandbox: false,
     },
   })
+  mainWindow.setMenuBarVisibility(false)
 
   await startBackend()
   if (await waitForBackend(15000)) {
@@ -233,3 +239,12 @@ ipcMain.handle("mpp-backend:get-logs", () => logs)
 ipcMain.handle("mpp-backend:start", () => startBackend())
 ipcMain.handle("mpp-backend:stop", () => stopBackend())
 ipcMain.handle("mpp-backend:restart", () => restartBackend())
+ipcMain.handle("mpp-dialog:select-directory", async (_event, options = {}) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: options.title || "选择文件夹",
+    defaultPath: options.defaultPath || undefined,
+    properties: ["openDirectory"],
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+  return result.filePaths[0]
+})
