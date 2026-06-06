@@ -13,14 +13,15 @@ function Write-Success { param($Message) Write-Host "[OK] " -ForegroundColor Gre
 
 Write-Status "Stopping MediaProcessPipeline services..."
 
-# Kill by port
-foreach ($Port in @(8000, 5173)) {
-    $NetStat = netstat -ano | Select-String ":$Port\s.*LISTENING"
-    if ($NetStat) {
-        $Pid = ($NetStat -split '\s+')[-1]
+# Kill by port. 18000 is the fixed backend port; 5173 is Vite; 8000 is kept
+# for older dev sessions that may still be running.
+foreach ($Port in @(18000, 5173, 8000)) {
+    $NetStats = netstat -ano | Select-String ":$Port\s.*LISTENING"
+    foreach ($Line in $NetStats) {
+        $Pid = ($Line -split '\s+')[-1]
         if ($Pid -match '^\d+$') {
             Write-Status "Stopping port $Port (PID: $Pid)"
-            Stop-Process -Id $Pid -Force -ErrorAction SilentlyContinue
+            Stop-Process -Id ([int]$Pid) -Force -ErrorAction SilentlyContinue
         }
     }
 }
