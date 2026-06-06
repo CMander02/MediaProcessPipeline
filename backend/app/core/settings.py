@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.core.logging_setup import log_event
 
@@ -19,6 +19,16 @@ logger = logging.getLogger(__name__)
 # __file__ = backend/app/core/settings.py
 # parent x4 = project root
 SETTINGS_FILE = Path(__file__).parent.parent.parent.parent / "data" / "settings.json"
+
+
+class CustomLLMProfile(BaseModel):
+    """OpenAI-compatible custom LLM endpoint profile."""
+
+    id: str = "default"
+    name: str = "Custom"
+    api_base: str = ""
+    model: str = ""
+    api_key: str = ""
 
 
 class RuntimeSettings(BaseModel):
@@ -36,7 +46,7 @@ class RuntimeSettings(BaseModel):
     custom_api_base: str = ""
     custom_model: str = ""
     custom_name: str = "Custom"
-    custom_llm_profiles: list[dict[str, str]] = []
+    custom_llm_profiles: list[CustomLLMProfile] = Field(default_factory=list)
     custom_active_profile_id: str = "default"
 
     # DeepSeek (native v4 API with thinking control)
@@ -92,8 +102,13 @@ class RuntimeSettings(BaseModel):
     # Speaker Diarization
     enable_diarization: bool = True
     hf_token: str = ""
+    # Optional proxy for Hugging Face Hub requests made by pyannote/model loaders.
+    # Empty = use process/env proxy or Windows user proxy when available.
+    # "direct"/"none" disables proxy env setup for this loader.
+    hf_proxy: str = ""
     pyannote_model_path: str = ""
     pyannote_segmentation_path: str = ""
+    pyannote_embedding_path: str = ""
     diarization_batch_size: int = 16
 
     # Voiceprint (speaker embedding) library
@@ -127,6 +142,7 @@ class RuntimeSettings(BaseModel):
     local_llm_n_ctx: int = 16384
     local_llm_n_batch: int = 512
     polish_provider: str = "local"          # "" = follow llm_provider, or local/anthropic/openai/custom
+    llm_polish_concurrency: int = 4
 
     # Concurrency
     max_download_concurrency: int = 2  # max parallel downloads (I/O bound, set 1-4)
@@ -236,6 +252,7 @@ def _load_settings_from_file() -> RuntimeSettings:
     if SETTINGS_FILE.exists():
         try:
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            _normalize_custom_profile_state(data, prefer_profiles=True)
             log_event(logger, logging.INFO, "settings.loaded", path=SETTINGS_FILE)
             return RuntimeSettings(**data)
         except Exception as e:
@@ -274,11 +291,91 @@ def _validate_data_root(path_str: str) -> None:
         )
 
 
+def _str_value(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def _coerce_custom_profiles(raw: Any) -> list[dict[str, str]]:
+    """Coerce persisted/custom profile data into stable dicts."""
+    profiles: list[dict[str, str]] = []
+    seen: set[str] = set()
+    if not isinstance(raw, list):
+        raw = []
+
+    for index, item in enumerate(raw):
+        if isinstance(item, BaseModel):
+            data = item.model_dump()
+        elif isinstance(item, dict):
+            data = item
+        else:
+            data = {}
+
+        profile_id = _str_value(data.get("id") or f"custom-{index + 1}").strip()
+        if not profile_id:
+            profile_id = f"custom-{index + 1}"
+        if profile_id in seen:
+            profile_id = f"{profile_id}-{index + 1}"
+        seen.add(profile_id)
+
+        profiles.append(
+            {
+                "id": profile_id,
+                "name": _str_value(data.get("name") or data.get("custom_name") or "Custom"),
+                "api_base": _str_value(data.get("api_base") or data.get("custom_api_base")),
+                "model": _str_value(data.get("model") or data.get("custom_model")),
+                "api_key": _str_value(data.get("api_key") or data.get("custom_api_key")),
+            }
+        )
+    return profiles
+
+
+def _legacy_custom_profile(data: dict[str, Any]) -> dict[str, str]:
+    return {
+        "id": _str_value(data.get("custom_active_profile_id") or "default"),
+        "name": _str_value(data.get("custom_name") or "Custom"),
+        "api_base": _str_value(data.get("custom_api_base")),
+        "model": _str_value(data.get("custom_model")),
+        "api_key": _str_value(data.get("custom_api_key")),
+    }
+
+
+def _normalize_custom_profile_state(data: dict[str, Any], *, prefer_profiles: bool) -> None:
+    """Keep multi-profile config and legacy custom_* fields in sync.
+
+    The service still reads the legacy custom_* fields for active calls. The
+    profile list is the durable multi-config representation, while the legacy
+    fields mirror the active profile for older code paths and CLI commands.
+    """
+    profiles = _coerce_custom_profiles(data.get("custom_llm_profiles"))
+    if not profiles:
+        profiles = [_legacy_custom_profile(data)]
+
+    active_id = _str_value(data.get("custom_active_profile_id") or profiles[0]["id"])
+    active = next((profile for profile in profiles if profile["id"] == active_id), profiles[0])
+    active_id = active["id"]
+
+    if not prefer_profiles:
+        active["name"] = _str_value(data.get("custom_name") or active["name"] or "Custom")
+        active["api_base"] = _str_value(data.get("custom_api_base") or active["api_base"])
+        active["model"] = _str_value(data.get("custom_model") or active["model"])
+        active["api_key"] = _str_value(data.get("custom_api_key") or active["api_key"])
+
+    data["custom_llm_profiles"] = profiles
+    data["custom_active_profile_id"] = active_id
+    data["custom_name"] = active["name"]
+    data["custom_api_base"] = active["api_base"]
+    data["custom_model"] = active["model"]
+    data["custom_api_key"] = active["api_key"]
+
+
 def update_runtime_settings(new_settings: RuntimeSettings) -> RuntimeSettings:
     """Replace all runtime settings and persist."""
     global _runtime_settings
-    _validate_data_root(new_settings.data_root)
-    _runtime_settings = new_settings
+    data = new_settings.model_dump()
+    _normalize_custom_profile_state(data, prefer_profiles=True)
+    candidate = RuntimeSettings(**data)
+    _validate_data_root(candidate.data_root)
+    _runtime_settings = candidate
     _save_settings_to_file(_runtime_settings)
     return _runtime_settings
 
@@ -290,6 +387,10 @@ def patch_runtime_settings(updates: dict[str, Any]) -> RuntimeSettings:
         _runtime_settings = _load_settings_from_file()
     current = _runtime_settings.model_dump()
     current.update(updates)
+    prefer_profiles = any(
+        key in updates for key in ("custom_llm_profiles", "custom_active_profile_id")
+    )
+    _normalize_custom_profile_state(current, prefer_profiles=prefer_profiles)
     candidate = RuntimeSettings(**current)
     _validate_data_root(candidate.data_root)
     _runtime_settings = candidate
@@ -300,5 +401,7 @@ def patch_runtime_settings(updates: dict[str, Any]) -> RuntimeSettings:
 def replace_runtime_settings_for_process(settings: RuntimeSettings) -> RuntimeSettings:
     """Replace settings in memory only; used by one-shot CLI flows."""
     global _runtime_settings
-    _runtime_settings = settings
+    data = settings.model_dump()
+    _normalize_custom_profile_state(data, prefer_profiles=True)
+    _runtime_settings = RuntimeSettings(**data)
     return _runtime_settings

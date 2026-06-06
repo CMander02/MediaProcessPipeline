@@ -25,7 +25,10 @@ _SECRET_FIELDS = {
     "anthropic_api_key",
     "openai_api_key",
     "custom_api_key",
+    "deepseek_api_key",
     "hf_token",
+    "hf_proxy",
+    "siliconflow_api_key",
     "bilibili_sessdata",
     "bilibili_bili_jct",
     "bilibili_dede_user_id",
@@ -57,15 +60,63 @@ def _mask_settings(settings: RuntimeSettings) -> dict[str, Any]:
     for field in _SECRET_FIELDS:
         if field in data and data[field]:
             data[field] = _mask_value(data[field])
+    profiles = data.get("custom_llm_profiles")
+    if isinstance(profiles, list):
+        masked_profiles: list[dict[str, Any]] = []
+        for profile in profiles:
+            if not isinstance(profile, dict):
+                continue
+            item = dict(profile)
+            api_key = item.get("api_key")
+            if isinstance(api_key, str) and api_key:
+                item["api_key"] = _mask_value(api_key)
+            masked_profiles.append(item)
+        data["custom_llm_profiles"] = masked_profiles
     return data
 
 
-def _restore_secrets(updates: dict[str, Any]) -> dict[str, Any]:
-    """If a secret field still has masked value, drop it so the old value is kept."""
+def _restore_custom_profile_secrets(value: Any, current: RuntimeSettings) -> list[dict[str, Any]]:
+    """Restore masked nested custom profile keys from current settings."""
+    if not isinstance(value, list):
+        return []
+
+    current_profiles = [p.model_dump() for p in current.custom_llm_profiles]
+    current_by_id = {str(p.get("id")): p for p in current_profiles}
+    restored: list[dict[str, Any]] = []
+
+    for index, profile in enumerate(value):
+        if not isinstance(profile, dict):
+            continue
+        item = dict(profile)
+        api_key = item.get("api_key")
+        old = current_by_id.get(str(item.get("id")))
+        if old is None and index < len(current_profiles):
+            old = current_profiles[index]
+        if isinstance(api_key, str) and _is_masked(api_key) and old:
+            item["api_key"] = old.get("api_key", "")
+        restored.append(item)
+
+    return restored
+
+
+def _restore_secrets(
+    updates: dict[str, Any],
+    current: RuntimeSettings | None = None,
+    *,
+    preserve_masked: bool = False,
+) -> dict[str, Any]:
+    """Restore or drop masked secret placeholders so they are not persisted."""
+    if current is None:
+        current = get_runtime_settings()
     cleaned = {}
     for key, value in updates.items():
         if key in _SECRET_FIELDS and isinstance(value, str) and _is_masked(value):
+            if preserve_masked:
+                cleaned[key] = getattr(current, key)
             continue  # skip — frontend sent back the masked placeholder
+        if key == "custom_llm_profiles":
+            cleaned[key] = _restore_custom_profile_secrets(value, current)
+            continue
         cleaned[key] = value
     return cleaned
 
@@ -107,7 +158,7 @@ async def get_settings():
     return _mask_settings(get_runtime_settings())
 
 
-@router.put("", response_model=RuntimeSettings)
+@router.put("")
 async def update_settings(new_settings: RuntimeSettings):
     """Update runtime settings and persist to file.
 
@@ -117,13 +168,11 @@ async def update_settings(new_settings: RuntimeSettings):
     current = get_runtime_settings()
     reopen_db = _prepare_data_root_change(new_settings.data_root)
     incoming = new_settings.model_dump()
-    for field in _SECRET_FIELDS:
-        if isinstance(incoming.get(field), str) and _is_masked(incoming[field]):
-            incoming[field] = getattr(current, field)
+    incoming = _restore_secrets(incoming, current, preserve_masked=True)
     updated = update_runtime_settings(RuntimeSettings(**incoming))
     if reopen_db:
         _reopen_task_db(updated.data_root)
-    return updated
+    return _mask_settings(updated)
 
 
 @router.patch("")

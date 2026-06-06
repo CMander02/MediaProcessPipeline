@@ -1,6 +1,6 @@
 [project]
 name = "MediaProcessPipeline"
-version = "0.3.6"
+version = "0.3.7"
 description = "Omni-Media Processing Pipeline - Convert audio/video to structured knowledge"
 requires-python = ">=3.11,<3.13"
 dependencies = [
@@ -9,7 +9,7 @@ dependencies = [
     "pydantic>=2.10.0",
     "pydantic-settings>=2.6.0",
     "python-dotenv>=1.0.0",
-    "httpx>=0.28.0",
+    "httpx[socks]>=0.28.0",
     # AI - OpenAI-compatible API (直连各 provider)
     "openai>=1.50.0",
     "python-multipart>=0.0.21",

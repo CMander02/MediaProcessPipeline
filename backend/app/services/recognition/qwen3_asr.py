@@ -3,7 +3,9 @@
 import logging
 import os
 import sys
+import hashlib
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 from typing import Any
 
 from app.core.settings import get_runtime_settings
@@ -72,6 +74,7 @@ class Qwen3ASRService:
         self._current_aligner_path: str | None = None
         self._diarize_model = None
         self._diarize_pipeline = None  # raw pyannote Pipeline (unwrapped)
+        self._current_diarize_key: tuple[str, str, str, str, int] | None = None
         self._last_diarize_df = None    # most recent diarization result
         self._last_diarize_audio = None  # audio path used in last diarization
         self._load_error: str | None = None
@@ -84,6 +87,7 @@ class Qwen3ASRService:
         self._current_aligner_path = None
         self._diarize_model = None
         self._diarize_pipeline = None
+        self._current_diarize_key = None
         self._last_diarize_df = None
         self._last_diarize_audio = None
 
@@ -175,6 +179,158 @@ class Qwen3ASRService:
             logger.error(self._load_error)
             self._model = None
 
+    @staticmethod
+    def _looks_like_hub_id(value: str) -> bool:
+        return "/" in value and "\\" not in value and ":" not in value and not value.startswith(".")
+
+    @staticmethod
+    def _normalize_proxy_url(raw: str) -> str:
+        proxy = raw.strip()
+        if proxy and "://" not in proxy:
+            proxy = f"http://{proxy}"
+        return proxy
+
+    @staticmethod
+    def _redact_proxy_url(raw: str) -> str:
+        try:
+            parsed = urlsplit(raw)
+            host = parsed.hostname or ""
+            port = f":{parsed.port}" if parsed.port else ""
+            netloc = f"{host}{port}" if host else parsed.netloc
+            return urlunsplit((parsed.scheme, netloc, "", "", ""))
+        except Exception:
+            return "<proxy>"
+
+    def _configure_huggingface_proxy(self, rt: Any) -> None:
+        """Make Hugging Face/pyannote network calls use a deterministic proxy."""
+        configured = str(getattr(rt, "hf_proxy", "") or "").strip()
+        if configured.lower() in {"none", "direct", "off", "false", "0"}:
+            logger.info("Hugging Face proxy disabled by hf_proxy setting")
+            return
+
+        proxy = configured
+        if not proxy:
+            for key in (
+                "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy",
+                "HTTP_PROXY", "http_proxy",
+            ):
+                value = os.environ.get(key)
+                if value:
+                    proxy = value
+                    break
+
+        if not proxy:
+            try:
+                from app.services.ingestion.ytdlp import _proxy_from_windows_user_settings
+                proxy = _proxy_from_windows_user_settings()
+            except Exception:
+                proxy = ""
+
+        if not proxy:
+            return
+
+        proxy = self._normalize_proxy_url(proxy)
+        for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+            os.environ[key] = proxy
+        logger.info(f"Using Hugging Face proxy: {self._redact_proxy_url(proxy)}")
+
+    def _resolve_pyannote_dependency(
+        self,
+        hub_id: str,
+        configured_path: str,
+        config_file: Path,
+    ) -> str | None:
+        configured = Path(configured_path).expanduser() if configured_path else None
+        if configured and configured.exists():
+            return str(configured.resolve())
+
+        parts = hub_id.split("/", 1)
+        org = parts[0] if len(parts) == 2 else ""
+        repo = parts[1] if len(parts) == 2 else parts[0]
+        names = [repo]
+        if org:
+            names.extend([f"{org}_{repo}", f"{org}-{repo}"])
+
+        bases: list[Path] = []
+        for base in (config_file.parent.parent, config_file.parent):
+            if base not in bases:
+                bases.append(base)
+        rt = get_runtime_settings()
+        for value in (
+            getattr(rt, "pyannote_model_path", ""),
+            getattr(rt, "pyannote_segmentation_path", ""),
+            getattr(rt, "pyannote_embedding_path", ""),
+        ):
+            if not value:
+                continue
+            parent = Path(str(value)).expanduser().parent
+            if parent not in bases:
+                bases.append(parent)
+
+        for base in bases:
+            for name in names:
+                candidate = base / name
+                if candidate.exists():
+                    return str(candidate.resolve())
+        return None
+
+    def _prepare_pyannote_config(self, model_path: str, rt: Any) -> tuple[str, bool]:
+        """Rewrite local pyannote config to local sub-model paths when possible."""
+        path = Path(model_path)
+        config_file = path / "config.yaml" if path.is_dir() else path
+        if not config_file.exists() or config_file.suffix.lower() not in {".yaml", ".yml"}:
+            return model_path, False
+
+        try:
+            import yaml
+        except ImportError:
+            return str(config_file), False
+
+        data = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
+        params = ((data.get("pipeline") or {}).get("params") or {})
+        replacements: dict[str, str] = {}
+
+        segmentation = str(params.get("segmentation") or "")
+        if segmentation and self._looks_like_hub_id(segmentation):
+            resolved = self._resolve_pyannote_dependency(
+                segmentation,
+                str(getattr(rt, "pyannote_segmentation_path", "") or ""),
+                config_file,
+            )
+            if resolved:
+                params["segmentation"] = resolved
+                replacements["segmentation"] = resolved
+
+        embedding = str(params.get("embedding") or "")
+        if embedding and self._looks_like_hub_id(embedding):
+            resolved = self._resolve_pyannote_dependency(
+                embedding,
+                str(getattr(rt, "pyannote_embedding_path", "") or ""),
+                config_file,
+            )
+            if resolved:
+                params["embedding"] = resolved
+                replacements["embedding"] = resolved
+
+        if not replacements:
+            return str(config_file), False
+
+        data["pipeline"]["params"] = params
+        rendered = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+        digest = hashlib.sha1(
+            (str(config_file.resolve()) + "\n" + rendered).encode("utf-8")
+        ).hexdigest()[:12]
+        cache_dir = Path(str(getattr(rt, "data_root", "data"))) / ".cache" / "pyannote"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        resolved_config = cache_dir / f"{config_file.stem}-{digest}.yaml"
+        resolved_config.write_text(rendered, encoding="utf-8")
+
+        logger.info(
+            "Resolved pyannote local dependencies: "
+            + ", ".join(f"{name}={path}" for name, path in replacements.items())
+        )
+        return str(resolved_config), True
+
     def _load_diarization_model(self, model_path: str, device: str):
         """Load diarization model from local path using pyannote directly.
 
@@ -186,6 +342,9 @@ class Qwen3ASRService:
         import pandas as pd
         import numpy as np
 
+        rt = get_runtime_settings()
+        self._configure_huggingface_proxy(rt)
+
         path = Path(model_path)
 
         # If it's a directory, look for config.yaml inside
@@ -196,6 +355,7 @@ class Qwen3ASRService:
             else:
                 raise FileNotFoundError(f"config.yaml not found in {path}")
 
+        model_path, local_dependencies = self._prepare_pyannote_config(model_path, rt)
         logger.info(f"Loading diarization model from: {model_path}")
         # PyTorch 2.6+ defaults weights_only=True which breaks pyannote/lightning
         # checkpoint loading. pyannote loads sub-models lazily (segmentation/embedding
@@ -208,11 +368,27 @@ class Qwen3ASRService:
                 return _orig_load(*a, **kw)
             _patched_load._mpp_weights_only_patched = True  # type: ignore[attr-defined]
             torch.load = _patched_load  # type: ignore[assignment]
-        pipeline = Pipeline.from_pretrained(model_path)
+        previous_hf_offline = os.environ.get("HF_HUB_OFFLINE")
+        if local_dependencies:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+        try:
+            hf_token = str(getattr(rt, "hf_token", "") or "")
+            if hf_token:
+                try:
+                    pipeline = Pipeline.from_pretrained(model_path, use_auth_token=hf_token)
+                except TypeError:
+                    pipeline = Pipeline.from_pretrained(model_path, token=hf_token)
+            else:
+                pipeline = Pipeline.from_pretrained(model_path)
+        finally:
+            if local_dependencies:
+                if previous_hf_offline is None:
+                    os.environ.pop("HF_HUB_OFFLINE", None)
+                else:
+                    os.environ["HF_HUB_OFFLINE"] = previous_hf_offline
         pipeline = pipeline.to(torch.device(device))
 
         # Optimize for long audio: reduce batch sizes to prevent OOM
-        rt = get_runtime_settings()
         diarization_batch_size = getattr(rt, 'diarization_batch_size', 16)
 
         if hasattr(pipeline, '_segmentation') and hasattr(pipeline._segmentation, 'batch_size'):
@@ -743,11 +919,19 @@ class Qwen3ASRService:
         import soundfile as sf
 
         # Load diarization model if not cached
-        if self._diarize_model is None:
+        diarize_key = (
+            str(rt.pyannote_model_path),
+            str(getattr(rt, "pyannote_segmentation_path", "")),
+            str(getattr(rt, "pyannote_embedding_path", "")),
+            str(rt.qwen3_device),
+            int(getattr(rt, "diarization_batch_size", 16) or 16),
+        )
+        if self._diarize_model is None or self._current_diarize_key != diarize_key:
             self._diarize_model = self._load_diarization_model(
                 rt.pyannote_model_path,
                 rt.qwen3_device,
             )
+            self._current_diarize_key = diarize_key
 
         # Load audio for diarization
         logger.info(f"Loading audio for diarization: {audio_path}")

@@ -207,10 +207,10 @@ function getCustomProfiles(settings: Settings): CustomProfile[] {
 
 function CustomProfilesEditor({
   settings,
-  updateSetting,
+  updateSettings,
 }: {
   settings: Settings
-  updateSetting: (key: string, value: unknown) => Promise<void>
+  updateSettings: (updates: Record<string, unknown>) => Promise<void>
 }) {
   const profiles = getCustomProfiles(settings)
   const activeId = String(settings.custom_active_profile_id ?? profiles[0]?.id ?? "default")
@@ -218,12 +218,14 @@ function CustomProfilesEditor({
 
   const saveProfiles = async (next: CustomProfile[], nextActive = activeId) => {
     const active = next.find((profile) => profile.id === nextActive) ?? next[0]
-    await updateSetting("custom_llm_profiles", next)
-    await updateSetting("custom_active_profile_id", active.id)
-    await updateSetting("custom_name", active.name)
-    await updateSetting("custom_api_base", active.api_base)
-    await updateSetting("custom_model", active.model)
-    await updateSetting("custom_api_key", active.api_key)
+    await updateSettings({
+      custom_llm_profiles: next,
+      custom_active_profile_id: active.id,
+      custom_name: active.name,
+      custom_api_base: active.api_base,
+      custom_model: active.model,
+      custom_api_key: active.api_key,
+    })
   }
 
   const updateProfile = (field: keyof CustomProfile, value: string) => {
@@ -305,21 +307,30 @@ export function SettingsPanel() {
       .catch(() => setBiliLoggedIn(false))
   }, [])
 
-  const updateSetting = useCallback(
-    async (key: string, value: unknown) => {
-      setSaving((s) => ({ ...s, [key]: true }))
+  const updateSettings = useCallback(
+    async (updates: Record<string, unknown>) => {
+      const keys = Object.keys(updates)
+      setSaving((s) => keys.reduce((acc, key) => ({ ...acc, [key]: true }), s))
       try {
-        const updated = await api.settings.patch({ [key]: value })
+        const updated = await api.settings.patch(updates)
         setSettings(updated)
         setSaveError(null)
-        setSaved((s) => ({ ...s, [key]: true }))
-        setTimeout(() => setSaved((s) => ({ ...s, [key]: false })), 1500)
+        setSaved((s) => keys.reduce((acc, key) => ({ ...acc, [key]: true }), s))
+        setTimeout(() => {
+          setSaved((s) => keys.reduce((acc, key) => ({ ...acc, [key]: false }), s))
+        }, 1500)
       } catch (e) {
         setSaveError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setSaving((s) => keys.reduce((acc, key) => ({ ...acc, [key]: false }), s))
       }
-      setSaving((s) => ({ ...s, [key]: false }))
     },
     [],
+  )
+
+  const updateSetting = useCallback(
+    (key: string, value: unknown) => updateSettings({ [key]: value }),
+    [updateSettings],
   )
 
   const toggleDark = () => {
@@ -645,6 +656,90 @@ export function SettingsPanel() {
                         value={String(settings.qwen3_device ?? "cuda")}
                         onChange={(value) => updateSetting("qwen3_device", value)}
                       />
+                      <PathPickerRow
+                        label="对齐模型"
+                        settingKey="qwen3_aligner_model_path"
+                        value={String(settings.qwen3_aligner_model_path ?? "")}
+                        onSave={updateSetting}
+                        saving={saving}
+                        saved={saved}
+                        placeholder="可选：Qwen3-ForcedAligner 本地目录"
+                        title="选择 Qwen3 ForcedAligner 模型目录"
+                      />
+                      <Separator />
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label>说话人分离</Label>
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            使用 pyannote 给字幕段落标注 SPEAKER_XX，并为声纹识别提供切片。
+                          </p>
+                        </div>
+                        <Switch
+                          checked={Boolean(settings.enable_diarization ?? true)}
+                          onCheckedChange={(v) => updateSetting("enable_diarization", Boolean(v))}
+                        />
+                      </div>
+                      {Boolean(settings.enable_diarization ?? true) && (
+                        <div className="space-y-3">
+                          <PathPickerRow
+                            label="Diarization"
+                            settingKey="pyannote_model_path"
+                            value={String(settings.pyannote_model_path ?? "")}
+                            onSave={updateSetting}
+                            saving={saving}
+                            saved={saved}
+                            placeholder="pyannote-speaker-diarization-3.1 本地目录"
+                            title="选择 pyannote diarization 模型目录"
+                          />
+                          <PathPickerRow
+                            label="Segmentation"
+                            settingKey="pyannote_segmentation_path"
+                            value={String(settings.pyannote_segmentation_path ?? "")}
+                            onSave={updateSetting}
+                            saving={saving}
+                            saved={saved}
+                            placeholder="pyannote-segmentation-3.0 本地目录"
+                            title="选择 pyannote segmentation 模型目录"
+                          />
+                          <PathPickerRow
+                            label="Embedding"
+                            settingKey="pyannote_embedding_path"
+                            value={String(settings.pyannote_embedding_path ?? "")}
+                            onSave={updateSetting}
+                            saving={saving}
+                            saved={saved}
+                            placeholder="pyannote_wespeaker-voxceleb-resnet34-LM 本地目录"
+                            title="选择 pyannote embedding 模型目录"
+                          />
+                          <SettingRow
+                            label="HF Proxy"
+                            settingKey="hf_proxy"
+                            value={String(settings.hf_proxy ?? "")}
+                            onSave={updateSetting}
+                            saving={saving}
+                            saved={saved}
+                            masked
+                            placeholder="留空自动读取系统代理，direct 禁用"
+                          />
+                          <SettingRow
+                            label="HF Token"
+                            settingKey="hf_token"
+                            value={String(settings.hf_token ?? "")}
+                            onSave={updateSetting}
+                            saving={saving}
+                            saved={saved}
+                            masked
+                          />
+                          <SettingRow
+                            label="分离批量"
+                            settingKey="diarization_batch_size"
+                            value={String(settings.diarization_batch_size ?? 16)}
+                            onSave={(key, val) => updateSetting(key, Number(val))}
+                            saving={saving}
+                            saved={saved}
+                          />
+                        </div>
+                      )}
                     </div>
                   )}
                 </CardContent>
@@ -716,7 +811,7 @@ export function SettingsPanel() {
                       />
                     </div>
                   ) : visibleLlmProvider === "custom" ? (
-                    <CustomProfilesEditor settings={settings} updateSetting={updateSetting} />
+                    <CustomProfilesEditor settings={settings} updateSettings={updateSettings} />
                   ) : visibleLlmProvider === "deepseek" ? (
                     <DeepSeekConfig
                       settings={settings}
@@ -792,6 +887,21 @@ export function SettingsPanel() {
                         <Label htmlFor="polish-custom">Custom</Label>
                       </div>
                     </RadioGroup>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Label className="w-24 shrink-0 text-sm text-muted-foreground">润色并发</Label>
+                    <select
+                      value={String(settings.llm_polish_concurrency ?? 4)}
+                      onChange={(e) => updateSetting("llm_polish_concurrency", Number(e.target.value))}
+                      className="h-8 rounded-md border border-input bg-background px-3 text-sm"
+                    >
+                      {[1, 2, 3, 4, 6, 8].map((n) => (
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                    {saved.llm_polish_concurrency && (
+                      <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -1475,7 +1585,7 @@ function DeepSeekConfig({ settings, updateSetting, saving, saved }: DeepSeekConf
     <div className="space-y-4">
       <p className="text-xs text-muted-foreground">
         DeepSeek v4 原生 API，按阶段独立配置 model / thinking / reasoning_effort。
-        deepseek-chat 与 deepseek-reasoner 已于 2026/07/24 弃用，请使用 deepseek-v4-flash 或 deepseek-v4-pro。
+        常用模型名包括 deepseek-v4-flash 和 deepseek-v4-pro。
       </p>
       <SettingRow
         label="API Base"
