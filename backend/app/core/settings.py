@@ -62,6 +62,10 @@ class RuntimeSettings(BaseModel):
     deepseek_mindmap_thinking: str = "disabled"
     deepseek_mindmap_effort: str = ""
 
+    # Output artifacts
+    # mindmap.md is a concise display map; detail.md keeps the former deep outline.
+    generate_video_detail: bool = True
+
     # ASR
     asr_provider: str = "qwen3"  # Supported: qwen3 (local), siliconflow (OpenAI-compatible API)
 
@@ -74,13 +78,16 @@ class RuntimeSettings(BaseModel):
     qwen3_device: str = "cuda"
 
     # SiliconFlow ASR (OpenAI-compatible /audio/transcriptions)
-    # Local Silero VAD splits audio into chunks; each chunk is uploaded serially.
+    # ffmpeg chunking keeps API-only installs free of torch/torchaudio.
+    # Set to "vad" or "auto" if local torch deps are installed and VAD chunking
+    # is preferred.
     siliconflow_api_base: str = "https://api.siliconflow.cn/v1"
     siliconflow_api_key: str = ""
     siliconflow_asr_model: str = "FunAudioLLM/SenseVoiceSmall"
     siliconflow_asr_language: str = ""  # "" = auto; e.g. "zh", "en"
     siliconflow_asr_max_chunk_sec: float = 30.0
     siliconflow_asr_timeout_sec: float = 120.0
+    siliconflow_asr_chunk_strategy: str = "ffmpeg"  # ffmpeg | vad | auto
 
     # Speaker Diarization
     enable_diarization: bool = True
@@ -196,6 +203,14 @@ class RuntimeSettings(BaseModel):
             raise ValueError("asr_provider must be one of: qwen3, siliconflow")
         return provider
 
+    @field_validator("siliconflow_asr_chunk_strategy")
+    @classmethod
+    def _validate_siliconflow_asr_chunk_strategy(cls, value: str) -> str:
+        strategy = value.strip().lower()
+        if strategy not in {"ffmpeg", "vad", "auto"}:
+            raise ValueError("siliconflow_asr_chunk_strategy must be one of: ffmpeg, vad, auto")
+        return strategy
+
     @field_validator("bilibili_subtitle_engine")
     @classmethod
     def _validate_bilibili_subtitle_engine(cls, value: str) -> str:
@@ -279,4 +294,11 @@ def patch_runtime_settings(updates: dict[str, Any]) -> RuntimeSettings:
     _validate_data_root(candidate.data_root)
     _runtime_settings = candidate
     _save_settings_to_file(_runtime_settings)
+    return _runtime_settings
+
+
+def replace_runtime_settings_for_process(settings: RuntimeSettings) -> RuntimeSettings:
+    """Replace settings in memory only; used by one-shot CLI flows."""
+    global _runtime_settings
+    _runtime_settings = settings
     return _runtime_settings

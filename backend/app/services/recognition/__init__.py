@@ -54,10 +54,31 @@ async def transcribe_audio(
     language: str | None = None,
     output_dir: Path | None = None,
     num_speakers: int | None = None,
+    provider: str | None = None,
+    diarize: bool = True,
+    chunk_strategy: str | None = None,
 ) -> dict[str, Any]:
     """Transcribe audio with the configured ASR provider and optionally write an SRT file."""
-    service = get_asr_service()
-    result = await asyncio.to_thread(service.transcribe, audio_path, language, num_speakers=num_speakers)
+    provider_id = (provider or get_runtime_settings().asr_provider).strip().lower()
+    service = get_asr_service(provider_id)
+
+    def _run_transcribe() -> dict[str, Any]:
+        if provider_id == "siliconflow":
+            return service.transcribe(
+                audio_path,
+                language=language,
+                diarize=False,
+                num_speakers=num_speakers,
+                chunk_strategy=chunk_strategy,
+            )
+        return service.transcribe(
+            audio_path,
+            language=language,
+            diarize=diarize,
+            num_speakers=num_speakers,
+        )
+
+    result = await asyncio.to_thread(_run_transcribe)
     segments = service.to_segments(result)
     srt_content = service.to_srt(segments)
     detected_language = result.get("language", language or "unknown")

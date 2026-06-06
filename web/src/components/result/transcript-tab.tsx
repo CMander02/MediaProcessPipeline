@@ -6,24 +6,119 @@ import { TranscriptSearch } from "./transcript-search"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { api } from "@/lib/api"
 
+export interface MindmapTocNode {
+  title: string
+  start?: number
+  end?: number
+  children?: MindmapTocNode[]
+}
+
 interface TranscriptTabProps {
   subtitles: Subtitle[]
   currentSegmentIndex: number
   autoScroll: boolean
+  currentTime?: number
   onSegmentClick: (subtitle: Subtitle) => void
   onManualScroll: () => void
+  onTocSeek?: (seconds: number) => void
+  tocTree?: MindmapTocNode | null
   /** Path to the SRT file for saving edits */
   srtPath?: string
   /** Called when subtitles are modified */
   onSubtitlesChange?: (subtitles: Subtitle[]) => void
 }
 
+function isTocNodeActive(node: MindmapTocNode, currentTime: number): boolean {
+  if (typeof node.start === "number") {
+    const end = typeof node.end === "number" ? node.end : node.start + 20
+    if (currentTime >= node.start && currentTime <= end) return true
+  }
+  return Boolean(node.children?.some((child) => isTocNodeActive(child, currentTime)))
+}
+
+function TocNode({
+  node,
+  depth,
+  currentTime,
+  onSeek,
+}: {
+  node: MindmapTocNode
+  depth: number
+  currentTime: number
+  onSeek?: (seconds: number) => void
+}) {
+  const active = isTocNodeActive(node, currentTime)
+  const seekable = typeof node.start === "number"
+  return (
+    <li>
+      <button
+        type="button"
+        disabled={!seekable}
+        onClick={() => seekable && onSeek?.(node.start!)}
+        className={[
+          "w-full rounded px-2 py-1 text-left text-[11px] leading-snug transition-colors",
+          seekable ? "hover:bg-muted" : "cursor-default text-muted-foreground",
+          active ? "bg-primary/10 text-primary font-medium" : "text-foreground",
+        ].join(" ")}
+        style={{ paddingLeft: `${8 + depth * 10}px` }}
+        title={seekable ? `跳转到 ${Math.floor(node.start! / 60)}:${String(Math.floor(node.start! % 60)).padStart(2, "0")}` : undefined}
+      >
+        {node.title}
+      </button>
+      {node.children && node.children.length > 0 && (
+        <ul className="mt-0.5 space-y-0.5">
+          {node.children.map((child, idx) => (
+            <TocNode key={`${child.title}-${idx}`} node={child} depth={depth + 1} currentTime={currentTime} onSeek={onSeek} />
+          ))}
+        </ul>
+      )}
+    </li>
+  )
+}
+
+function TranscriptToc({
+  tree,
+  currentTime,
+  onSeek,
+}: {
+  tree: MindmapTocNode
+  currentTime: number
+  onSeek?: (seconds: number) => void
+}) {
+  const [collapsed, setCollapsed] = useState(false)
+  const nodes = tree.children?.length ? tree.children : [tree]
+  return (
+    <aside className="hidden w-44 shrink-0 border-l bg-muted/10 md:flex md:flex-col">
+      <button
+        type="button"
+        onClick={() => setCollapsed((v) => !v)}
+        className="flex items-center justify-between border-b px-2 py-1.5 text-xs font-medium hover:bg-muted/50"
+      >
+        <span>字幕 TOC</span>
+        <span className="text-muted-foreground">{collapsed ? "展开" : "收起"}</span>
+      </button>
+      {!collapsed && (
+        <ScrollArea className="min-h-0 flex-1">
+          <ul className="space-y-0.5 p-2">
+            {nodes.map((node, idx) => (
+              <TocNode key={`${node.title}-${idx}`} node={node} depth={0} currentTime={currentTime} onSeek={onSeek} />
+            ))}
+          </ul>
+        </ScrollArea>
+      )}
+    </aside>
+  )
+}
+
 export function TranscriptTab({
   subtitles,
   currentSegmentIndex,
   autoScroll,
+  currentTime = 0,
   onSegmentClick,
   onManualScroll,
+  onTocSeek,
+  tocTree,
   srtPath,
   onSubtitlesChange,
 }: TranscriptTabProps) {
@@ -143,41 +238,44 @@ export function TranscriptTab({
   const speakers = useMemo(() => extractSpeakers(subtitles), [subtitles])
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="px-3 py-2 border-b">
-        <TranscriptSearch
-          value={searchQuery}
-          onChange={setSearchQuery}
-          matchCount={matchCount}
-        />
-      </div>
-      <ScrollArea className="flex-1 min-h-0" onScrollCapture={handleScroll}>
-        <div ref={scrollRef} className="py-2 space-y-0.5">
-          {filteredIndices.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-8">
-              {searchQuery ? "无匹配结果" : "无字幕数据"}
-            </p>
-          ) : (
-            filteredIndices.map((idx) => (
-              <div key={`${idx}-${subtitles[idx]?.startTime}`} ref={(el) => setSegmentRef(idx, el)}>
-                <TranscriptSegment
-                  subtitle={subtitles[idx]}
-                  isActive={idx === currentSegmentIndex}
-                  searchQuery={searchQuery}
-                  editing={editingIndex === idx}
-                  speakers={speakers}
-                  onClick={() => onSegmentClick(subtitles[idx])}
-                  onEdit={(changes) => { setIsNewInsert(false); handleEdit(idx, changes) }}
-                  onDelete={() => handleDelete(idx)}
-                  onInsert={(pos) => handleInsert(idx, pos)}
-                  onEditStart={() => { setEditingIndex(idx); setIsNewInsert(false) }}
-                  onEditCancel={() => handleEditCancel(idx)}
-                />
-              </div>
-            ))
-          )}
+    <div className="flex h-full min-h-0">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="px-3 py-2 border-b">
+          <TranscriptSearch
+            value={searchQuery}
+            onChange={setSearchQuery}
+            matchCount={matchCount}
+          />
         </div>
-      </ScrollArea>
+        <ScrollArea className="flex-1 min-h-0" onScrollCapture={handleScroll}>
+          <div ref={scrollRef} className="py-2 space-y-0.5">
+            {filteredIndices.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-8">
+                {searchQuery ? "无匹配结果" : "无字幕数据"}
+              </p>
+            ) : (
+              filteredIndices.map((idx) => (
+                <div key={`${idx}-${subtitles[idx]?.startTime}`} ref={(el) => setSegmentRef(idx, el)}>
+                  <TranscriptSegment
+                    subtitle={subtitles[idx]}
+                    isActive={idx === currentSegmentIndex}
+                    searchQuery={searchQuery}
+                    editing={editingIndex === idx}
+                    speakers={speakers}
+                    onClick={() => onSegmentClick(subtitles[idx])}
+                    onEdit={(changes) => { setIsNewInsert(false); handleEdit(idx, changes) }}
+                    onDelete={() => handleDelete(idx)}
+                    onInsert={(pos) => handleInsert(idx, pos)}
+                    onEditStart={() => { setEditingIndex(idx); setIsNewInsert(false) }}
+                    onEditCancel={() => handleEditCancel(idx)}
+                  />
+                </div>
+              ))
+            )}
+          </div>
+        </ScrollArea>
+      </div>
+      {tocTree && <TranscriptToc tree={tocTree} currentTime={currentTime} onSeek={onTocSeek} />}
     </div>
   )
 }

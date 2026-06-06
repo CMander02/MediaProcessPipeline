@@ -20,15 +20,6 @@ dependencies = [
     "sqlite-vec>=0.1.6",
     # Media pipeline runtime dependencies
     "yt-dlp>=2026.3.17",
-    # PyTorch GPU - CUDA 12.8 (cu128 索引)
-    "torch~=2.8.0",
-    "torchaudio~=2.8.0",
-    # 音频处理 (UVR5 人声分离)
-    "audio-separator[gpu]>=0.41.0",
-    # Qwen3-ASR (支持本地模型)
-    "qwen-asr>=0.0.6",
-    # 说话人分离 / 声纹
-    "pyannote-audio>=3.4.0",
     "litellm>=1.83.14",
     "playwright>=1.60.0",
 ]
@@ -41,6 +32,35 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.8.0",
+]
+uvr = [
+    # PyTorch GPU - CUDA 12.8 (cu128 索引)
+    "torch~=2.8.0",
+    "torchaudio~=2.8.0",
+    # 音频处理 (UVR5 人声分离)
+    "audio-separator[gpu]>=0.41.0",
+]
+local-asr = [
+    "torch~=2.8.0",
+    "torchaudio~=2.8.0",
+    # Qwen3-ASR (支持本地模型)
+    "qwen-asr>=0.0.6",
+    # 说话人分离 / 声纹
+    "pyannote-audio>=3.4.0",
+]
+local-llm = [
+    "torch~=2.8.0",
+    "transformers>=4.45.0",
+    "accelerate>=0.34.0",
+]
+local-models = [
+    "torch~=2.8.0",
+    "torchaudio~=2.8.0",
+    "audio-separator[gpu]>=0.41.0",
+    "qwen-asr>=0.0.6",
+    "pyannote-audio>=3.4.0",
+    "transformers>=4.45.0",
+    "accelerate>=0.34.0",
 ]
 
 [tool.setuptools.packages.find]

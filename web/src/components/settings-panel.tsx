@@ -527,6 +527,19 @@ export function SettingsPanel() {
                       onCheckedChange={(v) => updateSetting("pipeline_overlap", v)}
                     />
                   </div>
+                  <Separator />
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label>生成视频详情 detail.md</Label>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        开启后额外生成旧版深层树状 Markdown，作为“视频详情”展示和导出；默认导图保持浅层展示型结构。
+                      </p>
+                    </div>
+                    <Switch
+                      checked={Boolean(settings.generate_video_detail ?? true)}
+                      onCheckedChange={(v) => updateSetting("generate_video_detail", v)}
+                    />
+                  </div>
                 </CardContent>
               </Card>
             </>
