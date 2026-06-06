@@ -24,9 +24,21 @@ def generate_mindmap(*args, **kwargs):
     return _fn(*args, **kwargs)
 
 
+def generate_detail(*args, **kwargs):
+    from app.services.analysis.llm import generate_detail as _fn
+    return _fn(*args, **kwargs)
+
+
 def srt_to_markdown(*args, **kwargs):
     from app.services.analysis.llm import srt_to_markdown as _fn
     return _fn(*args, **kwargs)
 
 
-__all__ = ["analyze_content", "polish_text", "summarize_text", "generate_mindmap", "srt_to_markdown"]
+__all__ = [
+    "analyze_content",
+    "polish_text",
+    "summarize_text",
+    "generate_mindmap",
+    "generate_detail",
+    "srt_to_markdown",
+]

@@ -58,6 +58,10 @@ class RuntimeSettings(BaseModel):
     deepseek_mindmap_thinking: str = "disabled"
     deepseek_mindmap_effort: str = ""
 
+    # Output artifacts
+    # mindmap.md is a concise display map; detail.md keeps the former deep outline.
+    generate_video_detail: bool = True
+
     # ASR
     asr_provider: str = "qwen3"  # Supported: qwen3 (local), siliconflow (OpenAI-compatible API)
 

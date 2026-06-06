@@ -29,7 +29,7 @@ import { api } from "@/lib/api"
 import { usePipelineSteps } from "@/lib/constants"
 import { MediaPlayer } from "@/components/result/media-player"
 import { SpeakerPanel } from "@/components/result/speaker-panel"
-import { TranscriptTab } from "@/components/result/transcript-tab"
+import { TranscriptTab, type MindmapTocNode } from "@/components/result/transcript-tab"
 import { SummaryTab } from "@/components/result/summary-tab"
 import { MindmapViewer } from "@/components/result/mindmap-viewer"
 import { ImageNoteViewer, type ImageDescription } from "@/components/result/image-note-viewer"
@@ -65,6 +65,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const [transcript, setTranscript] = useState<string | null>(null)
   const [isPolished, setIsPolished] = useState(false)
   const [mindmap, setMindmap] = useState<string | null>(null)
+  const [mindmapTree, setMindmapTree] = useState<MindmapTocNode | null>(null)
+  const [detail, setDetail] = useState<string | null>(null)
   const [mindmapFit, setMindmapFit] = useState<(() => void) | null>(null)
   const [subtitles, setSubtitles] = useState<Subtitle[]>([])
   const [subtitleTracks, setSubtitleTracks] = useState<SubtitleTrackInfo[]>([])
@@ -224,6 +226,16 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     }
   }, [archivePath, sep])
 
+  const loadMindmapTree = useCallback(async () => {
+    const c = await loadFile("mindmap.json")
+    if (!c) return
+    try {
+      setMindmapTree(JSON.parse(c) as MindmapTocNode)
+    } catch (err) {
+      console.warn("Failed to parse mindmap.json:", err)
+    }
+  }, [loadFile])
+
   // Load image descriptions for image_note content type
   const loadImageDescriptions = useCallback(async () => {
     if (!archivePath) return
@@ -263,8 +275,11 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   useEffect(() => {
     // Summary
     loadFile("summary.md").then((c) => { if (c) setSummary(c) })
-    // Mindmap
+    // Mindmap + JSON tree for subtitle TOC
     loadFile("mindmap.md").then((c) => { if (c) setMindmap(c) })
+    loadMindmapTree()
+    // Optional detailed video outline
+    loadFile("detail.md").then((c) => { if (c) setDetail(c) })
     // Transcript — prefer polished, fallback to raw
     loadFile("transcript_polished.srt").then((polished) => {
       if (polished) {
@@ -284,7 +299,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         })
       }
     })
-  }, [archivePath, loadFile])
+  }, [archivePath, loadFile, loadMindmapTree])
 
   // --- SSE subscription for in-progress tasks ---
   useTaskSSE(resolvedTaskId, {
@@ -326,6 +341,10 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         loadFile("summary.md").then((c) => { if (c) setSummary(c) })
       } else if (file === "mindmap.md") {
         loadFile("mindmap.md").then((c) => { if (c) setMindmap(c) })
+      } else if (file === "mindmap.json") {
+        loadMindmapTree()
+      } else if (file === "detail.md") {
+        loadFile("detail.md").then((c) => { if (c) setDetail(c) })
       } else if (file === "metadata.json") {
         refreshArchives(true)
       }
@@ -401,6 +420,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     if (activeTab === "summary") return { content: summary, suffix: "摘要", ext: "md" }
     if (activeTab === "transcript") return { content: transcript, suffix: "字幕", ext: "srt" }
     if (activeTab === "mindmap") return { content: mindmap, suffix: "导图", ext: "md" }
+    if (activeTab === "detail") return { content: detail, suffix: "视频详情", ext: "md" }
     return null
   }
 
@@ -635,6 +655,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                       )}
                     </TabsTrigger>
                     {(mindmap || isProcessing) && <TabsTrigger value="mindmap">导图</TabsTrigger>}
+                    {detail && <TabsTrigger value="detail">详情</TabsTrigger>}
                   </TabsList>
                   {activeTab === "mindmap" && mindmapFit && (
                     <button
@@ -752,6 +773,9 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                         currentSegmentIndex={currentSegmentIndex}
                         autoScroll={autoScroll}
                         onSegmentClick={(sub) => seekTo(sub.startTime)}
+                        currentTime={currentTime}
+                        tocTree={mindmapTree}
+                        onTocSeek={seekTo}
                         onManualScroll={onManualScroll}
                         srtPath={archivePath + sep + (
                           activeTrackLang && !subtitleTracks.find((t) => t.lang === activeTrackLang)?.polished
@@ -785,6 +809,13 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                         <span className="text-sm">等待分析完成...</span>
                       </div>
                     ) : null}
+                  </TabsContent>
+                )}
+                {detail && (
+                  <TabsContent value="detail" className="mt-3 relative flex-1">
+                    <div className="absolute inset-0 rounded-md border">
+                      <SummaryTab content={detail} />
+                    </div>
                   </TabsContent>
                 )}
               </Tabs>

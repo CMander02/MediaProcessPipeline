@@ -41,10 +41,46 @@ def _language_clause(user_language: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 def get_mindmap_prompt(text: str, user_language: str | None = None) -> str:
-    """Short-content prompt (< ~30 min transcript). Used as fallback."""
+    """Short-content prompt for the concise, display-oriented mindmap."""
     return f"""You are a content-structuring expert. Read the following transcript
 (it may be a meeting, interview, lecture, or podcast) and distill it into a
-structured mind-map outline.
+concise display-oriented mind-map.
+
+{_language_clause(user_language)}
+
+## Core requirements
+1. Distill and rephrase — do NOT copy sentences verbatim. Turn scattered
+   conversational speech into information-dense bullet points.
+2. The root topic is implicit; level-1 nodes are 5-8 main branches; level-2
+   nodes are the key points under each branch.
+3. Keep the default hierarchy shallow: normally 2 levels below the root;
+   never exceed 3 levels below the root unless one exceptional branch truly
+   needs one more layer. Absolute maximum depth: 5 including the root.
+4. Keep the whole map presentation-friendly: ideally 20-40 nodes total.
+5. Each node should be a short phrase, not a paragraph or transcript quote.
+6. Filter out filler words, speaker small talk, and low-value anecdotes unless
+   they are crucial to the video's argument.
+7. If the transcript includes timestamps, append a timestamp range to every node
+   in square brackets, using the node's earliest relevant start and latest
+   relevant end, e.g. `- 背景 [00:00:03 - 00:01:12]`.
+
+## Output format
+- Use `- ` markers with 2-space indentation to express hierarchy.
+- Plain text only. NO markdown formatting — no bold, italic, links, code
+  blocks, or heading symbols.
+- Emit the list directly, with no preamble or closing remarks.
+
+## Transcript
+{text}
+
+Output the concise plain-text bullet list now:"""
+
+
+def get_detail_prompt(text: str, user_language: str | None = None) -> str:
+    """Former deep mindmap prompt, now used for optional detail.md."""
+    return f"""You are a content-structuring expert. Read the following transcript
+(it may be a meeting, interview, lecture, or podcast) and distill it into a
+detailed structured outline for archival video details.
 
 {_language_clause(user_language)}
 
@@ -70,7 +106,7 @@ structured mind-map outline.
 ## Transcript
 {text}
 
-Output the plain-text bullet list now:"""
+Output the detailed plain-text bullet list now:"""
 
 
 def get_mindmap_map_prompt(
@@ -92,17 +128,20 @@ transcript of the chapter titled "{chapter_title}" from a longer video.
 {chapter_text}
 
 ## Task
-Distill this chapter into a structured mind-map outline. Requirements:
+Distill this chapter into a concise display-oriented mind-map outline. Requirements:
 1. Distill and rephrase — do NOT copy sentences verbatim. Turn scattered
    conversational speech into information-dense points.
-2. Level-1 nodes are the chapter's main sub-topics (2-5 of them); levels 2
-   and 3 progressively add detail.
-3. Each node is a complete short phrase, not a fragment of spoken language.
-4. Filter out filler words and meaningless repetition; keep key names,
-   technical terms, numbers.
-5. Use `- ` markers with 2-space indentation, 2-4 levels deep.
-6. Plain text only — no markdown formatting (no bold, italic, links, code).
-7. Emit the plain-text list directly, with no code fences or prose wrapper."""
+2. Level-1 nodes are the chapter's main sub-topics (2-4 of them); add only the
+   essential level-2 points under each sub-topic.
+3. Keep this chapter shallow and presentation-friendly: normally 2 levels below
+   the chapter root; only exceptional content may add one more layer.
+4. Each node is a short phrase, not a paragraph.
+5. Filter out filler words and repetition; keep key names, terms, numbers, and
+   conclusions.
+6. If timestamps are available, append `[start - end]` to every node.
+7. Use `- ` markers with 2-space indentation.
+8. Plain text only — no markdown formatting (no bold, italic, links, code).
+9. Emit the plain-text list directly, with no code fences or prose wrapper."""
 
 
 def get_mindmap_reduce_prompt(
@@ -120,13 +159,16 @@ summaries of several chapters from the "{group_label}" part of a video.
 {group_summaries}
 
 ## Task
-Merge these chapter summaries into a single structured mind-map outline.
+Merge these chapter summaries into one concise display-oriented mind-map outline.
 Requirements:
-1. Level-1 nodes are the major topic sections of this part.
-2. Levels 2, 3, and 4 progressively add detail; preserve key names, technical
-   terms, and numbers.
-3. Merge overlapping content and remove redundancy.
-4. Each node is a complete, informative short phrase.
-5. Plain text only — no markdown formatting (no bold, italic, links, code).
-6. Emit the list directly with `- ` markers and 2-space indentation. No code
+1. Level-1 nodes are 5-8 major topic sections for this part/video.
+2. Keep the hierarchy shallow: normally 2 levels below the root; allow one
+   exceptional extra layer only when it materially improves navigation.
+3. Keep the total node count presentation-friendly, ideally 20-40 nodes.
+4. Merge overlapping content and remove redundancy.
+5. Each node is a short, informative phrase.
+6. Preserve or infer timestamp ranges in `[start - end]` when source summaries
+   contain timestamps.
+7. Plain text only — no markdown formatting (no bold, italic, links, code).
+8. Emit the list directly with `- ` markers and 2-space indentation. No code
    fences."""

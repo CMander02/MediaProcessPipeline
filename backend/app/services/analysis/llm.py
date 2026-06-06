@@ -16,12 +16,89 @@ from app.services.analysis.prompts import (
     get_polish_prompt,
     get_simple_polish_prompt,
     get_summarize_prompt,
+    get_detail_prompt,
     get_mindmap_prompt,
     get_mindmap_map_prompt,
     get_mindmap_reduce_prompt,
 )
 
 logger = logging.getLogger(__name__)
+
+_TIMESTAMP_RE = re.compile(
+    r"\s*\[(\d{1,2}:\d{2}(?::\d{2})?(?:[,.]\d{1,3})?)"
+    r"(?:\s*-\s*(\d{1,2}:\d{2}(?::\d{2})?(?:[,.]\d{1,3})?))?\]\s*$"
+)
+
+
+def _timestamp_to_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    parts = value.replace(",", ".").split(":")
+    try:
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + float(parts[1])
+        return float(parts[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _split_mindmap_line(line: str) -> tuple[int, str, float | None, float | None] | None:
+    stripped = line.rstrip()
+    marker = re.match(r"^(\s*)[-*]\s+(.+?)\s*$", stripped)
+    if not marker:
+        return None
+    depth = len(marker.group(1).replace("\t", "  ")) // 2
+    title = marker.group(2).strip()
+    start = end = None
+    ts_match = _TIMESTAMP_RE.search(title)
+    if ts_match:
+        start = _timestamp_to_seconds(ts_match.group(1))
+        end = _timestamp_to_seconds(ts_match.group(2))
+        title = title[: ts_match.start()].strip()
+    return depth, title, start, end
+
+
+def mindmap_markdown_without_timestamps(markdown: str) -> str:
+    """Export timed mindmap markdown as a plain nested Markdown list."""
+    lines: list[str] = []
+    for raw in markdown.splitlines():
+        parsed = _split_mindmap_line(raw)
+        if not parsed:
+            continue
+        depth, title, _start, _end = parsed
+        lines.append(f"{'  ' * depth}- {title}")
+    return "\n".join(lines)
+
+
+def mindmap_markdown_to_timed_tree(markdown: str) -> dict[str, Any]:
+    """Parse `- node [start - end]` markdown into a frontend-friendly tree."""
+    roots: list[dict[str, Any]] = []
+    stack: list[tuple[int, dict[str, Any]]] = []
+    for raw in markdown.splitlines():
+        parsed = _split_mindmap_line(raw)
+        if not parsed:
+            continue
+        depth, title, start, end = parsed
+        node: dict[str, Any] = {"title": title, "children": []}
+        if start is not None:
+            node["start"] = start
+        if end is not None:
+            node["end"] = end
+        while stack and stack[-1][0] >= depth:
+            stack.pop()
+        if stack:
+            stack[-1][1]["children"].append(node)
+        else:
+            roots.append(node)
+        stack.append((depth, node))
+    if not roots:
+        return {"title": "Mindmap", "children": []}
+    if len(roots) == 1:
+        return roots[0]
+    return {"title": "Mindmap", "children": roots}
+
 
 # ---------------------------------------------------------------------------
 # Local HuggingFace model singleton — transformers + safetensors backend.
@@ -695,6 +772,12 @@ class LLMService:
             pass
         return {"tldr": resp, "key_facts": [], "action_items": [], "topics": []}
 
+    async def detail(self, text: str, user_language: str | None = None) -> str:
+        """Generate optional detailed video outline (`detail.md`)."""
+        prompt = get_detail_prompt(text, user_language=user_language)
+        resp = await self._call(prompt, stage="summary")
+        return self._filter_mindmap_lines(resp)
+
     async def mindmap(
         self,
         text: str,
@@ -964,6 +1047,10 @@ def srt_to_markdown(srt_content: str, title: str = "") -> str:
 
 async def summarize_text(text: str, user_language: str | None = None) -> dict[str, Any]:
     return await get_llm_service().summarize(text, user_language=user_language)
+
+
+async def generate_detail(text: str, user_language: str | None = None) -> str:
+    return await get_llm_service().detail(text, user_language=user_language)
 
 
 async def generate_mindmap(

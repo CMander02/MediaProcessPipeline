@@ -103,11 +103,25 @@ class ArchiveService:
             sum_path.write_text(content, encoding="utf-8")
             files["summary"] = str(sum_path)
 
-        # Mindmap (separate file)
+        # Mindmap (separate file): mindmap.md is export-friendly Markdown with
+        # timestamps stripped; mindmap.json keeps optional timing for frontend use.
         if mindmap:
+            from app.services.analysis.llm import (
+                mindmap_markdown_to_timed_tree,
+                mindmap_markdown_without_timestamps,
+            )
+
+            export_markdown = mindmap_markdown_without_timestamps(mindmap) or mindmap
             mm_path = output_dir / "mindmap.md"
-            mm_path.write_text(mindmap, encoding="utf-8")
+            mm_path.write_text(export_markdown, encoding="utf-8")
             files["mindmap"] = str(mm_path)
+
+            tree_path = output_dir / "mindmap.json"
+            tree_path.write_text(
+                json.dumps(mindmap_markdown_to_timed_tree(mindmap), indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            files["mindmap_json"] = str(tree_path)
 
         logger.info(f"Archived to: {output_dir}")
         return {"output_dir": str(output_dir), "files": files}
