@@ -223,6 +223,60 @@ async def _emit_file_ready(task: Task, filename: str, file_path: str) -> None:
     }))
 
 
+def _artifact_content_type(filename: str) -> str:
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".json":
+        return "application/json"
+    if suffix == ".md":
+        return "text/markdown"
+    if suffix == ".srt":
+        return "application/x-subrip"
+    return "text/plain"
+
+
+def _persist_text_artifact(task: Task, filename: str, content: str) -> None:
+    """Save a generated text artifact into SQLite alongside file output."""
+    get_task_store().save_artifact(
+        task.id,
+        filename,
+        content,
+        content_type=_artifact_content_type(filename),
+    )
+
+
+async def _write_text_artifact(task: Task, task_dir: Path, filename: str, content: str) -> Path:
+    """Write text artifact to disk, mirror it to SQLite, then emit file_ready."""
+    artifact_path = task_dir / filename
+    artifact_path.write_text(content, encoding="utf-8")
+    _persist_text_artifact(task, filename, content)
+    await _emit_file_ready(task, filename, str(artifact_path))
+    return artifact_path
+
+
+async def _write_mindmap_files(task: Task, task_dir: Path, mindmap: str) -> None:
+    """Persist frontend tree JSON plus clean Markdown export for the mindmap."""
+    from app.services.analysis.llm import (
+        mindmap_markdown_to_timed_tree,
+        mindmap_markdown_without_timestamps,
+    )
+
+    export_markdown = mindmap_markdown_without_timestamps(mindmap) or mindmap
+    await _write_text_artifact(task, task_dir, "mindmap.md", export_markdown)
+
+    tree = mindmap_markdown_to_timed_tree(mindmap)
+    await _write_text_artifact(
+        task,
+        task_dir,
+        "mindmap.json",
+        json.dumps(tree, indent=2, ensure_ascii=False),
+    )
+
+
+async def _write_detail_file(task: Task, task_dir: Path, detail: str) -> None:
+    """Persist optional former deep mindmap as detail.md."""
+    await _write_text_artifact(task, task_dir, "detail.md", detail)
+
+
 def _clean_source_path(source: str) -> str:
     """Clean up source path by removing quotes and whitespace.
 
@@ -632,7 +686,7 @@ async def _run_subtitle_fast_path(
     Returns the text-related portion of the task result.
     """
     from app.services.recognition.subtitle_processor import process_subtitles
-    from app.services.analysis import polish_text, summarize_text, generate_mindmap, analyze_content
+    from app.services.analysis import polish_text, summarize_text, generate_mindmap, generate_detail, analyze_content
 
     # -- SEPARATE: skip (no audio to separate) --
     await _raise_if_cancelled(task.id)
@@ -678,16 +732,11 @@ async def _run_subtitle_fast_path(
 
     # Write transcript files
     if srt:
-        srt_path = task_dir / "transcript.srt"
-        srt_path.write_text(srt, encoding="utf-8")
-        await _emit_file_ready(task, "transcript.srt", str(srt_path))
+        await _write_text_artifact(task, task_dir, "transcript.srt", srt)
     if polished:
-        polished_srt_path = task_dir / "transcript_polished.srt"
-        polished_srt_path.write_text(polished, encoding="utf-8")
-        await _emit_file_ready(task, "transcript_polished.srt", str(polished_srt_path))
+        await _write_text_artifact(task, task_dir, "transcript_polished.srt", polished)
         if polished_md:
-            polished_md_path = task_dir / "transcript_polished.md"
-            polished_md_path.write_text(polished_md, encoding="utf-8")
+            await _write_text_artifact(task, task_dir, "transcript_polished.md", polished_md)
 
     await _update_step(task, PipelineStep.TRANSCRIBE, completed=True)
 
@@ -742,6 +791,7 @@ async def _run_subtitle_fast_path(
 
     analysis_text = _plain_text_from_srt(polished) if polished else transcript
     mindmap_text = polished or srt or transcript
+    rt = get_runtime_settings()
 
     analysis = await analyze_content(analysis_text, metadata.title, metadata=video_metadata)
     await _raise_if_cancelled(task.id)
@@ -754,18 +804,24 @@ async def _run_subtitle_fast_path(
         analysis_path.write_text(_json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
         await _emit_file_ready(task, "analysis.json", str(analysis_path))
 
-    summary, mindmap = await asyncio.gather(
+    tasks = [
         summarize_text(analysis_text, user_language=user_language),
         generate_mindmap(mindmap_text, metadata=mindmap_metadata, user_language=user_language),
-    )
+    ]
+    if rt.generate_video_detail:
+        tasks.append(generate_detail(mindmap_text, user_language=user_language))
+    results = await asyncio.gather(*tasks)
+    summary = results[0]
+    mindmap = results[1]
+    detail = results[2] if len(results) > 2 else ""
     await _raise_if_cancelled(task.id)
 
     if summary:
         await _write_summary_files(task, task_dir, metadata, summary)
     if mindmap:
-        mm_path = task_dir / "mindmap.md"
-        mm_path.write_text(mindmap, encoding="utf-8")
-        await _emit_file_ready(task, "mindmap.md", str(mm_path))
+        await _write_mindmap_files(task, task_dir, mindmap)
+    if detail:
+        await _write_detail_file(task, task_dir, detail)
 
     await _update_step(task, PipelineStep.ANALYZE, completed=True)
 
@@ -794,7 +850,7 @@ async def _process_image_note(
 ) -> None:
     """Process a Xiaohongshu image_note: download images, run VLM, summarize, archive."""
     import asyncio as _aio
-    from app.services.analysis import summarize_text, generate_mindmap, analyze_content
+    from app.services.analysis import summarize_text, generate_mindmap, generate_detail, analyze_content
     from app.services.archiving import archive_result
 
     # Mark all audio steps as skipped immediately
@@ -886,6 +942,7 @@ async def _process_image_note(
     analysis = None
     summary: dict = {}
     mindmap = ""
+    detail = ""
 
     if combined_text and len(combined_text.strip()) >= 10:
         import json as _json
@@ -898,18 +955,24 @@ async def _process_image_note(
             analysis_path.write_text(_json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
             await _emit_file_ready(task, "analysis.json", str(analysis_path))
 
-        summary, mindmap = await _aio.gather(
+        tasks = [
             summarize_text(combined_text, user_language=user_language),
             generate_mindmap(combined_text, metadata=mindmap_metadata, user_language=user_language),
-        )
+        ]
+        if rt.generate_video_detail:
+            tasks.append(generate_detail(combined_text, user_language=user_language))
+        results = await _aio.gather(*tasks)
+        summary = results[0]
+        mindmap = results[1]
+        detail = results[2] if len(results) > 2 else ""
         await _raise_if_cancelled(task.id)
 
         if summary:
             await _write_summary_files(task, task_dir, metadata, summary)
         if mindmap:
-            mm_path = task_dir / "mindmap.md"
-            mm_path.write_text(mindmap, encoding="utf-8")
-            await _emit_file_ready(task, "mindmap.md", str(mm_path))
+            await _write_mindmap_files(task, task_dir, mindmap)
+        if detail:
+            await _write_detail_file(task, task_dir, detail)
     else:
         logger.warning("Image note: combined text too short or empty — skipping LLM analysis")
 
@@ -962,7 +1025,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     from app.services.preprocessing import separate_vocals
     from app.services.recognition import transcribe_audio
     from app.services.recognition.subtitle_processor import process_subtitles
-    from app.services.analysis import polish_text, summarize_text, generate_mindmap, analyze_content
+    from app.services.analysis import polish_text, summarize_text, generate_mindmap, generate_detail, analyze_content
     from app.services.archiving import archive_result
     from app.core.queue import get_task_queue
 
@@ -1001,6 +1064,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     analysis: dict = {}
     summary: dict = {}
     mindmap: str = ""
+    detail: str = ""
 
     # ── Checkpoint restore helpers ─────────────────────────────────────────
     def _restore_metadata() -> bool:
@@ -1642,16 +1706,11 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
                 # Write transcript.srt immediately
                 if srt:
-                    srt_path = task_dir / "transcript.srt"
-                    srt_path.write_text(srt, encoding="utf-8")
-                    await _emit_file_ready(task, "transcript.srt", str(srt_path))
+                    await _write_text_artifact(task, task_dir, "transcript.srt", srt)
                 if has_subtitle and polished:
-                    polished_srt_path = task_dir / "transcript_polished.srt"
-                    polished_srt_path.write_text(polished, encoding="utf-8")
-                    await _emit_file_ready(task, "transcript_polished.srt", str(polished_srt_path))
+                    await _write_text_artifact(task, task_dir, "transcript_polished.srt", polished)
                     if polished_md:
-                        polished_md_path = task_dir / "transcript_polished.md"
-                        polished_md_path.write_text(polished_md, encoding="utf-8")
+                        await _write_text_artifact(task, task_dir, "transcript_polished.md", polished_md)
 
                 await _update_step(task, PipelineStep.TRANSCRIBE, completed=True)
                 await _raise_if_cancelled(task.id)
@@ -1732,12 +1791,9 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             await _raise_if_cancelled(task.id)
         if not has_subtitle and polished:
             from app.services.analysis import srt_to_markdown
-            polished_srt_path = task_dir / "transcript_polished.srt"
-            polished_srt_path.write_text(polished, encoding="utf-8")
-            await _emit_file_ready(task, "transcript_polished.srt", str(polished_srt_path))
+            await _write_text_artifact(task, task_dir, "transcript_polished.srt", polished)
             polished_md_content = srt_to_markdown(polished, metadata.title)
-            polished_md_path = task_dir / "transcript_polished.md"
-            polished_md_path.write_text(polished_md_content, encoding="utf-8")
+            await _write_text_artifact(task, task_dir, "transcript_polished.md", polished_md_content)
             polish_ran = True
         await _update_step(task, PipelineStep.POLISH, completed=True)
         await _raise_if_cancelled(task.id)
@@ -1778,18 +1834,24 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             analysis_path.write_text(_json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
             await _emit_file_ready(task, "analysis.json", str(analysis_path))
 
-        summary, mindmap = await asyncio.gather(
+        tasks = [
             summarize_text(analysis_text, user_language=user_language),
             generate_mindmap(mindmap_text, metadata=mindmap_metadata, user_language=user_language),
-        )
+        ]
+        if rt.generate_video_detail:
+            tasks.append(generate_detail(mindmap_text, user_language=user_language))
+        results = await asyncio.gather(*tasks)
+        summary = results[0]
+        mindmap = results[1]
+        detail = results[2] if len(results) > 2 else ""
         await _raise_if_cancelled(task.id)
 
         if summary:
             await _write_summary_files(task, task_dir, metadata, summary)
         if mindmap:
-            mm_path = task_dir / "mindmap.md"
-            mm_path.write_text(mindmap, encoding="utf-8")
-            await _emit_file_ready(task, "mindmap.md", str(mm_path))
+            await _write_mindmap_files(task, task_dir, mindmap)
+        if detail:
+            await _write_detail_file(task, task_dir, detail)
 
         await _update_step(task, PipelineStep.ANALYZE, completed=True)
     # end if ANALYZE not in done

@@ -122,6 +122,18 @@ async def read_file(
             return {"success": False, "error": "Access denied: path outside data directory"}
 
         if not file_path.exists():
+            try:
+                from app.core.database import get_task_store
+                artifact = get_task_store().get_artifact_by_output_dir(file_path.parent, file_path.name)
+                if artifact:
+                    return {
+                        "success": True,
+                        "content": artifact["content"],
+                        "path": str(file_path),
+                        "source": "sqlite",
+                    }
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"sqlite artifact fallback failed: {e}")
             return {"success": False, "error": f"File not found: {path}"}
         if not file_path.is_file():
             return {"success": False, "error": f"Not a file: {path}"}
@@ -150,6 +162,20 @@ async def write_file(req: WriteFileRequest):
 
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(req.content, encoding="utf-8")
+        try:
+            from app.core.database import get_task_store
+            from app.core.pipeline import _artifact_content_type
+            store = get_task_store()
+            existing = store.get_artifact_by_output_dir(file_path.parent, file_path.name)
+            if existing:
+                store.save_artifact(
+                    existing["task_id"],
+                    file_path.name,
+                    req.content,
+                    content_type=_artifact_content_type(file_path.name),
+                )
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"sqlite artifact write-through failed: {e}")
         return {"success": True, "path": str(file_path)}
     except Exception as e:
         logging.getLogger(__name__).warning(f"write_file error: {e}")

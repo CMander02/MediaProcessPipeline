@@ -46,6 +46,19 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS task_artifacts (
+    task_id      TEXT NOT NULL,
+    filename     TEXT NOT NULL,
+    content_type TEXT NOT NULL DEFAULT 'text/plain',
+    content      TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    PRIMARY KEY (task_id, filename),
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_artifacts_task_id ON task_artifacts(task_id);
 """
 
 # Columns added after initial schema — applied idempotently via ALTER TABLE
@@ -244,6 +257,63 @@ class TaskStore:
                 vals,
             )
             conn.commit()
+
+    def save_artifact(
+        self,
+        task_id: UUID | str,
+        filename: str,
+        content: str,
+        content_type: str = "text/plain",
+    ) -> None:
+        """Persist a generated text artifact in SQLite.
+
+        This is intentionally text-only for now: transcripts, markdown exports,
+        JSON navigation trees, and analysis/summary payloads. Large media stays
+        on disk.
+        """
+        conn = _get_conn()
+        now = datetime.now().isoformat()
+        with _db_lock:
+            conn.execute(
+                """
+                INSERT INTO task_artifacts
+                    (task_id, filename, content_type, content, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id, filename) DO UPDATE SET
+                    content_type = excluded.content_type,
+                    content = excluded.content,
+                    updated_at = excluded.updated_at
+                """,
+                (str(task_id), filename, content_type, content, now, now),
+            )
+            conn.commit()
+
+    def get_artifact(self, task_id: UUID | str, filename: str) -> dict[str, Any] | None:
+        """Return one SQLite-backed artifact for a task."""
+        conn = _get_conn()
+        cur = conn.execute(
+            """
+            SELECT task_id, filename, content_type, content, created_at, updated_at
+            FROM task_artifacts
+            WHERE task_id = ? AND filename = ?
+            """,
+            (str(task_id), filename),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+    def get_artifact_by_output_dir(self, output_dir: Path | str, filename: str) -> dict[str, Any] | None:
+        """Resolve a task by its result output_dir/archive.output_dir and return an artifact."""
+        target = str(Path(output_dir).resolve())
+        for task in self.list(limit=10000):
+            result = task.result or {}
+            candidates = [
+                result.get("output_dir"),
+                (result.get("archive") or {}).get("output_dir") if isinstance(result.get("archive"), dict) else None,
+            ]
+            if any(candidate and str(Path(candidate).resolve()) == target for candidate in candidates):
+                return self.get_artifact(task.id, filename)
+        return None
 
     def delete(self, task_id: UUID) -> bool:
         """Delete a task."""
