@@ -65,6 +65,10 @@ interface Props {
   taskId?: string | null
 }
 
+function normalizeArchivePath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()
+}
+
 export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const pipelineSteps = usePipelineSteps()
   const { archives, refresh: refreshArchives } = useArchives()
@@ -235,24 +239,78 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   }, [archive, resolveMediaUrl])
 
   // --- Progressive file loading ---
-  const loadFile = useCallback(async (filename: string): Promise<string> => {
+  const readFilePath = useCallback(async (path: string): Promise<string> => {
     try {
-      const data = await api.filesystem.read(archivePath + sep + filename)
+      const data = await api.filesystem.read(path)
       return data.content ?? ""
     } catch {
       return ""
     }
-  }, [archivePath, sep])
+  }, [])
 
-  const loadMindmapTree = useCallback(async () => {
-    const c = await loadFile("mindmap.json")
-    if (!c) return
-    try {
-      setMindmapTree(JSON.parse(c) as MindmapTocNode)
-    } catch (err) {
-      console.warn("Failed to parse mindmap.json:", err)
+  const loadFile = useCallback(async (filename: string, basePath = archivePath): Promise<string> => {
+    const baseSep = basePath.includes("\\") ? "\\" : "/"
+    return readFilePath(basePath + baseSep + filename)
+  }, [archivePath, readFilePath])
+
+  const applyTranscriptContent = useCallback((content: string, polished: boolean) => {
+    setTranscript(content)
+    setIsPolished(polished)
+    setSubtitles(parseSRT(content))
+    setSubtitleSourceType((prev) => prev ?? (polished ? "platform" : "asr"))
+  }, [])
+
+  const loadGeneratedContent = useCallback(async (basePath = archivePath) => {
+    const [
+      summaryMd,
+      mindmapMd,
+      mindmapJson,
+      detailMd,
+      polishedSrt,
+      rawSrt,
+    ] = await Promise.all([
+      loadFile("summary.md", basePath),
+      loadFile("mindmap.md", basePath),
+      loadFile("mindmap.json", basePath),
+      loadFile("detail.md", basePath),
+      loadFile("transcript_polished.srt", basePath),
+      loadFile("transcript.srt", basePath),
+    ])
+
+    if (summaryMd) setSummary(summaryMd)
+    if (mindmapMd) setMindmap(mindmapMd)
+    if (mindmapJson) {
+      try {
+        setMindmapTree(JSON.parse(mindmapJson) as MindmapTocNode)
+      } catch (err) {
+        console.warn("Failed to parse mindmap.json:", err)
+      }
     }
-  }, [loadFile])
+    if (detailMd) setDetail(detailMd)
+
+    if (polishedSrt) {
+      applyTranscriptContent(polishedSrt, true)
+      setActiveTrackLang((prev) => prev ?? null)
+    } else if (rawSrt) {
+      applyTranscriptContent(rawSrt, false)
+    }
+  }, [archivePath, applyTranscriptContent, loadFile])
+
+  const refreshTaskSnapshot = useCallback(async () => {
+    if (!resolvedTaskId) return null
+    try {
+      const task = await api.tasks.get(resolvedTaskId)
+      setTaskStatus(task.status)
+      setCurrentStep(task.current_step)
+      setCompletedSteps(task.completed_steps ?? [])
+      setTaskError(task.error)
+      const descs = task.result?.image_descriptions as ImageDescription[] | undefined
+      if (descs && descs.length > 0) setImageDescriptions(descs)
+      return task
+    } catch {
+      return null
+    }
+  }, [resolvedTaskId])
 
   // Load image descriptions for image_note content type
   const loadImageDescriptions = useCallback(async () => {
@@ -291,33 +349,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
 
   // Load files independently on mount
   useEffect(() => {
-    // Summary
-    loadFile("summary.md").then((c) => { if (c) setSummary(c) })
-    // Mindmap + JSON tree for subtitle TOC
-    loadFile("mindmap.md").then((c) => { if (c) setMindmap(c) })
-    loadMindmapTree()
-    // Optional detailed video outline
-    loadFile("detail.md").then((c) => { if (c) setDetail(c) })
-    // Transcript — prefer polished, fallback to raw
-    loadFile("transcript_polished.srt").then((polished) => {
-      if (polished) {
-        setTranscript(polished)
-        setIsPolished(true)
-        setSubtitles(parseSRT(polished))
-        setSubtitleSourceType((prev) => prev ?? "platform")
-        setActiveTrackLang((prev) => prev ?? null)
-      } else {
-        loadFile("transcript.srt").then((raw) => {
-          if (raw) {
-            setTranscript(raw)
-            setIsPolished(false)
-            setSubtitles(parseSRT(raw))
-            setSubtitleSourceType((prev) => prev ?? "asr")
-          }
-        })
-      }
-    })
-  }, [archivePath, loadFile, loadMindmapTree])
+    loadGeneratedContent()
+  }, [archivePath, loadGeneratedContent])
 
   // --- SSE subscription for in-progress tasks ---
   useTaskSSE(resolvedTaskId, {
@@ -339,37 +372,56 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
       }
     },
     onFileReady(data: FileReadyEvent) {
-      const { file } = data
+      const { file, path } = data
+      const loadReadyFile = () => readFilePath(path || archivePath + sep + file)
       if (file === "transcript_polished.srt") {
-        loadFile("transcript_polished.srt").then((c) => {
+        loadReadyFile().then((c) => {
           if (c) {
-            setTranscript(c)
-            setIsPolished(true)
-            setSubtitles(parseSRT(c))
+            applyTranscriptContent(c, true)
           }
         })
       } else if (file === "transcript.srt" && !isPolished) {
-        loadFile("transcript.srt").then((c) => {
+        loadReadyFile().then((c) => {
           if (c) {
-            setTranscript(c)
-            setSubtitles(parseSRT(c))
+            applyTranscriptContent(c, false)
           }
         })
       } else if (file === "summary.md") {
-        loadFile("summary.md").then((c) => { if (c) setSummary(c) })
+        loadReadyFile().then((c) => { if (c) setSummary(c) })
       } else if (file === "mindmap.md") {
-        loadFile("mindmap.md").then((c) => { if (c) setMindmap(c) })
+        loadReadyFile().then((c) => { if (c) setMindmap(c) })
       } else if (file === "mindmap.json") {
-        loadMindmapTree()
+        loadReadyFile().then((c) => {
+          if (!c) return
+          try {
+            setMindmapTree(JSON.parse(c) as MindmapTocNode)
+          } catch (err) {
+            console.warn("Failed to parse mindmap.json:", err)
+          }
+        })
       } else if (file === "detail.md") {
-        loadFile("detail.md").then((c) => { if (c) setDetail(c) })
+        loadReadyFile().then((c) => { if (c) setDetail(c) })
       } else if (file === "metadata.json") {
         refreshArchives(true)
       }
     },
-    onCompleted() {
+    async onCompleted(data) {
       setTaskStatus("completed")
-      refreshArchives(true)
+      const task = await refreshTaskSnapshot()
+      const outputDir =
+        data.output_dir ??
+        (task?.result?.output_dir as string | undefined) ??
+        ((task?.result?.archive as Record<string, unknown> | undefined)?.output_dir as string | undefined)
+
+      await Promise.all([
+        refreshArchives(true),
+        loadGeneratedContent(outputDir || archivePath),
+      ])
+
+      if (outputDir && normalizeArchivePath(outputDir) !== normalizeArchivePath(archivePath)) {
+        const tid = resolvedTaskId ? `&taskId=${encodeURIComponent(resolvedTaskId)}` : ""
+        navigate(`#/result/archive?path=${encodeURIComponent(outputDir)}${tid}`, { replace: true })
+      }
     },
     onFailed(data) {
       setTaskStatus("failed")

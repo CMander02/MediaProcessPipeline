@@ -33,6 +33,17 @@ if _log_file:
 
 config = get_settings()
 
+_NO_STORE_HEADERS = {"Cache-Control": "no-store"}
+
+
+class NoStoreStaticFiles(StaticFiles):
+    """Serve local frontend assets without browser caching stale Vite chunks."""
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers.update(_NO_STORE_HEADERS)
+        return response
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -145,18 +156,18 @@ async def health_check():
 # Serve frontend static files (built Vite output)
 _web_dist = Path(__file__).resolve().parent.parent.parent / "web" / "dist"
 if _web_dist.is_dir():
-    app.mount("/assets", StaticFiles(directory=str(_web_dist / "assets")), name="static")
+    app.mount("/assets", NoStoreStaticFiles(directory=str(_web_dist / "assets")), name="static")
 
     # Serve static files in root (favicon, etc.)
     @app.get("/favicon.svg")
     async def favicon():
-        return FileResponse(_web_dist / "favicon.svg")
+        return FileResponse(_web_dist / "favicon.svg", headers=_NO_STORE_HEADERS)
 
     # SPA fallback: serve index.html for all non-API routes
     @app.get("/{path:path}")
     async def spa_fallback(path: str):
         file_path = _web_dist / path
         if file_path.is_file():
-            return FileResponse(file_path)
-        return FileResponse(_web_dist / "index.html")
+            return FileResponse(file_path, headers=_NO_STORE_HEADERS)
+        return FileResponse(_web_dist / "index.html", headers=_NO_STORE_HEADERS)
 

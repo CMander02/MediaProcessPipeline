@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { Subtitle } from "@/lib/srt"
-import { subtitlesToSRT, extractSpeakers } from "@/lib/srt"
+import { subtitlesToSRT, extractSpeakers, findSubtitleIndexAtTime } from "@/lib/srt"
 import { TranscriptSegment } from "./transcript-segment"
 import { TranscriptSearch } from "./transcript-search"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -20,7 +20,7 @@ interface TranscriptTabProps {
   currentTime?: number
   onSegmentClick: (subtitle: Subtitle) => void
   onManualScroll: () => void
-  onTocSeek?: (seconds: number) => void
+  onTocSeek?: (timeMs: number) => void
   tocTree?: MindmapTocNode | null
   /** Path to the SRT file for saving edits */
   srtPath?: string
@@ -88,14 +88,26 @@ function TranscriptToc({
   const [collapsed, setCollapsed] = useState(false)
   const nodes = tree.children?.length ? tree.children : [tree]
   return (
-    <aside className="hidden w-44 shrink-0 border-l bg-muted/10 md:flex md:flex-col">
+    <aside
+      className={[
+        "hidden shrink-0 border-l bg-muted/10 transition-[width] duration-150 md:flex md:flex-col",
+        collapsed ? "w-11" : "w-44",
+      ].join(" ")}
+    >
       <button
         type="button"
+        aria-expanded={!collapsed}
         onClick={() => setCollapsed((v) => !v)}
-        className="flex items-center justify-between border-b px-2 py-1.5 text-xs font-medium hover:bg-muted/50"
+        className={[
+          "border-b text-xs font-medium hover:bg-muted/50",
+          collapsed
+            ? "flex h-full items-start justify-center px-1.5 py-3 [writing-mode:vertical-rl]"
+            : "flex items-center justify-between px-2 py-1.5",
+        ].join(" ")}
+        title={collapsed ? "展开字幕 TOC" : "收起字幕 TOC"}
       >
-        <span>字幕 TOC</span>
-        <span className="text-muted-foreground">{collapsed ? "展开" : "收起"}</span>
+        <span>{collapsed ? "TOC" : "字幕 TOC"}</span>
+        {!collapsed && <span className="text-muted-foreground">收起</span>}
       </button>
       {!collapsed && (
         <ScrollArea className="min-h-0 flex-1">
@@ -125,9 +137,11 @@ export function TranscriptTab({
   const [searchQuery, setSearchQuery] = useState("")
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [isNewInsert, setIsNewInsert] = useState(false) // track if editing a freshly inserted subtitle
+  const [pendingScrollIndex, setPendingScrollIndex] = useState<number | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const segmentRefs = useRef<Map<number, HTMLDivElement>>(new Map())
   const isUserScrolling = useRef(false)
+  const programmaticScroll = useRef(false)
 
   // Filter subtitles by search
   const filteredIndices = useMemo(() => {
@@ -140,19 +154,36 @@ export function TranscriptTab({
 
   const matchCount = searchQuery ? filteredIndices.length : 0
 
+  const scrollToSegment = useCallback((index: number) => {
+    const el = segmentRefs.current.get(index)
+    if (!el) return false
+
+    programmaticScroll.current = true
+    el.scrollIntoView({ behavior: "smooth", block: "center" })
+    window.setTimeout(() => {
+      programmaticScroll.current = false
+    }, 400)
+    return true
+  }, [])
+
   // Auto-scroll to current segment
   useEffect(() => {
     if (!autoScroll || currentSegmentIndex < 0 || isUserScrolling.current) return
     if (searchQuery) return
     if (editingIndex !== null) return // Don't auto-scroll during editing
 
-    const el = segmentRefs.current.get(currentSegmentIndex)
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "center" })
+    scrollToSegment(currentSegmentIndex)
+  }, [currentSegmentIndex, autoScroll, searchQuery, editingIndex, scrollToSegment])
+
+  useEffect(() => {
+    if (pendingScrollIndex === null || searchQuery) return
+    if (scrollToSegment(pendingScrollIndex)) {
+      setPendingScrollIndex(null)
     }
-  }, [currentSegmentIndex, autoScroll, searchQuery, editingIndex])
+  }, [filteredIndices.length, pendingScrollIndex, scrollToSegment, searchQuery])
 
   const handleScroll = useCallback(() => {
+    if (programmaticScroll.current) return
     isUserScrolling.current = true
     onManualScroll()
     setTimeout(() => {
@@ -237,6 +268,17 @@ export function TranscriptTab({
 
   const speakers = useMemo(() => extractSpeakers(subtitles), [subtitles])
 
+  const handleTocSeek = useCallback((seconds: number) => {
+    const timeMs = Math.max(0, Math.round(seconds * 1000))
+    let targetIndex = findSubtitleIndexAtTime(subtitles, timeMs)
+    if (targetIndex < 0 && subtitles.length > 0) targetIndex = 0
+    if (targetIndex >= 0) {
+      if (searchQuery) setSearchQuery("")
+      setPendingScrollIndex(targetIndex)
+    }
+    onTocSeek?.(timeMs)
+  }, [onTocSeek, searchQuery, subtitles])
+
   return (
     <div className="flex h-full min-h-0">
       <div className="flex min-w-0 flex-1 flex-col">
@@ -275,7 +317,7 @@ export function TranscriptTab({
           </div>
         </ScrollArea>
       </div>
-      {tocTree && <TranscriptToc tree={tocTree} currentTime={currentTime} onSeek={onTocSeek} />}
+      {tocTree && <TranscriptToc tree={tocTree} currentTime={currentTime} onSeek={handleTocSeek} />}
     </div>
   )
 }

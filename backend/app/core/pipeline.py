@@ -2013,7 +2013,7 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
     # Only set PROCESSING status on first entry (download worker call).
     # On GPU worker re-entry the task is already PROCESSING.
     if task.status != TaskStatus.PROCESSING:
-        store.update_status(task_id, TaskStatus.PROCESSING)
+        store.update_status(task_id, TaskStatus.PROCESSING, error=None)
         await bus.publish(TaskEvent(task_id, "processing"))
 
     # Re-read from DB to get latest completed_steps
@@ -2060,6 +2060,7 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
             progress=1.0,
             result=task.result,
             completed_at=task.completed_at,
+            error=None,
         )
         await bus.publish(TaskEvent(task_id, "completed", {
             "output_dir": task.result.get("output_dir") if task.result else None,
