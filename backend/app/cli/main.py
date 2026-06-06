@@ -276,11 +276,34 @@ def run(
     speakers: int = typer.Option(None, "--speakers", "-s", help="说话人数量（留空自动检测）"),
     hotwords: str = typer.Option(None, "--hotwords", "-w", help="热词，逗号分隔"),
     force_asr: bool = typer.Option(False, "--force-asr", help="强制 ASR，忽略平台字幕"),
+    direct: bool = typer.Option(
+        False, "--direct", help="不启动 daemon，在当前 CLI 进程直接跑完整流程"
+    ),
+    api_flow: bool = typer.Option(
+        False, "--api-flow", help="纯 API 流程：跳过 UVR/本地分离，使用 API ASR"
+    ),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="只输出结果路径"),
 ):
     """提交任务并实时显示进度（Ctrl+C 可脱离，任务继续后台运行）。"""
+    options = _build_options(
+        no_sep=no_sep,
+        speakers=speakers,
+        hotwords=hotwords,
+        force_asr=force_asr,
+        api_flow=api_flow,
+    )
+
+    if direct:
+        try:
+            final = _run_direct(source, options=options, quiet=quiet)
+        except KeyboardInterrupt:
+            from app.cli.display import console
+            console.print("\n[yellow]direct 任务已中断；当前进程退出后不会继续后台处理[/yellow]")
+            raise typer.Exit(130)
+        _print_final(final, quiet=quiet)
+        raise typer.Exit(0 if final.get("status") == "completed" else 1)
+
     client = _require_daemon(auto_start=True)
-    options = _build_options(no_sep=no_sep, speakers=speakers, hotwords=hotwords, force_asr=force_asr)
 
     task = client.create_task(source, options=options)
     task_id = task["id"]
@@ -297,6 +320,7 @@ def _build_options(
     speakers: int | None = None,
     hotwords: str | None = None,
     force_asr: bool = False,
+    api_flow: bool = False,
 ) -> dict:
     opts: dict = {}
     if no_sep:
@@ -307,7 +331,190 @@ def _build_options(
         opts["hotwords"] = [w.strip() for w in hotwords.split(",") if w.strip()]
     if force_asr:
         opts["force_asr"] = True
+    if api_flow:
+        opts["api_flow"] = True
+        opts["skip_separation"] = True
+        opts["asr_provider"] = "siliconflow"
+        opts["asr_chunk_strategy"] = "ffmpeg"
+        opts["disable_diarization"] = True
+        opts["disable_voiceprint"] = True
     return opts
+
+
+def _run_direct(source: str, options: dict, quiet: bool = False) -> dict:
+    """Run a pipeline task in the current CLI process without uvicorn/daemon."""
+    import asyncio
+
+    return asyncio.run(_run_direct_async(source, options=options, quiet=quiet))
+
+
+async def _run_direct_async(source: str, options: dict, quiet: bool = False) -> dict:
+    import asyncio
+
+    from app.cli.display import console
+    from app.core.database import close_db, get_task_store, init_db
+    from app.core.events import TaskEvent, get_event_bus
+    from app.core.pipeline import process_task
+
+    _apply_direct_runtime_overrides(options)
+    init_db()
+
+    task = _create_direct_task(source, options)
+    bus = get_event_bus()
+    q = bus.subscribe_task(task.id)
+
+    if not quiet and not _json_mode:
+        console.print(f"direct  [bold]{str(task.id)[:8]}[/bold]")
+
+    await bus.publish(TaskEvent(task.id, "queued"))
+    runner = asyncio.create_task(process_task(task.id, _download_worker_call=False))
+
+    try:
+        await _stream_direct_events(q, runner, quiet=quiet)
+        await runner
+        final = get_task_store().get(task.id)
+        return final.model_dump(mode="json") if final else task.model_dump(mode="json")
+    finally:
+        await bus.unsubscribe_task(task.id, q)
+        close_db()
+
+
+def _apply_direct_runtime_overrides(options: dict) -> None:
+    """Apply process-local runtime settings for one-shot direct flows."""
+    if not options.get("api_flow"):
+        return
+
+    from app.cli.display import console
+    from app.core.settings import get_runtime_settings, replace_runtime_settings_for_process
+
+    rt = get_runtime_settings()
+    if rt.llm_provider == "local":
+        console.print(
+            "[red]--api-flow 要求 LLM 也走 API。请先把 llm_provider 设为 "
+            "anthropic/openai/deepseek/custom。[/red]"
+        )
+        raise typer.Exit(1)
+
+    updates = {
+        "asr_provider": "siliconflow",
+        "siliconflow_asr_chunk_strategy": "ffmpeg",
+        "enable_diarization": False,
+        "enable_voiceprint": False,
+    }
+    if rt.polish_provider == "local":
+        # Empty means "follow llm_provider"; keeps API flow from loading local HF.
+        updates["polish_provider"] = ""
+
+    replace_runtime_settings_for_process(rt.model_copy(update=updates))
+
+
+def _create_direct_task(source: str, options: dict):
+    from pathlib import Path
+
+    from app.core.database import get_task_store
+    from app.core.pipeline import (
+        PIPELINE_STEPS,
+        PipelineStep,
+        _clean_source_path,
+        _looks_like_local_path,
+        create_task_dir,
+        write_metadata_json,
+    )
+    from app.models import Task, TaskStatus, TaskType
+
+    task = Task(
+        task_type=TaskType.PIPELINE,
+        source=source,
+        options=options,
+        status=TaskStatus.QUEUED,
+        current_step=PipelineStep.DOWNLOAD,
+        message="等待处理...",
+        steps=[s["id"] for s in PIPELINE_STEPS],
+        completed_steps=[],
+    )
+
+    clean_source = _clean_source_path(source)
+    if _looks_like_local_path(clean_source):
+        path = Path(clean_source)
+        title = path.stem
+        media_type = (
+            "video"
+            if path.suffix.lower() in {".mp4", ".mkv", ".avi", ".webm", ".mov"}
+            else "audio"
+        )
+    else:
+        title = "download"
+        media_type = "unknown"
+
+    task_dir = create_task_dir(task.id, title)
+    write_metadata_json(
+        task_dir,
+        {
+            "title": title,
+            "source_url": clean_source,
+            "media_type": media_type,
+        },
+        status="queued",
+    )
+    task.result = {"output_dir": str(task_dir)}
+
+    store = get_task_store()
+    store.save(task)
+    return task
+
+
+async def _stream_direct_events(q, runner, quiet: bool = False) -> None:
+    if quiet or _json_mode:
+        await runner
+        return
+
+    import asyncio
+    import time as _time
+
+    from app.cli.display import STEP_LABELS, console
+
+    ok_char = "+" if _plain_mode else "✓"
+    err_char = "x" if _plain_mode else "✗"
+    run_char = ">" if _plain_mode else "▶"
+    started: dict[str, float] = {}
+    printed: set[str] = set()
+
+    def _label(step) -> str:
+        key = str(step)
+        return STEP_LABELS.get(key, key)
+
+    while True:
+        if runner.done() and q.empty():
+            return
+        try:
+            event = await asyncio.wait_for(q.get(), timeout=0.2)
+        except asyncio.TimeoutError:
+            continue
+
+        etype = event.event_type
+        data = event.data or {}
+
+        if etype == "step":
+            step = str(data.get("step", ""))
+            completed = bool(data.get("completed", False))
+            if not step:
+                continue
+            if completed:
+                if step in printed:
+                    continue
+                elapsed = _time.monotonic() - started.get(step, _time.monotonic())
+                console.print(
+                    f"  [green]{ok_char}[/green] {_label(step)}  [dim]{elapsed:.1f}s[/dim]"
+                )
+                printed.add(step)
+            elif step not in started and step not in printed:
+                started[step] = _time.monotonic()
+                console.print(f"  [blue]{run_char}[/blue] {_label(step)}")
+        elif etype == "failed":
+            console.print(f"  [red]{err_char}[/red] 失败: {data.get('error', '')}")
+            return
+        elif etype in ("completed", "cancelled"):
+            return
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +528,9 @@ def submit(
     speakers: int = typer.Option(None, "--speakers", "-s", help="说话人数量"),
     hotwords: str = typer.Option(None, "--hotwords", "-w", help="热词，逗号分隔"),
     force_asr: bool = typer.Option(False, "--force-asr", help="强制 ASR"),
+    api_flow: bool = typer.Option(
+        False, "--api-flow", help="纯 API 流程：跳过 UVR/本地分离，使用 API ASR"
+    ),
 ):
     """纯提交，打印 task_id 后立即返回（供脚本捕获）。
 
@@ -331,7 +541,13 @@ def submit(
     mpp attach $ID
     """
     client = _require_daemon(auto_start=True)
-    options = _build_options(no_sep=no_sep, speakers=speakers, hotwords=hotwords, force_asr=force_asr)
+    options = _build_options(
+        no_sep=no_sep,
+        speakers=speakers,
+        hotwords=hotwords,
+        force_asr=force_asr,
+        api_flow=api_flow,
+    )
     task = client.create_task(source, options=options)
     task_id = task["id"]
 
@@ -857,6 +1073,9 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "asr_provider",
         "qwen3_asr_model_path", "qwen3_aligner_model_path",
         "qwen3_enable_timestamps", "qwen3_batch_size", "qwen3_max_new_tokens", "qwen3_device",
+        "siliconflow_api_base", "siliconflow_api_key", "siliconflow_asr_model",
+        "siliconflow_asr_language", "siliconflow_asr_max_chunk_sec",
+        "siliconflow_asr_timeout_sec", "siliconflow_asr_chunk_strategy",
     ],
     "diarization": [
         "enable_diarization", "hf_token",
@@ -893,6 +1112,7 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
 
 _SECRET_KEYS = {
     "anthropic_api_key", "openai_api_key", "custom_api_key",
+    "deepseek_api_key", "siliconflow_api_key",
     "hf_token", "api_token",
     "bilibili_sessdata", "bilibili_bili_jct",
 }
@@ -1049,6 +1269,63 @@ def config_set(
 
     ok = "+" if _plain_mode else "✓"
     console.print(f"[green]{ok}[/green]  {key} = {_mask(key, typed_value)}")
+
+
+@config_app.command(name="preset")
+def config_preset(
+    name: str = typer.Argument(..., help="预设名: api-flow / local-models"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="只显示将要修改的配置，不写入"),
+):
+    """应用常用运行预设。"""
+    from app.cli.display import console
+
+    presets: dict[str, dict[str, str | bool]] = {
+        "api-flow": {
+            "asr_provider": "siliconflow",
+            "siliconflow_asr_chunk_strategy": "ffmpeg",
+            "enable_diarization": False,
+            "enable_voiceprint": False,
+            # Empty means polish follows llm_provider, avoiding local HF loads.
+            "polish_provider": "",
+        },
+        "local-models": {
+            "asr_provider": "qwen3",
+            "enable_diarization": True,
+            "enable_voiceprint": True,
+            "polish_provider": "local",
+        },
+    }
+
+    key = name.strip().lower()
+    if key not in presets:
+        close = get_close_matches(key, list(presets.keys()), n=2, cutoff=0.4)
+        msg = f"[red]未知预设: {name}[/red]"
+        if close:
+            msg += f"\n  你是指: [bold]{', '.join(close)}[/bold] ?"
+        console.print(msg)
+        raise typer.Exit(1)
+
+    updates = presets[key]
+    if dry_run:
+        console.print(f"[bold]{key}[/bold] 将修改:")
+        for k, v in updates.items():
+            console.print(f"  {k} = {_mask(k, v)}")
+        return
+
+    client = _get_client()
+    if client.ping():
+        client.patch_settings(updates)
+    else:
+        from app.core.settings import patch_runtime_settings
+
+        patch_runtime_settings(updates)
+
+    ok = "+" if _plain_mode else "✓"
+    console.print(f"[green]{ok}[/green] 已应用预设  [bold]{key}[/bold]")
+    if key == "api-flow":
+        console.print(
+            "  [dim]仍需配置 siliconflow_api_key 和可用的 API LLM provider。[/dim]"
+        )
 
 
 # ---------------------------------------------------------------------------

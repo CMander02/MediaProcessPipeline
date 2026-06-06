@@ -58,8 +58,11 @@ MediaProcessPipeline/
 git clone <repo-url>
 cd MediaProcessPipeline
 
-# Python 依赖（默认即包含下载 / UVR / ASR 运行链路）
+# Python 依赖（默认是轻量 API/CLI 环境，不安装 torch/UVR/Qwen/Pyannote）
 uv sync
+
+# 可选：安装本地模型链路（UVR、本地 Qwen-ASR、Pyannote、local LLM）
+uv sync --extra local-models
 
 # 前端依赖 + 构建
 cd web && npm install && npm run build && cd ..
@@ -102,6 +105,10 @@ uv run python -m app.cli serve     # 启动 daemon :18000
 # bash
 ./scripts/mpp serve
 ./scripts/mpp run <url>
+
+# 纯 CLI / 纯 API 一次性流程：不启动 daemon，不打开前端
+./scripts/mpp config preset api-flow
+./scripts/mpp run --direct --api-flow <url-or-file>
 ```
 
 ### 开发模式

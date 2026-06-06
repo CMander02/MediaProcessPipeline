@@ -1550,7 +1550,11 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 _restore_audio_paths()
             else:
                 await _update_step(task, PipelineStep.SEPARATE)
-                skip_separation = task.options.get("skip_separation", False) or has_subtitle
+                skip_separation = (
+                    task.options.get("skip_separation", False)
+                    or task.options.get("api_flow", False)
+                    or has_subtitle
+                )
                 if skip_separation:
                     vocals_path = audio_path
                 else:
@@ -1598,7 +1602,17 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     recognition_segments = sub_result.get("segments", [])
                 else:
                     num_speakers = task.options.get("num_speakers")
-                    recognition = await transcribe_audio(vocals_path, output_dir=task_dir, num_speakers=num_speakers)
+                    asr_provider = task.options.get("asr_provider")
+                    if task.options.get("api_flow", False) and not asr_provider:
+                        asr_provider = "siliconflow"
+                    recognition = await transcribe_audio(
+                        vocals_path,
+                        output_dir=task_dir,
+                        num_speakers=num_speakers,
+                        provider=asr_provider,
+                        diarize=not task.options.get("disable_diarization", False),
+                        chunk_strategy=task.options.get("asr_chunk_strategy"),
+                    )
                     await _raise_if_cancelled(task.id)
                     transcript = " ".join(s["text"] for s in recognition.get("segments", []))
                     srt = recognition.get("srt", "")

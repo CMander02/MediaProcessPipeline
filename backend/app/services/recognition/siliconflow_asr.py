@@ -1,16 +1,15 @@
 """SiliconFlow (OpenAI-compatible) ASR provider.
 
-Splits audio locally with Silero VAD, then uploads each chunk serially to
-the OpenAI-compatible /audio/transcriptions endpoint. Timestamps come from
-VAD chunk boundaries — the API only returns text per chunk.
-
-This avoids loading a multi-gigabyte ASR model on the local GPU, at the
-cost of network latency and per-request quota usage.
+Uploads audio chunks serially to the OpenAI-compatible /audio/transcriptions
+endpoint. The default chunker uses ffmpeg so API-only installs do not need
+torch/torchaudio; Silero VAD chunking remains available when local model deps
+are installed.
 """
 
 from __future__ import annotations
 
 import logging
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -24,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 class SiliconFlowASRService:
-    """ASR via OpenAI-compatible /audio/transcriptions, local VAD chunking."""
+    """ASR via OpenAI-compatible /audio/transcriptions."""
 
     def __init__(self) -> None:
         self._vad_model = None
@@ -139,6 +138,77 @@ class SiliconFlowASRService:
 
         return final, waveform, sample_rate
 
+    def _probe_duration(self, audio_path: str) -> float:
+        """Return media duration in seconds via ffprobe."""
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(audio_path),
+        ]
+        try:
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            return float(result.stdout.strip())
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                "ffprobe not found in PATH; install FFmpeg for API ASR chunking"
+            ) from e
+        except (subprocess.CalledProcessError, ValueError) as e:
+            raise RuntimeError(f"Failed to probe audio duration: {audio_path}") from e
+
+    def _fixed_chunks(self, audio_path: str, max_duration: float) -> list[dict[str, float]]:
+        """Split by fixed wall-clock duration without local ML dependencies."""
+        duration = self._probe_duration(audio_path)
+        if duration <= 0:
+            return [{"start": 0.0, "end": max_duration}]
+        chunks: list[dict[str, float]] = []
+        start = 0.0
+        while start < duration:
+            end = min(start + max_duration, duration)
+            chunks.append({"start": round(start, 3), "end": round(end, 3)})
+            start = end
+        return chunks or [{"start": 0.0, "end": duration}]
+
+    def _export_chunk_ffmpeg(
+        self,
+        audio_path: str,
+        chunk: dict[str, float],
+        wav_path: str,
+    ) -> None:
+        """Export one mono 16 kHz WAV chunk via ffmpeg."""
+        duration = max(0.0, float(chunk["end"]) - float(chunk["start"]))
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            f"{float(chunk['start']):.3f}",
+            "-t",
+            f"{duration:.3f}",
+            "-i",
+            str(audio_path),
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            wav_path,
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                "ffmpeg not found in PATH; install FFmpeg for API ASR chunking"
+            ) from e
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode(errors="replace") if e.stderr else ""
+            raise RuntimeError(f"ffmpeg failed to export ASR chunk: {stderr[:500]}") from e
+
     def _post_chunk(
         self,
         client: httpx.Client,
@@ -181,13 +251,13 @@ class SiliconFlowASRService:
         language: str | None = None,
         diarize: bool = True,  # noqa: ARG002 — API does not provide diarization
         num_speakers: int | None = None,  # noqa: ARG002
+        chunk_strategy: str | None = None,
     ) -> dict[str, Any]:
-        import torchaudio
-
         rt = get_runtime_settings()
         if not rt.siliconflow_api_key:
             raise RuntimeError(
-                "siliconflow_api_key is empty — configure it in Settings before using this ASR provider"
+                "siliconflow_api_key is empty — configure it in Settings before using this "
+                "ASR provider"
             )
         base = rt.siliconflow_api_base.rstrip("/")
         if not base.endswith("/v1"):
@@ -198,6 +268,7 @@ class SiliconFlowASRService:
         lang_hint = language or (rt.siliconflow_asr_language or None)
         max_chunk = float(rt.siliconflow_asr_max_chunk_sec or 30.0)
         timeout = float(rt.siliconflow_asr_timeout_sec or 120.0)
+        strategy = (chunk_strategy or rt.siliconflow_asr_chunk_strategy or "ffmpeg").strip().lower()
 
         audio_file = Path(audio_path)
         if not audio_file.exists():
@@ -205,25 +276,60 @@ class SiliconFlowASRService:
 
         logger.info(
             f"SiliconFlow ASR: {audio_path} (model={model}, lang={lang_hint or 'auto'}, "
-            f"max_chunk={max_chunk}s)"
+            f"max_chunk={max_chunk}s, chunk_strategy={strategy})"
         )
 
-        chunks, waveform, sample_rate = self._vad_chunks(str(audio_file), max_chunk)
-        logger.info(f"VAD produced {len(chunks)} chunks; uploading serially")
+        waveform = None
+        sample_rate = None
+        use_torchaudio_export = False
+        if strategy in {"vad", "auto"}:
+            try:
+                chunks, waveform, sample_rate = self._vad_chunks(str(audio_file), max_chunk)
+                use_torchaudio_export = True
+                logger.info(f"VAD produced {len(chunks)} chunks; uploading serially")
+            except ImportError as e:
+                if strategy == "vad":
+                    raise RuntimeError(
+                        "SiliconFlow VAD chunking requires local model dependencies. "
+                        "Install them with `uv sync --extra local-asr`, or set "
+                        "siliconflow_asr_chunk_strategy=ffmpeg."
+                    ) from e
+                logger.info("VAD chunking unavailable; falling back to ffmpeg fixed chunks")
+                chunks = self._fixed_chunks(str(audio_file), max_chunk)
+            except Exception:
+                if strategy == "vad":
+                    raise
+                logger.warning(
+                    "VAD chunking failed; falling back to ffmpeg fixed chunks",
+                    exc_info=True,
+                )
+                chunks = self._fixed_chunks(str(audio_file), max_chunk)
+        else:
+            chunks = self._fixed_chunks(str(audio_file), max_chunk)
+        if not use_torchaudio_export:
+            logger.info(f"ffmpeg fixed chunking produced {len(chunks)} chunks; uploading serially")
 
         segments: list[dict[str, Any]] = []
         with httpx.Client(timeout=timeout) as client:
             for i, chunk in enumerate(chunks):
-                start_sample = int(chunk["start"] * sample_rate)
-                end_sample = int(chunk["end"] * sample_rate)
-                chunk_wav = waveform[:, start_sample:end_sample]
-                if chunk_wav.shape[1] < 1600:  # < 0.1s
+                chunk_duration = float(chunk["end"]) - float(chunk["start"])
+                if chunk_duration < 0.1:
                     continue
 
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     tmp_path = tmp.name
                 try:
-                    torchaudio.save(tmp_path, chunk_wav, sample_rate)
+                    if use_torchaudio_export:
+                        import torchaudio
+
+                        start_sample = int(chunk["start"] * sample_rate)
+                        end_sample = int(chunk["end"] * sample_rate)
+                        chunk_wav = waveform[:, start_sample:end_sample]
+                        if chunk_wav.shape[1] < 1600:  # < 0.1s at 16 kHz
+                            continue
+                        torchaudio.save(tmp_path, chunk_wav, sample_rate)
+                    else:
+                        self._export_chunk_ffmpeg(str(audio_file), chunk, tmp_path)
                     text = self._post_chunk(
                         client, url, rt.siliconflow_api_key, model, lang_hint, tmp_path
                     )

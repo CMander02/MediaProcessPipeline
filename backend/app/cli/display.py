@@ -54,6 +54,7 @@ STEP_LABELS = {
     "download": "下载媒体",
     "separate": "分离人声",
     "transcribe": "转录音频",
+    "voiceprint": "声纹识别",
     "analyze": "分析内容",
     "polish": "润色字幕",
     "summarize": "生成摘要",
@@ -155,7 +156,6 @@ def print_task_detail(task: dict) -> None:
     status = task.get("status", "")
     style, icon = icons.get(status, ("", "?"))
 
-    ok  = _icon("✓", "+")
     err = _icon("✗", "x")
     arr = _icon("→", "->")
 
