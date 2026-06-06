@@ -41,3 +41,30 @@ def test_youtube_network_errors_are_classified():
 
     assert ytdlp.is_youtube_network_error(error, "https://www.youtube.com/watch?v=DPe_srf0GlI")
     assert not ytdlp.is_youtube_network_error(error, "https://www.bilibili.com/video/BV123")
+
+
+def test_youtube_rate_limit_errors_are_classified():
+    error = RuntimeError("Unable to download webpage: HTTP Error 429: Too Many Requests")
+
+    assert ytdlp.is_youtube_network_error(error, "https://www.youtube.com/watch?v=gQgKkUsx5q0")
+
+
+def test_ytdlp_base_opts_routes_output_to_logger(monkeypatch):
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setattr(ytdlp, "_proxy_from_windows_user_settings", lambda: "")
+    monkeypatch.setattr(ytdlp, "get_runtime_settings", lambda: RuntimeSettings(youtube_proxy=""))
+
+    opts = ytdlp.ytdlp_base_opts()
+
+    assert "logger" in opts
+    assert opts["noprogress"] is True
+    assert opts["no_color"] is True
+
+
+def test_ytdlp_logger_captures_rate_limit_warning():
+    logger = ytdlp._YtdlpLogger()
+
+    logger.warning("[youtube] Unable to download webpage: HTTP Error 429: Too Many Requests")
+
+    assert logger.has_youtube_network_error("https://www.youtube.com/watch?v=gQgKkUsx5q0")
+    assert "429" in logger.network_error_summary()

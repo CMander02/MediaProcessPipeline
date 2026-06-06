@@ -10,7 +10,7 @@ import httpx
 DEFAULT_BASE_URL = "http://127.0.0.1:18000"
 
 # Disable proxy for localhost — system proxy (e.g. Clash) would intercept otherwise.
-_NO_PROXY = httpx.Client(proxy=None, timeout=10.0)
+_NO_PROXY = httpx.Client(proxy=None, timeout=10.0, trust_env=False)
 
 
 class MppClient:
@@ -23,6 +23,7 @@ class MppClient:
             base_url=self.base_url,
             proxy=None,
             timeout=timeout,
+            trust_env=False,
             headers={"X-Requested-With": "mpp-cli"},
         )
 
@@ -89,7 +90,7 @@ class MppClient:
 
     def stream_task_events(self, task_id: str) -> Generator[dict, None, None]:
         """Stream SSE events for a specific task. Yields parsed event dicts."""
-        with httpx.Client(base_url=self.base_url, proxy=None, timeout=None) as client:
+        with httpx.Client(base_url=self.base_url, proxy=None, timeout=None, trust_env=False) as client:
             with client.stream("GET", f"/api/tasks/{task_id}/events") as response:
                 response.raise_for_status()
                 for line in response.iter_lines():
@@ -101,7 +102,7 @@ class MppClient:
 
     def stream_all_events(self) -> Generator[dict, None, None]:
         """Stream SSE events for ALL tasks. Yields parsed event dicts."""
-        with httpx.Client(base_url=self.base_url, proxy=None, timeout=None) as client:
+        with httpx.Client(base_url=self.base_url, proxy=None, timeout=None, trust_env=False) as client:
             with client.stream("GET", "/api/tasks/events") as response:
                 response.raise_for_status()
                 for line in response.iter_lines():

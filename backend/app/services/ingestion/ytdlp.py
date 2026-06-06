@@ -84,6 +84,8 @@ class YoutubeNetworkError(RuntimeError):
 
 
 _YTDLP_NETWORK_ERROR_MARKERS = (
+    "http error 429",
+    "too many requests",
     "failed to establish a new connection",
     "connection refused",
     "actively refused",
@@ -102,6 +104,39 @@ _YTDLP_NETWORK_ERROR_MARKERS = (
     "unable to connect to proxy",
     "unable to download api page",
 )
+
+
+class _YtdlpLogger:
+    """Route yt-dlp output through app logging instead of raw stderr."""
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def debug(self, msg: str) -> None:
+        if msg.startswith("[debug] "):
+            self.messages.append(msg)
+            log_event(logger, logging.DEBUG, "ytdlp.debug", message=msg)
+
+    def info(self, msg: str) -> None:
+        self.messages.append(msg)
+        log_event(logger, logging.INFO, "ytdlp.info", message=msg)
+
+    def warning(self, msg: str) -> None:
+        self.messages.append(msg)
+        log_event(logger, logging.WARNING, "ytdlp.warning", message=msg)
+
+    def error(self, msg: str) -> None:
+        self.messages.append(msg)
+        log_event(logger, logging.ERROR, "ytdlp.error", message=msg)
+
+    def has_youtube_network_error(self, url: str | None = None) -> bool:
+        return any(is_youtube_network_error(msg, url) for msg in self.messages)
+
+    def network_error_summary(self) -> str:
+        for msg in reversed(self.messages):
+            if is_youtube_network_error(msg):
+                return msg
+        return self.messages[-1] if self.messages else "unknown yt-dlp error"
 
 
 def _normalize_proxy_url(raw: str) -> str:
@@ -177,7 +212,7 @@ def youtube_proxy_url() -> str | None:
     return detected or None
 
 
-def ytdlp_base_opts() -> dict[str, Any]:
+def ytdlp_base_opts(ydl_logger: _YtdlpLogger | None = None) -> dict[str, Any]:
     """Shared yt-dlp options: fail fast on network errors instead of retrying
     forever. Without this, a dead proxy or DNS issue produces ~9 retries
     × multiple clients (tv/android/web) × ~3 socket retries each = looks like
@@ -200,6 +235,9 @@ def ytdlp_base_opts() -> dict[str, Any]:
         "extractor_retries": 3,       # extractor-level retries
         "socket_timeout": 15,         # cap each TCP attempt
         "remote_components": ["ejs:github"],
+        "logger": ydl_logger or _YtdlpLogger(),
+        "noprogress": True,
+        "no_color": True,
     }
     proxy = youtube_proxy_url()
     if proxy is not None:
@@ -218,9 +256,9 @@ def is_youtube_network_error(error: BaseException | str, url: str | None = None)
 
 def _youtube_network_error(url: str, error: BaseException) -> YoutubeNetworkError:
     return YoutubeNetworkError(
-        "YouTube is unreachable after limited yt-dlp retries. "
-        "Check Settings > YouTube > Proxy, or set youtube_proxy to your local proxy "
-        "(for example http://127.0.0.1:7897). "
+        "YouTube is unreachable or rate-limited after limited yt-dlp retries. "
+        "Check Settings > YouTube > Proxy and cookies/browser auth, or set youtube_proxy "
+        "to your local proxy (for example http://127.0.0.1:7897). "
         f"Last error: {error}"
     )
 
@@ -1378,10 +1416,12 @@ class YtdlpService:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Probe all available subtitle languages via yt-dlp metadata
+        metadata_logger = _YtdlpLogger()
+        subtitle_network_error: YoutubeNetworkError | None = None
         metadata_opts = {
             "quiet": True,
             "skip_download": True,
-            **ytdlp_base_opts(),
+            **ytdlp_base_opts(metadata_logger),
             **ytdlp_auth_opts(),
         }
         try:
@@ -1397,6 +1437,8 @@ class YtdlpService:
 
         manual_subs = info.get("subtitles") or {}
         auto_subs = info.get("automatic_captions") or {}
+        if not manual_subs and not auto_subs and metadata_logger.has_youtube_network_error(url):
+            raise _youtube_network_error(url, RuntimeError(metadata_logger.network_error_summary()))
 
         # If user provided langs, filter; otherwise take ALL available
         def _filter(avail: dict, want: list[str] | None) -> list[str]:
@@ -1419,8 +1461,10 @@ class YtdlpService:
         tracks: list[dict[str, Any]] = []
 
         def _try_download(use_auto: bool, target_langs: list[str], type_label: str) -> None:
+            nonlocal subtitle_network_error
             if not target_langs:
                 return
+            subtitle_logger = _YtdlpLogger()
             ydl_opts = {
                 "skip_download": True,
                 "writesubtitles": not use_auto,
@@ -1429,13 +1473,15 @@ class YtdlpService:
                 "subtitlesformat": "json3/srt/best",
                 "outtmpl": str(output_dir / "%(id)s"),
                 "quiet": True,
-                **ytdlp_base_opts(),
+                **ytdlp_base_opts(subtitle_logger),
                 **ytdlp_auth_opts(),
             }
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
             except Exception as e:
+                if is_youtube_network_error(e, url):
+                    raise _youtube_network_error(url, e) from e
                 log_event(
                     logger,
                     logging.WARNING,
@@ -1445,6 +1491,11 @@ class YtdlpService:
                     error=e,
                 )
                 return
+            if subtitle_logger.has_youtube_network_error(url):
+                subtitle_network_error = _youtube_network_error(
+                    url,
+                    RuntimeError(subtitle_logger.network_error_summary()),
+                )
             for lang in target_langs:
                 # Find the file yt-dlp wrote for this lang
                 for ext in ["json3", "srt", "vtt"]:
@@ -1466,6 +1517,8 @@ class YtdlpService:
         _try_download(True, auto_langs, "ai")
 
         if not tracks:
+            if subtitle_network_error:
+                raise subtitle_network_error
             log_event(logger, logging.INFO, "subtitle.empty", url=url, engine="yt-dlp")
             return empty
 

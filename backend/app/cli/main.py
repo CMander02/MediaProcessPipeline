@@ -812,7 +812,7 @@ def tasks(
             from app.core.database import get_task_store, init_db
             init_db()
             store = get_task_store()
-            task_list = store.list(status=status_filter, limit=limit if not all_tasks else 1000)
+            task_list = store.list(status=status_filter, limit=limit)
             task_dicts = [_task_to_dict(t) for t in task_list]
             if not use_json:
                 console.print("[dim](offline — 读取本地 SQLite)[/dim]")
@@ -821,7 +821,7 @@ def tasks(
             raise typer.Exit(1)
     else:
         if all_tasks:
-            task_dicts = client.list_tasks(status=status_filter, limit=1000)
+            task_dicts = client.list_tasks(status=status_filter, limit=limit)
         elif status_filter:
             task_dicts = client.list_tasks(status=status_filter, limit=limit)
         else:
@@ -1066,8 +1066,14 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "anthropic_api_key", "anthropic_api_base", "anthropic_model",
         "openai_api_key", "openai_api_base", "openai_model",
         "custom_api_key", "custom_api_base", "custom_model", "custom_name",
+        "custom_active_profile_id", "custom_llm_profiles",
+        "deepseek_api_key", "deepseek_api_base",
+        "deepseek_analyze_model", "deepseek_analyze_thinking", "deepseek_analyze_effort",
+        "deepseek_polish_model", "deepseek_polish_thinking", "deepseek_polish_effort",
+        "deepseek_summary_model", "deepseek_summary_thinking", "deepseek_summary_effort",
+        "deepseek_mindmap_model", "deepseek_mindmap_thinking", "deepseek_mindmap_effort",
         "local_llm_model_path", "local_llm_n_gpu_layers", "local_llm_n_ctx", "local_llm_n_batch",
-        "polish_provider",
+        "polish_provider", "llm_polish_concurrency",
     ],
     "asr": [
         "asr_provider",
@@ -1078,8 +1084,8 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "siliconflow_asr_timeout_sec", "siliconflow_asr_chunk_strategy",
     ],
     "diarization": [
-        "enable_diarization", "hf_token",
-        "pyannote_model_path", "pyannote_segmentation_path",
+        "enable_diarization", "hf_token", "hf_proxy",
+        "pyannote_model_path", "pyannote_segmentation_path", "pyannote_embedding_path",
         "diarization_batch_size",
     ],
     "subtitle": [
@@ -1094,12 +1100,13 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "data_root",
         "qwen3_asr_model_path", "qwen3_aligner_model_path",
         "uvr_model_dir",
-        "pyannote_model_path", "pyannote_segmentation_path",
+        "pyannote_model_path", "pyannote_segmentation_path", "pyannote_embedding_path",
         "local_llm_model_path",
     ],
     "security": [
         "api_token",
-        "anthropic_api_key", "openai_api_key", "custom_api_key", "hf_token",
+        "anthropic_api_key", "openai_api_key", "custom_api_key", "deepseek_api_key",
+        "hf_token", "hf_proxy",
         "bilibili_sessdata", "bilibili_bili_jct", "bilibili_dede_user_id",
     ],
     "bilibili": [
@@ -1113,7 +1120,7 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
 _SECRET_KEYS = {
     "anthropic_api_key", "openai_api_key", "custom_api_key",
     "deepseek_api_key", "siliconflow_api_key",
-    "hf_token", "api_token",
+    "hf_token", "hf_proxy", "api_token",
     "bilibili_sessdata", "bilibili_bili_jct",
 }
 
