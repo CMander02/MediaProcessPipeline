@@ -30,6 +30,9 @@ _TIMESTAMP_RE = re.compile(
     r"\s*\[(\d{1,2}:\d{2}(?::\d{2})?(?:[,.]\d{1,3})?)"
     r"(?:\s*-\s*(\d{1,2}:\d{2}(?::\d{2})?(?:[,.]\d{1,3})?))?\]\s*$"
 )
+_SPEAKER_PREFIX_RE = re.compile(r"^\s*\[([^\]]+)\]\s*(.*)$", re.DOTALL)
+_SENTENCE_SPLIT_RE = re.compile(r"[^。！？!?；;\n]+[。！？!?；;]*[”’）】》」』]*")
+_SENTENCE_END_RE = re.compile(r"(?:[。！？!?；;]|(?<!\d)\.)[\"'”’）】》」』]*$")
 
 
 def _timestamp_to_seconds(value: str | None) -> float | None:
@@ -44,6 +47,18 @@ def _timestamp_to_seconds(value: str | None) -> float | None:
         return float(parts[0])
     except (TypeError, ValueError):
         return None
+
+
+def _seconds_to_srt_timestamp(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    total_ms = int(round(seconds * 1000))
+    ms = total_ms % 1000
+    total_s = total_ms // 1000
+    s = total_s % 60
+    total_m = total_s // 60
+    m = total_m % 60
+    h = total_m // 60
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
 def _split_mindmap_line(line: str) -> tuple[int, str, float | None, float | None] | None:
@@ -212,6 +227,33 @@ def offload_local_llm() -> None:
             pass
 
 
+def _get_deepseek_params(stage: str = "polish") -> dict[str, Any] | None:
+    """Build OpenAI SDK kwargs for DeepSeek's OpenAI-compatible API."""
+    rt = get_runtime_settings()
+    if not rt.deepseek_api_key:
+        return None
+
+    stage_map = {
+        "analyze": (rt.deepseek_analyze_model, rt.deepseek_analyze_thinking, rt.deepseek_analyze_effort),
+        "polish": (rt.deepseek_polish_model, rt.deepseek_polish_thinking, rt.deepseek_polish_effort),
+        "summary": (rt.deepseek_summary_model, rt.deepseek_summary_thinking, rt.deepseek_summary_effort),
+        "mindmap": (rt.deepseek_mindmap_model, rt.deepseek_mindmap_thinking, rt.deepseek_mindmap_effort),
+    }
+    model_name, thinking_type, effort = stage_map.get(stage, stage_map["polish"])
+    if not model_name:
+        return None
+
+    params: dict[str, Any] = {
+        "model": model_name,
+        "api_key": rt.deepseek_api_key,
+        "api_base": rt.deepseek_api_base or "https://api.deepseek.com",
+        "extra_body": {"thinking": {"type": "enabled" if thinking_type == "enabled" else "disabled"}},
+    }
+    if thinking_type == "enabled" and effort:
+        params["reasoning_effort"] = effort
+    return params
+
+
 def _get_litellm_params(provider_override: str = "", stage: str = "polish") -> dict[str, Any] | None:
     """Build litellm.acompletion kwargs from runtime settings.
 
@@ -250,28 +292,15 @@ def _get_litellm_params(provider_override: str = "", stage: str = "polish") -> d
             params["api_base"] = rt.openai_api_base
 
     elif provider == "deepseek":
-        if not rt.deepseek_api_key:
+        deepseek_params = _get_deepseek_params(stage)
+        if deepseek_params is None:
             return None
-        stage_map = {
-            "analyze": (rt.deepseek_analyze_model, rt.deepseek_analyze_thinking, rt.deepseek_analyze_effort),
-            "polish":  (rt.deepseek_polish_model,  rt.deepseek_polish_thinking,  rt.deepseek_polish_effort),
-            "summary": (rt.deepseek_summary_model, rt.deepseek_summary_thinking, rt.deepseek_summary_effort),
-            "mindmap": (rt.deepseek_mindmap_model, rt.deepseek_mindmap_thinking, rt.deepseek_mindmap_effort),
-        }
-        model_name, thinking_type, effort = stage_map.get(stage, stage_map["polish"])
-        if not model_name:
-            return None
-        params["model"] = f"openai/{model_name}"  # DeepSeek is OpenAI-compatible
-        params["api_key"] = rt.deepseek_api_key
-        params["api_base"] = rt.deepseek_api_base or "https://api.deepseek.com"
-        # Thinking control via extra_body (LiteLLM passes this through)
-        if thinking_type == "enabled":
-            thinking_body: dict[str, Any] = {"type": "enabled"}
-            if effort:
-                thinking_body["reasoning_effort"] = effort
-            params["extra_body"] = {"thinking": thinking_body}
-        else:
-            params["extra_body"] = {"thinking": {"type": "disabled"}}
+        params["model"] = f"openai/{deepseek_params['model']}"  # DeepSeek is OpenAI-compatible
+        params["api_key"] = deepseek_params["api_key"]
+        params["api_base"] = deepseek_params["api_base"]
+        params["extra_body"] = deepseek_params["extra_body"]
+        if deepseek_params.get("reasoning_effort"):
+            params["reasoning_effort"] = deepseek_params["reasoning_effort"]
 
     elif provider == "custom":
         if not rt.custom_api_base or not rt.custom_model:
@@ -366,8 +395,6 @@ class LLMService:
         provider_override: str = "",
         stage: str = "polish",
     ) -> str:
-        import litellm
-
         rt = get_runtime_settings()
         provider = provider_override or rt.llm_provider
 
@@ -380,6 +407,10 @@ class LLMService:
             provider = rt.llm_provider
             provider_override = ""
 
+        if provider == "deepseek":
+            return await self._call_deepseek(prompt, stage=stage, max_retries=max_retries)
+
+        import litellm
         params = _get_litellm_params(provider_override=provider_override, stage=stage)
         if params is None:
             log_event(logger, logging.WARNING, "llm.not_configured", provider=provider)
@@ -411,6 +442,72 @@ class LLMService:
                 "llm.call.failed",
                 provider=provider,
                 model=model,
+                stage=stage,
+                duration_ms=round((time.perf_counter() - t0) * 1000),
+                error=e,
+            )
+            raise
+
+    async def _call_deepseek(
+        self,
+        prompt: str,
+        *,
+        stage: str = "polish",
+        max_retries: int = 3,
+    ) -> str:
+        """Call DeepSeek through the OpenAI SDK so native v4 options pass through."""
+        params = _get_deepseek_params(stage)
+        if params is None:
+            log_event(logger, logging.WARNING, "llm.not_configured", provider="deepseek")
+            return "[LLM not configured]"
+
+        import httpx
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(
+            base_url=params["api_base"],
+            api_key=params["api_key"],
+            max_retries=max_retries,
+            timeout=httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0),
+        )
+        request: dict[str, Any] = {
+            "model": params["model"],
+            "messages": [{"role": "user", "content": prompt}],
+            "extra_body": params["extra_body"],
+        }
+        if params.get("reasoning_effort"):
+            request["reasoning_effort"] = params["reasoning_effort"]
+
+        t0 = time.perf_counter()
+        log_event(
+            logger,
+            logging.INFO,
+            "llm.call.started",
+            provider="deepseek",
+            model=params["model"],
+            stage=stage,
+        )
+        try:
+            response = await client.chat.completions.create(**request)
+            content = response.choices[0].message.content or ""
+            log_event(
+                logger,
+                logging.INFO,
+                "llm.call.completed",
+                provider="deepseek",
+                model=params["model"],
+                stage=stage,
+                duration_ms=round((time.perf_counter() - t0) * 1000),
+                chars=len(content),
+            )
+            return content
+        except Exception as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "llm.call.failed",
+                provider="deepseek",
+                model=params["model"],
                 stage=stage,
                 duration_ms=round((time.perf_counter() - t0) * 1000),
                 error=e,
@@ -499,6 +596,297 @@ class LLMService:
         for seg in segments:
             result.append(f"{seg['index']}\n{seg['timestamp']}\n{seg['text']}")
         return '\n\n'.join(result)
+
+    @staticmethod
+    def _split_speaker_prefix(text: str) -> tuple[str | None, str]:
+        """Return (speaker, body) for text starting with a [speaker] tag."""
+        match = _SPEAKER_PREFIX_RE.match(text.strip())
+        if not match:
+            return None, text.strip()
+        return match.group(1).strip(), match.group(2).strip()
+
+    @staticmethod
+    def _timestamp_bounds(timestamp: str) -> tuple[str, str]:
+        if "-->" not in timestamp:
+            ts = timestamp.strip()
+            return ts, ts
+        start, end = timestamp.split("-->", 1)
+        return start.strip(), end.strip()
+
+    @staticmethod
+    def _join_turn_text(existing: str, new_text: str) -> str:
+        """Join cue text fragments without inserting noisy spaces in Chinese."""
+        existing = existing.strip()
+        new_text = new_text.strip()
+        if not existing:
+            return new_text
+        if not new_text:
+            return existing
+        prev_core = existing.rstrip("\"'”’）】》」』")
+        prev = prev_core[-1] if prev_core else existing[-1]
+        nxt = new_text[0]
+        if (
+            prev.isascii()
+            and nxt.isascii()
+            and (prev.isalnum() or prev in ".,!?;:)]}\"'")
+            and (nxt.isalnum() or nxt in "([{\"'")
+        ):
+            return f"{existing} {new_text}"
+        return f"{existing}{new_text}"
+
+    @staticmethod
+    def _split_sentence_like(text: str) -> list[str]:
+        """Split Chinese and English transcript text at likely sentence endings."""
+        closers = "\"'”’）】》」』"
+        pieces: list[str] = []
+        start = 0
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            boundary = ch in "。！？!?；;"
+            if ch == ".":
+                prev = text[i - 1] if i > 0 else ""
+                nxt = text[i + 1] if i + 1 < len(text) else ""
+                if not (prev.isdigit() and nxt.isdigit()):
+                    j = i + 1
+                    while j < len(text) and text[j] in closers:
+                        j += 1
+                    boundary = j >= len(text) or text[j].isspace()
+            if boundary:
+                end = i + 1
+                while end < len(text) and text[end] in closers:
+                    end += 1
+                piece = text[start:end].strip()
+                if piece:
+                    pieces.append(piece)
+                start = end
+                i = end
+                continue
+            i += 1
+
+        tail = text[start:].strip()
+        if tail:
+            pieces.append(tail)
+        return pieces
+
+    @staticmethod
+    def _split_text_for_readable_turns(text: str, max_chars: int) -> list[str]:
+        """Split text into sentence-ish pieces, with a comma/length fallback."""
+        normalized = re.sub(r"\s+", " ", text.strip())
+        normalized = re.sub(
+            r"((?<!\d)[.!?][\"'”’）】》」』]*)(?=[A-Z])",
+            r"\1 ",
+            normalized,
+        )
+        if not normalized:
+            return []
+
+        pieces = LLMService._split_sentence_like(normalized) or [normalized]
+
+        result: list[str] = []
+        hard_limit = max(max_chars, 80)
+        soft_limit = max(80, min(hard_limit, max_chars))
+        for piece in pieces:
+            if len(piece) <= hard_limit:
+                result.append(piece)
+                continue
+            comma_parts = [
+                part.strip()
+                for part in re.split(r"(?<=[，,、：:])", piece)
+                if part.strip()
+            ]
+            current = ""
+            for part in comma_parts or [piece]:
+                if current and len(current) + len(part) > soft_limit:
+                    result.append(current)
+                    current = part
+                else:
+                    current = current + part
+            if current:
+                while len(current) > hard_limit:
+                    result.append(current[:hard_limit])
+                    current = current[hard_limit:]
+                if current:
+                    result.append(current)
+        return result
+
+    @staticmethod
+    def _sentence_count(text: str) -> int:
+        count = len(re.findall(r"[。！？!?；;]|(?<!\d)\.(?=\s|$|[\"'”’）】》」』])", text))
+        return max(1, count) if text.strip() else 0
+
+    @staticmethod
+    def _ends_sentence(text: str) -> bool:
+        return bool(_SENTENCE_END_RE.search(text.strip()))
+
+    def _segment_to_readable_events(
+        self,
+        seg: dict[str, Any],
+        *,
+        max_chars: int,
+    ) -> list[dict[str, Any]]:
+        speaker, body = self._split_speaker_prefix(str(seg.get("text", "")))
+        pieces = self._split_text_for_readable_turns(body, max_chars=max_chars)
+        if not pieces:
+            return []
+
+        start_ts, end_ts = self._timestamp_bounds(str(seg.get("timestamp", "")))
+        start_s = _timestamp_to_seconds(start_ts)
+        end_s = _timestamp_to_seconds(end_ts)
+        if start_s is None or end_s is None or end_s <= start_s or len(pieces) == 1:
+            return [
+                {
+                    "speaker": speaker,
+                    "start": start_ts,
+                    "end": end_ts,
+                    "start_s": start_s,
+                    "end_s": end_s,
+                    "text": pieces[0] if len(pieces) == 1 else "".join(pieces),
+                }
+            ]
+
+        total_chars = max(1, sum(len(piece) for piece in pieces))
+        cursor_chars = 0
+        events: list[dict[str, Any]] = []
+        for piece in pieces:
+            piece_start_s = start_s + (end_s - start_s) * (cursor_chars / total_chars)
+            cursor_chars += len(piece)
+            piece_end_s = start_s + (end_s - start_s) * (cursor_chars / total_chars)
+            events.append(
+                {
+                    "speaker": speaker,
+                    "start": _seconds_to_srt_timestamp(piece_start_s),
+                    "end": _seconds_to_srt_timestamp(piece_end_s),
+                    "start_s": piece_start_s,
+                    "end_s": piece_end_s,
+                    "text": piece,
+                }
+            )
+        return events
+
+    def merge_consecutive_speaker_segments(
+        self,
+        srt_content: str,
+        *,
+        max_chars: int = 180,
+        max_duration: float = 30.0,
+        max_sentences: int = 3,
+        max_gap: float = 2.0,
+    ) -> str:
+        """Merge adjacent SRT cues by speaker, then split into readable turns.
+
+        The LLM polishing step intentionally preserves cue count while it fixes
+        words and punctuation. This deterministic pass converts those polished
+        cues into dialogue turns: adjacent same-speaker cues are combined, but
+        the result is cut at sentence boundaries when a turn gets too long.
+        Empty speaker-only cues are ignored so they do not split a turn.
+        """
+        segments = self._parse_srt(srt_content)
+        if not segments:
+            return srt_content
+
+        events: list[dict[str, Any]] = []
+        for seg in segments:
+            events.extend(self._segment_to_readable_events(seg, max_chars=max_chars))
+        if not events:
+            return srt_content
+
+        readable: list[dict[str, Any]] = []
+        current: dict[str, Any] | None = None
+
+        def flush_current() -> None:
+            nonlocal current
+            if current is not None and str(current.get("text", "")).strip():
+                readable.append(current)
+            current = None
+
+        def duration_with(event: dict[str, Any]) -> float:
+            if current is None:
+                return 0.0
+            start_s = current.get("start_s")
+            end_s = event.get("end_s")
+            if start_s is None or end_s is None:
+                return 0.0
+            return float(end_s) - float(start_s)
+
+        for event in events:
+            speaker = event.get("speaker")
+            if (
+                current is not None
+                and (
+                    speaker != current.get("speaker")
+                    or (
+                        event.get("start_s") is not None
+                        and current.get("end_s") is not None
+                        and float(event["start_s"]) - float(current["end_s"]) > max_gap
+                    )
+                )
+            ):
+                flush_current()
+
+            if current is not None:
+                projected = self._join_turn_text(str(current["text"]), str(event["text"]))
+                current_can_end = self._ends_sentence(str(current["text"]))
+                projected_duration = duration_with(event)
+                hard_split = len(projected) > max_chars or projected_duration > max_duration
+                sentence_split = current_can_end and (
+                    int(current.get("sentences", 0)) >= max_sentences
+                    or hard_split
+                )
+                should_split = hard_split or sentence_split
+                if should_split:
+                    flush_current()
+
+            if current is None:
+                current = {
+                    "speaker": speaker,
+                    "start": event["start"],
+                    "end": event["end"],
+                    "start_s": event.get("start_s"),
+                    "end_s": event.get("end_s"),
+                    "text": str(event["text"]).strip(),
+                    "sentences": self._sentence_count(str(event["text"])),
+                }
+            else:
+                current["end"] = event["end"]
+                current["end_s"] = event.get("end_s")
+                current["text"] = self._join_turn_text(
+                    str(current["text"]),
+                    str(event["text"]),
+                )
+                current["sentences"] = int(current.get("sentences", 0)) + self._sentence_count(
+                    str(event["text"])
+                )
+
+            current_duration = 0.0
+            if current.get("start_s") is not None and current.get("end_s") is not None:
+                current_duration = float(current["end_s"]) - float(current["start_s"])
+            if self._ends_sentence(str(current["text"])) and (
+                int(current.get("sentences", 0)) >= max_sentences
+                or len(str(current["text"])) >= max_chars
+                or current_duration >= max_duration
+            ):
+                flush_current()
+
+        flush_current()
+
+        if not readable:
+            return srt_content
+
+        output_segments: list[dict[str, Any]] = []
+        for index, item in enumerate(readable, 1):
+            speaker = item.get("speaker")
+            text = str(item["text"]).strip()
+            if speaker:
+                text = f"[{speaker}] {text}"
+            output_segments.append(
+                {
+                    "index": index,
+                    "timestamp": f"{item['start']} --> {item['end']}",
+                    "text": text,
+                }
+            )
+        return self._segments_to_srt(output_segments)
 
     def _parse_polish_response(
         self, response: str, fallback_segments: list[dict]
@@ -607,9 +995,19 @@ class LLMService:
             max_concurrency: Maximum parallel LLM calls (default 8)
             provider_override: If non-empty, use this provider instead of global llm_provider
         """
-        # Local GGUF is single-threaded; serialise chunks
-        if self._effective_provider(provider_override) == "local":
+        # Local GGUF is single-threaded; serialise chunks.
+        effective_provider = self._effective_provider(provider_override)
+        if effective_provider == "local":
             max_concurrency = 1
+        else:
+            rt = get_runtime_settings()
+            try:
+                configured = int(
+                    getattr(rt, "llm_polish_concurrency", max_concurrency) or max_concurrency
+                )
+            except (TypeError, ValueError):
+                configured = max_concurrency
+            max_concurrency = max(1, min(max_concurrency, configured))
 
         segments = self._parse_srt(srt_content)
         if not segments:
@@ -703,10 +1101,17 @@ class LLMService:
 
         # Process all chunks in parallel (with semaphore limiting concurrency)
         tasks = [
-            process_chunk(idx, start, end, segs)
+            asyncio.create_task(process_chunk(idx, start, end, segs))
             for idx, start, end, segs in chunks
         ]
-        results = await asyncio.gather(*tasks)
+        try:
+            results = await asyncio.gather(*tasks)
+        except Exception:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
         # Sort by chunk index to maintain order
         results.sort(key=lambda x: x[0])
@@ -733,7 +1138,18 @@ class LLMService:
             input_segments=len(segments),
             output_segments=len(polished_segments),
         )
-        return self._segments_to_srt(polished_segments)
+        merged_srt = self.merge_consecutive_speaker_segments(
+            self._segments_to_srt(polished_segments)
+        )
+        merged_count = len(self._parse_srt(merged_srt))
+        log_event(
+            logger,
+            logging.INFO,
+            "llm.polish.turn_merge_completed",
+            input_segments=len(polished_segments),
+            output_segments=merged_count,
+        )
+        return merged_srt
 
     async def polish(self, text: str, context: dict[str, Any] | None = None) -> str:
         """Polish text, optionally with context from analysis phase.
@@ -758,44 +1174,18 @@ class LLMService:
     def srt_to_markdown(self, srt_content: str, title: str = "") -> str:
         """
         Convert polished SRT to a clean Markdown document.
-        Groups consecutive segments by speaker and merges them into paragraphs.
+        Preserves SRT cue boundaries as readable paragraphs.
         """
         segments = self._parse_srt(srt_content)
         if not segments:
             return srt_content
 
-        # Group segments by speaker
-        paragraphs = []
-        current_speaker = None
-        current_texts = []
-
+        paragraphs: list[dict[str, str | None]] = []
         for seg in segments:
             text = seg['text'].strip()
-            # Extract speaker if present
-            speaker = None
-            if text.startswith('[') and ']' in text:
-                bracket_end = text.index(']')
-                speaker = text[1:bracket_end]
-                text = text[bracket_end + 1:].strip()
-
-            # If speaker changed, save current paragraph
-            if speaker != current_speaker and current_texts:
-                paragraphs.append({
-                    'speaker': current_speaker,
-                    'text': ' '.join(current_texts)
-                })
-                current_texts = []
-
-            current_speaker = speaker
+            speaker, text = self._split_speaker_prefix(text)
             if text:
-                current_texts.append(text)
-
-        # Don't forget the last paragraph
-        if current_texts:
-            paragraphs.append({
-                'speaker': current_speaker,
-                'text': ' '.join(current_texts)
-            })
+                paragraphs.append({"speaker": speaker, "text": text})
 
         # Build markdown
         lines = []
@@ -1097,6 +1487,11 @@ async def analyze_content(
 async def polish_text(text: str, context: dict[str, Any] | None = None) -> str:
     """Polish text with optional context (Phase 2)."""
     return await get_llm_service().polish(text, context)
+
+
+def merge_consecutive_speaker_segments(srt_content: str, **kwargs: Any) -> str:
+    """Merge adjacent polished SRT cues from the same speaker into dialogue turns."""
+    return get_llm_service().merge_consecutive_speaker_segments(srt_content, **kwargs)
 
 
 def srt_to_markdown(srt_content: str, title: str = "") -> str:

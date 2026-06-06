@@ -14,6 +14,11 @@ def polish_text(*args, **kwargs):
     return _fn(*args, **kwargs)
 
 
+def merge_consecutive_speaker_segments(*args, **kwargs):
+    from app.services.analysis.llm import merge_consecutive_speaker_segments as _fn
+    return _fn(*args, **kwargs)
+
+
 def summarize_text(*args, **kwargs):
     from app.services.analysis.llm import summarize_text as _fn
     return _fn(*args, **kwargs)
@@ -37,6 +42,7 @@ def srt_to_markdown(*args, **kwargs):
 __all__ = [
     "analyze_content",
     "polish_text",
+    "merge_consecutive_speaker_segments",
     "summarize_text",
     "generate_mindmap",
     "generate_detail",

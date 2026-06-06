@@ -513,8 +513,10 @@ async def process_subtitles(
     )
 
     # Step 4: Convert to output formats
-    polished_srt = _paragraphs_to_srt(all_paragraphs)
-    polished_md = _paragraphs_to_markdown(all_paragraphs, metadata.title)
+    polished_srt = llm_service.merge_consecutive_speaker_segments(
+        _paragraphs_to_srt(all_paragraphs)
+    )
+    polished_md = llm_service.srt_to_markdown(polished_srt, metadata.title)
 
     # Build segments list (compatible with ASR output)
     result_segments = []
