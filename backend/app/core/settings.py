@@ -114,7 +114,8 @@ class RuntimeSettings(BaseModel):
     # Voiceprint (speaker embedding) library
     enable_voiceprint: bool = True
     voiceprint_match_threshold: float = 0.75      # >= → auto-merge into existing person
-    voiceprint_suggest_threshold: float = 0.60    # [suggest, match) → suggest but create new; < suggest → new person
+    # [suggest, match) -> suggest but create new; < suggest -> new person
+    voiceprint_suggest_threshold: float = 0.60
 
     # Platform Subtitles
     prefer_platform_subtitles: bool = True  # Use platform subtitles when available
@@ -131,6 +132,8 @@ class RuntimeSettings(BaseModel):
     uvr_kim_vocal_2_path: str = ""
     uvr_deecho_dereverb_path: str = ""
     uvr_htdemucs_path: str = ""
+    # audio-separator chunking guard for long files; 0 disables chunking.
+    uvr_chunk_duration_sec: float = 300.0
 
     # Local LLM (transformers + safetensors)
     local_llm_model_path: str = ""          # Path to HuggingFace model directory
@@ -141,7 +144,8 @@ class RuntimeSettings(BaseModel):
     local_llm_n_gpu_layers: int = -1
     local_llm_n_ctx: int = 16384
     local_llm_n_batch: int = 512
-    polish_provider: str = "local"          # "" = follow llm_provider, or local/anthropic/openai/custom
+    # "" = follow llm_provider, or local/anthropic/openai/custom
+    polish_provider: str = "local"
     llm_polish_concurrency: int = 4
 
     # Concurrency
@@ -168,7 +172,8 @@ class RuntimeSettings(BaseModel):
     bilibili_bili_jct: str = ""
     bilibili_dede_user_id: str = ""
     bilibili_preferred_quality: int = 64   # qn: 16=360P 32=480P 64=720P 80=1080P
-    bilibili_subtitle_engine: str = "native_wbi"  # Bilibili subtitles use native WBI API, not yt-dlp
+    # Bilibili subtitles use native WBI API, not yt-dlp
+    bilibili_subtitle_engine: str = "native_wbi"
     bilibili_subtitle_strict_validation: bool = True
     bilibili_subtitle_min_coverage: float = 0.60
     bilibili_subtitle_allow_legacy_fallback: bool = False
@@ -226,6 +231,13 @@ class RuntimeSettings(BaseModel):
         if strategy not in {"ffmpeg", "vad", "auto"}:
             raise ValueError("siliconflow_asr_chunk_strategy must be one of: ffmpeg, vad, auto")
         return strategy
+
+    @field_validator("uvr_chunk_duration_sec")
+    @classmethod
+    def _validate_uvr_chunk_duration_sec(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("uvr_chunk_duration_sec must be greater than or equal to 0")
+        return value
 
     @field_validator("bilibili_subtitle_engine")
     @classmethod

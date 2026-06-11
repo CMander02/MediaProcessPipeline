@@ -531,6 +531,46 @@ def _cleanup_vocals(task_dir: Path, audio_path: str | None, vocals_path: str | N
         )
 
 
+def _release_uvr_gpu_resources() -> None:
+    """Unload UVR before ASR/local LLM steps that need the same GPU memory."""
+    import gc
+
+    try:
+        from app.services.preprocessing.uvr import release_uvr_service
+
+        release_uvr_service()
+        log_event(logger, logging.INFO, "gpu.uvr.release")
+    except Exception as e:
+        log_event(logger, logging.WARNING, "gpu.uvr.release_failed", error=e)
+
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            log_event(logger, logging.INFO, "gpu.cuda_cache.cleared")
+    except Exception as e:
+        log_event(logger, logging.WARNING, "gpu.cuda_cache.clear_failed", error=e)
+
+    try:
+        gc.collect()
+        log_event(logger, logging.INFO, "runtime.gc.collected")
+    except Exception:
+        pass
+
+
+def _require_audio_file(path: str | None, *, stage: str) -> str:
+    """Return a concrete audio path or raise a stage-specific error."""
+    if not path:
+        raise RuntimeError(f"{stage} requires an audio file, but no audio path is available")
+    audio_file = Path(path)
+    if not audio_file.exists():
+        raise FileNotFoundError(f"{stage} audio file does not exist: {path}")
+    if not audio_file.is_file():
+        raise ValueError(f"{stage} audio path is not a file: {path}")
+    return str(audio_file)
+
+
 def _cleanup_extracted_audio(task_dir: Path, audio_path: str | None, media_type: str | None) -> None:
     """Clean up the working WAV when a compressed source is preserved.
 
@@ -1697,9 +1737,30 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 if skip_separation:
                     vocals_path = audio_path
                 else:
-                    preprocess = await separate_vocals(audio_path, output_dir=task_dir)
+                    source_audio = _require_audio_file(audio_path, stage="UVR separation")
+                    try:
+                        try:
+                            preprocess = await separate_vocals(source_audio, output_dir=task_dir)
+                        except Exception as e:
+                            log_event(
+                                logger,
+                                logging.WARNING,
+                                "uvr.separation.failed_fallback",
+                                error=e,
+                                fallback="original_audio",
+                            )
+                            metadata.extra["uvr_error"] = str(e)
+                            metadata.extra["uvr_fallback"] = "original_audio"
+                            vocals_path = source_audio
+                        else:
+                            vocals_path = preprocess.get("vocals_path") or source_audio
+                            vocals_path = _require_audio_file(
+                                vocals_path,
+                                stage="UVR separation output",
+                            )
+                    finally:
+                        await asyncio.to_thread(_release_uvr_gpu_resources)
                     await _raise_if_cancelled(task.id)
-                    vocals_path = preprocess.get("vocals_path", audio_path)
                 await _update_step(task, PipelineStep.SEPARATE, completed=True)
 
             # Step 3: Transcribe
@@ -1744,8 +1805,9 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     asr_provider = task.options.get("asr_provider")
                     if task.options.get("api_flow", False) and not asr_provider:
                         asr_provider = "siliconflow"
+                    asr_audio_path = _require_audio_file(vocals_path, stage="ASR transcription")
                     recognition = await transcribe_audio(
-                        vocals_path,
+                        asr_audio_path,
                         output_dir=task_dir,
                         num_speakers=num_speakers,
                         provider=asr_provider,

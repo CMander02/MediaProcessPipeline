@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     uvr_kim_vocal_2_path: str = ""
     uvr_deecho_dereverb_path: str = ""
     uvr_htdemucs_path: str = ""
+    uvr_chunk_duration_sec: float = 300.0
 
     # =========================================================================
     # Other settings

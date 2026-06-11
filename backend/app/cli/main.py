@@ -1095,6 +1095,7 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "uvr_model", "uvr_device", "uvr_model_dir",
         "uvr_mdx_inst_hq3_path", "uvr_hp_uvr_path", "uvr_denoise_lite_path",
         "uvr_kim_vocal_2_path", "uvr_deecho_dereverb_path", "uvr_htdemucs_path",
+        "uvr_chunk_duration_sec",
     ],
     "paths": [
         "data_root",

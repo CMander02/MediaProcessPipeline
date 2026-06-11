@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from app.core.config import get_settings
 from app.core.settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
@@ -35,6 +34,14 @@ class UVRService:
         self._separator = None
         self._current_model: str | None = None
         self._current_model_dir: str | None = None
+        self._current_chunk_duration: float | None = None
+
+    def release(self) -> None:
+        """Release the loaded separator so downstream GPU steps can use VRAM."""
+        self._separator = None
+        self._current_model = None
+        self._current_model_dir = None
+        self._current_chunk_duration = None
 
     def _get_model_path(self, model_name: str) -> str | None:
         """Get specific model path from runtime settings."""
@@ -54,12 +61,15 @@ class UVRService:
         rt = get_runtime_settings()
         model_name = rt.uvr_model
         model_dir = rt.uvr_model_dir
+        chunk_duration = float(getattr(rt, "uvr_chunk_duration_sec", 300.0) or 0)
+        chunk_duration_arg = chunk_duration if chunk_duration > 0 else None
 
         # Check if we need to reinitialize (settings changed)
         if (
             self._separator is not None
             and self._current_model == model_name
             and self._current_model_dir == model_dir
+            and self._current_chunk_duration == chunk_duration_arg
         ):
             return
 
@@ -73,6 +83,10 @@ class UVRService:
                 base_model_dir = find_local_uvr_model_dir()
 
             logger.info(f"Loading UVR model: {model_name}")
+            if chunk_duration_arg:
+                logger.info(f"UVR chunked processing enabled: {chunk_duration_arg:.0f}s chunks")
+            else:
+                logger.info("UVR chunked processing disabled")
 
             # Determine which subdirectory contains the model
             # audio-separator expects model_file_dir to be the directory containing the model file
@@ -120,6 +134,7 @@ class UVRService:
                     output_format="wav",
                     model_file_dir=str(model_file_dir),
                     output_single_stem="Vocals",
+                    chunk_duration=chunk_duration_arg,
                 )
                 # Load using filename (not full path) since we set model_file_dir
                 self._separator.load_model(model_file.name)
@@ -130,6 +145,7 @@ class UVRService:
                     output_format="wav",
                     model_file_dir=str(base_model_dir / "MDX_Net_Models"),
                     output_single_stem="Vocals",
+                    chunk_duration=chunk_duration_arg,
                 )
                 self._separator.load_model(model_name)
             else:
@@ -138,16 +154,21 @@ class UVRService:
                 self._separator = Separator(
                     output_format="wav",
                     output_single_stem="Vocals",
+                    chunk_duration=chunk_duration_arg,
                 )
                 self._separator.load_model(model_name)
 
             self._current_model = model_name
             self._current_model_dir = model_dir
+            self._current_chunk_duration = chunk_duration_arg
 
         except ImportError:
             logger.warning("audio-separator not installed - mock mode")
 
     def separate(self, audio_path: str, output_dir: Path | None = None) -> dict[str, Any]:
+        if not audio_path:
+            raise ValueError("UVR separation requires a non-empty audio path")
+
         self._ensure_init()
 
         audio_file = Path(audio_path)
@@ -173,6 +194,11 @@ class UVRService:
 
         logger.info(f"Separating vocals: {audio_path} -> {output_dir_abs}")
         output_files = self._separator.separate(str(audio_file))
+        if not output_files:
+            raise RuntimeError(
+                f"UVR separation did not produce any output for {audio_path}. "
+                "Check the preceding UVR log entries for the underlying failure."
+            )
 
         # With output_single_stem="Vocals", only vocals file is produced
         # Note: audio-separator may return just filename or relative path,
@@ -202,6 +228,12 @@ class UVRService:
                 else:
                     vocals_path = f
 
+        if not vocals_path or not Path(vocals_path).exists():
+            raise RuntimeError(
+                f"UVR separation did not produce a vocals file for {audio_path}. "
+                f"Outputs: {output_files}"
+            )
+
         rt = get_runtime_settings()
         return {
             "input_path": audio_path,
@@ -219,6 +251,11 @@ def get_uvr_service() -> UVRService:
     if _service is None:
         _service = UVRService()
     return _service
+
+
+def release_uvr_service() -> None:
+    if _service is not None:
+        _service.release()
 
 
 async def separate_vocals(audio_path: str, output_dir: Path | None = None) -> dict[str, Any]:

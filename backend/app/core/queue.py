@@ -33,13 +33,11 @@ def _flush_gpu_models() -> None:
     """Release all GPU models to free VRAM. Runs in a thread (torch calls are blocking)."""
     import gc
     try:
-        from app.services.preprocessing.uvr import get_uvr_service
-        svc = get_uvr_service()
-        if svc._separator is not None:
+        from app.services.preprocessing.uvr import get_uvr_service, release_uvr_service
+
+        if get_uvr_service()._separator is not None:
             log_event(logger, logging.INFO, "gpu.uvr.release")
-            svc._separator = None
-            svc._current_model = None
-            svc._current_model_dir = None
+            release_uvr_service()
     except Exception as e:
         log_event(logger, logging.WARNING, "gpu.uvr.release_failed", error=e)
     try:
