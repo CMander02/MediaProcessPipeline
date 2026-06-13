@@ -3,11 +3,12 @@
 import logging
 import mimetypes
 import os
+from email.utils import formatdate
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Query, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Query, HTTPException, Request
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/filesystem", tags=["filesystem"])
@@ -215,8 +216,80 @@ def _ensure_browser_playable(file_path: Path) -> tuple[Path, str]:
     return mp3_path, "audio/mpeg"
 
 
-@router.get("/media")
+def _parse_range_header(range_header: str | None, file_size: int) -> tuple[int, int] | None:
+    """Parse a single HTTP byte range.
+
+    Returns None when there is no usable range. Raises HTTPException for an
+    unsatisfiable range so browsers can retry cleanly.
+    """
+    if not range_header:
+        return None
+
+    unit, sep, spec = range_header.partition("=")
+    if sep != "=" or unit.strip().lower() != "bytes" or not spec.strip():
+        return None
+
+    # Browsers issue single ranges for media seeks. Ignore additional ranges
+    # instead of trying to produce multipart/byteranges.
+    first_range = spec.split(",", 1)[0].strip()
+    start_text, dash, end_text = first_range.partition("-")
+    if dash != "-":
+        return None
+
+    try:
+        if start_text == "":
+            suffix_length = int(end_text)
+            if suffix_length <= 0:
+                raise ValueError
+            start = max(file_size - suffix_length, 0)
+            end = file_size - 1
+        else:
+            start = int(start_text)
+            end = int(end_text) if end_text else file_size - 1
+    except ValueError:
+        raise HTTPException(
+            status_code=416,
+            detail="Invalid byte range",
+            headers={"Content-Range": f"bytes */{file_size}", "Accept-Ranges": "bytes"},
+        )
+
+    if start < 0 or start >= file_size or end < start:
+        raise HTTPException(
+            status_code=416,
+            detail="Requested range not satisfiable",
+            headers={"Content-Range": f"bytes */{file_size}", "Accept-Ranges": "bytes"},
+        )
+
+    return start, min(end, file_size - 1)
+
+
+def _media_headers(file_path: Path, content_length: int) -> dict[str, str]:
+    stat = file_path.stat()
+    return {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(content_length),
+        "Last-Modified": formatdate(stat.st_mtime, usegmt=True),
+        # Keep media responses inline. Attachment disposition can confuse
+        # browser media controls and is not useful for an embedded player.
+        "Content-Disposition": "inline",
+    }
+
+
+def _iter_file_range(file_path: Path, start: int, end: int, chunk_size: int = 1024 * 1024):
+    with file_path.open("rb") as fh:
+        fh.seek(start)
+        remaining = end - start + 1
+        while remaining > 0:
+            chunk = fh.read(min(chunk_size, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            yield chunk
+
+
+@router.api_route("/media", methods=["GET", "HEAD"])
 async def serve_media(
+    request: Request,
     path: str = Query(..., description="Media file path to serve"),
 ):
     """Serve a media file with correct Content-Type and Range support.
@@ -236,11 +309,31 @@ async def serve_media(
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
 
     serve_path, content_type = _ensure_browser_playable(file_path)
+    file_size = serve_path.stat().st_size
+    byte_range = _parse_range_header(request.headers.get("range"), file_size)
 
-    return FileResponse(
-        path=str(serve_path),
+    if byte_range:
+        start, end = byte_range
+        content_length = end - start + 1
+        headers = _media_headers(serve_path, content_length)
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+        if request.method == "HEAD":
+            return Response(status_code=206, media_type=content_type, headers=headers)
+        return StreamingResponse(
+            _iter_file_range(serve_path, start, end),
+            status_code=206,
+            media_type=content_type,
+            headers=headers,
+        )
+
+    headers = _media_headers(serve_path, file_size)
+    if request.method == "HEAD":
+        return Response(media_type=content_type, headers=headers)
+
+    return StreamingResponse(
+        _iter_file_range(serve_path, 0, file_size - 1),
         media_type=content_type,
-        filename=file_path.stem + serve_path.suffix,
+        headers=headers,
     )
 
 
