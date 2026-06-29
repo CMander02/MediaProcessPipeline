@@ -7,11 +7,11 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from app.core.settings import (
+    SETTINGS_FILE,
     RuntimeSettings,
     get_runtime_settings,
-    update_runtime_settings,
     patch_runtime_settings,
-    SETTINGS_FILE,
+    update_runtime_settings,
 )
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -72,6 +72,18 @@ def _mask_settings(settings: RuntimeSettings) -> dict[str, Any]:
                 item["api_key"] = _mask_value(api_key)
             masked_profiles.append(item)
         data["custom_llm_profiles"] = masked_profiles
+    connections = data.get("service_connections")
+    if isinstance(connections, list):
+        masked_connections: list[dict[str, Any]] = []
+        for connection in connections:
+            if not isinstance(connection, dict):
+                continue
+            item = dict(connection)
+            api_key = item.get("api_key")
+            if isinstance(api_key, str) and api_key:
+                item["api_key"] = _mask_value(api_key)
+            masked_connections.append(item)
+        data["service_connections"] = masked_connections
     return data
 
 
@@ -99,6 +111,65 @@ def _restore_custom_profile_secrets(value: Any, current: RuntimeSettings) -> lis
     return restored
 
 
+def _restore_service_connection_secrets(
+    value: Any,
+    current: RuntimeSettings,
+) -> list[dict[str, Any]]:
+    """Restore masked nested service connection keys from current settings."""
+    if not isinstance(value, list):
+        return []
+
+    current_connections = current.model_dump().get("service_connections", [])
+    if not isinstance(current_connections, list):
+        current_connections = []
+    current_by_id = {
+        str(connection.get("id")): connection
+        for connection in current_connections
+        if isinstance(connection, dict)
+    }
+    restored: list[dict[str, Any]] = []
+
+    for index, connection in enumerate(value):
+        if not isinstance(connection, dict):
+            continue
+        item = dict(connection)
+        api_key = item.get("api_key")
+        old = current_by_id.get(str(item.get("id")))
+        if old is None and index < len(current_connections):
+            old_item = current_connections[index]
+            old = old_item if isinstance(old_item, dict) else None
+        if isinstance(api_key, str) and _is_masked(api_key) and old:
+            item["api_key"] = old.get("api_key", "")
+        restored.append(item)
+
+    return restored
+
+
+def _restore_service_connection_dot_secret(
+    key: str,
+    value: Any,
+    current: RuntimeSettings,
+) -> Any | None:
+    parts = key.split(".", 2)
+    if (
+        len(parts) != 3
+        or parts[0] != "service_connections"
+        or parts[2] != "api_key"
+        or not isinstance(value, str)
+        or not _is_masked(value)
+    ):
+        return None
+
+    connections = current.model_dump().get("service_connections", [])
+    if not isinstance(connections, list):
+        return None
+    connection_id = parts[1]
+    for connection in connections:
+        if isinstance(connection, dict) and connection.get("id") == connection_id:
+            return connection.get("api_key", "")
+    return None
+
+
 def _restore_secrets(
     updates: dict[str, Any],
     current: RuntimeSettings | None = None,
@@ -114,8 +185,16 @@ def _restore_secrets(
             if preserve_masked:
                 cleaned[key] = getattr(current, key)
             continue  # skip — frontend sent back the masked placeholder
+        dot_secret = _restore_service_connection_dot_secret(key, value, current)
+        if dot_secret is not None:
+            if preserve_masked:
+                cleaned[key] = dot_secret
+            continue
         if key == "custom_llm_profiles":
             cleaned[key] = _restore_custom_profile_secrets(value, current)
+            continue
+        if key == "service_connections":
+            cleaned[key] = _restore_service_connection_secrets(value, current)
             continue
         cleaned[key] = value
     return cleaned

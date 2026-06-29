@@ -229,29 +229,13 @@ def offload_local_llm() -> None:
 
 def _get_deepseek_params(stage: str = "polish") -> dict[str, Any] | None:
     """Build OpenAI SDK kwargs for DeepSeek's OpenAI-compatible API."""
+    from app.core.model_router import resolve_deepseek_llm_binding
+
     rt = get_runtime_settings()
-    if not rt.deepseek_api_key:
+    binding = resolve_deepseek_llm_binding(rt, stage)
+    if not binding.configured:
         return None
-
-    stage_map = {
-        "analyze": (rt.deepseek_analyze_model, rt.deepseek_analyze_thinking, rt.deepseek_analyze_effort),
-        "polish": (rt.deepseek_polish_model, rt.deepseek_polish_thinking, rt.deepseek_polish_effort),
-        "summary": (rt.deepseek_summary_model, rt.deepseek_summary_thinking, rt.deepseek_summary_effort),
-        "mindmap": (rt.deepseek_mindmap_model, rt.deepseek_mindmap_thinking, rt.deepseek_mindmap_effort),
-    }
-    model_name, thinking_type, effort = stage_map.get(stage, stage_map["polish"])
-    if not model_name:
-        return None
-
-    params: dict[str, Any] = {
-        "model": model_name,
-        "api_key": rt.deepseek_api_key,
-        "api_base": rt.deepseek_api_base or "https://api.deepseek.com",
-        "extra_body": {"thinking": {"type": "enabled" if thinking_type == "enabled" else "disabled"}},
-    }
-    if thinking_type == "enabled" and effort:
-        params["reasoning_effort"] = effort
-    return params
+    return dict(binding.request_kwargs)
 
 
 def _get_litellm_params(provider_override: str = "", stage: str = "polish") -> dict[str, Any] | None:
@@ -265,55 +249,18 @@ def _get_litellm_params(provider_override: str = "", stage: str = "polish") -> d
         stage: One of "analyze" | "polish" | "summary" | "mindmap". Currently
             only deepseek uses it to pick per-stage model/thinking/effort.
     """
+    from app.core.model_router import resolve_llm_binding
+
     rt = get_runtime_settings()
-    provider = provider_override or rt.llm_provider
-
-    if provider == "local":
+    binding = resolve_llm_binding(rt, provider_override=provider_override, stage=stage)
+    if binding.provider == "local":
         return None  # caller handles local path
-
-    params: dict[str, Any] = {"num_retries": 3}
-
-    if provider == "anthropic":
-        if not rt.anthropic_api_key:
-            return None
-        model_name = rt.anthropic_model or "claude-sonnet-4-6"
-        params["model"] = f"anthropic/{model_name}"
-        params["api_key"] = rt.anthropic_api_key
-        if rt.anthropic_api_base:
-            params["api_base"] = rt.anthropic_api_base
-
-    elif provider == "openai":
-        if not rt.openai_api_key:
-            return None
-        model_name = rt.openai_model or "gpt-4o"
-        params["model"] = f"openai/{model_name}"
-        params["api_key"] = rt.openai_api_key
-        if rt.openai_api_base:
-            params["api_base"] = rt.openai_api_base
-
-    elif provider == "deepseek":
-        deepseek_params = _get_deepseek_params(stage)
-        if deepseek_params is None:
-            return None
-        params["model"] = f"openai/{deepseek_params['model']}"  # DeepSeek is OpenAI-compatible
-        params["api_key"] = deepseek_params["api_key"]
-        params["api_base"] = deepseek_params["api_base"]
-        params["extra_body"] = deepseek_params["extra_body"]
-        if deepseek_params.get("reasoning_effort"):
-            params["reasoning_effort"] = deepseek_params["reasoning_effort"]
-
-    elif provider == "custom":
-        if not rt.custom_api_base or not rt.custom_model:
-            return None
-        params["model"] = f"openai/{rt.custom_model}"
-        params["api_key"] = rt.custom_api_key or "not-needed"
-        params["api_base"] = rt.custom_api_base
-        if rt.custom_name:
-            params["custom_llm_provider"] = "openai"
-
-    else:
+    if not binding.configured:
         return None
 
+    params = dict(binding.request_kwargs)
+    if binding.provider == "deepseek" and params.get("model") and not str(params["model"]).startswith("openai/"):
+        params["model"] = f"openai/{params['model']}"
     return params
 
 

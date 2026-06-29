@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from app.core.model_router import EndpointBinding, resolve_vlm_binding
 from app.core.logging_setup import log_event
 
 logger = logging.getLogger(__name__)
@@ -57,28 +58,42 @@ class VLMService:
     def __init__(self) -> None:
         self._client: Any = None
         self._model: str = ""
+        self._api_base: str = ""
+        self._api_key: str = ""
 
-    def _get_client(self) -> tuple[Any, str]:
+    def _get_client(self, binding: EndpointBinding | None = None) -> tuple[Any, str]:
         from app.core.settings import get_runtime_settings
-        rt = get_runtime_settings()
-        if not rt.vlm_api_base:
+        binding = binding or resolve_vlm_binding(get_runtime_settings())
+        if not binding.api_base:
             raise RuntimeError("vlm_api_base is not configured — set it in Settings > 视觉模型")
-        if self._client is None or self._model != rt.vlm_model:
+        if (
+            self._client is None
+            or self._api_base != binding.api_base
+            or self._api_key != binding.api_key
+            or self._model != binding.model
+        ):
             from app.services.analysis._openai_client import make_openai_client
-            self._client = make_openai_client(rt.vlm_api_base, rt.vlm_api_key)
-            self._model = rt.vlm_model
+            self._client = make_openai_client(binding.api_base, binding.api_key)
+            self._model = binding.model
+            self._api_base = binding.api_base
+            self._api_key = binding.api_key
         return self._client, self._model
 
-    def describe_image(self, image_path: Path) -> dict[str, str]:
+    def describe_image(
+        self,
+        image_path: Path,
+        binding: EndpointBinding | None = None,
+    ) -> dict[str, str]:
         """Classify and describe/OCR a single image. Returns {kind, text}."""
         from app.core.settings import get_runtime_settings
         rt = get_runtime_settings()
-        client, model = self._get_client()
+        binding = binding or resolve_vlm_binding(rt)
+        client, model = self._get_client(binding)
 
         b64, media_type = _encode_image(image_path)
         response = client.chat.completions.create(
             model=model,
-            max_tokens=rt.vlm_max_tokens,
+            max_tokens=int(binding.request_kwargs.get("max_tokens") or rt.vlm_max_tokens),
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {

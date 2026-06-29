@@ -27,7 +27,12 @@ __all__ = [
 
 def get_asr_service(provider: str | None = None) -> ASRService:
     """Get the configured singleton ASR service."""
-    provider_id = (provider or get_runtime_settings().asr_provider).strip().lower()
+    from app.core.model_router import resolve_asr_binding
+
+    provider_id = resolve_asr_binding(
+        get_runtime_settings(),
+        task_options={"asr_provider": provider} if provider else None,
+    ).provider
     if provider_id == "qwen3":
         from app.services.recognition.qwen3_asr import get_qwen3_service
 
@@ -59,23 +64,36 @@ async def transcribe_audio(
     chunk_strategy: str | None = None,
 ) -> dict[str, Any]:
     """Transcribe audio with the configured ASR provider and optionally write an SRT file."""
-    provider_id = (provider or get_runtime_settings().asr_provider).strip().lower()
+    from app.core.model_router import resolve_asr_binding
+
+    options: dict[str, Any] = {}
+    if provider:
+        options["asr_provider"] = provider
+    if chunk_strategy:
+        options["asr_chunk_strategy"] = chunk_strategy
+    if num_speakers is not None:
+        options["num_speakers"] = num_speakers
+    if not diarize:
+        options["disable_diarization"] = True
+
+    binding = resolve_asr_binding(get_runtime_settings(), task_options=options, language=language)
+    provider_id = binding.provider
     service = get_asr_service(provider_id)
 
     def _run_transcribe() -> dict[str, Any]:
         if provider_id == "siliconflow":
             return service.transcribe(
                 audio_path,
-                language=language,
+                language=binding.language,
                 diarize=False,
-                num_speakers=num_speakers,
-                chunk_strategy=chunk_strategy,
+                num_speakers=binding.num_speakers,
+                chunk_strategy=binding.chunk_strategy,
             )
         return service.transcribe(
             audio_path,
-            language=language,
-            diarize=diarize,
-            num_speakers=num_speakers,
+            language=binding.language,
+            diarize=binding.diarize,
+            num_speakers=binding.num_speakers,
         )
 
     result = await asyncio.to_thread(_run_transcribe)

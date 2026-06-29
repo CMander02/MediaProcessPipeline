@@ -9,16 +9,16 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.logging_setup import log_event
 
 logger = logging.getLogger(__name__)
 
-# Settings file path - stored in project root data directory
+# Settings file path - stored in project root
 # __file__ = backend/app/core/settings.py
 # parent x4 = project root
-SETTINGS_FILE = Path(__file__).parent.parent.parent.parent / "data" / "settings.json"
+SETTINGS_FILE = Path(__file__).parent.parent.parent.parent / "config.json"
 
 
 class CustomLLMProfile(BaseModel):
@@ -33,6 +33,8 @@ class CustomLLMProfile(BaseModel):
 
 class RuntimeSettings(BaseModel):
     """Settings that can be updated at runtime from frontend."""
+
+    model_config = ConfigDict(extra="allow")
 
     # LLM
     llm_provider: str = "anthropic"
@@ -210,6 +212,13 @@ class RuntimeSettings(BaseModel):
     kb_chunk_size_chars: int = 400
     kb_chunk_overlap_chars: int = 50
 
+    # Document-style service registry. The flat fields above remain the
+    # compatibility surface used by existing services.
+    service_connections: list[dict[str, Any]] = Field(default_factory=list)
+    service_models: list[dict[str, Any]] = Field(default_factory=list)
+    flow_profiles: list[dict[str, Any]] = Field(default_factory=list)
+    active_flow_defaults: dict[str, Any] = Field(default_factory=dict)
+
     # Security
     api_token: str = ""  # Bearer token for API auth; empty = auth disabled
 
@@ -265,6 +274,7 @@ def _load_settings_from_file() -> RuntimeSettings:
         try:
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
             _normalize_custom_profile_state(data, prefer_profiles=True)
+            _normalize_settings_document_state(data)
             log_event(logger, logging.INFO, "settings.loaded", path=SETTINGS_FILE)
             return RuntimeSettings(**data)
         except Exception as e:
@@ -380,11 +390,378 @@ def _normalize_custom_profile_state(data: dict[str, Any], *, prefer_profiles: bo
     data["custom_api_key"] = active["api_key"]
 
 
+_CONNECTION_FIELD_FLAT_KEYS: dict[str, dict[str, str]] = {
+    "anthropic": {
+        "api_base": "anthropic_api_base",
+        "api_key": "anthropic_api_key",
+    },
+    "openai": {
+        "api_base": "openai_api_base",
+        "api_key": "openai_api_key",
+    },
+    "deepseek": {
+        "api_base": "deepseek_api_base",
+        "api_key": "deepseek_api_key",
+    },
+    "siliconflow-asr": {
+        "api_base": "siliconflow_api_base",
+        "api_key": "siliconflow_api_key",
+    },
+    "vision-default": {
+        "api_base": "vlm_api_base",
+        "api_key": "vlm_api_key",
+    },
+    "embedding-default": {
+        "api_base": "kb_embedding_api_base",
+        "api_key": "kb_embedding_api_key",
+    },
+}
+
+_FLAT_CONNECTION_FIELDS = {
+    flat_key: (connection_id, field)
+    for connection_id, fields in _CONNECTION_FIELD_FLAT_KEYS.items()
+    for field, flat_key in fields.items()
+}
+
+_MODEL_FIELD_SPECS: dict[str, tuple[str, list[str]]] = {
+    "anthropic_model": ("anthropic", ["chat", "json"]),
+    "openai_model": ("openai", ["chat", "vision", "json"]),
+    "deepseek_analyze_model": ("deepseek", ["chat", "reasoning", "json"]),
+    "deepseek_polish_model": ("deepseek", ["chat", "reasoning", "json"]),
+    "deepseek_summary_model": ("deepseek", ["chat", "reasoning", "json"]),
+    "deepseek_mindmap_model": ("deepseek", ["chat", "reasoning", "json"]),
+    "siliconflow_asr_model": ("siliconflow-asr", ["asr"]),
+    "vlm_model": ("vision-default", ["chat", "vision", "json"]),
+    "kb_embedding_model": ("embedding-default", ["embedding"]),
+}
+
+
+def _service_connection_record(
+    *,
+    connection_id: str,
+    name: str,
+    service_scope: str,
+    provider: str,
+    endpoint_type: str,
+    api_base: Any,
+    api_key: Any,
+) -> dict[str, Any]:
+    return {
+        "id": connection_id,
+        "name": name,
+        "service_scope": service_scope,
+        "provider": provider,
+        "endpoint_type": endpoint_type,
+        "api_base": _str_value(api_base),
+        "api_key": _str_value(api_key),
+        "headers": {},
+        "enabled": True,
+        "timeout_sec": 120.0,
+        "max_concurrency": 4,
+        "status": "unknown",
+        "last_checked_at": "",
+    }
+
+
+def _default_service_connections(data: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        _service_connection_record(
+            connection_id="anthropic",
+            name="Anthropic",
+            service_scope="api",
+            provider="anthropic",
+            endpoint_type="anthropic",
+            api_base=data.get("anthropic_api_base"),
+            api_key=data.get("anthropic_api_key"),
+        ),
+        _service_connection_record(
+            connection_id="openai",
+            name="OpenAI",
+            service_scope="api",
+            provider="openai",
+            endpoint_type="openai_compatible",
+            api_base=data.get("openai_api_base"),
+            api_key=data.get("openai_api_key"),
+        ),
+        _service_connection_record(
+            connection_id="deepseek",
+            name="DeepSeek",
+            service_scope="api",
+            provider="deepseek",
+            endpoint_type="deepseek_native",
+            api_base=data.get("deepseek_api_base"),
+            api_key=data.get("deepseek_api_key"),
+        ),
+        _service_connection_record(
+            connection_id="siliconflow-asr",
+            name="SiliconFlow ASR",
+            service_scope="api",
+            provider="siliconflow",
+            endpoint_type="audio_transcription",
+            api_base=data.get("siliconflow_api_base"),
+            api_key=data.get("siliconflow_api_key"),
+        ),
+        _service_connection_record(
+            connection_id="vision-default",
+            name="Vision API",
+            service_scope="api",
+            provider="custom_openai",
+            endpoint_type="openai_compatible",
+            api_base=data.get("vlm_api_base"),
+            api_key=data.get("vlm_api_key"),
+        ),
+        _service_connection_record(
+            connection_id="embedding-default",
+            name="Knowledge Base Embedding",
+            service_scope="api",
+            provider="custom_openai",
+            endpoint_type="openai_compatible",
+            api_base=data.get("kb_embedding_api_base"),
+            api_key=data.get("kb_embedding_api_key"),
+        ),
+    ]
+
+
+def _default_service_connection_by_id(
+    data: dict[str, Any],
+    connection_id: str,
+) -> dict[str, Any] | None:
+    return next(
+        (
+            connection
+            for connection in _default_service_connections(data)
+            if connection["id"] == connection_id
+        ),
+        None,
+    )
+
+
+def _generic_service_connection(connection_id: str) -> dict[str, Any]:
+    return _service_connection_record(
+        connection_id=connection_id,
+        name=connection_id,
+        service_scope="api",
+        provider=connection_id,
+        endpoint_type="openai_compatible",
+        api_base="",
+        api_key="",
+    )
+
+
+def _model_record_id(connection_id: str, model_id: str) -> str:
+    slug = model_id.strip().lower().replace("/", "-").replace(":", "-")
+    return f"{connection_id}:{slug}"
+
+
+def _service_model_record(
+    connection_id: str,
+    model_id: Any,
+    capabilities: list[str],
+    *,
+    default_params: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    model = _str_value(model_id).strip()
+    if not model:
+        return None
+    return {
+        "id": _model_record_id(connection_id, model),
+        "connection_id": connection_id,
+        "model_id": model,
+        "display_name": model,
+        "capabilities": capabilities,
+        "enabled": True,
+        "default_params": default_params or {},
+    }
+
+
+def _default_service_models(data: dict[str, Any]) -> list[dict[str, Any]]:
+    models: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(field: str, default_params: dict[str, Any] | None = None) -> None:
+        connection_id, capabilities = _MODEL_FIELD_SPECS[field]
+        record = _service_model_record(
+            connection_id,
+            data.get(field),
+            capabilities,
+            default_params=default_params,
+        )
+        if record is None:
+            return
+        key = (record["connection_id"], record["model_id"])
+        if key in seen:
+            return
+        seen.add(key)
+        models.append(record)
+
+    add("anthropic_model")
+    add("openai_model")
+    add("deepseek_analyze_model")
+    add("deepseek_polish_model")
+    add("deepseek_summary_model")
+    add("deepseek_mindmap_model")
+    add("siliconflow_asr_model")
+    add("vlm_model")
+    add("kb_embedding_model", {"dim": data.get("kb_embedding_dim", 1024)})
+    return models
+
+
+def _ensure_service_connections(data: dict[str, Any]) -> list[dict[str, Any]]:
+    connections = data.get("service_connections")
+    if not isinstance(connections, list) or not connections:
+        connections = _default_service_connections(data)
+        data["service_connections"] = connections
+    return connections
+
+
+def _ensure_service_models(data: dict[str, Any]) -> list[dict[str, Any]]:
+    models = data.get("service_models")
+    if not isinstance(models, list) or not models:
+        models = _default_service_models(data)
+        data["service_models"] = models
+    return models
+
+
+def _get_service_connection(
+    data: dict[str, Any],
+    connection_id: str,
+) -> dict[str, Any]:
+    connections = _ensure_service_connections(data)
+    for connection in connections:
+        if isinstance(connection, dict) and connection.get("id") == connection_id:
+            return connection
+
+    connection = _default_service_connection_by_id(data, connection_id)
+    if connection is None:
+        connection = _generic_service_connection(connection_id)
+    connections.append(connection)
+    return connection
+
+
+def _set_service_connection_field(
+    data: dict[str, Any],
+    connection_id: str,
+    field: str,
+    value: Any,
+) -> None:
+    connection = _get_service_connection(data, connection_id)
+    connection[field] = value
+
+
+def _sync_service_connections_from_flat(
+    data: dict[str, Any],
+    touched_flat_keys: set[str],
+) -> None:
+    for flat_key in touched_flat_keys:
+        mirror = _FLAT_CONNECTION_FIELDS.get(flat_key)
+        if mirror is None:
+            continue
+        connection_id, field = mirror
+        _set_service_connection_field(data, connection_id, field, data.get(flat_key))
+
+
+def _sync_flat_from_service_connection_field(
+    data: dict[str, Any],
+    connection_id: str,
+    field: str,
+    value: Any,
+) -> str | None:
+    flat_key = _CONNECTION_FIELD_FLAT_KEYS.get(connection_id, {}).get(field)
+    if flat_key is None:
+        return None
+    data[flat_key] = value
+    return flat_key
+
+
+def _ensure_service_model_for_field(data: dict[str, Any], field: str) -> None:
+    spec = _MODEL_FIELD_SPECS.get(field)
+    if spec is None:
+        return
+    connection_id, capabilities = spec
+    default_params = (
+        {"dim": data.get("kb_embedding_dim", 1024)}
+        if field == "kb_embedding_model"
+        else None
+    )
+    record = _service_model_record(
+        connection_id,
+        data.get(field),
+        capabilities,
+        default_params=default_params,
+    )
+    if record is None:
+        return
+
+    models = _ensure_service_models(data)
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        if (
+            item.get("connection_id") == record["connection_id"]
+            and item.get("model_id") == record["model_id"]
+        ):
+            item.setdefault("display_name", record["display_name"])
+            item.setdefault("capabilities", record["capabilities"])
+            item.setdefault("enabled", record["enabled"])
+            item.setdefault("default_params", record["default_params"])
+            return
+    models.append(record)
+
+
+def _sync_service_models_from_flat(data: dict[str, Any], touched_flat_keys: set[str]) -> None:
+    for flat_key in touched_flat_keys:
+        _ensure_service_model_for_field(data, flat_key)
+
+
+def _normalize_settings_document_state(
+    data: dict[str, Any],
+    *,
+    sync_flat_keys: set[str] | None = None,
+) -> None:
+    _ensure_service_connections(data)
+    _ensure_service_models(data)
+    if not isinstance(data.get("flow_profiles"), list):
+        data["flow_profiles"] = []
+    if not isinstance(data.get("active_flow_defaults"), dict):
+        data["active_flow_defaults"] = {}
+
+    if sync_flat_keys:
+        _sync_service_connections_from_flat(data, sync_flat_keys)
+        _sync_service_models_from_flat(data, sync_flat_keys)
+
+
+def _apply_dot_path_updates(
+    data: dict[str, Any],
+    updates: dict[str, Any],
+) -> tuple[dict[str, Any], set[str]]:
+    direct_updates: dict[str, Any] = {}
+    mirrored_flat_keys: set[str] = set()
+
+    for key, value in updates.items():
+        parts = key.split(".", 2)
+        if len(parts) == 3 and parts[0] == "service_connections":
+            _, connection_id, field = parts
+            _set_service_connection_field(data, connection_id, field, value)
+            flat_key = _sync_flat_from_service_connection_field(
+                data,
+                connection_id,
+                field,
+                value,
+            )
+            if flat_key:
+                mirrored_flat_keys.add(flat_key)
+            continue
+        direct_updates[key] = value
+
+    return direct_updates, mirrored_flat_keys
+
+
 def update_runtime_settings(new_settings: RuntimeSettings) -> RuntimeSettings:
     """Replace all runtime settings and persist."""
     global _runtime_settings
     data = new_settings.model_dump()
     _normalize_custom_profile_state(data, prefer_profiles=True)
+    _normalize_settings_document_state(data)
     candidate = RuntimeSettings(**data)
     _validate_data_root(candidate.data_root)
     _runtime_settings = candidate
@@ -398,11 +775,14 @@ def patch_runtime_settings(updates: dict[str, Any]) -> RuntimeSettings:
     if _runtime_settings is None:
         _runtime_settings = _load_settings_from_file()
     current = _runtime_settings.model_dump()
-    current.update(updates)
+    direct_updates, mirrored_flat_keys = _apply_dot_path_updates(current, updates)
+    current.update(direct_updates)
+    sync_flat_keys = set(direct_updates) | mirrored_flat_keys
     prefer_profiles = any(
-        key in updates for key in ("custom_llm_profiles", "custom_active_profile_id")
+        key in direct_updates for key in ("custom_llm_profiles", "custom_active_profile_id")
     )
     _normalize_custom_profile_state(current, prefer_profiles=prefer_profiles)
+    _normalize_settings_document_state(current, sync_flat_keys=sync_flat_keys)
     candidate = RuntimeSettings(**current)
     _validate_data_root(candidate.data_root)
     _runtime_settings = candidate
@@ -415,5 +795,6 @@ def replace_runtime_settings_for_process(settings: RuntimeSettings) -> RuntimeSe
     global _runtime_settings
     data = settings.model_dump()
     _normalize_custom_profile_state(data, prefer_profiles=True)
+    _normalize_settings_document_state(data)
     _runtime_settings = RuntimeSettings(**data)
     return _runtime_settings

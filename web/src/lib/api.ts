@@ -3,6 +3,9 @@
  * Talks to FastAPI backend at /api/* (proxied by Vite dev server).
  */
 
+import { createSettingsPatch, type SettingsPatchInput } from "./settings-patch"
+import type { RuntimeSettings } from "./settings-schema"
+
 export interface Task {
   id: string
   task_type: string
@@ -30,7 +33,7 @@ export interface TaskStats {
   cancelled?: number
 }
 
-export interface Settings {
+export interface Settings extends RuntimeSettings {
   llm_provider: string
   asr_provider: string
   qwen3_asr_model_path: string
@@ -162,10 +165,11 @@ export const api = {
 
   settings: {
     get: () => get<Settings>("/api/settings"),
-    patch: async (updates: Record<string, unknown>) => {
-      const updated = await patch<Settings>("/api/settings", updates)
-      if (typeof updates.api_token === "string" && !updates.api_token.startsWith("***...")) {
-        persistApiToken(updates.api_token)
+    patch: async (updates: SettingsPatchInput) => {
+      const preparedUpdates = createSettingsPatch(updates)
+      const updated = await patch<Settings>("/api/settings", preparedUpdates)
+      if (typeof preparedUpdates.api_token === "string") {
+        persistApiToken(preparedUpdates.api_token)
       }
       return updated
     },
@@ -314,7 +318,11 @@ export function subscribeTaskEvents(
 ): () => void {
   const es = new EventSource(`/api/tasks/${taskId}/events`)
   es.onmessage = (e) => {
-    try { onEvent(JSON.parse(e.data)) } catch {}
+    try {
+      onEvent(JSON.parse(e.data))
+    } catch {
+      // Ignore malformed SSE payloads from interrupted connections.
+    }
   }
   return () => es.close()
 }
@@ -324,7 +332,11 @@ export function subscribeAllEvents(
 ): () => void {
   const es = new EventSource("/api/tasks/events")
   es.onmessage = (e) => {
-    try { onEvent(JSON.parse(e.data)) } catch {}
+    try {
+      onEvent(JSON.parse(e.data))
+    } catch {
+      // Ignore malformed SSE payloads from interrupted connections.
+    }
   }
   return () => es.close()
 }
