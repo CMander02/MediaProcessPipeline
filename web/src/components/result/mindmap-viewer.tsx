@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { IPureNode } from "markmap-common"
-import ReactMarkdown from "react-markdown"
-import remarkGfm from "remark-gfm"
 import { Dialog, DialogContent } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Gps01Icon, Maximize01Icon, HierarchyIcon, File02Icon } from "@hugeicons/core-free-icons"
+import { MarkdownRenderer } from "./markdown-renderer"
 
 interface MindmapViewerProps {
   markdown: string
@@ -354,7 +353,7 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
   const MarkdownPane = (
     <ScrollArea className="h-full w-full">
       <article className="prose prose-sm dark:prose-invert max-w-none px-4 py-3">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
+        <MarkdownRenderer>{markdown}</MarkdownRenderer>
       </article>
     </ScrollArea>
   )

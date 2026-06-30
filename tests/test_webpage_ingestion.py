@@ -6,6 +6,8 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.services.ingestion import ytdlp  # noqa: E402
 from app.services.ingestion.platform.webpage import api as webpage_api  # noqa: E402
+from app.core.pipeline import _detect_source_type, _rewrite_ingest_paths_after_task_dir_move  # noqa: E402
+from app.models import MediaMetadata  # noqa: E402
 
 
 def test_fetch_metadata_prefers_defuddle(monkeypatch):
@@ -100,3 +102,40 @@ def test_generic_webpage_detection_skips_direct_media():
     assert ytdlp._is_generic_webpage_url("https://lilianweng.github.io/posts/2025-05-01-thinking/")
     assert not ytdlp._is_generic_webpage_url("https://example.com/video.mp4")
     assert not ytdlp._is_generic_webpage_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+
+
+def test_pipeline_detects_generic_webpage_before_ytdlp_title_probe():
+    assert _detect_source_type("https://lilianweng.github.io/posts/2026-06-24-scaling-laws/") == "webpage"
+    assert _detect_source_type("https://example.com/video.mp4") == "url"
+
+
+def test_rewrite_webpage_asset_paths_after_task_dir_rename(tmp_path):
+    old_dir = tmp_path / "download"
+    new_dir = tmp_path / "Scaling Laws"
+    old_dir.mkdir()
+    new_dir.mkdir()
+    metadata = MediaMetadata(
+        title="Scaling Laws",
+        platform="webpage",
+        content_subtype="text_note",
+        extra={
+            "source_markdown_path": str(old_dir / "source.md"),
+            "images": [{"path": str(old_dir / "images" / "00.png")}],
+        },
+    )
+    ingest = {
+        "info": {
+            "thumbnail": str(old_dir / "images" / "00.png"),
+            "extra": {
+                "source_markdown_path": str(old_dir / "source.md"),
+                "images": [{"path": str(old_dir / "images" / "00.png")}],
+            },
+        }
+    }
+
+    _rewrite_ingest_paths_after_task_dir_move(ingest, metadata, old_dir, new_dir)
+
+    assert metadata.extra["source_markdown_path"] == str(new_dir / "source.md")
+    assert metadata.extra["images"][0]["path"] == str(new_dir / "images" / "00.png")
+    assert ingest["info"]["extra"]["source_markdown_path"] == str(new_dir / "source.md")
+    assert ingest["info"]["thumbnail"] == str(new_dir / "images" / "00.png")

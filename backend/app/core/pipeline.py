@@ -77,6 +77,12 @@ def _detect_source_type(source: str) -> str:
     elif "zhihu.com" in source_lower:
         return "zhihu"
     elif source_lower.startswith(("http://", "https://")):
+        try:
+            from app.services.ingestion.ytdlp import _is_generic_webpage_url
+            if _is_generic_webpage_url(source):
+                return "webpage"
+        except Exception:
+            pass
         return "url"
     elif any(source_lower.endswith(ext) for ext in [".mp4", ".mkv", ".avi", ".webm", ".mov"]):
         return "local_video"
@@ -93,6 +99,9 @@ def _platform_prefer_subtitles(source_type: str) -> bool:
         configs = json.loads(rt.platform_configs or "{}")
     except Exception:
         configs = {}
+
+    if source_type == "webpage":
+        return False
 
     supported_platforms = {"bilibili", "youtube", "xiaoyuzhou", "xiaohongshu", "zhihu", "apple_podcast"}
     platform_cfg = configs.get(source_type) if source_type in supported_platforms else None
@@ -255,6 +264,43 @@ async def _write_text_artifact(task: Task, task_dir: Path, filename: str, conten
     _persist_text_artifact(task, filename, content)
     await _emit_file_ready(task, filename, str(artifact_path))
     return artifact_path
+
+
+def _rewrite_path_after_dir_move(value: Any, old_dir: Path, new_dir: Path) -> Any:
+    if not isinstance(value, str) or not value:
+        return value
+    try:
+        path = Path(value)
+        if not path.is_absolute():
+            return value
+        relative = path.resolve().relative_to(old_dir.resolve())
+        return str(new_dir / relative)
+    except Exception:
+        return value
+
+
+def _rewrite_ingest_paths_after_task_dir_move(ingest: dict[str, Any], metadata: "MediaMetadata", old_dir: Path, new_dir: Path) -> None:
+    """Keep note/webpage asset paths valid after renaming the task directory."""
+
+    def rewrite_extra(extra: Any) -> None:
+        if not isinstance(extra, dict):
+            return
+        extra["source_markdown_path"] = _rewrite_path_after_dir_move(
+            extra.get("source_markdown_path"),
+            old_dir,
+            new_dir,
+        )
+        images = extra.get("images")
+        if isinstance(images, list):
+            for item in images:
+                if isinstance(item, dict):
+                    item["path"] = _rewrite_path_after_dir_move(item.get("path"), old_dir, new_dir)
+
+    rewrite_extra(metadata.extra)
+    info = ingest.get("info") if isinstance(ingest, dict) else None
+    if isinstance(info, dict):
+        rewrite_extra(info.get("extra"))
+        info["thumbnail"] = _rewrite_path_after_dir_move(info.get("thumbnail"), old_dir, new_dir)
 
 
 async def _write_mindmap_files(task: Task, task_dir: Path, mindmap: str) -> None:
@@ -1578,9 +1624,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(source, download=False)
                         title = info.get("title", "unknown") if info else "unknown"
-            elif source_type in ("xiaohongshu", "zhihu", "xiaoyuzhou", "apple_podcast"):
-                # Use our own API — yt-dlp XiaoHongShu extractor fails on image notes
-                # and xiaoyuzhou is not supported by yt-dlp at all.
+            elif source_type in ("xiaohongshu", "zhihu", "xiaoyuzhou", "apple_podcast", "webpage"):
                 # Title will be resolved during the actual download step; use task id as placeholder.
                 title = None
             else:
@@ -1595,7 +1639,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             # 2. Decide whether to attempt fast path
             force_asr = rt.force_asr or task.options.get("force_asr", False)
 
-            if use_platform_subtitles and not force_asr and source_type not in ("xiaohongshu", "zhihu", "xiaoyuzhou", "apple_podcast"):
+            if use_platform_subtitles and not force_asr and source_type not in ("xiaohongshu", "zhihu", "xiaoyuzhou", "apple_podcast", "webpage"):
                 # Probe: fetch metadata + subtitle (lightweight, no video download)
                 try:
                     probe_metadata = await fetch_ytdlp_metadata(source)
@@ -1748,12 +1792,14 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             if real_title and task_dir.name != _sanitize_filename(real_title):
                 new_dir = task_dir.parent / _sanitize_filename(real_title)
                 if not new_dir.exists():
+                    old_dir = task_dir
                     task_dir.rename(new_dir)
                     task_dir = new_dir
                     if audio_path:
                         audio_path = str(new_dir / Path(audio_path).name)
                     if metadata.file_path:
                         metadata.file_path = str(new_dir / Path(metadata.file_path).name)
+                    _rewrite_ingest_paths_after_task_dir_move(ingest, metadata, old_dir, new_dir)
                     log_event(logger, logging.INFO, "task_dir.renamed", path=new_dir)
                 else:
                     log_event(logger, logging.WARNING, "task_dir.rename_skipped", reason="exists", path=new_dir)

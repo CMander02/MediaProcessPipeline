@@ -1,10 +1,8 @@
-import ReactMarkdown from "react-markdown"
-import remarkGfm from "remark-gfm"
-import rehypeHighlight from "rehype-highlight"
 import { useMemo } from "react"
 import { parseSummaryMarkdown } from "@/lib/markdown"
 import { KeyFactsCards } from "./key-facts-cards"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { MarkdownRenderer } from "./markdown-renderer"
 
 interface SummaryTabProps {
   content: string
@@ -29,9 +27,7 @@ export function SummaryTab({ content }: SummaryTabProps) {
 
         {/* Rendered markdown body */}
         <article className="prose prose-sm dark:prose-invert max-w-none">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
-            {parsed.body}
-          </ReactMarkdown>
+          <MarkdownRenderer highlight>{parsed.body}</MarkdownRenderer>
         </article>
       </div>
     </ScrollArea>

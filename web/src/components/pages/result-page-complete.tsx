@@ -3,8 +3,6 @@
  * Loads files progressively and subscribes to SSE for real-time updates.
  */
 import { useCallback, useEffect, useRef, useState } from "react"
-import ReactMarkdown from "react-markdown"
-import remarkGfm from "remark-gfm"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import {
@@ -35,6 +33,7 @@ import { TranscriptTab, type MindmapTocNode } from "@/components/result/transcri
 import { SummaryTab } from "@/components/result/summary-tab"
 import { MindmapViewer } from "@/components/result/mindmap-viewer"
 import { ImageNoteViewer, type ImageDescription } from "@/components/result/image-note-viewer"
+import { MarkdownRenderer } from "@/components/result/markdown-renderer"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
   ArrowLeft01Icon,
@@ -84,8 +83,7 @@ function resolveNoteMediaSrc(src: string | undefined, archivePath: string, sep: 
 function NoteMarkdown({ content, archivePath, sep }: { content: string; archivePath: string; sep: string }) {
   return (
     <div className="prose prose-sm max-w-none dark:prose-invert">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+      <MarkdownRenderer
         components={{
           img: ({ src, alt }) => (
             <img
@@ -101,7 +99,7 @@ function NoteMarkdown({ content, archivePath, sep }: { content: string; archiveP
         }}
       >
         {content}
-      </ReactMarkdown>
+      </MarkdownRenderer>
     </div>
   )
 }
@@ -496,6 +494,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const sourceHref = sourceUrl && /^https?:\/\//i.test(sourceUrl) ? sourceUrl : null
   const isImageNote = contentSubtype === "image_note"
   const isTextNote = contentSubtype === "text_note"
+  const isPureWebpage = platform === "webpage" && isTextNote
   const isNoteContent = isImageNote || isTextNote
   const headerMediaIcon = isImageNote || archive?.has_image
     ? Image01Icon
@@ -516,6 +515,13 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const [titleDraft, setTitleDraft] = useState("")
   const isProcessing = taskStatus === "processing" || taskStatus === "queued"
   const hasContent = summary || transcript || mindmap
+
+  useEffect(() => {
+    if (isPureWebpage && activeTab === "transcript") {
+      setActiveTab("summary")
+      updateActiveTab("summary")
+    }
+  }, [activeTab, isPureWebpage, updateActiveTab])
 
   // Sync title from archive
   useEffect(() => {
@@ -548,7 +554,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
 
   const getTabContent = () => {
     if (activeTab === "summary") return { content: summary, suffix: "摘要", ext: "md" }
-    if (activeTab === "transcript" && isTextNote) return { content: noteText, suffix: "正文", ext: "md" }
+    if (activeTab === "transcript" && isTextNote && !isPureWebpage) return { content: noteText, suffix: "正文", ext: "md" }
     if (activeTab === "transcript") return { content: transcript, suffix: "字幕", ext: "srt" }
     if (activeTab === "mindmap") return { content: mindmap, suffix: "导图", ext: "md" }
     if (activeTab === "detail") return { content: detail, suffix: "视频详情", ext: "md" }
@@ -816,12 +822,14 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                 <div className="shrink-0 flex items-center gap-2">
                   <TabsList>
                     <TabsTrigger value="summary">摘要</TabsTrigger>
-                    <TabsTrigger value="transcript">
-                      {isImageNote ? "图片" : isTextNote ? "正文" : "字幕"}
-                      {!isNoteContent && transcript && !isPolished && isProcessing && (
-                        <span className="ml-1 text-[10px] text-amber-600">(原始)</span>
-                      )}
-                    </TabsTrigger>
+                    {!isPureWebpage && (
+                      <TabsTrigger value="transcript">
+                        {isImageNote ? "图片" : isTextNote ? "正文" : "字幕"}
+                        {!isNoteContent && transcript && !isPolished && isProcessing && (
+                          <span className="ml-1 text-[10px] text-amber-600">(原始)</span>
+                        )}
+                      </TabsTrigger>
+                    )}
                     {(mindmap || isProcessing) && <TabsTrigger value="mindmap">导图</TabsTrigger>}
                     {detail && <TabsTrigger value="detail">详情</TabsTrigger>}
                   </TabsList>
@@ -871,111 +879,113 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                   </div>
                 </TabsContent>
 
-                <TabsContent value="transcript" className="mt-3 relative flex-1">
-                  <div className="absolute inset-0 rounded-md border flex flex-col">
-                    {isImageNote ? (
-                      imageDescriptions.length > 0 ? (
-                        <div className="overflow-y-auto flex-1 p-3 space-y-3">
-                          {imageDescriptions.map((d) => (
-                            <div
-                              key={d.index}
-                              className={cn(
-                                "rounded-md border p-2 cursor-pointer transition-colors text-sm",
-                                activeImageIdx === d.index ? "border-primary bg-primary/5" : "hover:bg-muted/30",
-                              )}
-                              onClick={() => setActiveImageIdx(d.index)}
-                            >
-                              <div className="flex items-center gap-1.5 mb-1">
-                                <span className="text-[10px] font-medium text-muted-foreground tabular-nums">
-                                  图片 {d.index + 1}
-                                </span>
-                                {d.kind === "text" && (
-                                  <span className="rounded bg-sky-500/10 px-1 text-[9px] text-sky-600 dark:text-sky-400">文字</span>
+                {!isPureWebpage && (
+                  <TabsContent value="transcript" className="mt-3 relative flex-1">
+                    <div className="absolute inset-0 rounded-md border flex flex-col">
+                      {isImageNote ? (
+                        imageDescriptions.length > 0 ? (
+                          <div className="overflow-y-auto flex-1 p-3 space-y-3">
+                            {imageDescriptions.map((d) => (
+                              <div
+                                key={d.index}
+                                className={cn(
+                                  "rounded-md border p-2 cursor-pointer transition-colors text-sm",
+                                  activeImageIdx === d.index ? "border-primary bg-primary/5" : "hover:bg-muted/30",
+                                )}
+                                onClick={() => setActiveImageIdx(d.index)}
+                              >
+                                <div className="flex items-center gap-1.5 mb-1">
+                                  <span className="text-[10px] font-medium text-muted-foreground tabular-nums">
+                                    图片 {d.index + 1}
+                                  </span>
+                                  {d.kind === "text" && (
+                                    <span className="rounded bg-sky-500/10 px-1 text-[9px] text-sky-600 dark:text-sky-400">文字</span>
+                                  )}
+                                </div>
+                                {d.text ? (
+                                  <p className="text-xs leading-relaxed whitespace-pre-wrap">{d.text}</p>
+                                ) : (
+                                  <p className="text-xs text-muted-foreground italic">无描述</p>
                                 )}
                               </div>
-                              {d.text ? (
-                                <p className="text-xs leading-relaxed whitespace-pre-wrap">{d.text}</p>
-                              ) : (
-                                <p className="text-xs text-muted-foreground italic">无描述</p>
-                              )}
+                            ))}
+                          </div>
+                        ) : isProcessing ? (
+                          <div className="flex items-center justify-center h-full text-muted-foreground">
+                            <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
+                            <span className="text-sm">正在分析图片...</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-center h-full text-muted-foreground text-sm">无图片数据</div>
+                        )
+                      ) : isTextNote ? (
+                        noteText ? (
+                          <div className="overflow-y-auto flex-1 p-5 text-sm leading-7">
+                            <NoteMarkdown content={noteText} archivePath={archivePath} sep={sep} />
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+                            暂无正文
+                          </div>
+                        )
+                      ) : (
+                        <>
+                          {subtitleTracks.length > 1 && (
+                            <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b bg-muted/20 overflow-x-auto">
+                              <span className="text-[10px] text-muted-foreground shrink-0">语言：</span>
+                              {subtitleTracks.map((t) => {
+                                const active = (activeTrackLang ?? polishedLang) === t.lang
+                                return (
+                                  <button
+                                    key={t.lang}
+                                    onClick={() => selectTrack(t.lang)}
+                                    className={cn(
+                                      "shrink-0 rounded px-2 py-0.5 text-[11px] transition-colors",
+                                      active
+                                        ? "bg-primary text-primary-foreground"
+                                        : "bg-muted hover:bg-muted/70 text-foreground",
+                                    )}
+                                    title={t.polished ? "已润色" : "原始字幕"}
+                                  >
+                                    {t.lang}
+                                    {t.polished && <span className="ml-1 text-[9px] opacity-80">✓</span>}
+                                  </button>
+                                )
+                              })}
                             </div>
-                          ))}
-                        </div>
-                      ) : isProcessing ? (
-                        <div className="flex items-center justify-center h-full text-muted-foreground">
-                          <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
-                          <span className="text-sm">正在分析图片...</span>
-                        </div>
-                      ) : (
-                        <div className="flex items-center justify-center h-full text-muted-foreground text-sm">无图片数据</div>
-                      )
-                    ) : isTextNote ? (
-                      noteText ? (
-                        <div className="overflow-y-auto flex-1 p-5 text-sm leading-7">
-                          <NoteMarkdown content={noteText} archivePath={archivePath} sep={sep} />
-                        </div>
-                      ) : (
-                        <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
-                          暂无正文
-                        </div>
-                      )
-                    ) : (
-                    <>
-                    {subtitleTracks.length > 1 && (
-                      <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b bg-muted/20 overflow-x-auto">
-                        <span className="text-[10px] text-muted-foreground shrink-0">语言：</span>
-                        {subtitleTracks.map((t) => {
-                          const active = (activeTrackLang ?? polishedLang) === t.lang
-                          return (
-                            <button
-                              key={t.lang}
-                              onClick={() => selectTrack(t.lang)}
-                              className={cn(
-                                "shrink-0 rounded px-2 py-0.5 text-[11px] transition-colors",
-                                active
-                                  ? "bg-primary text-primary-foreground"
-                                  : "bg-muted hover:bg-muted/70 text-foreground",
+                          )}
+                          {subtitles.length > 0 ? (
+                            <TranscriptTab
+                              subtitles={subtitles}
+                              currentSegmentIndex={currentSegmentIndex}
+                              autoScroll={autoScroll}
+                              onSegmentClick={(sub) => seekTo(sub.startTime)}
+                              currentTime={currentTime}
+                              tocTree={mindmapTree}
+                              onTocSeek={seekTo}
+                              onManualScroll={onManualScroll}
+                              srtPath={archivePath + sep + (
+                                activeTrackLang && !subtitleTracks.find((t) => t.lang === activeTrackLang)?.polished
+                                  ? `transcript.${activeTrackLang}.srt`
+                                  : (isPolished ? "transcript_polished.srt" : "transcript.srt")
                               )}
-                              title={t.polished ? "已润色" : "原始字幕"}
-                            >
-                              {t.lang}
-                              {t.polished && <span className="ml-1 text-[9px] opacity-80">✓</span>}
-                            </button>
-                          )
-                        })}
-                      </div>
-                    )}
-                    {subtitles.length > 0 ? (
-                      <TranscriptTab
-                        subtitles={subtitles}
-                        currentSegmentIndex={currentSegmentIndex}
-                        autoScroll={autoScroll}
-                        onSegmentClick={(sub) => seekTo(sub.startTime)}
-                        currentTime={currentTime}
-                        tocTree={mindmapTree}
-                        onTocSeek={seekTo}
-                        onManualScroll={onManualScroll}
-                        srtPath={archivePath + sep + (
-                          activeTrackLang && !subtitleTracks.find((t) => t.lang === activeTrackLang)?.polished
-                            ? `transcript.${activeTrackLang}.srt`
-                            : (isPolished ? "transcript_polished.srt" : "transcript.srt")
-                        )}
-                        onSubtitlesChange={setSubtitles}
-                      />
-                    ) : isProcessing ? (
-                      <div className="flex items-center justify-center h-full text-muted-foreground">
-                        <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
-                        <span className="text-sm">等待转录完成...</span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
-                        无字幕数据
-                      </div>
-                    )}
-                    </>
-                    )}
-                  </div>
-                </TabsContent>
+                              onSubtitlesChange={setSubtitles}
+                            />
+                          ) : isProcessing ? (
+                            <div className="flex items-center justify-center h-full text-muted-foreground">
+                              <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
+                              <span className="text-sm">等待转录完成...</span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+                              无字幕数据
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </TabsContent>
+                )}
 
                 {(mindmap || isProcessing) && (
                   <TabsContent value="mindmap" className="mt-3 relative flex-1">
