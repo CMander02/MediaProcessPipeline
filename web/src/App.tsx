@@ -9,7 +9,7 @@ import { SettingsPage } from "@/components/pages/settings-page"
 import { TaskQueueDropdown } from "@/components/task-queue-dropdown"
 import { Input } from "@/components/ui/input"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { AudioWave01Icon, ComputerTerminal01Icon, FolderOpenIcon, PlusSignIcon, Settings01Icon, Search01Icon } from "@hugeicons/core-free-icons"
+import { ComputerTerminal01Icon, FolderOpenIcon, PlusSignIcon, Settings01Icon, Search01Icon } from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
 
 export default function App() {
@@ -40,7 +40,7 @@ export default function App() {
       {/* Header */}
       <header className="shrink-0 border-b bg-card">
         <div className="flex items-center h-12 px-4 gap-1">
-          <HugeiconsIcon icon={AudioWave01Icon} className="h-4.5 w-4.5 text-primary mr-2" aria-hidden="true" />
+          <img src="/favicon.svg" className="mr-2 h-5 w-5" alt="" aria-hidden="true" />
           <span className="text-sm font-semibold mr-4">MPP</span>
 
           {/* Nav links */}
