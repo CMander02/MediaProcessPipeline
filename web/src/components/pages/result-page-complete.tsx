@@ -3,6 +3,8 @@
  * Loads files progressively and subscribes to SSE for real-time updates.
  */
 import { useCallback, useEffect, useRef, useState } from "react"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import {
@@ -67,6 +69,41 @@ interface Props {
 
 function normalizeArchivePath(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()
+}
+
+function resolveNoteMediaSrc(src: string | undefined, archivePath: string, sep: string): string | undefined {
+  if (!src) return src
+  if (/^(?:https?:|data:|blob:)/i.test(src)) return src
+  const normalized = src.replace(/\\/g, "/")
+  if (/^[A-Za-z]:\//.test(normalized) || normalized.startsWith("/")) {
+    return api.filesystem.mediaUrl(src)
+  }
+  return api.filesystem.mediaUrl(archivePath + sep + normalized.replace(/\//g, sep))
+}
+
+function NoteMarkdown({ content, archivePath, sep }: { content: string; archivePath: string; sep: string }) {
+  return (
+    <div className="prose prose-sm max-w-none dark:prose-invert">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          img: ({ src, alt }) => (
+            <img
+              src={resolveNoteMediaSrc(src, archivePath, sep)}
+              alt={alt ?? ""}
+              className="mx-auto my-4 max-h-[520px] w-full rounded-md object-contain"
+              loading="lazy"
+            />
+          ),
+          a: ({ href, children }) => (
+            <a href={href} target="_blank" rel="noreferrer">{children}</a>
+          ),
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  )
 }
 
 export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
@@ -266,6 +303,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
       mindmapMd,
       mindmapJson,
       detailMd,
+      sourceMd,
       polishedSrt,
       rawSrt,
     ] = await Promise.all([
@@ -273,6 +311,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
       loadFile("mindmap.md", basePath),
       loadFile("mindmap.json", basePath),
       loadFile("detail.md", basePath),
+      loadFile("source.md", basePath),
       loadFile("transcript_polished.srt", basePath),
       loadFile("transcript.srt", basePath),
     ])
@@ -287,6 +326,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
       }
     }
     if (detailMd) setDetail(detailMd)
+    if (sourceMd) setNoteText(sourceMd)
 
     if (polishedSrt) {
       applyTranscriptContent(polishedSrt, true)
@@ -401,6 +441,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         })
       } else if (file === "detail.md") {
         loadReadyFile().then((c) => { if (c) setDetail(c) })
+      } else if (file === "source.md") {
+        loadReadyFile().then((c) => { if (c) setNoteText(c) })
       } else if (file === "metadata.json") {
         refreshArchives(true)
       }
@@ -727,8 +769,14 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                   />
                 </div>
               ) : isTextNote ? (
-                <div className="flex h-full min-h-40 items-center justify-center rounded-lg border bg-muted/20 text-sm text-muted-foreground">
-                  文本内容，无媒体预览
+                <div className="h-full min-h-40 overflow-y-auto rounded-lg border bg-background p-5">
+                  {noteText ? (
+                    <NoteMarkdown content={noteText} archivePath={archivePath} sep={sep} />
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                      暂无正文
+                    </div>
+                  )}
                 </div>
               ) : mediaUrl ? (
                 <div className="sticky top-0 z-10 bg-background pb-2">
@@ -863,8 +911,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                       )
                     ) : isTextNote ? (
                       noteText ? (
-                        <div className="overflow-y-auto flex-1 p-5 text-sm leading-7 whitespace-pre-wrap">
-                          {noteText}
+                        <div className="overflow-y-auto flex-1 p-5 text-sm leading-7">
+                          <NoteMarkdown content={noteText} archivePath={archivePath} sep={sep} />
                         </div>
                       ) : (
                         <div className="flex items-center justify-center h-full text-muted-foreground text-sm">

@@ -217,19 +217,30 @@ class SiliconFlowASRService:
         model: str,
         language: str | None,
         wav_path: str,
+        default_params: dict[str, Any] | None = None,
     ) -> str:
         """POST one chunk to /audio/transcriptions and return text.
 
-        SiliconFlow expects model (and optional language) as multipart parts,
-        not regular form fields — match their reference snippet exactly.
+        SiliconFlow expects model and file as multipart fields. The provider
+        metadata keeps the upload limits and optional language behavior.
         """
+        params = default_params if isinstance(default_params, dict) else {}
+        max_file_mb = float(params.get("max_file_mb") or 50)
+        max_bytes = int(max_file_mb * 1024 * 1024)
+        file_size = Path(wav_path).stat().st_size
+        if file_size > max_bytes:
+            raise RuntimeError(
+                f"SiliconFlow ASR chunk is {file_size / 1024 / 1024:.1f}MB; "
+                f"limit is {max_file_mb:.0f}MB."
+            )
+
         headers = {"Authorization": f"Bearer {api_key}"}
         with open(wav_path, "rb") as f:
             files: list[tuple[str, Any]] = [
                 ("file", (Path(wav_path).name, f, "audio/wav")),
                 ("model", (None, model)),
             ]
-            if language:
+            if language and bool(params.get("include_language", False)):
                 files.append(("language", (None, language)))
             resp = client.post(url, headers=headers, files=files)
 
@@ -254,19 +265,35 @@ class SiliconFlowASRService:
         chunk_strategy: str | None = None,
     ) -> dict[str, Any]:
         rt = get_runtime_settings()
-        if not rt.siliconflow_api_key:
+        from app.core.model_router import resolve_asr_binding
+
+        binding = resolve_asr_binding(
+            rt,
+            task_options={"asr_provider": "siliconflow"},
+            language=language,
+        )
+        api_key = binding.api_key or rt.siliconflow_api_key
+        if not api_key:
             raise RuntimeError(
                 "siliconflow_api_key is empty — configure it in Settings before using this "
                 "ASR provider"
             )
-        base = rt.siliconflow_api_base.rstrip("/")
+        base = (binding.api_base or rt.siliconflow_api_base).rstrip("/")
         if not base.endswith("/v1"):
             # Tolerate users entering the bare host
             base = base + "/v1" if "/v" not in base else base
-        url = f"{base}/audio/transcriptions"
-        model = rt.siliconflow_asr_model
-        lang_hint = language or (rt.siliconflow_asr_language or None)
-        max_chunk = float(rt.siliconflow_asr_max_chunk_sec or 30.0)
+        url = str(binding.request_kwargs.get("endpoint") or f"{base}/audio/transcriptions")
+        model = binding.model or rt.siliconflow_asr_model
+        if not binding.configured:
+            raise RuntimeError(
+                f"SiliconFlow ASR binding is unavailable: {binding.reason or 'incomplete configuration'}"
+            )
+        lang_hint = binding.language or language or (rt.siliconflow_asr_language or None)
+        default_params = binding.request_kwargs.get("default_params")
+        if not isinstance(default_params, dict):
+            default_params = {}
+        max_duration_sec = float(default_params.get("max_duration_sec") or 3600)
+        max_chunk = min(float(rt.siliconflow_asr_max_chunk_sec or 30.0), max_duration_sec)
         timeout = float(rt.siliconflow_asr_timeout_sec or 120.0)
         strategy = (chunk_strategy or rt.siliconflow_asr_chunk_strategy or "ffmpeg").strip().lower()
 
@@ -331,7 +358,13 @@ class SiliconFlowASRService:
                     else:
                         self._export_chunk_ffmpeg(str(audio_file), chunk, tmp_path)
                     text = self._post_chunk(
-                        client, url, rt.siliconflow_api_key, model, lang_hint, tmp_path
+                        client,
+                        url,
+                        api_key,
+                        model,
+                        lang_hint,
+                        tmp_path,
+                        default_params,
                     )
                     if text:
                         segments.append(

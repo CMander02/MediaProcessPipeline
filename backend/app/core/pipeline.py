@@ -288,18 +288,20 @@ def _clean_source_path(source: str) -> str:
     the Xiaohongshu mobile/web app:
       '77 【标题 | 小红书】 😆 n7715oGO82X4J5v 😆 https://www.xiaohongshu.com/...'
     """
-    import re as _re
     source = source.strip()
     if (source.startswith('"') and source.endswith('"')) or \
        (source.startswith("'") and source.endswith("'")):
         source = source[1:-1]
-    # If it doesn't look like a plain URL or local path, try to pull the first URL out.
-    if not source.startswith(("http://", "https://", "ftp://", "rtmp://")) and \
-       not (len(source) >= 2 and source[1] == ":") and \
-       not source.startswith("/"):
-        m = _re.search(r'https?://\S+', source)
-        if m:
-            source = m.group(0)
+    url_match = re.search(r'https?://[^\s<>"\'，。！？；、]+', source)
+    if url_match and (
+        source.startswith(("http://", "https://"))
+        or (
+            not source.startswith(("ftp://", "rtmp://"))
+            and not (len(source) >= 2 and source[1] == ":")
+            and not source.startswith("/")
+        )
+    ):
+        source = url_match.group(0)
     return source
 
 
@@ -910,6 +912,51 @@ async def _run_subtitle_fast_path(
 # Note pipeline (XHS/Zhihu notes: optional VLM → summary/mindmap → archive)
 # ---------------------------------------------------------------------------
 
+def _note_text_excerpt(text: str, limit: int = 600) -> str:
+    compact = re.sub(r"\s+", " ", text).strip()
+    if len(compact) <= limit:
+        return compact
+    return compact[:limit].rstrip() + "..."
+
+
+def _fallback_note_analysis(text: str) -> dict[str, Any]:
+    return {
+        "language": "zh-CN" if re.search(r"[\u4e00-\u9fff]", text) else "unknown",
+        "content_type": "note",
+        "main_topics": [],
+        "keywords": [],
+        "proper_nouns": [],
+        "speakers_detected": 1,
+        "tone": "unknown",
+    }
+
+
+def _fallback_note_summary(text: str) -> dict[str, Any]:
+    return {
+        "tldr": _note_text_excerpt(text),
+        "key_facts": [],
+        "action_items": [],
+        "topics": [],
+    }
+
+
+def _fallback_note_mindmap(metadata: "MediaMetadata", image_count: int, text: str) -> str:
+    title = metadata.title or "图片笔记"
+    return "\n".join([
+        f"# {title}",
+        "- 原始笔记正文已归档",
+        f"- 图片数量: {image_count}",
+        f"- 正文长度: {len(text)} 字符",
+    ])
+
+
+def _image_note_index(position: int, path: Path) -> int:
+    try:
+        return int(path.stem)
+    except ValueError:
+        return position
+
+
 async def _process_image_note(
     task: Task,
     metadata: "MediaMetadata",
@@ -927,6 +974,21 @@ async def _process_image_note(
     await _raise_if_cancelled(task.id)
 
     await _update_step(task, PipelineStep.ANALYZE)
+
+    source_text = ""
+    extra = ingest_info.get("extra") if isinstance(ingest_info, dict) else None
+    source_path_value = extra.get("source_markdown_path") if isinstance(extra, dict) else None
+    if source_path_value:
+        try:
+            source_path = Path(str(source_path_value))
+            if source_path.exists():
+                source_text = source_path.read_text(encoding="utf-8")
+        except Exception as e:
+            log_event(logger, logging.WARNING, "note.source.read_failed", path=source_path_value, error=e)
+    if not source_text and metadata.description:
+        source_text = metadata.description
+    if source_text:
+        await _write_text_artifact(task, task_dir, "source.md", source_text)
 
     # Download images when the note actually has image media.
     if metadata.content_subtype == "text_note":
@@ -949,15 +1011,24 @@ async def _process_image_note(
     # Run VLM on each image (limited by vlm_concurrency)
     rt = get_runtime_settings()
     descriptions: list[dict] = []
-    if image_paths and rt.vlm_api_base:
+    from app.core.model_router import resolve_deepseek_llm_binding, resolve_llm_binding, resolve_vlm_binding
+
+    vlm_binding = resolve_vlm_binding(rt)
+    if image_paths and vlm_binding.configured:
         from app.services.analysis.vlm import get_vlm_service
         vlm = get_vlm_service()
-        sem = _aio.Semaphore(rt.vlm_concurrency)
+        sem = _aio.Semaphore(int(vlm_binding.request_kwargs.get("concurrency") or rt.vlm_concurrency))
 
-        async def _describe(idx: int, path: Path) -> dict:
+        async def _describe(position: int, path: Path) -> dict:
+            idx = _image_note_index(position, path)
             async with sem:
                 try:
-                    result = await _aio.get_event_loop().run_in_executor(None, vlm.describe_image, path)
+                    result = await _aio.get_event_loop().run_in_executor(
+                        None,
+                        vlm.describe_image,
+                        path,
+                        vlm_binding,
+                    )
                     return {"index": idx, "image_path": str(path), **result}
                 except Exception as e:
                     log_event(logger, logging.WARNING, "vlm.image.failed", index=idx, file=path.name, error=e)
@@ -966,9 +1037,15 @@ async def _process_image_note(
         descriptions = list(await _aio.gather(*[_describe(i, p) for i, p in enumerate(image_paths)]))
     else:
         for i, p in enumerate(image_paths):
-            descriptions.append({"index": i, "image_path": str(p), "kind": "content", "text": ""})
-        if image_paths and not rt.vlm_api_base:
-            log_event(logger, logging.WARNING, "vlm.skipped", reason="not_configured", images=len(image_paths))
+            descriptions.append({"index": _image_note_index(i, p), "image_path": str(p), "kind": "content", "text": ""})
+        if image_paths:
+            log_event(
+                logger,
+                logging.WARNING,
+                "vlm.skipped",
+                reason=vlm_binding.reason or "not_configured",
+                images=len(image_paths),
+            )
 
     await _raise_if_cancelled(task.id)
 
@@ -986,8 +1063,9 @@ async def _process_image_note(
         if d.get("text"):
             label = f"图片 {d['index'] + 1}"
             combined_parts.append(f"### {label}\n{d['text']}")
-    if metadata.description:
-        combined_parts.insert(0, f"### 笔记正文\n{metadata.description}")
+    if source_text:
+        body_label = "网页正文" if metadata.platform == "webpage" else "笔记正文"
+        combined_parts.insert(0, f"### {body_label}\n{source_text}")
     combined_text = "\n\n".join(combined_parts)
     if combined_text:
         combined_path = desc_dir / "combined.md"
@@ -1002,14 +1080,14 @@ async def _process_image_note(
     # Analyze + summarize + mindmap using combined text
     video_metadata = {
         "uploader": metadata.uploader,
-        "description": metadata.description,
+        "description": source_text or metadata.description,
         "tags": metadata.tags,
         "chapters": None,
     }
     mindmap_metadata = {
         "title": metadata.title,
         "uploader": metadata.uploader,
-        "description": metadata.description,
+        "description": source_text or metadata.description,
         "chapters": None,
     }
 
@@ -1020,33 +1098,74 @@ async def _process_image_note(
 
     if combined_text and len(combined_text.strip()) >= 10:
         import json as _json
-        analysis = await analyze_content(combined_text, metadata.title, metadata=video_metadata)
-        await _raise_if_cancelled(task.id)
-        user_language = _user_language_hint(analysis)
 
-        if analysis:
+        deepseek_summary_binding = resolve_deepseek_llm_binding(rt, stage="summary")
+        llm_provider_override = "deepseek" if deepseek_summary_binding.configured else ""
+        llm_binding = deepseek_summary_binding if llm_provider_override else resolve_llm_binding(rt, stage="summary")
+        if not llm_binding.configured:
+            log_event(
+                logger,
+                logging.WARNING,
+                "image_note.llm.skipped",
+                provider=llm_binding.provider,
+                reason=llm_binding.reason,
+            )
+            analysis = _fallback_note_analysis(combined_text)
             analysis_path = task_dir / "analysis.json"
             analysis_path.write_text(_json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
             await _emit_file_ready(task, "analysis.json", str(analysis_path))
-
-        tasks = [
-            summarize_text(combined_text, user_language=user_language),
-            generate_mindmap(combined_text, metadata=mindmap_metadata, user_language=user_language),
-        ]
-        if rt.generate_video_detail:
-            tasks.append(generate_detail(combined_text, user_language=user_language))
-        results = await _aio.gather(*tasks)
-        summary = results[0]
-        mindmap = results[1]
-        detail = results[2] if len(results) > 2 else ""
-        await _raise_if_cancelled(task.id)
-
-        if summary:
+            summary = _fallback_note_summary(combined_text)
+            mindmap = _fallback_note_mindmap(metadata, len(image_paths), combined_text)
             await _write_summary_files(task, task_dir, metadata, summary)
-        if mindmap:
             await _write_mindmap_files(task, task_dir, mindmap)
-        if detail:
-            await _write_detail_file(task, task_dir, detail)
+        else:
+            analysis = await analyze_content(
+                combined_text,
+                metadata.title,
+                metadata=video_metadata,
+                provider_override=llm_provider_override,
+            )
+            await _raise_if_cancelled(task.id)
+            user_language = _user_language_hint(analysis)
+
+            if analysis:
+                analysis_path = task_dir / "analysis.json"
+                analysis_path.write_text(_json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
+                await _emit_file_ready(task, "analysis.json", str(analysis_path))
+
+            tasks = [
+                summarize_text(
+                    combined_text,
+                    user_language=user_language,
+                    provider_override=llm_provider_override,
+                ),
+                generate_mindmap(
+                    combined_text,
+                    metadata=mindmap_metadata,
+                    user_language=user_language,
+                    provider_override=llm_provider_override,
+                ),
+            ]
+            if rt.generate_video_detail:
+                tasks.append(
+                    generate_detail(
+                        combined_text,
+                        user_language=user_language,
+                        provider_override=llm_provider_override,
+                    )
+                )
+            results = await _aio.gather(*tasks)
+            summary = results[0]
+            mindmap = results[1]
+            detail = results[2] if len(results) > 2 else ""
+            await _raise_if_cancelled(task.id)
+
+            if summary:
+                await _write_summary_files(task, task_dir, metadata, summary)
+            if mindmap:
+                await _write_mindmap_files(task, task_dir, mindmap)
+            if detail:
+                await _write_detail_file(task, task_dir, detail)
     else:
         log_event(logger, logging.WARNING, "image_note.llm.skipped", reason="combined_text_too_short")
 

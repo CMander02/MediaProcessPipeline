@@ -12,17 +12,19 @@ import {
 import { RenameDialog } from "@/components/rename-dialog"
 import { PlatformIcon } from "@/components/platform-icon"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { Video01Icon, MusicNote01Icon, Note01Icon, Image01Icon, ListTreeIcon, FolderOpenIcon, PencilEdit01Icon, Delete01Icon, Loading03Icon } from "@hugeicons/core-free-icons"
+import { Video01Icon, MusicNote01Icon, Note01Icon, Image01Icon, ListTreeIcon, FolderOpenIcon, PencilEdit01Icon, Delete01Icon, Loading03Icon, RefreshIcon } from "@hugeicons/core-free-icons"
 
 interface ArchiveCardProps {
   archive: ArchiveItem
   onClick: () => void
   onDelete?: () => void
   onRenamed?: (newTitle: string) => void
+  onRerun?: () => void
+  rerunning?: boolean
   compact?: boolean
 }
 
-export function ArchiveCard({ archive, onClick, onDelete, onRenamed, compact = false }: ArchiveCardProps) {
+export function ArchiveCard({ archive, onClick, onDelete, onRenamed, onRerun, rerunning = false, compact = false }: ArchiveCardProps) {
   const [imgError, setImgError] = useState(false)
   const [showRename, setShowRename] = useState(false)
   const contentSubtype = typeof archive.metadata?.content_subtype === "string"
@@ -34,6 +36,8 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed, compact = f
 
   const showThumbnail = !imgError && !isTextNote
   const thumbnailUrl = api.archives.thumbnailUrl(archive.path)
+  const thumbnailClassName =
+    "h-full w-full object-cover object-center transition-transform group-hover:scale-[1.03]"
 
   return (
     <>
@@ -51,7 +55,7 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed, compact = f
                 alt=""
                 loading="lazy"
                 onError={() => setImgError(true)}
-                className="h-full w-full object-cover transition-transform group-hover:scale-[1.03]"
+                className={thumbnailClassName}
               />
             ) : archive.has_video ? (
               <div className="flex h-full w-full items-center justify-center">
@@ -129,6 +133,10 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed, compact = f
         <ContextMenuItem onClick={onClick}>
           <HugeiconsIcon icon={FolderOpenIcon} className="h-4 w-4" />
           打开
+        </ContextMenuItem>
+        <ContextMenuItem disabled={!onRerun || rerunning} onClick={() => onRerun?.()}>
+          <HugeiconsIcon icon={rerunning ? Loading03Icon : RefreshIcon} className={rerunning ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+          {rerunning ? "重做中" : "重做"}
         </ContextMenuItem>
         <ContextMenuItem onClick={() => setShowRename(true)}>
           <HugeiconsIcon icon={PencilEdit01Icon} className="h-4 w-4" />

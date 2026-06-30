@@ -166,6 +166,11 @@ if _web_dist.is_dir():
     # SPA fallback: serve index.html for all non-API routes
     @app.get("/{path:path}")
     async def spa_fallback(path: str):
+        if path == "api" or path.startswith("api/"):
+            return JSONResponse(
+                status_code=404,
+                content={"detail": f"API route not found: /{path}"},
+            )
         file_path = _web_dist / path
         if file_path.is_file():
             return FileResponse(file_path, headers=_NO_STORE_HEADERS)

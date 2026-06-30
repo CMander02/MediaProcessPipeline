@@ -2,6 +2,8 @@ import { useState, useMemo, useEffect, useLayoutEffect, useRef } from "react"
 import { useArchives } from "@/hooks/use-archives"
 import { usePreferences } from "@/hooks/use-preferences"
 import { navigate } from "@/lib/router"
+import { api } from "@/lib/api"
+import type { ArchiveItem } from "@/hooks/use-archives"
 import { ArchiveCard } from "@/components/archive-card"
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
 import { Button } from "@/components/ui/button"
@@ -9,7 +11,7 @@ import { Input } from "@/components/ui/input"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Loading03Icon, FolderOpenIcon, ArrowLeft01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons"
 
-const PAGE_SIZE = 18
+const PAGE_SIZE = 24
 const MIN_PAGE_SIZE = 1
 
 interface FilesPageProps {
@@ -24,7 +26,9 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
   const [pageInput, setPageInput] = useState("1")
   const [pageSize, setPageSize] = useState(PAGE_SIZE)
   const [deleteTarget, setDeleteTarget] = useState<{ title: string; path: string } | null>(null)
+  const [rerunningPath, setRerunningPath] = useState<string | null>(null)
   const gridRef = useRef<HTMLDivElement>(null)
+  const paginationRef = useRef<HTMLDivElement>(null)
 
   const filtered = useMemo(() => {
     let list = archives
@@ -76,7 +80,10 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
       const cardHeight = firstCard.getBoundingClientRect().height
       if (cardHeight <= 0) return
 
-      const rows = Math.max(1, Math.floor((grid.clientHeight + rowGap) / (cardHeight + rowGap)))
+      const gridTop = grid.getBoundingClientRect().top
+      const paginationHeight = paginationRef.current?.getBoundingClientRect().height ?? 32
+      const availableHeight = window.innerHeight - gridTop - paginationHeight - 12
+      const rows = Math.max(1, Math.floor((availableHeight + rowGap) / (cardHeight + rowGap)))
       const nextPageSize = Math.max(MIN_PAGE_SIZE, columns * rows)
       setPageSize((current) => (current === nextPageSize ? current : nextPageSize))
     }
@@ -101,6 +108,53 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
     navigate(`#/result/archive?path=${encodeURIComponent(path)}${tid}`)
   }
 
+  const sourceFromMetadata = (archive: ArchiveItem): string => {
+    const metadata = archive.metadata ?? {}
+    const extra = metadata.extra
+    const candidates = [
+      metadata.source_url,
+      metadata.original_url,
+      metadata.webpage_url,
+      metadata.file_path,
+      extra && typeof extra === "object" && "original_url" in extra ? (extra as Record<string, unknown>).original_url : undefined,
+      extra && typeof extra === "object" && "webpage_url" in extra ? (extra as Record<string, unknown>).webpage_url : undefined,
+    ]
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.trim()) return candidate.trim()
+    }
+    return ""
+  }
+
+  const handleRerun = async (archive: ArchiveItem) => {
+    if (rerunningPath) return
+    setRerunningPath(archive.path)
+    try {
+      let source = ""
+      let options: Record<string, unknown> = {}
+      if (archive.task_id) {
+        try {
+          const task = await api.tasks.get(archive.task_id)
+          source = task.source
+          options = task.options ?? {}
+        } catch {
+          source = ""
+        }
+      }
+      if (!source) source = sourceFromMetadata(archive)
+      if (!source) {
+        window.alert("找不到原始来源，无法重做。")
+        return
+      }
+      await api.tasks.create(source, options)
+      setPage(1)
+      await refresh(true)
+    } catch (e) {
+      window.alert(`重做失败：${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setRerunningPath(null)
+    }
+  }
+
   const commitPageInput = () => {
     const parsed = Number.parseInt(pageInput, 10)
     if (!Number.isFinite(parsed)) {
@@ -121,10 +175,14 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3 p-4 pb-2">
+    <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_auto] gap-2 px-4 pt-3 pb-1">
       {/* Grid */}
       {filtered.length > 0 ? (
-        <div ref={gridRef} className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4 overflow-hidden flex-1 min-h-0 content-start">
+        <div
+          ref={gridRef}
+          data-testid="archive-grid"
+          className="grid h-full min-h-0 grid-cols-[repeat(auto-fill,minmax(220px,1fr))] content-between gap-x-4 gap-y-3 overflow-hidden"
+        >
           {paged.map((a) => (
             <ArchiveCard
               key={a.path}
@@ -133,11 +191,13 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
               onClick={() => handleOpen(a.path, a.task_id)}
               onDelete={() => setDeleteTarget({ title: a.title, path: a.path })}
               onRenamed={() => refresh(true)}
+              onRerun={() => handleRerun(a)}
+              rerunning={rerunningPath === a.path}
             />
           ))}
         </div>
       ) : (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
+        <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 text-muted-foreground">
           <HugeiconsIcon icon={FolderOpenIcon} className="h-12 w-12 opacity-20" />
           {archives.length === 0 ? (
             <p>还没有归档结果。处理完成后这里会显示文件。</p>
@@ -149,7 +209,11 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="shrink-0 flex items-center justify-center gap-2 py-1">
+        <div
+          ref={paginationRef}
+          data-testid="files-pagination"
+          className="h-8 shrink-0 flex items-center justify-center gap-2"
+        >
           <Button
             variant="ghost"
             size="icon-sm"

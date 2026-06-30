@@ -174,7 +174,7 @@ def _load_local_llm(model_path: str, device: str = "cuda", dtype: str = "bfloat1
         ) from e
 
     log_event(logger, logging.INFO, "llm.local.load_started", model_path=model_path, device=device, dtype=dtype)
-    # tqdm can fail when the daemon is launched by Electron with hidden stdio on Windows.
+    # tqdm can fail when the daemon is launched by the desktop shell with hidden stdio on Windows.
     hf_logging.disable_progress_bar()
 
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
@@ -269,8 +269,10 @@ class LLMService:
         self._static_settings = get_settings()
 
     def _effective_provider(self, provider_override: str = "") -> str:
+        from app.core.model_router import resolve_llm_binding
+
         rt = get_runtime_settings()
-        return provider_override or rt.llm_provider
+        return resolve_llm_binding(rt, provider_override=provider_override, stage="polish").provider
 
     async def _call_local(self, prompt: str) -> str:
         """Call local HF model (transformers). Loads on first call; serialised via lock."""
@@ -342,8 +344,14 @@ class LLMService:
         provider_override: str = "",
         stage: str = "polish",
     ) -> str:
+        from app.core.model_router import resolve_llm_binding
+
         rt = get_runtime_settings()
-        provider = provider_override or rt.llm_provider
+        provider = resolve_llm_binding(
+            rt,
+            provider_override=provider_override,
+            stage=stage,
+        ).provider
 
         # Local HF path — unchanged, no LiteLLM involved
         if provider == "local":
@@ -351,8 +359,8 @@ class LLMService:
                 log_event(logger, logging.INFO, "llm.local.call_started")
                 return await self._call_local(prompt)
             log_event(logger, logging.WARNING, "llm.local.fallback", reason="model_path_empty")
-            provider = rt.llm_provider
             provider_override = ""
+            provider = resolve_llm_binding(rt, stage=stage).provider
 
         if provider == "deepseek":
             return await self._call_deepseek(prompt, stage=stage, max_retries=max_retries)
@@ -466,6 +474,7 @@ class LLMService:
         text: str,
         title: str,
         metadata: dict[str, Any] | None = None,
+        provider_override: str = "",
     ) -> dict[str, Any]:
         """
         Phase 1: Analyze content to extract metadata.
@@ -493,7 +502,7 @@ class LLMService:
             tags=tags,
             chapters=chapters,
         )
-        resp = await self._call(prompt, stage="analyze")
+        resp = await self._call(prompt, provider_override=provider_override, stage="analyze")
 
         try:
             # Extract JSON from response
@@ -1154,9 +1163,14 @@ class LLMService:
 
         return '\n'.join(lines)
 
-    async def summarize(self, text: str, user_language: str | None = None) -> dict[str, Any]:
+    async def summarize(
+        self,
+        text: str,
+        user_language: str | None = None,
+        provider_override: str = "",
+    ) -> dict[str, Any]:
         prompt = get_summarize_prompt(text, user_language=user_language)
-        resp = await self._call(prompt, stage="summary")
+        resp = await self._call(prompt, provider_override=provider_override, stage="summary")
         try:
             start, end = resp.find("{"), resp.rfind("}") + 1
             if start >= 0 and end > start:
@@ -1165,10 +1179,15 @@ class LLMService:
             pass
         return {"tldr": resp, "key_facts": [], "action_items": [], "topics": []}
 
-    async def detail(self, text: str, user_language: str | None = None) -> str:
+    async def detail(
+        self,
+        text: str,
+        user_language: str | None = None,
+        provider_override: str = "",
+    ) -> str:
         """Generate optional detailed video outline (`detail.md`)."""
         prompt = get_detail_prompt(text, user_language=user_language)
-        resp = await self._call(prompt, stage="summary")
+        resp = await self._call(prompt, provider_override=provider_override, stage="summary")
         return self._filter_mindmap_lines(resp)
 
     async def mindmap(
@@ -1176,19 +1195,31 @@ class LLMService:
         text: str,
         metadata: dict[str, Any] | None = None,
         user_language: str | None = None,
+        provider_override: str = "",
     ) -> str:
         """Generate mindmap, auto-selecting single-pass or map-reduce based on length."""
         # Rough threshold: ~15k chars ≈ 30min of Chinese transcript
         if len(text) > 15000 and metadata:
             chapters = metadata.get("chapters")
             if chapters:
-                return await self._mindmap_map_reduce(text, metadata, chapters, user_language=user_language)
+                return await self._mindmap_map_reduce(
+                    text,
+                    metadata,
+                    chapters,
+                    user_language=user_language,
+                    provider_override=provider_override,
+                )
             # No chapters but long text — auto-split by segment count
-            return await self._mindmap_map_reduce_auto(text, metadata, user_language=user_language)
+            return await self._mindmap_map_reduce_auto(
+                text,
+                metadata,
+                user_language=user_language,
+                provider_override=provider_override,
+            )
 
         # Short content: single-pass
         prompt = get_mindmap_prompt(text, user_language=user_language)
-        resp = await self._call(prompt, stage="mindmap")
+        resp = await self._call(prompt, provider_override=provider_override, stage="mindmap")
         return self._filter_mindmap_lines(resp)
 
     async def _mindmap_map_reduce(
@@ -1197,6 +1228,7 @@ class LLMService:
         metadata: dict[str, Any],
         chapters: list[dict],
         user_language: str | None = None,
+        provider_override: str = "",
     ) -> str:
         """Map-reduce mindmap using chapter markers to split transcript."""
         segments = self._parse_srt(text) if "\n-->" in text else None
@@ -1212,7 +1244,7 @@ class LLMService:
 
         # --- Map phase: parallel ---
         log_event(logger, logging.INFO, "llm.mindmap.map_reduce_started", chapters=len(chapter_texts))
-        map_concurrency = 1 if self._effective_provider() == "local" else 8
+        map_concurrency = 1 if self._effective_provider(provider_override) == "local" else 8
         semaphore = asyncio.Semaphore(map_concurrency)
 
         async def map_one(title: str, content: str) -> tuple[str, str]:
@@ -1220,7 +1252,7 @@ class LLMService:
                 prompt = get_mindmap_map_prompt(
                     title, content, global_context, user_language=user_language,
                 )
-                resp = await self._call(prompt, stage="mindmap")
+                resp = await self._call(prompt, provider_override=provider_override, stage="mindmap")
                 return title, resp
 
         map_results = await asyncio.gather(*[
@@ -1238,13 +1270,18 @@ class LLMService:
         )
 
         # --- Reduce phase: group into batches to stay within output limits ---
-        return await self._mindmap_reduce(chapter_summaries, user_language=user_language)
+        return await self._mindmap_reduce(
+            chapter_summaries,
+            user_language=user_language,
+            provider_override=provider_override,
+        )
 
     async def _mindmap_map_reduce_auto(
         self,
         text: str,
         metadata: dict[str, Any],
         user_language: str | None = None,
+        provider_override: str = "",
     ) -> str:
         """Map-reduce for long text without chapter markers — auto-split."""
         segments = self._parse_srt(text) if "\n-->" in text else None
@@ -1267,7 +1304,7 @@ class LLMService:
         global_context = self._build_global_context(metadata, [])
 
         log_event(logger, logging.INFO, "llm.mindmap.auto_map_reduce_started", chunks=len(chapter_texts))
-        map_concurrency = 1 if self._effective_provider() == "local" else 8
+        map_concurrency = 1 if self._effective_provider(provider_override) == "local" else 8
         semaphore = asyncio.Semaphore(map_concurrency)
 
         async def map_one(title: str, content: str) -> tuple[str, str]:
@@ -1275,7 +1312,7 @@ class LLMService:
                 prompt = get_mindmap_map_prompt(
                     title, content, global_context, user_language=user_language,
                 )
-                resp = await self._call(prompt, stage="mindmap")
+                resp = await self._call(prompt, provider_override=provider_override, stage="mindmap")
                 return title, resp
 
         map_results = await asyncio.gather(*[
@@ -1283,12 +1320,17 @@ class LLMService:
         ])
         chapter_summaries = dict(map_results)
 
-        return await self._mindmap_reduce(chapter_summaries, user_language=user_language)
+        return await self._mindmap_reduce(
+            chapter_summaries,
+            user_language=user_language,
+            provider_override=provider_override,
+        )
 
     async def _mindmap_reduce(
         self,
         chapter_summaries: dict[str, str],
         user_language: str | None = None,
+        provider_override: str = "",
     ) -> str:
         """Reduce chapter summaries into final mindmap, batching to fit output limits."""
         names = list(chapter_summaries.keys())
@@ -1304,7 +1346,7 @@ class LLMService:
         log_event(logger, logging.INFO, "llm.mindmap.reduce_started", groups=len(groups), chapters=len(names))
 
         # Reduce each group (can be parallel for small groups)
-        reduce_concurrency = 1 if self._effective_provider() == "local" else 4
+        reduce_concurrency = 1 if self._effective_provider(provider_override) == "local" else 4
         semaphore = asyncio.Semaphore(reduce_concurrency)
 
         async def reduce_one(label: str, batch_names: list[str]) -> str:
@@ -1315,7 +1357,7 @@ class LLMService:
                 prompt = get_mindmap_reduce_prompt(
                     label, summaries, user_language=user_language,
                 )
-                resp = await self._call(prompt, stage="mindmap")
+                resp = await self._call(prompt, provider_override=provider_override, stage="mindmap")
                 return self._filter_mindmap_lines(resp)
 
         results = await asyncio.gather(*[
@@ -1426,9 +1468,15 @@ async def analyze_content(
     text: str,
     title: str,
     metadata: dict[str, Any] | None = None,
+    provider_override: str = "",
 ) -> dict[str, Any]:
     """Analyze content to extract metadata (Phase 1)."""
-    return await get_llm_service().analyze_content(text, title, metadata)
+    return await get_llm_service().analyze_content(
+        text,
+        title,
+        metadata,
+        provider_override=provider_override,
+    )
 
 
 async def polish_text(text: str, context: dict[str, Any] | None = None) -> str:
@@ -1446,19 +1494,39 @@ def srt_to_markdown(srt_content: str, title: str = "") -> str:
     return get_llm_service().srt_to_markdown(srt_content, title)
 
 
-async def summarize_text(text: str, user_language: str | None = None) -> dict[str, Any]:
-    return await get_llm_service().summarize(text, user_language=user_language)
+async def summarize_text(
+    text: str,
+    user_language: str | None = None,
+    provider_override: str = "",
+) -> dict[str, Any]:
+    return await get_llm_service().summarize(
+        text,
+        user_language=user_language,
+        provider_override=provider_override,
+    )
 
 
-async def generate_detail(text: str, user_language: str | None = None) -> str:
-    return await get_llm_service().detail(text, user_language=user_language)
+async def generate_detail(
+    text: str,
+    user_language: str | None = None,
+    provider_override: str = "",
+) -> str:
+    return await get_llm_service().detail(
+        text,
+        user_language=user_language,
+        provider_override=provider_override,
+    )
 
 
 async def generate_mindmap(
     text: str,
     metadata: dict[str, Any] | None = None,
     user_language: str | None = None,
+    provider_override: str = "",
 ) -> str:
     return await get_llm_service().mindmap(
-        text, metadata=metadata, user_language=user_language,
+        text,
+        metadata=metadata,
+        user_language=user_language,
+        provider_override=provider_override,
     )

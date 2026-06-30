@@ -4,7 +4,8 @@ export type DeepSeekStage = (typeof DEEPSEEK_STAGES)[number]
 export type LlmProvider = "local" | "deepseek" | "custom" | "anthropic" | "openai"
 export type AsrProvider = "qwen3" | "siliconflow"
 export type DeviceValue = "cuda" | "cpu" | "auto"
-export type ModelCapability = "chat" | "fast" | "thinking" | "reasoning" | "vision" | "asr" | "embedding" | "local"
+export type ModelCapability = "llm" | "vlm" | "chat" | "fast" | "thinking" | "reasoning" | "vision" | "asr" | "embedding" | "rerank" | "local" | "json"
+export type ServiceModelType = "llm" | "vlm" | "embedding" | "rerank" | "asr"
 export type ModelStage = DeepSeekStage | "asr" | "vision" | "embedding"
 
 export interface CustomLLMProfile {
@@ -13,6 +14,60 @@ export interface CustomLLMProfile {
   api_base: string
   model: string
   api_key: string
+  [key: string]: unknown
+}
+
+export interface ServiceModelRecord {
+  id: string
+  connection_id: string
+  model_id: string
+  display_name?: string
+  model_type?: ServiceModelType | string
+  capabilities?: ModelCapability[] | string[]
+  endpoint_path?: string
+  enabled?: boolean
+  default_params?: Record<string, unknown>
+  [key: string]: unknown
+}
+
+export interface ProviderModelRecord {
+  id: string
+  model_id: string
+  display_name?: string
+  enabled?: boolean
+  model_type?: ServiceModelType | string
+  capabilities?: ModelCapability[] | string[]
+  endpoint_path?: string
+  default_params?: Record<string, unknown>
+  [key: string]: unknown
+}
+
+export interface ProviderBalanceConfig {
+  enabled?: boolean
+  endpoint_path?: string
+  method?: string
+  [key: string]: unknown
+}
+
+export interface ProviderConfig {
+  id: string
+  name: string
+  provider_type?: string
+  enabled?: boolean
+  api_base?: string
+  api_key?: string
+  api_mode?: string
+  headers?: Record<string, unknown>
+  extra_body?: Record<string, unknown>
+  balance?: ProviderBalanceConfig
+  models?: ProviderModelRecord[]
+  [key: string]: unknown
+}
+
+export interface RuntimeModelBinding {
+  provider_id: string
+  model_id: string
+  capability: string
   [key: string]: unknown
 }
 
@@ -32,6 +87,11 @@ export interface RuntimeSettings {
   custom_name?: string
   custom_llm_profiles?: CustomLLMProfile[]
   custom_active_profile_id?: string
+  service_models?: ServiceModelRecord[]
+  service_connections?: Record<string, unknown>[]
+  providers?: ProviderConfig[]
+  deleted_provider_ids?: string[]
+  runtime_model_bindings?: Record<string, RuntimeModelBinding>
 
   deepseek_api_key?: string
   deepseek_api_base?: string
@@ -54,6 +114,11 @@ export interface RuntimeSettings {
   siliconflow_api_base?: string
   siliconflow_api_key?: string
   siliconflow_asr_model?: string
+  jina_reader_enabled?: boolean
+  jina_reader_api_base?: string
+  jina_reader_api_key?: string
+  jina_reader_bypass_cache?: boolean
+  web_scrape_timeout_sec?: number
 
   local_llm_model_path?: string
   local_llm_device?: DeviceValue | string
@@ -83,6 +148,7 @@ export const SECRET_SETTING_KEYS = [
   "xiaohongshu_cookie",
   "vlm_api_key",
   "kb_embedding_api_key",
+  "jina_reader_api_key",
 ] as const
 
 export type SecretSettingKey = (typeof SECRET_SETTING_KEYS)[number]

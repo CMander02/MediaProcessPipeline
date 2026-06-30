@@ -25,14 +25,36 @@ _SYSTEM_PROMPT = (
     "Respond in the same language as the text in the image (default Chinese)."
 )
 
+_OCR_RETRY_PROMPT = (
+    "这是一张以文字信息为主的图片。请直接提取所有可读文字，保持原文语言、段落顺序和编号。"
+    "如果有标题、列表、括号、英文术语或代码，请完整保留。只输出提取结果。"
+)
+
+_USER_IMAGE_PROMPT = (
+    "请分析这张图片。若图片主要包含文字，请完整 OCR；若主要是照片或插画，请用中文描述主要内容。"
+)
+
+
+def _detect_media_type(data: bytes, suffix: str) -> str:
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return "image/gif"
+    media_type_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                      "webp": "image/webp", "gif": "image/gif"}
+    return media_type_map.get(suffix, "image/jpeg")
+
 
 def _encode_image(image_path: Path) -> tuple[str, str]:
     """Return (base64_data, media_type) for an image file."""
     suffix = image_path.suffix.lower().lstrip(".")
-    media_type_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
-                      "webp": "image/webp", "gif": "image/gif"}
-    media_type = media_type_map.get(suffix, "image/jpeg")
-    data = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    raw = image_path.read_bytes()
+    media_type = _detect_media_type(raw, suffix)
+    data = base64.b64encode(raw).decode("ascii")
     return data, media_type
 
 
@@ -91,14 +113,17 @@ class VLMService:
         client, model = self._get_client(binding)
 
         b64, media_type = _encode_image(image_path)
+        timeout_sec = int(binding.request_kwargs.get("timeout_sec") or 90)
         response = client.chat.completions.create(
             model=model,
             max_tokens=int(binding.request_kwargs.get("max_tokens") or rt.vlm_max_tokens),
+            timeout=timeout_sec,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": [
+                        {"type": "text", "text": _USER_IMAGE_PROMPT},
                         {
                             "type": "image_url",
                             "image_url": {"url": f"data:{media_type};base64,{b64}"},
@@ -109,9 +134,34 @@ class VLMService:
         )
         raw = response.choices[0].message.content or ""
         result = _parse_response(raw)
+        if not result["text"].strip():
+            retry = client.chat.completions.create(
+                model=model,
+                max_tokens=max(2048, int(binding.request_kwargs.get("max_tokens") or rt.vlm_max_tokens)),
+                timeout=timeout_sec,
+                messages=[
+                    {"role": "system", "content": _OCR_RETRY_PROMPT},
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "请完整识别这张图片中的所有中文和英文文字。不要分类，不要描述画面，只输出 OCR 文本。",
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{media_type};base64,{b64}"},
+                            }
+                        ],
+                    },
+                ],
+            )
+            retry_text = (retry.choices[0].message.content or "").strip()
+            if retry_text:
+                result = {"kind": "text", "text": retry_text}
         log_event(
             logger,
-            logging.DEBUG,
+            logging.INFO,
             "vlm.image.completed",
             file=image_path.name,
             kind=result["kind"],

@@ -11,7 +11,7 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
-import { getBackendBridge, type BackendLogEntry, type BackendState, type BackendStatus } from "@/lib/electron"
+import { getBackendBridge, type BackendLogEntry, type BackendState, type BackendStatus } from "@/lib/tauri"
 import { cn } from "@/lib/utils"
 
 const defaultStatus: BackendStatus = {
@@ -20,7 +20,7 @@ const defaultStatus: BackendStatus = {
   cwd: "backend",
   pid: null,
   url: "http://127.0.0.1:18000",
-  message: "仅 Electron 应用内可管理后端进程。",
+  message: "仅桌面端应用内可管理后端进程。",
 }
 
 const statusLabel: Record<BackendState, string> = {
@@ -54,6 +54,20 @@ function formatTime(value: string) {
   return date.toLocaleTimeString("zh-CN", { hour12: false })
 }
 
+function formatError(error: unknown) {
+  if (error instanceof Error) return error.message
+  if (typeof error === "string") return error
+  return JSON.stringify(error)
+}
+
+function makeLogEntry(source: BackendLogEntry["source"], line: string): BackendLogEntry {
+  return {
+    ts: new Date().toISOString(),
+    source,
+    line,
+  }
+}
+
 function StatusIcon({ state }: { state: BackendState }) {
   if (state === "running" || state === "external") {
     return <HugeiconsIcon icon={Tick02Icon} className="h-4 w-4" />
@@ -73,11 +87,11 @@ export function BackendPage() {
   const [logs, setLogs] = useState<BackendLogEntry[]>([])
   const [busy, setBusy] = useState(false)
   const logEndRef = useRef<HTMLDivElement>(null)
-  const isElectron = Boolean(bridge)
+  const hasDesktopBridge = Boolean(bridge)
   const commandLine = useMemo(() => `cd ${status.cwd} && ${status.command}`, [status.cwd, status.command])
-  const canStart = isElectron && !busy && (status.state === "stopped" || status.state === "error")
-  const canStop = isElectron && !busy && (status.state === "running" || status.state === "starting")
-  const canRestart = isElectron && !busy && (status.state === "running" || status.state === "external" || status.state === "error")
+  const canStart = hasDesktopBridge && !busy && (status.state === "stopped" || status.state === "error")
+  const canStop = hasDesktopBridge && !busy && (status.state === "running" || status.state === "starting")
+  const canRestart = hasDesktopBridge && !busy && (status.state === "running" || status.state === "external" || status.state === "error")
 
   useEffect(() => {
     if (!bridge) return
@@ -85,9 +99,18 @@ export function BackendPage() {
     let active = true
     bridge.getStatus().then((nextStatus) => {
       if (active) setStatus(nextStatus)
+    }).catch((error: unknown) => {
+      if (!active) return
+      const message = `桌面桥接状态读取失败：${formatError(error)}`
+      setStatus((current) => ({ ...current, state: "error", message }))
+      setLogs((current) => [...current.slice(-1199), makeLogEntry("error", message)])
     })
     bridge.getLogs().then((nextLogs) => {
       if (active) setLogs(nextLogs)
+    }).catch((error: unknown) => {
+      if (!active) return
+      const message = `桌面桥接日志读取失败：${formatError(error)}`
+      setLogs((current) => [...current.slice(-1199), makeLogEntry("error", message)])
     })
 
     const unsubscribeStatus = bridge.onStatus(setStatus)
@@ -112,6 +135,11 @@ export function BackendPage() {
     try {
       const nextStatus = await bridge[action]()
       setStatus(nextStatus)
+    } catch (error) {
+      const actionLabel = action === "start" ? "启动" : action === "stop" ? "停止" : "重启"
+      const message = `后端${actionLabel}失败：${formatError(error)}`
+      setStatus((current) => ({ ...current, state: "error", message }))
+      setLogs((current) => [...current.slice(-1199), makeLogEntry("error", message)])
     } finally {
       setBusy(false)
     }
@@ -163,9 +191,9 @@ export function BackendPage() {
           </div>
         </div>
 
-        {!isElectron && (
+        {!hasDesktopBridge && (
           <div className="mt-3 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
-            当前是浏览器模式，只能查看 Web 前端；启动、停止和日志观察需要通过 Electron 入口打开。
+            当前是浏览器模式，只能查看 Web 前端；启动、停止和日志观察需要通过桌面端入口打开。
           </div>
         )}
       </div>

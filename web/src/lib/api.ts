@@ -4,7 +4,7 @@
  */
 
 import { createSettingsPatch, type SettingsPatchInput } from "./settings-patch"
-import type { RuntimeSettings } from "./settings-schema"
+import type { ProviderConfig, ProviderModelRecord, RuntimeSettings } from "./settings-schema"
 
 export interface Task {
   id: string
@@ -44,6 +44,26 @@ export interface Settings extends RuntimeSettings {
   local_llm_n_batch: number
   polish_provider: string
   [key: string]: unknown
+}
+
+export interface ProviderModelListItem {
+  id: string
+  display_name?: string
+  model_type?: string
+}
+
+export interface ProviderModelSyncResult {
+  provider: ProviderConfig
+  models: ProviderModelRecord[]
+}
+
+export interface ProviderModelCatalogResult {
+  provider_id: string
+  source: "remote" | "configured"
+  models: ProviderModelRecord[]
+  configured_models: ProviderModelRecord[]
+  allowed_models: ProviderModelRecord[]
+  error?: string | null
 }
 
 export interface PipelineStep {
@@ -91,17 +111,38 @@ function requestedHeaders(): HeadersInit {
 
 async function parseError(res: Response): Promise<Error> {
   try {
-    const data = await res.json()
-    return new Error(data.detail || data.error || `${res.status} ${res.statusText}`)
-  } catch {
-    return new Error(`${res.status} ${res.statusText}`)
+    const data = await readJson<Record<string, unknown>>(res)
+    const detail =
+      typeof data.detail === "string"
+        ? data.detail
+        : typeof data.error === "string"
+          ? data.error
+          : `${res.status} ${res.statusText}`
+    return new Error(detail)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    return new Error(`${res.status} ${res.statusText}: ${detail}`)
+  }
+}
+
+async function readJson<T>(res: Response): Promise<T> {
+  const text = await res.text()
+  if (!text.trim()) return undefined as T
+  try {
+    return JSON.parse(text) as T
+  } catch (error) {
+    const snippet = text.trim().slice(0, 80).replace(/\s+/g, " ")
+    if (snippet.toLowerCase().startsWith("<!doctype") || snippet.toLowerCase().startsWith("<html")) {
+      throw new Error("接口返回了前端页面，请重启后端并确认 API 路由已加载。")
+    }
+    throw new Error(`接口返回内容不是 JSON：${snippet || String(error)}`)
   }
 }
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: headers() })
   if (!res.ok) throw await parseError(res)
-  return res.json()
+  return readJson<T>(res)
 }
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
@@ -111,7 +152,7 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) throw await parseError(res)
-  return res.json()
+  return readJson<T>(res)
 }
 
 async function patch<T>(path: string, body: unknown): Promise<T> {
@@ -121,7 +162,7 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   })
   if (!res.ok) throw await parseError(res)
-  return res.json()
+  return readJson<T>(res)
 }
 
 async function put<T>(path: string, body: unknown): Promise<T> {
@@ -131,7 +172,7 @@ async function put<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   })
   if (!res.ok) throw await parseError(res)
-  return res.json()
+  return readJson<T>(res)
 }
 
 async function httpDelete<T>(path: string, body?: unknown): Promise<T> {
@@ -141,7 +182,7 @@ async function httpDelete<T>(path: string, body?: unknown): Promise<T> {
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) throw await parseError(res)
-  return res.json()
+  return readJson<T>(res)
 }
 
 // ---- Tasks ----
@@ -174,6 +215,20 @@ export const api = {
       return updated
     },
     detectLocalUvr: () => get<{ found: boolean; path: string; models: string[] }>("/api/settings/uvr/local"),
+    fetchSiliconFlowModels: () =>
+      get<{ models: ProviderModelListItem[] }>("/api/settings/providers/siliconflow/models"),
+    fetchProviderModels: (providerId: string, capability?: string) => {
+      const params = new URLSearchParams()
+      if (capability) params.set("capability", capability)
+      const suffix = params.toString() ? `?${params}` : ""
+      return get<ProviderModelCatalogResult>(`/api/settings/providers/${providerId}/models/catalog${suffix}`)
+    },
+    syncProviderModels: (providerId: string) =>
+      post<ProviderModelSyncResult>(`/api/settings/providers/${providerId}/models/sync`),
+    inferProviderModelMetadata: (body: { model_id: string; model_type?: string; display_name?: string; provider_id?: string }) =>
+      post<ProviderModelRecord>("/api/settings/providers/models/metadata", body),
+    queryProviderBalance: (providerId: string) =>
+      post<{ provider_id: string; balance: unknown }>(`/api/settings/providers/${providerId}/balance`),
   },
 
   archives: {

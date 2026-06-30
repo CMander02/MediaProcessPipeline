@@ -14,11 +14,13 @@ interface SettingsModalProps {
 export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-5xl max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[85vh] flex-col overflow-hidden sm:max-w-[1400px]">
+        <DialogHeader className="shrink-0">
           <DialogTitle>设置</DialogTitle>
         </DialogHeader>
-        <SettingsPanel />
+        <div className="min-h-0 flex-1">
+          <SettingsPanel />
+        </div>
       </DialogContent>
     </Dialog>
   )

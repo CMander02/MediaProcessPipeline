@@ -1,0 +1,24 @@
+[[permission]]
+identifier = "allow-backend-get-status"
+description = "Allows reading the desktop-managed backend process status."
+commands.allow = ["backend_get_status"]
+
+[[permission]]
+identifier = "allow-backend-get-logs"
+description = "Allows reading the desktop-managed backend process logs."
+commands.allow = ["backend_get_logs"]
+
+[[permission]]
+identifier = "allow-backend-start"
+description = "Allows starting the desktop-managed backend process."
+commands.allow = ["backend_start"]
+
+[[permission]]
+identifier = "allow-backend-stop"
+description = "Allows stopping the desktop-managed backend process."
+commands.allow = ["backend_stop"]
+
+[[permission]]
+identifier = "allow-backend-restart"
+description = "Allows restarting the desktop-managed backend process."
+commands.allow = ["backend_restart"]

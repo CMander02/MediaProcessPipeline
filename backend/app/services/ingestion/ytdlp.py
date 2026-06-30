@@ -11,6 +11,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from app.core.config import get_settings
 from app.core.logging_setup import log_event
@@ -22,43 +23,131 @@ logger = logging.getLogger(__name__)
 # BBDown executable — shipped with the project
 _BBDOWN_DIR = Path(__file__).resolve().parent.parent.parent.parent / "tools" / "bbdown"
 _BBDOWN_EXE = _BBDOWN_DIR / "BBDown.exe"
+_HTTP_URL_RE = re.compile(r'https?://[^\s<>"\'，。！？；、]+', re.IGNORECASE)
+
+
+def _extract_http_urls(value: str) -> list[str]:
+    return [match.group(0).strip() for match in _HTTP_URL_RE.finditer(value)]
+
+
+def _candidate_urls(value: str) -> list[str]:
+    urls = _extract_http_urls(value)
+    return urls or [value.strip()]
+
+
+def _candidate_matches(value: str, pattern: str) -> bool:
+    return any(re.search(pattern, candidate, re.IGNORECASE) for candidate in _candidate_urls(value))
+
+
+def _host_matches(value: str, suffixes: tuple[str, ...]) -> bool:
+    for candidate in _candidate_urls(value):
+        if "://" not in candidate:
+            candidate = f"https://{candidate}"
+        parsed = urlparse(candidate)
+        host = (parsed.hostname or "").lower()
+        if any(host == suffix or host.endswith(f".{suffix}") for suffix in suffixes):
+            return True
+    return False
 
 
 def _is_bilibili_url(url: str) -> bool:
-    return bool(re.search(r'bilibili\.com|b23\.tv|BV[0-9A-Za-z]+|av\d+', url))
+    if _host_matches(url, ("bilibili.com", "b23.tv")):
+        return True
+    if _extract_http_urls(url):
+        return False
+    return bool(re.fullmatch(r'(?:BV[0-9A-Za-z]+|av\d+)', url.strip(), re.IGNORECASE))
 
 
 def _is_xiaoyuzhou_url(url: str) -> bool:
-    return bool(re.search(r'xiaoyuzhoufm\.com/episode/[0-9a-fA-F]+', url))
+    return _candidate_matches(url, r'xiaoyuzhoufm\.com/episode/[0-9a-fA-F]+')
 
 
 def _is_xiaohongshu_url(url: str) -> bool:
-    return bool(re.search(r'xiaohongshu\.com|xhslink\.com', url))
+    return _host_matches(url, ("xiaohongshu.com", "xhslink.com"))
 
 
 def _is_zhihu_url(url: str) -> bool:
-    return bool(re.search(r'zhihu\.com/(?:pin/\d+|question/\d+/answer/\d+)', url, re.IGNORECASE))
+    return _candidate_matches(url, r'zhihu\.com/(?:pin/\d+|question/\d+/answer/\d+)')
+
+
+_DIRECT_MEDIA_EXTS = {
+    ".mp4", ".mkv", ".avi", ".webm", ".mov", ".m4v",
+    ".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac",
+}
+
+
+def _is_direct_media_url(url: str) -> bool:
+    for candidate in _candidate_urls(url):
+        if "://" not in candidate:
+            continue
+        parsed = urlparse(candidate)
+        if Path(parsed.path).suffix.lower() in _DIRECT_MEDIA_EXTS:
+            return True
+    return False
 
 
 def _is_apple_podcast_url(url: str) -> bool:
-    return bool(re.search(r'podcasts\.apple\.com/(?:[a-z]{2}/)?podcast/[^?#/]*/id\d+', url, re.IGNORECASE))
+    return _candidate_matches(url, r'podcasts\.apple\.com/(?:[a-z]{2}/)?podcast/[^?#/]*/id\d+')
 
 
 def _is_youtube_url(url: str) -> bool:
-    return bool(re.search(r'(?:youtube\.com|youtu\.be)', url, re.IGNORECASE))
+    return _host_matches(url, ("youtube.com", "youtu.be"))
+
+
+def _is_generic_webpage_url(url: str) -> bool:
+    if not _extract_http_urls(url) and not url.strip().startswith(("http://", "https://")):
+        return False
+    if _is_direct_media_url(url):
+        return False
+    if _host_matches(url, (
+        "youtube.com", "youtu.be", "vimeo.com",
+        "x.com", "twitter.com", "tiktok.com", "douyin.com",
+        "kuaishou.com", "weibo.com",
+    )):
+        return False
+    return True
 
 
 def _extract_bilibili_bvid(url: str) -> str | None:
     """Extract or resolve a Bilibili BV id from BV or av/aid URLs."""
-    bv_match = re.search(r'(BV[0-9A-Za-z]+)', url)
-    if bv_match:
-        return bv_match.group(1)
-
-    av_match = re.search(r'(?:/av|av)(\d+)', url, re.IGNORECASE)
-    if not av_match:
+    value = url.strip()
+    if not value:
         return None
 
-    aid = av_match.group(1)
+    bare_bv = re.fullmatch(r'(BV[0-9A-Za-z]{10})', value)
+    if bare_bv:
+        return bare_bv.group(1)
+
+    bare_av = re.fullmatch(r'av(\d+)', value, re.IGNORECASE)
+    if bare_av:
+        aid = bare_av.group(1)
+    else:
+        aid = None
+        for candidate in _candidate_urls(value):
+            if "://" not in candidate:
+                candidate = f"https://{candidate}"
+            parsed = urlparse(candidate)
+            host = (parsed.hostname or "").lower()
+            if not (host == "bilibili.com" or host.endswith(".bilibili.com")):
+                continue
+
+            bvid_values = parse_qs(parsed.query).get("bvid") or []
+            for bvid in bvid_values:
+                if re.fullmatch(r'BV[0-9A-Za-z]{10}', bvid):
+                    return bvid
+
+            path_match = re.search(r'/(?:video/)?(BV[0-9A-Za-z]{10})(?:/|$)', parsed.path)
+            if path_match:
+                return path_match.group(1)
+
+            av_match = re.search(r'/(?:video/)?av(\d+)(?:/|$)', parsed.path, re.IGNORECASE)
+            if av_match:
+                aid = av_match.group(1)
+                break
+
+    if not aid:
+        return None
+
     try:
         import json
         import urllib.request
@@ -451,6 +540,8 @@ class YtdlpService:
             return self._download_xiaohongshu(url, output_dir)
         if _is_zhihu_url(url):
             return self._download_zhihu(url, output_dir)
+        if _is_generic_webpage_url(url):
+            return self._download_webpage(url, output_dir)
 
         import yt_dlp
         outtmpl = str(output_dir / "%(title)s.%(ext)s")
@@ -709,6 +800,20 @@ class YtdlpService:
         return {
             "url": url,
             "title": info.get("title", "zhihu_note"),
+            "file_path": None,
+            "video_path": None,
+            "info": info,
+        }
+
+    def _download_webpage(self, url: str, output_dir: Path) -> dict[str, Any]:
+        """Fetch a generic web page as a text note with localized media."""
+        from app.services.ingestion.platform.webpage.api import download_webpage
+
+        log_event(logger, logging.INFO, "webpage.metadata.fetch_started", url=url)
+        info = download_webpage(url, output_dir)
+        return {
+            "url": url,
+            "title": info.get("title", "webpage"),
             "file_path": None,
             "video_path": None,
             "info": info,
@@ -1114,6 +1219,11 @@ class YtdlpService:
                 fetch_metadata as fetch_zhihu_metadata,
             )
             return fetch_zhihu_metadata(url)
+        if _is_generic_webpage_url(url):
+            from app.services.ingestion.platform.webpage.api import (
+                fetch_metadata as fetch_webpage_metadata,
+            )
+            return fetch_webpage_metadata(url)
 
         import yt_dlp
 
@@ -1406,6 +1516,15 @@ class YtdlpService:
         if _is_zhihu_url(url):
             return _empty_subtitle_result(
                 engine="zhihu-page",
+                diagnostics=[{
+                    "stage": "subtitle",
+                    "status": "skipped",
+                    "reason": "text_note_no_subtitle_endpoint",
+                }],
+            )
+        if _is_generic_webpage_url(url):
+            return _empty_subtitle_result(
+                engine="webpage-scrape",
                 diagnostics=[{
                     "stage": "subtitle",
                     "status": "skipped",

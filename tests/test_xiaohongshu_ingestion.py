@@ -5,7 +5,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.models import MediaType  # noqa: E402
+from app.models import MediaMetadata, MediaType  # noqa: E402
+from app.core.pipeline import (  # noqa: E402
+    _clean_source_path,
+    _detect_source_type,
+    _fallback_note_mindmap,
+    _fallback_note_summary,
+)
+from app.services.ingestion.platform.xiaohongshu import api as xhs_api  # noqa: E402
 from app.services.ingestion.platform.xiaohongshu.api import (  # noqa: E402
     _extract_initial_state,
     _extract_note,
@@ -13,6 +20,7 @@ from app.services.ingestion.platform.xiaohongshu.api import (  # noqa: E402
     extract_post_info,
     is_xiaohongshu_url,
 )
+from app.services.ingestion import ytdlp  # noqa: E402
 from app.services.ingestion.ytdlp import YtdlpService  # noqa: E402
 
 
@@ -27,6 +35,151 @@ def test_xiaohongshu_url_detection_and_post_info():
 
     assert info.post_id == "6a04606b000000003503392c"
     assert info.xsec_token == "ABLQRfvRqGgEZfMdnklHHK2gAVm2dVI65ti2IHgicBFks="
+
+
+def test_xiaohongshu_share_text_with_bili_like_tokens_stays_xiaohongshu():
+    share_text = (
+        "77 【标题 | 小红书】 av12345 BV1xx411c7mD "
+        "https://xhslink.com/a/ABcdEFgH，复制本条消息打开小红书"
+    )
+
+    cleaned = _clean_source_path(share_text)
+
+    assert cleaned == "https://xhslink.com/a/ABcdEFgH"
+    assert _detect_source_type(cleaned) == "xiaohongshu"
+    assert ytdlp._is_xiaohongshu_url(share_text)
+    assert not ytdlp._is_bilibili_url(share_text)
+
+
+def test_xiaohongshu_pc_share_text_routes_to_xiaohongshu():
+    share_text = (
+        "26 【传说中deepseek融资会议Q&A - blh | 小红书 - 你的生活兴趣社区】 "
+        "😆 CNRCqayKNUVytbk 😆 "
+        "https://www.xiaohongshu.com/discovery/item/6a37ac8b000000001101d922"
+        "?source=webshare&xhsshare=pc_web"
+        "&xsec_token=AB3Gr9I0rGdAYkcJ7Z7sd3ppChGDarTcN_3lGMsI2CEiU="
+        "&xsec_source=pc_share"
+    )
+
+    cleaned = _clean_source_path(share_text)
+
+    assert cleaned.startswith("https://www.xiaohongshu.com/discovery/item/6a37ac8b000000001101d922")
+    assert _detect_source_type(cleaned) == "xiaohongshu"
+    assert ytdlp._is_xiaohongshu_url(share_text)
+    assert not ytdlp._is_bilibili_url(share_text)
+
+
+def test_xiaohongshu_xsec_token_starting_with_abv_does_not_extract_bvid(tmp_path, monkeypatch):
+    url = (
+        "https://www.xiaohongshu.com/discovery/item/6a3e475c000000001503faf2"
+        "?source=webshare&xhsshare=pc_web"
+        "&xsec_token=ABVnVzCcWrPXmbuqPK3H9LOfshIiskh9vVVJgSPqzxMj0="
+        "&xsec_source=pc_share"
+    )
+
+    assert _detect_source_type(_clean_source_path(url)) == "xiaohongshu"
+    assert ytdlp._is_xiaohongshu_url(url)
+    assert not ytdlp._is_bilibili_url(url)
+    assert ytdlp._extract_bilibili_bvid(url) is None
+
+    service = YtdlpService()
+
+    def fail_bilibili(*_args, **_kwargs):
+        raise AssertionError("bilibili branch should not be used")
+
+    monkeypatch.setattr(service, "_download_bilibili", fail_bilibili)
+    monkeypatch.setattr(
+        service,
+        "_download_xiaohongshu",
+        lambda source, output_dir: {
+            "url": source,
+            "title": "xhs",
+            "file_path": None,
+            "video_path": None,
+            "info": {"platform": "xiaohongshu"},
+        },
+    )
+
+    result = service.download(url, tmp_path)
+
+    assert result["info"]["platform"] == "xiaohongshu"
+
+
+def test_xiaohongshu_share_text_download_uses_xiaohongshu_branch(tmp_path, monkeypatch):
+    share_text = (
+        "26 【传说中deepseek融资会议Q&A - blh | 小红书 - 你的生活兴趣社区】 "
+        "https://www.xiaohongshu.com/discovery/item/6a37ac8b000000001101d922"
+        "?source=webshare&xhsshare=pc_web&xsec_token=AB3Gr9I0rGdAYkcJ7Z7sd3ppChGDarTcN_3lGMsI2CEiU="
+    )
+    service = YtdlpService()
+
+    def fail_bilibili(*_args, **_kwargs):
+        raise AssertionError("bilibili branch should not be used")
+
+    monkeypatch.setattr(service, "_download_bilibili", fail_bilibili)
+    monkeypatch.setattr(
+        service,
+        "_download_xiaohongshu",
+        lambda url, output_dir: {
+            "url": url,
+            "title": "xhs",
+            "file_path": None,
+            "video_path": None,
+            "info": {"platform": "xiaohongshu"},
+        },
+    )
+
+    result = service.download(share_text, tmp_path)
+
+    assert result["info"]["platform"] == "xiaohongshu"
+
+
+def test_xiaohongshu_image_download_retries_transient_urlopen_error(tmp_path, monkeypatch):
+    calls = 0
+
+    class FakeResponse:
+        def __init__(self):
+            self.headers = {"Content-Length": "3"}
+            self._sent = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size):
+            if self._sent:
+                return b""
+            self._sent = True
+            return b"abc"
+
+    def fake_urlopen(_req, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise xhs_api.urllib.error.URLError("ssl eof")
+        return FakeResponse()
+
+    monkeypatch.setattr(xhs_api.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(xhs_api.time, "sleep", lambda _seconds: None)
+
+    dest = tmp_path / "00.jpg"
+    xhs_api._download_file("https://ci.xiaohongshu.com/image", dest, "https://www.xiaohongshu.com/")
+
+    assert calls == 2
+    assert dest.read_bytes() == b"abc"
+
+
+def test_image_note_fallback_outputs_do_not_use_llm_placeholder():
+    text = "### 笔记正文\nDeepSeek 招聘讨论，包含大厂履历和 AI 公司经验等内容。"
+    summary = _fallback_note_summary(text)
+    mindmap = _fallback_note_mindmap(MediaMetadata(title="招聘讨论"), 3, text)
+
+    assert "[LLM not configured]" not in summary["tldr"]
+    assert "[LLM not configured]" not in mindmap
+    assert "招聘讨论" in mindmap
+    assert "图片数量: 3" in mindmap
 
 
 def test_xiaohongshu_initial_state_video_stream_is_parsed():

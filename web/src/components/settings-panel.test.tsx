@@ -1,10 +1,11 @@
 /** @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import "@testing-library/jest-dom/vitest"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { SettingsPanel } from "./settings-panel"
+import { api } from "@/lib/api"
 
 const { mockSettings } = vi.hoisted(() => ({
   mockSettings: {
@@ -43,6 +44,54 @@ const { mockSettings } = vi.hoisted(() => ({
     vlm_model: "qwen2.5-vl-7b-instruct",
     vlm_max_tokens: 1024,
     vlm_concurrency: 3,
+    kb_embedding_model: "qwen3-embedding-0.6b",
+    jina_reader_enabled: true,
+    jina_reader_api_base: "https://r.jina.ai",
+    jina_reader_api_key: "",
+    jina_reader_bypass_cache: false,
+    web_scrape_timeout_sec: 30,
+    siliconflow_api_base: "https://api.siliconflow.cn/v1",
+    siliconflow_api_key: "",
+    siliconflow_asr_model: "FunAudioLLM/SenseVoiceSmall",
+    service_models: [
+      {
+        id: "siliconflow-asr:baai-bge-m3",
+        connection_id: "siliconflow-asr",
+        model_id: "BAAI/bge-m3",
+        display_name: "BAAI/bge-m3",
+        model_type: "embedding",
+        capabilities: ["embedding"],
+        endpoint_path: "/embeddings",
+        enabled: true,
+      },
+      {
+        id: "siliconflow-asr:baai-bge-reranker-v2-m3",
+        connection_id: "siliconflow-asr",
+        model_id: "BAAI/bge-reranker-v2-m3",
+        display_name: "BAAI/bge-reranker-v2-m3",
+        model_type: "rerank",
+        capabilities: ["rerank"],
+        endpoint_path: "/rerank",
+        enabled: true,
+      },
+      {
+        id: "siliconflow-asr:pro-deepseek-ai-deepseek-v3.2",
+        connection_id: "siliconflow-asr",
+        model_id: "Pro/deepseek-ai/DeepSeek-V3.2",
+        display_name: "Pro/deepseek-ai/DeepSeek-V3.2",
+        model_type: "vlm",
+        capabilities: ["chat", "vision"],
+        endpoint_path: "/chat/completions",
+        enabled: true,
+      },
+    ],
+    runtime_model_bindings: {
+      embedding: {
+        provider_id: "custom-embedding-default",
+        model_id: "qwen3-embedding-0.6b",
+        capability: "embedding",
+      },
+    },
     local_llm_device: "cuda",
     local_llm_dtype: "bfloat16",
     local_llm_max_new_tokens: 4096,
@@ -65,6 +114,107 @@ vi.mock("@/lib/api", () => ({
         ...updates,
       })),
       detectLocalUvr: vi.fn().mockResolvedValue({ found: false, path: "", models: [] }),
+      fetchSiliconFlowModels: vi.fn().mockResolvedValue({
+        models: [
+          { id: "Qwen/Qwen3.5-8B", display_name: "Qwen/Qwen3.5-8B", model_type: "llm" },
+        ],
+      }),
+      fetchProviderModels: vi.fn().mockResolvedValue({
+        provider_id: "siliconflow",
+        source: "remote",
+        models: [
+          {
+            id: "siliconflow:Qwen/Qwen3.5-8B",
+            model_id: "Qwen/Qwen3.5-8B",
+            display_name: "Qwen/Qwen3.5-8B",
+            model_type: "llm",
+            capabilities: ["llm", "chat"],
+            endpoint_path: "/chat/completions",
+            enabled: true,
+            default_params: {},
+          },
+          {
+            id: "siliconflow:BAAI/bge-m3",
+            model_id: "BAAI/bge-m3",
+            display_name: "BAAI/bge-m3",
+            model_type: "embedding",
+            capabilities: ["embedding"],
+            endpoint_path: "/embeddings",
+            enabled: true,
+            default_params: {},
+          },
+        ],
+        configured_models: [
+          {
+            id: "siliconflow:BAAI/bge-m3",
+            model_id: "BAAI/bge-m3",
+            display_name: "BAAI/bge-m3",
+            model_type: "embedding",
+            capabilities: ["embedding"],
+            endpoint_path: "/embeddings",
+            enabled: true,
+            default_params: {},
+          },
+        ],
+        allowed_models: [
+          {
+            id: "siliconflow:BAAI/bge-m3",
+            model_id: "BAAI/bge-m3",
+            display_name: "BAAI/bge-m3",
+            model_type: "embedding",
+            capabilities: ["embedding"],
+            endpoint_path: "/embeddings",
+            enabled: true,
+            default_params: {},
+          },
+        ],
+        error: null,
+      }),
+      syncProviderModels: vi.fn().mockResolvedValue({
+        provider: {
+          id: "siliconflow",
+          name: "SiliconFlow",
+          provider_type: "siliconflow",
+          enabled: true,
+          api_base: "https://api.siliconflow.cn/v1",
+          api_key: "",
+          models: [
+            {
+              id: "siliconflow:Qwen/Qwen3.5-8B",
+              model_id: "Qwen/Qwen3.5-8B",
+              display_name: "Qwen/Qwen3.5-8B",
+              model_type: "llm",
+              capabilities: ["llm", "chat"],
+              endpoint_path: "/chat/completions",
+              enabled: true,
+              default_params: {},
+            },
+          ],
+        },
+        models: [
+          {
+            id: "siliconflow:Qwen/Qwen3.5-8B",
+            model_id: "Qwen/Qwen3.5-8B",
+            display_name: "Qwen/Qwen3.5-8B",
+            model_type: "llm",
+            capabilities: ["llm", "chat"],
+            endpoint_path: "/chat/completions",
+            enabled: true,
+            default_params: {},
+          },
+        ],
+      }),
+      inferProviderModelMetadata: vi.fn().mockImplementation(async ({ model_id }: { model_id: string }) => ({
+        id: `siliconflow:${model_id}`,
+        model_id,
+        display_name: model_id,
+        model_type: "llm",
+        capabilities: ["llm", "chat"],
+        endpoint_path: "/chat/completions",
+        enabled: true,
+        default_params: {},
+      })),
+      queryProviderBalance: vi.fn().mockResolvedValue({ provider_id: "siliconflow", balance: {} }),
     },
     bilibili: {
       status: vi.fn().mockResolvedValue({ logged_in: false, message: "未登录" }),
@@ -100,7 +250,7 @@ afterEach(() => {
 })
 
 describe("SettingsPanel", () => {
-  it("renders five hierarchical tabs", async () => {
+  it("renders six hierarchical tabs", async () => {
     render(<SettingsPanel />)
 
     await screen.findByRole("button", { name: "Overall" })
@@ -110,10 +260,22 @@ describe("SettingsPanel", () => {
     expect(labels).toEqual([
       "Overall",
       "Knowledge Base",
-      "LLM/API Registry",
+      "Providers",
+      "Services",
       "Local Models",
       "Pipelines/Sources",
     ])
+  })
+
+  it("places Jina Reader settings under Services", async () => {
+    render(<SettingsPanel />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Services" }))
+
+    expect(await screen.findByText("Jina")).toBeInTheDocument()
+    expect(screen.getByText("启用 Jina Reader")).toBeInTheDocument()
+    expect(screen.getByDisplayValue("https://r.jina.ai")).toBeInTheDocument()
+    expect(screen.getByDisplayValue("30")).toBeInTheDocument()
   })
 
   it("places platform source settings under Pipelines/Sources", async () => {
@@ -128,29 +290,73 @@ describe("SettingsPanel", () => {
     expect(screen.getByText("知乎")).toBeInTheDocument()
   })
 
-  it("shows registry and local models as searchable list-detail panels", async () => {
+  it("shows model purposes in Overall and server details in list-detail panels", async () => {
     render(<SettingsPanel />)
 
-    fireEvent.click(await screen.findByRole("button", { name: "LLM/API Registry" }))
+    expect(await screen.findByText("模型用途")).toBeInTheDocument()
+    expect(screen.getByText("字幕简单润色")).toBeInTheDocument()
+    expect(screen.getByText("ASR")).toBeInTheDocument()
+    expect(screen.getAllByRole("combobox").length).toBeGreaterThanOrEqual(8)
+    expect(screen.queryByText(/当前：/)).not.toBeInTheDocument()
+    expect(screen.getByDisplayValue("BAAI/bge-m3 · SiliconFlow")).toBeInTheDocument()
 
-    expect(await screen.findByPlaceholderText("搜索模型服务...")).toBeInTheDocument()
-    expect(screen.getByRole("heading", { name: "DeepSeek" })).toBeInTheDocument()
-    expect(screen.getByText("Vision Server")).toBeInTheDocument()
-    expect(screen.getByText("Purpose Binding")).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole("button", { name: "Providers" }))
 
-    fireEvent.click(screen.getByText("Vision Server"))
-    expect(screen.getByRole("heading", { name: "Vision Server" })).toBeInTheDocument()
-    expect(screen.getByDisplayValue("qwen2.5-vl-7b-instruct")).toBeInTheDocument()
+    const providerSearch = await screen.findByPlaceholderText("搜索 Providers...")
+    const providerList = providerSearch.closest("aside")
+    expect(providerList).not.toBeNull()
+    expect(within(providerList as HTMLElement).getByRole("button", { name: /DeepSeek/ })).toBeInTheDocument()
+    const siliconFlowButton = within(providerList as HTMLElement).getByRole("button", { name: /SiliconFlow/ })
+    expect(siliconFlowButton).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /本地 HF 模型/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /Vision Server/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /Purpose Binding/ })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /添加 Provider/ })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "批量导入" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("combobox", { name: "能力筛选" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("combobox", { name: "Provider 筛选" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("combobox", { name: "启用状态筛选" })).not.toBeInTheDocument()
+
+    fireEvent.click(siliconFlowButton)
+    expect(screen.getByRole("heading", { name: "SiliconFlow" })).toBeInTheDocument()
+    expect(screen.getByText("API Base")).toBeInTheDocument()
+    expect(screen.getByText("API Key")).toBeInTheDocument()
+    expect(screen.getByDisplayValue("https://api.siliconflow.cn/v1")).toBeInTheDocument()
+    expect(screen.getAllByDisplayValue("BAAI/bge-m3").length).toBeGreaterThan(0)
+    expect(screen.getAllByDisplayValue("Embedding").length).toBeGreaterThan(0)
+    expect(screen.getAllByDisplayValue("Rerank").length).toBeGreaterThan(0)
+    expect(screen.getAllByDisplayValue("VLM").length).toBeGreaterThan(0)
+
+    fireEvent.click(screen.getByRole("button", { name: "获取模型" }))
+    await waitFor(() => expect(api.settings.fetchProviderModels).toHaveBeenCalledWith("siliconflow"))
+    expect(await screen.findByText("远端模型目录")).toBeInTheDocument()
+    expect(screen.getByText("允许使用")).toBeInTheDocument()
+    expect(screen.getByText("加入配置")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "同步模型" }))
+    await waitFor(() => expect(api.settings.syncProviderModels).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByRole("button", { name: "添加模型" }))
+    expect(screen.getByPlaceholderText("模型 ID，例如 Qwen/Qwen3.5-8B")).toBeInTheDocument()
+    expect(screen.getByLabelText("模型类型")).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "Local Models" }))
 
     expect(await screen.findByPlaceholderText("搜索本地模型...")).toBeInTheDocument()
-    expect(await screen.findByRole("heading", { name: "Local LLM Server" })).toBeInTheDocument()
-    expect(screen.getByText("UVR Server")).toBeInTheDocument()
-    expect(screen.getByText("Voiceprint Purpose")).toBeInTheDocument()
+    expect(await screen.findByRole("heading", { name: "Qwen3-ASR" })).toBeInTheDocument()
+    expect(screen.queryByText("默认 ASR")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /SiliconFlow ASR/ })).not.toBeInTheDocument()
+    expect(screen.getByText("Diarization")).toBeInTheDocument()
+    expect(screen.queryByText("Local LLM Server")).not.toBeInTheDocument()
+    expect(screen.queryByText("Voiceprint Purpose")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText("Diarization"))
+    expect(screen.getByRole("heading", { name: "Diarization" })).toBeInTheDocument()
+    expect(screen.getByText("启用声纹识别")).toBeInTheDocument()
 
     fireEvent.click(screen.getByText("UVR Server"))
     expect(screen.getByRole("heading", { name: "UVR Server" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "检查本机 UVR" })).toBeInTheDocument()
+    expect(screen.queryByPlaceholderText("可选：直接指定当前模型文件所在目录")).not.toBeInTheDocument()
   })
 })

@@ -164,6 +164,7 @@ class ArchiveService:
                 (task_dir / "metadata.json").exists()
                 or (task_dir / "transcript.srt").exists()
                 or (task_dir / "summary.md").exists()
+                or (task_dir / "source.md").exists()
             )
             if not has_any_output:
                 continue
@@ -210,6 +211,13 @@ class ArchiveService:
                 elif ext in image_exts and f.stem.lower() not in ("cover", "thumbnail"):
                     # Real image-note content; covers/thumbnails are just artwork
                     # for audio/video archives and shouldn't change the type.
+                    has_image = True
+            if not has_image:
+                images_dir = task_dir / "images"
+                if images_dir.exists() and any(
+                    item.is_file() and item.suffix.lower() in image_exts
+                    for item in images_dir.iterdir()
+                ):
                     has_image = True
 
             # Determine processing status

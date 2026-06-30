@@ -9,6 +9,7 @@ describe("settings schema", () => {
 
   it("identifies secret runtime setting keys", () => {
     expect(isSecretSettingKey("deepseek_api_key")).toBe(true)
+    expect(isSecretSettingKey("jina_reader_api_key")).toBe(true)
     expect(isSecretSettingKey("deepseek_summary_model")).toBe(false)
   })
 })

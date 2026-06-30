@@ -424,6 +424,22 @@ async def archive_thumbnail(path: str):
             media_type = "image/png" if candidate.endswith(".png") else "image/jpeg"
             return FileResponse(thumb, media_type=media_type)
 
+    image_dir = archive_dir / "images"
+    if image_dir.is_dir():
+        image_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+        media_types = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".webp": "image/webp",
+            ".gif": "image/gif",
+            ".bmp": "image/bmp",
+        }
+        for image in sorted(image_dir.iterdir(), key=lambda item: item.name.lower()):
+            ext = image.suffix.lower()
+            if image.is_file() and ext in image_exts:
+                return FileResponse(image, media_type=media_types.get(ext, "application/octet-stream"))
+
     # Try to find video in archive directory
     video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov"}
     video_file = None

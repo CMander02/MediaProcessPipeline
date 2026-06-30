@@ -28,6 +28,23 @@ def test_vlm_binding_resolves_openai_compatible_endpoint():
     assert binding.request_kwargs == {"max_tokens": 2048, "concurrency": 5}
 
 
+def test_vlm_binding_uses_siliconflow_defaults_when_vlm_endpoint_is_empty():
+    settings = RuntimeSettings(
+        vlm_api_base="",
+        vlm_api_key="",
+        vlm_model="qwen2.5-vl-7b-instruct",
+        siliconflow_api_base="https://api.siliconflow.cn",
+        siliconflow_api_key="sf-key",
+    )
+
+    binding = resolve_vlm_binding(settings)
+
+    assert binding.configured is True
+    assert binding.model == "Qwen/Qwen3.5-4B"
+    assert binding.api_base == "https://api.siliconflow.cn/v1"
+    assert binding.api_key == "sf-key"
+
+
 def test_embedding_binding_tracks_kb_enablement_and_vector_settings():
     disabled = RuntimeSettings(
         kb_enabled=False,

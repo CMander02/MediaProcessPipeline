@@ -11,7 +11,7 @@
 - **语音转录**: Qwen3-ASR，支持说话人分离
 - **智能润色**: LLM 滑动窗口润色，修正错字、添加标点
 - **内容分析**: 自动提取关键信息、生成摘要和思维导图（支持 map-reduce 长文本）
-- **桌面应用**: Electron 打包，双击即用
+- **桌面应用**: Tauri 打包，双击即用
 
 ## 项目结构
 
@@ -32,8 +32,8 @@ MediaProcessPipeline/
 │   └── run.py
 ├── web/                        # Vite + React 19 + shadcn/ui
 │   └── src/
-├── electron/                   # Electron 桌面壳
-│   └── main.js
+├── web/src-tauri/              # Tauri 桌面壳
+│   └── src/main.rs
 ├── scripts/                    # CLI 快捷脚本
 │   ├── mpp.ps1                 # PowerShell
 │   └── mpp                     # bash
@@ -70,13 +70,17 @@ cd web && npm install && npm run build && cd ..
 
 ### 启动
 
-**方式 1: Electron 桌面应用**
+**方式 1: Tauri 桌面应用**
 
 ```bash
-cd electron && npm install && npm start
+cd web && npm install && npm run dev
 ```
 
-或打包后双击 `MPP.exe`（放在项目根目录）。
+或打包：
+
+```bash
+cd web && npm run tauri:build
+```
 
 **方式 2: 后端 + 浏览器**
 
@@ -118,7 +122,7 @@ uv run python -m app.cli serve     # 启动 daemon :18000
 cd backend && uv run python run.py --reload
 
 # 前端 (Vite dev server, 代理 API 到 :18000)
-cd web && npm run dev              # :5173
+cd web && npm run web:dev          # :5173
 ```
 
 ## API 端点
@@ -179,7 +183,7 @@ cd web && npm run dev              # :5173
 
 - **Backend**: Python 3.11+, FastAPI, SQLite, uv
 - **Frontend**: React 19, Vite, shadcn/ui, Tailwind CSS 4
-- **Desktop**: Electron
+- **Desktop**: Tauri
 - **AI**: Qwen3-ASR, pyannote-audio, UVR5 (audio-separator), OpenAI SDK（Anthropic / OpenAI / DeepSeek v4 / OpenAI-compatible）
 - **下载**: yt-dlp, FFmpeg
 

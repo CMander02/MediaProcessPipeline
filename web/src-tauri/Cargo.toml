@@ -1,0 +1,19 @@
+[package]
+name = "mpp-desktop"
+version = "0.3.7"
+description = "MediaProcessPipeline desktop shell"
+authors = ["MediaProcessPipeline"]
+edition = "2021"
+
+[[bin]]
+name = "mpp-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2.7.1"

@@ -7,15 +7,15 @@ import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { api, type Settings } from "@/lib/api"
 import { usePreferences } from "@/hooks/use-preferences"
-import { DeviceChoice, PathPickerRow, SettingRow } from "@/components/settings/setting-controls"
-import { LocalModelSettings, RegistrySettings } from "@/components/settings/model-sections"
+import { SettingRow } from "@/components/settings/setting-controls"
+import { LocalModelSettings, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
 import { BilibiliCard, PlaceholderSection, YoutubeCard, ZhihuCard } from "@/components/settings/source-cards"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Tick02Icon, Moon02Icon, Sun01Icon } from "@hugeicons/core-free-icons"
 
 // --- Tab definitions ---
 
-type TabId = "overall" | "knowledge" | "registry" | "local" | "pipelines"
+type TabId = "overall" | "knowledge" | "registry" | "services" | "local" | "pipelines"
 
 interface TabDef {
   id: TabId
@@ -25,7 +25,8 @@ interface TabDef {
 const TABS: TabDef[] = [
   { id: "overall", label: "Overall" },
   { id: "knowledge", label: "Knowledge Base" },
-  { id: "registry", label: "LLM/API Registry" },
+  { id: "registry", label: "Providers" },
+  { id: "services", label: "Services" },
   { id: "local", label: "Local Models" },
   { id: "pipelines", label: "Pipelines/Sources" },
 ]
@@ -115,13 +116,13 @@ export function SettingsPanel() {
     : "deepseek"
 
   return (
-    <div className="w-full">
+    <div className="h-full min-h-0 w-full">
       {saveError && (
         <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {saveError}
         </div>
       )}
-      <div className="flex min-h-[calc(100vh-170px)] gap-5">
+      <div className="flex h-full min-h-0 gap-5">
         {/* Left sidebar */}
         <nav className="sticky top-5 h-fit w-[220px] shrink-0 space-y-1 rounded-lg border bg-card p-2">
           {TABS.map((tab) => {
@@ -154,10 +155,10 @@ export function SettingsPanel() {
         </nav>
 
         {/* Right content */}
-        <div className="min-w-0 flex-1 space-y-4 [&_[data-slot=card]]:rounded-none [&_[data-slot=card]]:bg-transparent [&_[data-slot=card]]:py-0 [&_[data-slot=card]]:ring-0 [&_[data-slot=card]]:border-b [&_[data-slot=card]]:border-border/70 [&_[data-slot=card]]:pb-4 [&_[data-slot=card-header]]:px-0 [&_[data-slot=card-header]]:pb-1.5 [&_[data-slot=card-content]]:px-0">
+        <div className="min-w-0 flex-1 overflow-hidden [&_[data-slot=card]]:rounded-none [&_[data-slot=card]]:bg-transparent [&_[data-slot=card]]:py-0 [&_[data-slot=card]]:ring-0 [&_[data-slot=card]]:border-b [&_[data-slot=card]]:border-border/70 [&_[data-slot=card]]:pb-4 [&_[data-slot=card-header]]:px-0 [&_[data-slot=card-header]]:pb-1.5 [&_[data-slot=card-content]]:px-0">
           {/* ── Overall ── */}
           {activeTab === "overall" && (
-            <>
+            <div className="h-full min-h-0 space-y-4 overflow-y-auto pr-1">
               {/* Appearance */}
               <Card>
                 <CardHeader className="pb-3">
@@ -260,6 +261,8 @@ export function SettingsPanel() {
                 </CardContent>
               </Card>
 
+              <PurposeModelBindings settings={settings} updateSetting={updateSetting} />
+
               {/* Pipeline mode */}
               <Card>
                 <CardHeader className="pb-3">
@@ -294,198 +297,7 @@ export function SettingsPanel() {
                   </div>
                 </CardContent>
               </Card>
-            </>
-          )}
-
-          {/* ── Local Models ── */}
-          {activeTab === "local" && (
-            <>
-              {/* ASR */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base flex items-center gap-2">
-                    ASR
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <RadioGroup
-                    value={String(settings.asr_provider ?? "qwen3")}
-                    onValueChange={(v) => updateSetting("asr_provider", v)}
-                    className="flex flex-wrap gap-4"
-                  >
-                    <div className="flex items-center gap-2">
-                      <RadioGroupItem value="qwen3" id="asr-qwen3" />
-                      <Label htmlFor="asr-qwen3">Qwen3-ASR（本地）</Label>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <RadioGroupItem value="siliconflow" id="asr-siliconflow" />
-                      <Label htmlFor="asr-siliconflow">SiliconFlow API</Label>
-                    </div>
-                  </RadioGroup>
-                  <Separator />
-                  {String(settings.asr_provider ?? "qwen3") === "siliconflow" ? (
-                    <div className="space-y-3">
-                      <p className="text-xs text-muted-foreground">
-                        通过 OpenAI 兼容的 /audio/transcriptions 接口调用。本地 Silero VAD 切片后串行上传，时间戳由 VAD 边界给出。
-                      </p>
-                      <SettingRow
-                        label="API Base"
-                        settingKey="siliconflow_api_base"
-                        value={String(settings.siliconflow_api_base ?? "https://api.siliconflow.cn/v1")}
-                        onSave={updateSetting}
-                        saving={saving}
-                        saved={saved}
-                        placeholder="https://api.siliconflow.cn/v1"
-                      />
-                      <SettingRow
-                        label="API Key"
-                        settingKey="siliconflow_api_key"
-                        value={String(settings.siliconflow_api_key ?? "")}
-                        onSave={updateSetting}
-                        saving={saving}
-                        saved={saved}
-                        masked
-                      />
-                      <SettingRow
-                        label="模型"
-                        settingKey="siliconflow_asr_model"
-                        value={String(settings.siliconflow_asr_model ?? "FunAudioLLM/SenseVoiceSmall")}
-                        onSave={updateSetting}
-                        saving={saving}
-                        saved={saved}
-                        placeholder="FunAudioLLM/SenseVoiceSmall"
-                      />
-                      <SettingRow
-                        label="语言（空=自动）"
-                        settingKey="siliconflow_asr_language"
-                        value={String(settings.siliconflow_asr_language ?? "")}
-                        onSave={updateSetting}
-                        saving={saving}
-                        saved={saved}
-                        placeholder="zh / en / 留空自动"
-                      />
-                      <SettingRow
-                        label="切片上限（秒）"
-                        settingKey="siliconflow_asr_max_chunk_sec"
-                        value={String(settings.siliconflow_asr_max_chunk_sec ?? 30)}
-                        onSave={(key, val) => updateSetting(key, Number(val))}
-                        saving={saving}
-                        saved={saved}
-                      />
-                      <SettingRow
-                        label="单段超时（秒）"
-                        settingKey="siliconflow_asr_timeout_sec"
-                        value={String(settings.siliconflow_asr_timeout_sec ?? 120)}
-                        onSave={(key, val) => updateSetting(key, Number(val))}
-                        saving={saving}
-                        saved={saved}
-                      />
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <PathPickerRow
-                        label="模型路径"
-                        settingKey="qwen3_asr_model_path"
-                        value={String(settings.qwen3_asr_model_path ?? "")}
-                        onSave={updateSetting}
-                        saving={saving}
-                        saved={saved}
-                        placeholder="留空使用 HuggingFace，或选择本地模型目录"
-                        title="选择 Qwen3-ASR 模型目录"
-                      />
-                      <DeviceChoice
-                        value={String(settings.qwen3_device ?? "cuda")}
-                        onChange={(value) => updateSetting("qwen3_device", value)}
-                      />
-                      <PathPickerRow
-                        label="对齐模型"
-                        settingKey="qwen3_aligner_model_path"
-                        value={String(settings.qwen3_aligner_model_path ?? "")}
-                        onSave={updateSetting}
-                        saving={saving}
-                        saved={saved}
-                        placeholder="可选：Qwen3-ForcedAligner 本地目录"
-                        title="选择 Qwen3 ForcedAligner 模型目录"
-                      />
-                      <Separator />
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <Label>说话人分离</Label>
-                          <p className="text-xs text-muted-foreground mt-0.5">
-                            使用 pyannote 给字幕段落标注 SPEAKER_XX，并为声纹识别提供切片。
-                          </p>
-                        </div>
-                        <Switch
-                          checked={Boolean(settings.enable_diarization ?? true)}
-                          onCheckedChange={(v) => updateSetting("enable_diarization", Boolean(v))}
-                        />
-                      </div>
-                      {Boolean(settings.enable_diarization ?? true) && (
-                        <div className="space-y-3">
-                          <PathPickerRow
-                            label="Diarization"
-                            settingKey="pyannote_model_path"
-                            value={String(settings.pyannote_model_path ?? "")}
-                            onSave={updateSetting}
-                            saving={saving}
-                            saved={saved}
-                            placeholder="pyannote-speaker-diarization-3.1 本地目录"
-                            title="选择 pyannote diarization 模型目录"
-                          />
-                          <PathPickerRow
-                            label="Segmentation"
-                            settingKey="pyannote_segmentation_path"
-                            value={String(settings.pyannote_segmentation_path ?? "")}
-                            onSave={updateSetting}
-                            saving={saving}
-                            saved={saved}
-                            placeholder="pyannote-segmentation-3.0 本地目录"
-                            title="选择 pyannote segmentation 模型目录"
-                          />
-                          <PathPickerRow
-                            label="Embedding"
-                            settingKey="pyannote_embedding_path"
-                            value={String(settings.pyannote_embedding_path ?? "")}
-                            onSave={updateSetting}
-                            saving={saving}
-                            saved={saved}
-                            placeholder="pyannote_wespeaker-voxceleb-resnet34-LM 本地目录"
-                            title="选择 pyannote embedding 模型目录"
-                          />
-                          <SettingRow
-                            label="HF Proxy"
-                            settingKey="hf_proxy"
-                            value={String(settings.hf_proxy ?? "")}
-                            onSave={updateSetting}
-                            saving={saving}
-                            saved={saved}
-                            masked
-                            placeholder="留空自动读取系统代理，direct 禁用"
-                          />
-                          <SettingRow
-                            label="HF Token"
-                            settingKey="hf_token"
-                            value={String(settings.hf_token ?? "")}
-                            onSave={updateSetting}
-                            saving={saving}
-                            saved={saved}
-                            masked
-                          />
-                          <SettingRow
-                            label="分离批量"
-                            settingKey="diarization_batch_size"
-                            value={String(settings.diarization_batch_size ?? 16)}
-                            onSave={(key, val) => updateSetting(key, Number(val))}
-                            saving={saving}
-                            saved={saved}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </>
+            </div>
           )}
 
           {/* ── LLM/API Registry ── */}
@@ -512,9 +324,73 @@ export function SettingsPanel() {
             />
           )}
 
+          {/* ── Services ── */}
+          {activeTab === "services" && (
+            <div className="h-full min-h-0 space-y-4 overflow-y-auto pr-1">
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Jina</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    网页 Scrape fallback 服务。通用网页先使用本地 Defuddle，失败后调用 Jina Reader 返回 Markdown。
+                  </p>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label>启用 Jina Reader</Label>
+                      <p className="mt-0.5 text-xs text-muted-foreground">用于 Defuddle 抽取失败后的网页正文解析。</p>
+                    </div>
+                    <Switch
+                      checked={Boolean(settings.jina_reader_enabled ?? true)}
+                      onCheckedChange={(v) => updateSetting("jina_reader_enabled", v)}
+                    />
+                  </div>
+                  <SettingRow
+                    label="API Base"
+                    settingKey="jina_reader_api_base"
+                    value={String(settings.jina_reader_api_base ?? "https://r.jina.ai")}
+                    onSave={updateSetting}
+                    saving={saving}
+                    saved={saved}
+                    placeholder="https://r.jina.ai"
+                  />
+                  <SettingRow
+                    label="API Key"
+                    settingKey="jina_reader_api_key"
+                    value={String(settings.jina_reader_api_key ?? "")}
+                    onSave={updateSetting}
+                    saving={saving}
+                    saved={saved}
+                    masked
+                    placeholder="可选 Bearer Token"
+                  />
+                  <SettingRow
+                    label="超时秒数"
+                    settingKey="web_scrape_timeout_sec"
+                    value={String(settings.web_scrape_timeout_sec ?? 30)}
+                    onSave={(key, value) => updateSetting(key, Number(value) || 30)}
+                    saving={saving}
+                    saved={saved}
+                    placeholder="30"
+                  />
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label>绕过缓存</Label>
+                      <p className="mt-0.5 text-xs text-muted-foreground">需要实时刷新网页时打开。</p>
+                    </div>
+                    <Switch
+                      checked={Boolean(settings.jina_reader_bypass_cache ?? false)}
+                      onCheckedChange={(v) => updateSetting("jina_reader_bypass_cache", v)}
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
           {/* ── Knowledge Base ── */}
           {activeTab === "knowledge" && (
-            <>
+            <div className="h-full min-h-0 space-y-4 overflow-y-auto pr-1">
               {/* Knowledge base */}
               <Card>
                 <CardHeader className="pb-3">
@@ -567,12 +443,12 @@ export function SettingsPanel() {
                   />
                 </CardContent>
               </Card>
-            </>
+            </div>
           )}
 
           {/* ── Pipelines/Sources ── */}
           {activeTab === "pipelines" && (
-            <>
+            <div className="h-full min-h-0 space-y-4 overflow-y-auto pr-1">
               <BilibiliCard onAuthChange={setBiliLoggedIn} />
               <YoutubeCard settings={settings} updateSetting={updateSetting} saving={saving} saved={saved} />
               <PlaceholderSection
@@ -586,7 +462,7 @@ export function SettingsPanel() {
                 comingSoon={false}
               />
               <ZhihuCard settings={settings} updateSetting={updateSetting} saving={saving} saved={saved} />
-            </>
+            </div>
           )}
         </div>
       </div>

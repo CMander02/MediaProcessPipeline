@@ -1,0 +1,24 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Allow the local MediaProcessPipeline web UI to inspect and manage the desktop-owned backend process.",
+  "windows": ["main"],
+  "webviews": ["main"],
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:18000",
+      "http://127.0.0.1:18000/*",
+      "http://localhost:18000",
+      "http://localhost:18000/*"
+    ]
+  },
+  "permissions": [
+    "core:default",
+    "allow-backend-get-status",
+    "allow-backend-get-logs",
+    "allow-backend-start",
+    "allow-backend-stop",
+    "allow-backend-restart",
+    "dialog:allow-open"
+  ]
+}

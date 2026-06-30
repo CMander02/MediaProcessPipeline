@@ -63,7 +63,48 @@ def test_pipeline_binding_for_image_note_uses_vlm_when_images_are_present():
     assert binding.run_polish is False
     assert binding.run_analysis is True
     assert binding.run_vlm is True
-    assert binding.vlm.model == "qwen2.5-vl-7b-instruct"
+    assert binding.vlm.model == "Qwen/Qwen3.5-4B"
+
+
+def test_pipeline_binding_for_image_note_uses_siliconflow_vlm_fallback():
+    settings = RuntimeSettings(
+        siliconflow_api_base="https://api.siliconflow.cn",
+        siliconflow_api_key="sf-key",
+        vlm_api_base="",
+        vlm_api_key="",
+        vlm_model="",
+    )
+
+    binding = resolve_pipeline_model_bindings(
+        settings,
+        content_subtype="image_note",
+        has_images=True,
+    )
+
+    assert binding.run_vlm is True
+    assert binding.vlm.model == "Qwen/Qwen3.5-4B"
+    assert binding.vlm.api_base == "https://api.siliconflow.cn/v1"
+
+
+def test_pipeline_binding_for_image_note_prefers_deepseek_llm_stages():
+    settings = RuntimeSettings(
+        llm_provider="anthropic",
+        anthropic_api_key="",
+        deepseek_api_key="sk-deepseek",
+        deepseek_summary_model="deepseek-v4-pro",
+        deepseek_summary_effort="max",
+    )
+
+    binding = resolve_pipeline_model_bindings(
+        settings,
+        content_subtype="image_note",
+        has_images=False,
+    )
+
+    assert binding.llm_stages["summary"].provider == "deepseek"
+    assert binding.llm_stages["summary"].model == "deepseek-v4-pro"
+    assert binding.llm_stages["summary"].request_kwargs["reasoning_effort"] == "max"
+    assert binding.notes["llm_provider_override"] == "deepseek"
 
 
 def test_pipeline_binding_for_text_note_skips_audio_and_vlm():

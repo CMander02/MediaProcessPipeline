@@ -85,7 +85,8 @@ def fetch_metadata(value: str) -> dict[str, Any]:
     state = _extract_initial_state(page_html)
     note = _extract_note(state, info.post_id)
     video_url, video_stream = _extract_video_url(note)
-    image_urls = _extract_image_urls(note)
+    image_url_candidates = _extract_image_url_candidates(note)
+    image_urls = [candidates[0] for candidates in image_url_candidates if candidates]
     note_type = str(note.get("type") or "").lower()
     is_video = bool(video_url or note_type == "video" or note.get("video"))
 
@@ -127,6 +128,7 @@ def fetch_metadata(value: str) -> dict[str, Any]:
             "note_type": note_type,
             "is_video": is_video,
             "image_urls": image_urls,
+            "image_url_candidates": image_url_candidates,
             "video_url": video_url,
             "video_stream": video_stream,
             "liked_count": _nested_get(note, ["interactInfo", "likedCount"]),
@@ -181,29 +183,46 @@ def download_video(info: dict[str, Any], output_dir: Path) -> tuple[Path, Path]:
 
 def download_images(info: dict[str, Any], output_dir: Path) -> list[Path]:
     """Download all images from an image_note and return their local paths."""
-    image_urls: list[str] = (info.get("extra") or {}).get("image_urls") or []
-    if not image_urls:
+    extra = info.get("extra") or {}
+    image_urls: list[str] = extra.get("image_urls") or []
+    image_url_candidates = extra.get("image_url_candidates") or []
+    if not image_url_candidates:
+        image_url_candidates = [[url] for url in image_urls]
+    if not image_url_candidates:
         raise RuntimeError("Xiaohongshu note has no image URLs — is it really an image_note?")
 
     images_dir = output_dir / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
     referer = str(info.get("webpage_url") or "https://www.xiaohongshu.com/")
     paths: list[Path] = []
-    for idx, url in enumerate(image_urls):
-        ext = _guess_image_ext(url)
+    for idx, candidates in enumerate(image_url_candidates):
+        urls = [url for url in candidates if isinstance(url, str) and url.startswith("http")]
+        if not urls:
+            continue
+        ext = _guess_image_ext_from_urls(urls)
         dest = images_dir / f"{idx:02d}.{ext}"
         if dest.exists():
             paths.append(dest)
             continue
         try:
-            _download_file(url, dest, referer=referer)
+            _download_file_candidates(urls, dest, referer=referer)
             paths.append(dest)
         except Exception as e:
             logger.warning(f"Failed to download XHS image {idx}: {e}")
     return paths
 
 
+def _guess_image_ext_from_urls(urls: list[str]) -> str:
+    for url in urls:
+        ext = _guess_image_ext(url)
+        if ext:
+            return ext
+    return "jpg"
+
+
 def _guess_image_ext(url: str) -> str:
+    if "webp" in url.lower():
+        return "webp"
     match = re.search(r"\.([a-zA-Z0-9]{2,5})(?:[?#!]|$)", url.split("?")[0])
     if match:
         ext = match.group(1).lower()
@@ -351,17 +370,38 @@ def _pick_stream_url(item: dict[str, Any]) -> str | None:
 
 
 def _extract_image_urls(note: dict[str, Any]) -> list[str]:
+    return [candidates[0] for candidates in _extract_image_url_candidates(note) if candidates]
+
+
+def _extract_image_url_candidates(note: dict[str, Any]) -> list[list[str]]:
     images = note.get("imageList")
     if not isinstance(images, list):
         return []
-    urls: list[str] = []
+    all_candidates: list[list[str]] = []
     for image in images:
         if not isinstance(image, dict):
             continue
-        url = image.get("urlDefault") or image.get("url") or image.get("urlPre")
-        if isinstance(url, str) and url.startswith("http"):
-            urls.append(_transform_image_to_original(url))
-    return urls
+        candidates: list[str] = []
+
+        def add_url(value: Any) -> None:
+            if not isinstance(value, str) or not value.startswith("http"):
+                return
+            normalized = _normalize_url(value)
+            for candidate in (normalized, _transform_image_to_original(normalized)):
+                if candidate and candidate not in candidates:
+                    candidates.append(candidate)
+
+        add_url(image.get("urlDefault"))
+        add_url(image.get("url"))
+        add_url(image.get("urlPre"))
+        info_list = image.get("infoList")
+        if isinstance(info_list, list):
+            for item in info_list:
+                if isinstance(item, dict):
+                    add_url(item.get("url"))
+        if candidates:
+            all_candidates.append(candidates)
+    return all_candidates
 
 
 def _transform_image_to_original(value: str) -> str:
@@ -448,22 +488,55 @@ def _dedupe_path(path: Path) -> Path:
         counter += 1
 
 
-def _download_file(url: str, dest: Path, referer: str) -> None:
-    req = urllib.request.Request(url, headers=_headers(referer))
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        total = int(resp.headers.get("Content-Length", 0))
+def _download_file_candidates(urls: list[str], dest: Path, referer: str) -> None:
+    last_error: Exception | None = None
+    seen: set[str] = set()
+    for url in urls:
+        if url in seen:
+            continue
+        seen.add(url)
+        try:
+            _download_file(url, dest, referer=referer)
+            return
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Xiaohongshu image download URL failed: {e}")
+            dest.unlink(missing_ok=True)
+            dest.with_name(dest.name + ".part").unlink(missing_ok=True)
+    raise RuntimeError(f"All Xiaohongshu image URLs failed: {last_error}")
+
+
+def _download_file(url: str, dest: Path, referer: str, attempts: int = 2, timeout_sec: int = 25) -> None:
+    last_error: Exception | None = None
+    part = dest.with_name(dest.name + ".part")
+    for attempt in range(1, attempts + 1):
         downloaded = 0
-        with open(dest, "wb") as f:
-            while True:
-                chunk = resp.read(_CHUNK_SIZE)
-                if not chunk:
-                    break
-                f.write(chunk)
-                downloaded += len(chunk)
-    if total and downloaded < total:
         dest.unlink(missing_ok=True)
-        raise RuntimeError(f"Incomplete download: {downloaded}/{total} bytes")
-    logger.info(f"Downloaded Xiaohongshu video: {downloaded:,} bytes -> {dest.name}")
+        part.unlink(missing_ok=True)
+        req = urllib.request.Request(url, headers=_headers(referer))
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+                total = int(resp.headers.get("Content-Length", 0))
+                with open(part, "wb") as f:
+                    while True:
+                        chunk = resp.read(_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+            if total and downloaded < total:
+                raise RuntimeError(f"Incomplete download: {downloaded}/{total} bytes")
+            part.replace(dest)
+            logger.info(f"Downloaded Xiaohongshu file: {downloaded:,} bytes -> {dest.name}")
+            return
+        except Exception as e:
+            last_error = e
+            dest.unlink(missing_ok=True)
+            part.unlink(missing_ok=True)
+            if attempt >= attempts:
+                raise RuntimeError(f"Xiaohongshu file download failed after {attempts} attempts: {last_error}") from e
+            logger.warning(f"Xiaohongshu file download retry {attempt}/{attempts}: {e}")
+            time.sleep(min(attempt, 3))
 
 
 def _video_download_urls(primary_url: str, info: dict[str, Any]) -> list[str]:

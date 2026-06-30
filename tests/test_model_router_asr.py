@@ -69,3 +69,53 @@ def test_asr_settings_qwen3_binding_includes_model_and_diarization_flags():
     assert binding.diarize is False
     assert binding.num_speakers == 2
     assert binding.request_kwargs["aligner_model_path"] == "D:/models/qwen3-aligner"
+
+
+def test_asr_runtime_binding_uses_siliconflow_provider_model_metadata():
+    settings = RuntimeSettings(
+        siliconflow_api_key="flat-key",
+        providers=[
+            {
+                "id": "siliconflow",
+                "name": "SiliconFlow",
+                "provider_type": "siliconflow",
+                "api_base": "https://api.siliconflow.cn/v1",
+                "api_key": "provider-key",
+                "enabled": True,
+                "models": [
+                    {
+                        "id": "siliconflow:TeleAI/TeleSpeechASR",
+                        "model_id": "TeleAI/TeleSpeechASR",
+                        "model_type": "asr",
+                        "capabilities": ["asr"],
+                        "endpoint_path": "/audio/transcriptions",
+                        "enabled": True,
+                        "default_params": {
+                            "request_format": "multipart",
+                            "file_field": "file",
+                            "model_field": "model",
+                            "max_file_mb": 50,
+                            "max_duration_sec": 3600,
+                        },
+                    }
+                ],
+            }
+        ],
+        runtime_model_bindings={
+            "asr": {
+                "provider_id": "siliconflow",
+                "model_id": "TeleAI/TeleSpeechASR",
+                "capability": "asr",
+            }
+        },
+    )
+
+    binding = resolve_asr_binding(settings)
+
+    assert binding.provider == "siliconflow"
+    assert binding.source == "runtime_binding"
+    assert binding.model == "TeleAI/TeleSpeechASR"
+    assert binding.api_key == "provider-key"
+    assert binding.request_kwargs["endpoint"] == "https://api.siliconflow.cn/v1/audio/transcriptions"
+    assert binding.request_kwargs["default_params"]["request_format"] == "multipart"
+    assert binding.request_kwargs["default_params"]["max_file_mb"] == 50

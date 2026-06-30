@@ -1121,7 +1121,7 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
 _SECRET_KEYS = {
     "anthropic_api_key", "openai_api_key", "custom_api_key",
     "deepseek_api_key", "siliconflow_api_key",
-    "hf_token", "hf_proxy", "api_token",
+    "hf_token", "hf_proxy", "api_token", "jina_reader_api_key",
     "bilibili_sessdata", "bilibili_bili_jct",
 }
 
