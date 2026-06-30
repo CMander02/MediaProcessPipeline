@@ -45,9 +45,13 @@ export function useArchives() {
     }
   }, [])
 
+  const removeArchive = useCallback((path: string) => {
+    setArchives((current) => current.filter((archive) => archive.path !== path))
+  }, [])
+
   useEffect(() => {
     refresh()
   }, [refresh])
 
-  return { archives, loading, error, refresh }
+  return { archives, loading, error, refresh, removeArchive }
 }

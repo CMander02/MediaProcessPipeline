@@ -20,7 +20,7 @@ interface FilesPageProps {
 }
 
 export function FilesPage({ search, mediaFilter }: FilesPageProps) {
-  const { archives, loading, refresh } = useArchives()
+  const { archives, loading, refresh, removeArchive } = useArchives()
   const { update: updatePrefs } = usePreferences()
   const [page, setPage] = useState(1)
   const [pageInput, setPageInput] = useState("1")
@@ -257,7 +257,7 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
           onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}
           title={deleteTarget.title}
           archivePath={deleteTarget.path}
-          onDeleted={refresh}
+          onDeleted={() => removeArchive(deleteTarget.path)}
         />
       )}
     </div>
