@@ -1,11 +1,16 @@
 import json
 import sys
 from pathlib import Path
+from uuid import uuid4
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.models import MediaMetadata, MediaType  # noqa: E402
+from app.core import database, pipeline as pipeline_core, settings as settings_module  # noqa: E402
+from app.core.settings import RuntimeSettings  # noqa: E402
+from app.models import MediaMetadata, MediaType, Task, TaskStatus, TaskType  # noqa: E402
 from app.core.pipeline import (  # noqa: E402
     _clean_source_path,
     _detect_source_type,
@@ -180,6 +185,69 @@ def test_image_note_fallback_outputs_do_not_use_llm_placeholder():
     assert "[LLM not configured]" not in mindmap
     assert "招聘讨论" in mindmap
     assert "图片数量: 3" in mindmap
+
+
+@pytest.mark.asyncio
+async def test_image_note_llm_connection_error_writes_fallback_archive(tmp_path, monkeypatch):
+    database.reset_db_path(tmp_path)
+    settings = RuntimeSettings(
+        data_root=str(tmp_path),
+        deepseek_api_key="sk-testkey1234567890",
+        deepseek_summary_model="deepseek-v4-pro",
+        kb_enabled=False,
+    )
+    monkeypatch.setattr(settings_module, "_runtime_settings", settings)
+    monkeypatch.setattr(pipeline_core, "get_runtime_settings", lambda: settings)
+    monkeypatch.setattr(pipeline_core, "_schedule_kb_index", lambda *_args, **_kwargs: None)
+
+    import app.services.analysis as analysis_module
+
+    async def fail_analyze(*_args, **_kwargs):
+        raise ConnectionError("Connection error.")
+
+    monkeypatch.setattr(analysis_module, "analyze_content", fail_analyze)
+
+    def fail_download(*_args, **_kwargs):
+        raise RuntimeError("expired image urls")
+
+    monkeypatch.setattr(xhs_api, "download_images", fail_download)
+
+    store = database.get_task_store()
+    task = Task(
+        id=uuid4(),
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.PROCESSING,
+        source="https://www.xiaohongshu.com/explore/demo",
+    )
+    store.save(task)
+
+    source_path = tmp_path / "source-input.md"
+    source_path.write_text("招聘讨论，包含大厂履历和 AI 公司经验等内容。", encoding="utf-8")
+    task_dir = tmp_path / "archive"
+    task_dir.mkdir()
+    metadata = MediaMetadata(
+        title="招聘讨论",
+        source_url=task.source,
+        platform="xiaohongshu",
+        media_type=MediaType.OTHER,
+        content_subtype="image_note",
+    )
+
+    await pipeline_core._process_image_note(
+        task,
+        metadata,
+        task_dir,
+        {"extra": {"source_markdown_path": str(source_path), "image_urls": ["https://example.com/0.webp"]}},
+    )
+
+    warning_codes = [warning["code"] for warning in task.result["warnings"]]
+    assert "note_images_download_failed" in warning_codes
+    assert "note_llm_failed" in warning_codes
+    assert task.result["archive"]["files"]["summary"].endswith("summary.md")
+    assert (task_dir / "summary.md").exists()
+    assert (task_dir / "mindmap.md").exists()
+    analysis = json.loads((task_dir / "analysis.json").read_text(encoding="utf-8"))
+    assert analysis["_fallback"]["reason"] == "llm_failed"
 
 
 def test_xiaohongshu_initial_state_video_stream_is_parsed():

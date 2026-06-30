@@ -996,6 +996,54 @@ def _fallback_note_mindmap(metadata: "MediaMetadata", image_count: int, text: st
     ])
 
 
+def _safe_pipeline_error(error: Exception) -> str:
+    message = str(error) or error.__class__.__name__
+    return re.sub(r"sk-[A-Za-z0-9_-]{8,}", lambda m: f"{m.group(0)[:6]}...{m.group(0)[-4:]}", message)
+
+
+def _append_task_warning(task: Task, code: str, message: str, **details: Any) -> None:
+    result = dict(task.result or {})
+    warnings = list(result.get("warnings") or [])
+    warning: dict[str, Any] = {"code": code, "message": message}
+    if details:
+        warning["details"] = {
+            key: str(value) if isinstance(value, (Path, Exception)) else value
+            for key, value in details.items()
+            if value is not None
+        }
+    warnings.append(warning)
+    result["warnings"] = warnings
+    task.result = result
+    get_task_store().update_status(task.id, task.status, result=task.result)
+
+
+async def _write_note_fallback_outputs(
+    task: Task,
+    task_dir: Path,
+    metadata: "MediaMetadata",
+    image_count: int,
+    combined_text: str,
+    *,
+    reason: str,
+    analysis: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    if analysis is None:
+        analysis = _fallback_note_analysis(combined_text)
+        analysis["_fallback"] = {"reason": reason}
+        await _write_text_artifact(
+            task,
+            task_dir,
+            "analysis.json",
+            json.dumps(analysis, indent=2, ensure_ascii=False),
+        )
+
+    summary = _fallback_note_summary(combined_text)
+    mindmap = _fallback_note_mindmap(metadata, image_count, combined_text)
+    await _write_summary_files(task, task_dir, metadata, summary)
+    await _write_mindmap_files(task, task_dir, mindmap)
+    return analysis, summary, mindmap
+
+
 def _image_note_index(position: int, path: Path) -> int:
     try:
         return int(path.stem)
@@ -1037,6 +1085,7 @@ async def _process_image_note(
         await _write_text_artifact(task, task_dir, "source.md", source_text)
 
     # Download images when the note actually has image media.
+    image_warning_recorded = False
     if metadata.content_subtype == "text_note":
         image_paths = []
     else:
@@ -1049,8 +1098,24 @@ async def _process_image_note(
                 None, download_images, ingest_info, task_dir
             )
         except Exception as e:
-            log_event(logger, logging.WARNING, "note.images.download_failed", error=e)
+            error_message = _safe_pipeline_error(e)
+            log_event(logger, logging.WARNING, "note.images.download_failed", error=error_message)
+            _append_task_warning(
+                task,
+                "note_images_download_failed",
+                "图片下载失败，已继续处理正文。",
+                error=error_message,
+            )
+            image_warning_recorded = True
             image_paths = []
+    if metadata.content_subtype == "image_note" and not image_paths and not image_warning_recorded:
+        log_event(logger, logging.WARNING, "note.images.empty", platform=metadata.platform)
+        _append_task_warning(
+            task,
+            "note_images_empty",
+            "没有获得图片文件，已继续处理正文。",
+            platform=metadata.platform,
+        )
 
     await _raise_if_cancelled(task.id)
 
@@ -1156,62 +1221,93 @@ async def _process_image_note(
                 provider=llm_binding.provider,
                 reason=llm_binding.reason,
             )
-            analysis = _fallback_note_analysis(combined_text)
-            analysis_path = task_dir / "analysis.json"
-            analysis_path.write_text(_json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
-            await _emit_file_ready(task, "analysis.json", str(analysis_path))
-            summary = _fallback_note_summary(combined_text)
-            mindmap = _fallback_note_mindmap(metadata, len(image_paths), combined_text)
-            await _write_summary_files(task, task_dir, metadata, summary)
-            await _write_mindmap_files(task, task_dir, mindmap)
-        else:
-            analysis = await analyze_content(
+            analysis, summary, mindmap = await _write_note_fallback_outputs(
+                task,
+                task_dir,
+                metadata,
+                len(image_paths),
                 combined_text,
-                metadata.title,
-                metadata=video_metadata,
-                provider_override=llm_provider_override,
+                reason=llm_binding.reason or "not_configured",
             )
-            await _raise_if_cancelled(task.id)
-            user_language = _user_language_hint(analysis)
-
-            if analysis:
-                analysis_path = task_dir / "analysis.json"
-                analysis_path.write_text(_json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
-                await _emit_file_ready(task, "analysis.json", str(analysis_path))
-
-            tasks = [
-                summarize_text(
+        else:
+            try:
+                analysis = await analyze_content(
                     combined_text,
-                    user_language=user_language,
+                    metadata.title,
+                    metadata=video_metadata,
                     provider_override=llm_provider_override,
-                ),
-                generate_mindmap(
-                    combined_text,
-                    metadata=mindmap_metadata,
-                    user_language=user_language,
-                    provider_override=llm_provider_override,
-                ),
-            ]
-            if rt.generate_video_detail:
-                tasks.append(
-                    generate_detail(
+                )
+                await _raise_if_cancelled(task.id)
+                user_language = _user_language_hint(analysis)
+
+                if analysis:
+                    await _write_text_artifact(
+                        task,
+                        task_dir,
+                        "analysis.json",
+                        _json.dumps(analysis, indent=2, ensure_ascii=False),
+                    )
+
+                tasks = [
+                    summarize_text(
                         combined_text,
                         user_language=user_language,
                         provider_override=llm_provider_override,
+                    ),
+                    generate_mindmap(
+                        combined_text,
+                        metadata=mindmap_metadata,
+                        user_language=user_language,
+                        provider_override=llm_provider_override,
+                    ),
+                ]
+                if rt.generate_video_detail:
+                    tasks.append(
+                        generate_detail(
+                            combined_text,
+                            user_language=user_language,
+                            provider_override=llm_provider_override,
+                        )
                     )
-                )
-            results = await _aio.gather(*tasks)
-            summary = results[0]
-            mindmap = results[1]
-            detail = results[2] if len(results) > 2 else ""
-            await _raise_if_cancelled(task.id)
+                results = await _aio.gather(*tasks)
+                summary = results[0]
+                mindmap = results[1]
+                detail = results[2] if len(results) > 2 else ""
+                await _raise_if_cancelled(task.id)
 
-            if summary:
-                await _write_summary_files(task, task_dir, metadata, summary)
-            if mindmap:
-                await _write_mindmap_files(task, task_dir, mindmap)
-            if detail:
-                await _write_detail_file(task, task_dir, detail)
+                if summary:
+                    await _write_summary_files(task, task_dir, metadata, summary)
+                if mindmap:
+                    await _write_mindmap_files(task, task_dir, mindmap)
+                if detail:
+                    await _write_detail_file(task, task_dir, detail)
+            except Exception as e:
+                error_message = _safe_pipeline_error(e)
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "image_note.llm.failed_fallback",
+                    provider=llm_binding.provider,
+                    model=llm_binding.model,
+                    error=error_message,
+                )
+                _append_task_warning(
+                    task,
+                    "note_llm_failed",
+                    "模型分析失败，已使用正文生成基础结果。",
+                    provider=llm_binding.provider,
+                    model=llm_binding.model,
+                    error=error_message,
+                )
+                analysis, summary, mindmap = await _write_note_fallback_outputs(
+                    task,
+                    task_dir,
+                    metadata,
+                    len(image_paths),
+                    combined_text,
+                    reason="llm_failed",
+                    analysis=analysis,
+                )
     else:
         log_event(logger, logging.WARNING, "image_note.llm.skipped", reason="combined_text_too_short")
 
@@ -1229,6 +1325,7 @@ async def _process_image_note(
     write_metadata_json(task_dir, metadata, status="completed")
     await _update_step(task, PipelineStep.ARCHIVE, completed=True)
 
+    warnings = list((task.result or {}).get("warnings") or [])
     task.result = {
         "metadata": metadata.model_dump(mode="json"),
         "image_descriptions": descriptions,
@@ -1237,6 +1334,8 @@ async def _process_image_note(
         "analysis": analysis,
         "content_subtype": metadata.content_subtype,
     }
+    if warnings:
+        task.result["warnings"] = warnings
 
     # Async KB indexing (fail-soft)
     _schedule_kb_index(str(task.id), str(task_dir))
