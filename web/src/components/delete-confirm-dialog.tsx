@@ -52,7 +52,7 @@ export function DeleteConfirmDialog({
             将删除「{title}」的所有文件（归档、转录、摘要等），此操作不可撤销。
           </AlertDialogDescription>
         </AlertDialogHeader>
-        <AlertDialogFooter>
+        <AlertDialogFooter className="border-t-0">
           <AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"

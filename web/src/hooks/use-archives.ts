@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { api } from "@/lib/api"
 
 export interface ArchiveItem {
@@ -31,17 +31,20 @@ export function useArchives() {
   const [archives, setArchives] = useState<ArchiveItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const loadedRef = useRef(false)
 
   const refresh = useCallback(async (silent = false) => {
+    const showInitialLoader = !silent && !loadedRef.current
     try {
-      if (!silent) setLoading(true)
+      if (showInitialLoader) setLoading(true)
       const data = await api.archives.list()
       setArchives((data.archives ?? []) as ArchiveItem[])
       setError(null)
     } catch (e) {
       setError(String(e))
     } finally {
-      if (!silent) setLoading(false)
+      loadedRef.current = true
+      if (showInitialLoader) setLoading(false)
     }
   }, [])
 

@@ -6,7 +6,6 @@ import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
-  ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { RenameDialog } from "@/components/rename-dialog"
@@ -142,7 +141,6 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed, onRerun, re
           <HugeiconsIcon icon={PencilEdit01Icon} className="h-4 w-4" />
           重命名
         </ContextMenuItem>
-        <ContextMenuSeparator />
         <ContextMenuItem variant="destructive" onClick={() => onDelete?.()}>
           <HugeiconsIcon icon={Delete01Icon} className="h-4 w-4" />
           删除

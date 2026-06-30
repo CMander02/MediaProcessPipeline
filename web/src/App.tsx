@@ -29,6 +29,17 @@ export default function App() {
     }
   }, [])
 
+  useEffect(() => {
+    const handleContextMenu = (event: MouseEvent) => {
+      const target = event.target
+      if (target instanceof Element && target.closest("[data-slot='context-menu-trigger']")) return
+      event.preventDefault()
+    }
+
+    window.addEventListener("contextmenu", handleContextMenu, true)
+    return () => window.removeEventListener("contextmenu", handleContextMenu, true)
+  }, [])
+
   const navItems = [
     { page: "files" as const, icon: FolderOpenIcon, label: "文件" },
     { page: "submit" as const, icon: PlusSignIcon, label: "处理" },
