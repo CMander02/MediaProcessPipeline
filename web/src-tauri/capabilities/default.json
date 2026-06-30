@@ -19,6 +19,7 @@
     "allow-backend-start",
     "allow-backend-stop",
     "allow-backend-restart",
+    "allow-open-external-url",
     "dialog:allow-open"
   ]
 }

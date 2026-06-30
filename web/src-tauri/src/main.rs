@@ -565,6 +565,48 @@ fn backend_restart(app: AppHandle) -> Result<BackendStatus, String> {
     Ok(status)
 }
 
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return Err("only http(s) URLs can be opened".to_string());
+    }
+    if trimmed.chars().any(|ch| ch.is_control() || ch == '"') {
+        return Err("invalid URL".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        Command::new("cmd")
+            .args(["/C", "start", "", trimmed])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|err| format!("failed to open URL: {err}"))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(trimmed)
+            .spawn()
+            .map_err(|err| format!("failed to open URL: {err}"))?;
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(trimmed)
+            .spawn()
+            .map_err(|err| format!("failed to open URL: {err}"))?;
+        return Ok(());
+    }
+}
+
 fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn Error>> {
     app.manage(BackendProcess::default());
     let app_handle = app.handle().clone();
@@ -596,7 +638,8 @@ fn main() {
             backend_get_logs,
             backend_start,
             backend_stop,
-            backend_restart
+            backend_restart,
+            open_external_url
         ])
         .setup(setup_app)
         .on_window_event(|window, event| {

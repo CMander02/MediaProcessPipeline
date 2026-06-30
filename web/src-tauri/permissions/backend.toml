@@ -22,3 +22,8 @@ commands.allow = ["backend_stop"]
 identifier = "allow-backend-restart"
 description = "Allows restarting the desktop-managed backend process."
 commands.allow = ["backend_restart"]
+
+[[permission]]
+identifier = "allow-open-external-url"
+description = "Allows opening http(s) source links in the system default browser."
+commands.allow = ["open_external_url"]

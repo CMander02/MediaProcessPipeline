@@ -58,13 +58,13 @@ function isTauriRuntime() {
   }
 }
 
-function tauriInvoke<T>(command: string) {
+function tauriInvoke<T>(command: string, args?: Record<string, unknown>) {
   const tauriWindow = window as TauriWindow
   const globalInvoke = tauriWindow.__TAURI__?.core?.invoke
   if (typeof globalInvoke === "function") {
-    return globalInvoke<T>(command)
+    return globalInvoke<T>(command, args)
   }
-  return invoke<T>(command)
+  return invoke<T>(command, args)
 }
 
 function getTauriBackendBridge(): MppBackendBridge | undefined {
@@ -158,4 +158,19 @@ export async function selectDirectory(options: SelectDirectoryOptions = {}): Pro
   })
   if (Array.isArray(selected)) return selected[0] ?? null
   return selected
+}
+
+export async function openExternalUrl(url: string): Promise<void> {
+  if (!/^https?:\/\//i.test(url)) return
+
+  if (isTauriRuntime()) {
+    try {
+      await tauriInvoke<void>("open_external_url", { url })
+      return
+    } catch (error) {
+      console.warn("Tauri open_external_url failed, falling back to window.open:", error)
+    }
+  }
+
+  window.open(url, "_blank", "noopener,noreferrer")
 }

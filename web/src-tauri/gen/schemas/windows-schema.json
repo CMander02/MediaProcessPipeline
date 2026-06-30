@@ -207,6 +207,12 @@
           "markdownDescription": "Allows stopping the desktop-managed backend process."
         },
         {
+          "description": "Allows opening http(s) source links in the system default browser.",
+          "type": "string",
+          "const": "allow-open-external-url",
+          "markdownDescription": "Allows opening http(s) source links in the system default browser."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

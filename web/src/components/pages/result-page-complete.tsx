@@ -26,6 +26,7 @@ import { useTaskSSE, type FileReadyEvent, type StepEvent } from "@/hooks/use-tas
 import { parseSRT, subtitlesToSRT, type Subtitle } from "@/lib/srt"
 import { navigate } from "@/lib/router"
 import { api } from "@/lib/api"
+import { openExternalUrl } from "@/lib/tauri"
 import { usePipelineSteps } from "@/lib/constants"
 import { MediaPlayer } from "@/components/result/media-player"
 import { SpeakerPanel } from "@/components/result/speaker-panel"
@@ -68,6 +69,38 @@ interface Props {
 
 function normalizeArchivePath(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function firstHttpUrl(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value !== "string") continue
+    const trimmed = value.trim()
+    if (/^https?:\/\//i.test(trimmed)) return trimmed
+  }
+  return null
+}
+
+function resolveSourceUrl(metadata: Record<string, unknown>): string | null {
+  const extra = asRecord(metadata.extra)
+  const nested = asRecord(extra?.metadata) ?? asRecord(extra?.raw) ?? asRecord(extra?.info)
+  return firstHttpUrl(
+    metadata.source_url,
+    metadata.original_url,
+    metadata.webpage_url,
+    metadata.url,
+    extra?.source_url,
+    extra?.original_url,
+    extra?.webpage_url,
+    extra?.url,
+    nested?.source_url,
+    nested?.original_url,
+    nested?.webpage_url,
+    nested?.url,
+  )
 }
 
 function resolveNoteMediaSrc(src: string | undefined, archivePath: string, sep: string): string | undefined {
@@ -234,7 +267,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     if (found) {
       setArchive(found)
       const meta = (found.metadata || {}) as Record<string, unknown>
-      setSourceUrl((meta.source_url as string | null) ?? null)
+      setSourceUrl(resolveSourceUrl(meta))
       setPlatform((meta.platform as string | null) ?? null)
       setUploader((meta.uploader as string | null) ?? null)
       setContentSubtype((meta.content_subtype as string | null) ?? null)
@@ -491,7 +524,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   }, [subtitleTracks, loadFile])
 
   const mediaType = archive?.has_video ? "video" : "audio"
-  const sourceHref = sourceUrl && /^https?:\/\//i.test(sourceUrl) ? sourceUrl : null
+  const sourceHref = firstHttpUrl(sourceUrl)
   const isImageNote = contentSubtype === "image_note"
   const isTextNote = contentSubtype === "text_note"
   const isPureWebpage = platform === "webpage" && isTextNote
@@ -583,6 +616,11 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     URL.revokeObjectURL(url)
   }
 
+  const handleOpenSource = useCallback(() => {
+    if (!sourceHref) return
+    void openExternalUrl(sourceHref)
+  }, [sourceHref])
+
   return (
     <div className="flex h-full flex-col">
       {/* Top bar */}
@@ -616,30 +654,28 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
             <div className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
               {platform ? (
                 sourceHref ? (
-                  <a
-                    href={sourceHref}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    onClick={handleOpenSource}
                     className="rounded p-1 transition-colors hover:bg-muted hover:text-primary"
                     title={uploader ? `打开 ${uploader}` : "打开原始来源"}
                   >
                     <PlatformIcon platform={platform} uploader={uploader} className="h-4 w-4" />
-                  </a>
+                  </button>
                 ) : (
                   <span className="p-1" title={uploader ?? platform}>
                     <PlatformIcon platform={platform} uploader={uploader} className="h-4 w-4" />
                   </span>
                 )
               ) : sourceHref ? (
-                <a
-                  href={sourceHref}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <button
+                  type="button"
+                  onClick={handleOpenSource}
                   className="rounded p-1 transition-colors hover:bg-muted hover:text-primary"
                   title="打开原始链接"
                 >
                   <HugeiconsIcon icon={Link01Icon} className="h-3.5 w-3.5" />
-                </a>
+                </button>
               ) : null}
               <span className="rounded p-1" title={headerMediaLabel}>
                 <HugeiconsIcon icon={headerMediaIcon} className="h-3.5 w-3.5" strokeWidth={1.75} />
