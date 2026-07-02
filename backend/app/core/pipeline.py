@@ -99,29 +99,54 @@ def _sanitize_filename(name: str) -> str:
     return name[:100] if len(name) > 100 else name
 
 
+def _unique_child_dir(parent: Path, dir_name: str, current_dir: Path | None = None) -> Path:
+    """Return an available child directory path under parent."""
+    candidate = parent / dir_name
+    if current_dir is not None and candidate.resolve() == current_dir.resolve():
+        return current_dir
+    if not candidate.exists():
+        return candidate
+
+    counter = 2
+    while True:
+        candidate = parent / f"{dir_name} ({counter})"
+        if current_dir is not None and candidate.resolve() == current_dir.resolve():
+            return current_dir
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
 def create_task_dir(task_id: UUID, title: str | None = None) -> Path:
     """Create a dedicated directory for this task under data/{title}/."""
     settings = get_runtime_settings()
     data_root = Path(settings.data_root).resolve()
 
     if title:
-        dir_name = _sanitize_filename(title)
+        dir_name = _sanitize_filename(title) or str(task_id)[:8]
     else:
         dir_name = str(task_id)[:8]
 
-    task_dir = data_root / dir_name
-    # Handle duplicate names by appending (2), (3), etc.
-    if task_dir.exists():
-        counter = 2
-        while True:
-            candidate = data_root / f"{dir_name} ({counter})"
-            if not candidate.exists():
-                task_dir = candidate
-                break
-            counter += 1
-
+    task_dir = _unique_child_dir(data_root, dir_name)
     task_dir.mkdir(parents=True, exist_ok=True)
     return task_dir
+
+
+def _rename_task_dir_to_title(task_dir: Path, title: str | None) -> tuple[Path, Path | None]:
+    """Move a placeholder task directory to a unique metadata-title directory."""
+    if not title:
+        return task_dir, None
+
+    dir_name = _sanitize_filename(title)
+    if not dir_name:
+        return task_dir, None
+
+    target = _unique_child_dir(task_dir.parent, dir_name, current_dir=task_dir)
+    if target.resolve() == task_dir.resolve():
+        return task_dir, None
+
+    task_dir.rename(target)
+    return target, task_dir
 
 
 def write_metadata_json(
@@ -1960,22 +1985,17 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
                     # Rename task_dir to real title
                     real_title = metadata.title
-                    if real_title and task_dir.name != _sanitize_filename(real_title):
-                        new_dir = task_dir.parent / _sanitize_filename(real_title)
-                        if not new_dir.exists():
-                            task_dir.rename(new_dir)
-                            task_dir = new_dir
-                            # Update all subtitle paths after rename: tracks[].path + back-compat subtitle_path
-                            new_sub_dir = task_dir / "subtitles"
-                            for tr in probe_subtitle.get("tracks") or []:
-                                if tr.get("path"):
-                                    tr["path"] = str(new_sub_dir / Path(tr["path"]).name)
-                            if probe_subtitle.get("subtitle_path"):
-                                old_sub_path = Path(probe_subtitle["subtitle_path"])
-                                probe_subtitle["subtitle_path"] = str(new_sub_dir / old_sub_path.name)
-                            log_event(logger, logging.INFO, "task_dir.renamed", path=new_dir)
-                        else:
-                            log_event(logger, logging.WARNING, "task_dir.rename_skipped", reason="exists", path=new_dir)
+                    task_dir, old_dir = _rename_task_dir_to_title(task_dir, real_title)
+                    if old_dir:
+                        # Update all subtitle paths after rename: tracks[].path + back-compat subtitle_path
+                        new_sub_dir = task_dir / "subtitles"
+                        for tr in probe_subtitle.get("tracks") or []:
+                            if tr.get("path"):
+                                tr["path"] = str(new_sub_dir / Path(tr["path"]).name)
+                        if probe_subtitle.get("subtitle_path"):
+                            old_sub_path = Path(probe_subtitle["subtitle_path"])
+                            probe_subtitle["subtitle_path"] = str(new_sub_dir / old_sub_path.name)
+                        log_event(logger, logging.INFO, "task_dir.renamed", from_path=old_dir, path=task_dir)
 
                     log_event(
                         logger,
@@ -2068,20 +2088,14 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
             # Rename task_dir from temp name (BV号/video ID) to real title
             real_title = metadata.title
-            if real_title and task_dir.name != _sanitize_filename(real_title):
-                new_dir = task_dir.parent / _sanitize_filename(real_title)
-                if not new_dir.exists():
-                    old_dir = task_dir
-                    task_dir.rename(new_dir)
-                    task_dir = new_dir
-                    if audio_path:
-                        audio_path = str(new_dir / Path(audio_path).name)
-                    if metadata.file_path:
-                        metadata.file_path = str(new_dir / Path(metadata.file_path).name)
-                    _rewrite_ingest_paths_after_task_dir_move(ingest, metadata, old_dir, new_dir)
-                    log_event(logger, logging.INFO, "task_dir.renamed", path=new_dir)
-                else:
-                    log_event(logger, logging.WARNING, "task_dir.rename_skipped", reason="exists", path=new_dir)
+            task_dir, old_dir = _rename_task_dir_to_title(task_dir, real_title)
+            if old_dir:
+                if audio_path:
+                    audio_path = str(task_dir / Path(audio_path).name)
+                if metadata.file_path:
+                    metadata.file_path = str(task_dir / Path(metadata.file_path).name)
+                _rewrite_ingest_paths_after_task_dir_move(ingest, metadata, old_dir, task_dir)
+                log_event(logger, logging.INFO, "task_dir.renamed", from_path=old_dir, path=task_dir)
 
             # Notes take a different branch entirely — no GPU, no audio.
             if metadata.content_subtype in {"image_note", "text_note"}:

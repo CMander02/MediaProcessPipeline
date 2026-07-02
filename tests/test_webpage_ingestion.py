@@ -7,7 +7,11 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.services.ingestion import ytdlp  # noqa: E402
 from app.services.ingestion.platform.webpage import api as webpage_api  # noqa: E402
 from app.core.source_resolver import resolve_source_flow  # noqa: E402
-from app.core.pipeline import _detect_source_type, _rewrite_ingest_paths_after_task_dir_move  # noqa: E402
+from app.core.pipeline import (  # noqa: E402
+    _detect_source_type,
+    _rename_task_dir_to_title,
+    _rewrite_ingest_paths_after_task_dir_move,
+)
 from app.models import MediaMetadata  # noqa: E402
 
 
@@ -145,3 +149,18 @@ def test_rewrite_webpage_asset_paths_after_task_dir_rename(tmp_path):
     assert metadata.extra["images"][0]["path"] == str(new_dir / "images" / "00.png")
     assert ingest["info"]["extra"]["source_markdown_path"] == str(new_dir / "source.md")
     assert ingest["info"]["thumbnail"] == str(new_dir / "images" / "00.png")
+
+
+def test_task_dir_rename_uses_unique_metadata_title_when_target_exists(tmp_path):
+    existing_title_dir = tmp_path / "Scaling Laws"
+    placeholder_dir = tmp_path / "download (11)"
+    existing_title_dir.mkdir()
+    placeholder_dir.mkdir()
+    (placeholder_dir / "source.md").write_text("# Scaling Laws\n", encoding="utf-8")
+
+    renamed_dir, old_dir = _rename_task_dir_to_title(placeholder_dir, "Scaling Laws")
+
+    assert old_dir == placeholder_dir
+    assert renamed_dir == tmp_path / "Scaling Laws (2)"
+    assert not placeholder_dir.exists()
+    assert (renamed_dir / "source.md").read_text(encoding="utf-8") == "# Scaling Laws\n"
