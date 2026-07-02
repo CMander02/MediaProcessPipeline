@@ -609,6 +609,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState("")
   const isProcessing = taskStatus === "processing" || taskStatus === "queued"
+  const showFlowDiagnostics = isProcessing || taskStatus === "failed"
   const hasContent = summary || transcript || mindmap
   const flowCompletedSteps = taskFlow?.completed_steps ?? []
   const recentTimelineEvents = timelineEvents
@@ -851,7 +852,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         </div>
       )}
 
-      {(taskFlow || recentTimelineEvents.length > 0) && (
+      {showFlowDiagnostics && (taskFlow || recentTimelineEvents.length > 0) && (
         <div className="shrink-0 border-b bg-background px-4 py-2">
           {taskFlow && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
