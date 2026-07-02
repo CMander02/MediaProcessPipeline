@@ -92,6 +92,7 @@ class Task(BaseModel):
     current_step: str | None = None
     steps: list[str] = Field(default_factory=list)
     completed_steps: list[str] = Field(default_factory=list)
+    flow: dict[str, Any] | None = None
     # Denormalized media metadata columns (mirrors tasks DB columns)
     platform: str | None = None
     uploader_id: str | None = None

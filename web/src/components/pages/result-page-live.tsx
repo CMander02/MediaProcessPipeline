@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { subscribeTaskEvents, api, type Task } from "@/lib/api"
+import { subscribeTaskEvents, api, type Task, type TaskFlowSnapshot, type TaskTimelineEvent } from "@/lib/api"
 import { navigate } from "@/lib/router"
 import { STEP_NAME, usePipelineSteps } from "@/lib/constants"
 import { cn } from "@/lib/utils"
@@ -11,17 +11,39 @@ interface LogEntry {
   ts: string
   type: string
   detail: string
+  level?: string
+}
+
+function timelineToLog(event: TaskTimelineEvent): LogEntry {
+  const data = event.data
+  const detail =
+    event.message ||
+    (typeof data.error === "string" ? data.error : "") ||
+    (typeof data.message === "string" ? data.message : "")
+  return {
+    ts: event.timestamp.split("T")[1]?.slice(0, 8) ?? "",
+    type: event.event_type,
+    detail,
+    level: event.level,
+  }
 }
 
 export function ResultPageLive({ taskId }: { taskId: string }) {
   const pipelineSteps = usePipelineSteps()
   const [task, setTask] = useState<Task | null>(null)
+  const [flow, setFlow] = useState<TaskFlowSnapshot | null>(null)
   const [logs, setLogs] = useState<LogEntry[]>([])
   const bottomRef = useRef<HTMLDivElement>(null)
 
   // Fetch initial task state
   useEffect(() => {
-    api.tasks.get(taskId).then(setTask).catch(() => {})
+    Promise.all([api.tasks.get(taskId), api.tasks.timeline(taskId)])
+      .then(([taskData, timeline]) => {
+        setTask(taskData)
+        setFlow(taskData.flow ?? null)
+        setLogs(timeline.events.map(timelineToLog))
+      })
+      .catch(() => {})
   }, [taskId])
 
   // Subscribe to SSE events
@@ -41,16 +63,20 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
       } else if (data.output_dir) {
         detail = `归档完成`
       }
+      const level = typeof data.level === "string" ? data.level : undefined
 
       // Snapshot is a state-rebuild ping on (re)connect; merge it into task
       // state but don't add it to the visible event log (it isn't a real event).
       if (event.type !== "snapshot") {
-        setLogs((prev) => [...prev, { ts, type: event.type, detail }])
+        setLogs((prev) => [...prev, { ts, type: event.type, detail, level }].slice(-200))
       }
 
       // Update task state from snapshot or progress events
       if (data.status || data.current_step || data.completed_steps) {
         setTask((prev) => (prev ? { ...prev, ...data } as Task : prev))
+      }
+      if (data.flow && typeof data.flow === "object") {
+        setFlow(data.flow as unknown as TaskFlowSnapshot)
       }
     })
 
@@ -183,6 +209,36 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
           })}
         </div>
 
+        {flow && (
+          <div className="space-y-2 border-y bg-muted/20 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <span className="font-medium">{flow.label}</span>
+              <span className="text-muted-foreground">{flow.platform}</span>
+              <span className="text-blue-600">{flow.current_step_label ?? flow.current_step}</span>
+              <span className="text-muted-foreground">{Math.round((flow.progress ?? 0) * 100)}%</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {flow.steps.map((step) => {
+                const isDone = (flow.completed_steps ?? []).includes(step.id)
+                const isCurrent = flow.current_step === step.id
+                return (
+                  <span
+                    key={step.id}
+                    className={cn(
+                      "inline-flex h-5 items-center rounded px-1.5 text-[10px]",
+                      isDone && "bg-emerald-50 text-emerald-700",
+                      isCurrent && !isDone && "bg-blue-50 text-blue-700",
+                      !isDone && !isCurrent && "bg-background text-muted-foreground",
+                    )}
+                  >
+                    {step.label}
+                  </span>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Event log */}
         <div>
           <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
@@ -197,7 +253,12 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
             {logs.map((e, i) => (
               <div key={i} className="flex gap-2 leading-5">
                 <span className="text-muted-foreground shrink-0">{e.ts}</span>
-                <span className="text-amber-600 dark:text-amber-400 shrink-0 w-16">{e.type}</span>
+                <span className={cn(
+                  "shrink-0 w-20 truncate",
+                  e.level === "error" && "text-destructive",
+                  e.level === "warning" && "text-amber-600 dark:text-amber-400",
+                  !e.level && "text-amber-600 dark:text-amber-400",
+                )}>{e.type}</span>
                 <span className="text-foreground truncate">{e.detail}</span>
               </div>
             ))}

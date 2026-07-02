@@ -13,9 +13,11 @@ from typing import Any
 from app.core.settings import RuntimeSettings
 
 LLM_STAGES = {"analyze", "polish", "summary", "mindmap"}
-ASR_PROVIDERS = {"qwen3", "siliconflow"}
+ASR_PROVIDERS = {"qwen3", "qwen3_gguf", "siliconflow"}
 
 _DEFAULT_QWEN3_ASR_MODEL = "Qwen/Qwen3-ASR-1.7B"
+_DEFAULT_QWEN3_GGUF_REPO = "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0"
+_DEFAULT_QWEN3_GGUF_ALIAS = "Qwen3-ASR-1.7B"
 _DEFAULT_DEEPSEEK_API_BASE = "https://api.deepseek.com"
 _DEFAULT_SILICONFLOW_VLM_MODEL = "Qwen/Qwen3.5-4B"
 _LEGACY_VLM_DEFAULT_MODELS = {"qwen2.5-vl-7b-instruct"}
@@ -145,6 +147,16 @@ def _clean_text(value: Any) -> str:
 
 def _normalize_provider(provider: str | None) -> str:
     return _clean_text(provider).lower()
+
+
+def _looks_like_gguf_path(value: str) -> bool:
+    normalized = value.replace("\\", "/").lower()
+    return (
+        normalized.endswith(".gguf")
+        or normalized.startswith("/")
+        or normalized.startswith("~/")
+        or ":/" in normalized
+    )
 
 
 def _normalize_stage(stage: str) -> str:
@@ -740,6 +752,54 @@ def resolve_asr_binding(
                 "language": language,
                 "diarize": diarize,
                 "num_speakers": num_speakers,
+            },
+        )
+
+    if provider == "qwen3_gguf":
+        bound_model = _clean_text(asr_runtime_binding.get("model_id"))
+        model_path = _clean_text(rt.qwen3_gguf_model_path)
+        mmproj_path = _clean_text(rt.qwen3_gguf_mmproj_path)
+        hf_repo = _clean_text(rt.qwen3_gguf_hf_repo) or _DEFAULT_QWEN3_GGUF_REPO
+        if bound_model and not model_path and bound_model != _DEFAULT_QWEN3_GGUF_ALIAS:
+            if _looks_like_gguf_path(bound_model):
+                model_path = bound_model
+            else:
+                hf_repo = bound_model
+        has_local_pair = bool(model_path and mmproj_path)
+        has_partial_local = bool(model_path) != bool(mmproj_path)
+        configured = has_local_pair or (not has_partial_local and bool(hf_repo))
+        reason = ""
+        if has_partial_local:
+            reason = "qwen3_gguf_model_path and qwen3_gguf_mmproj_path must be set together"
+        elif not configured:
+            reason = "qwen3_gguf_hf_repo is empty"
+        chunk_strategy = _normalize_provider(
+            options.get("asr_chunk_strategy") or rt.qwen3_gguf_chunk_strategy
+        )
+        return ASRBinding(
+            provider="qwen3_gguf",
+            source=source,
+            model=model_path or hf_repo,
+            language=language,
+            diarize=False,
+            num_speakers=num_speakers,
+            chunk_strategy=chunk_strategy,
+            configured=configured,
+            reason=reason,
+            request_kwargs={
+                "binary_path": rt.llama_cpp_binary_path,
+                "model_path": model_path,
+                "mmproj_path": mmproj_path,
+                "hf_repo": hf_repo,
+                "device": rt.qwen3_gguf_device,
+                "ctx": rt.qwen3_gguf_ctx,
+                "n_gpu_layers": rt.qwen3_gguf_n_gpu_layers,
+                "timeout_sec": rt.qwen3_gguf_timeout_sec,
+                "keepalive_sec": rt.qwen3_gguf_keepalive_sec,
+                "chunk_strategy": chunk_strategy,
+                "max_chunk_sec": 30.0,
+                "silero_onnx_model_path": rt.silero_onnx_model_path,
+                "alias": _DEFAULT_QWEN3_GGUF_ALIAS,
             },
         )
 

@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { selectDirectory } from "@/lib/tauri"
 
-export type DeviceValue = "cuda" | "cpu"
+export type DeviceValue = "auto" | "cuda" | "cpu"
 
 export interface SettingsSectionProps {
   title: ReactNode
@@ -43,18 +43,21 @@ export interface SettingRowProps {
 export function DeviceChoice({
   value,
   onChange,
-  labels = { cuda: "CUDA", cpu: "内存" },
+  labels = { auto: "自动", cuda: "CUDA", cpu: "内存" },
+  options = ["cuda", "cpu"],
 }: {
   value: string
   onChange: (value: DeviceValue) => void
   labels?: Record<DeviceValue, string>
+  options?: DeviceValue[]
 }) {
-  const current: DeviceValue = value === "cpu" ? "cpu" : "cuda"
+  const fallback = options[0] ?? "cuda"
+  const current: DeviceValue = options.includes(value as DeviceValue) ? value as DeviceValue : fallback
   return (
     <div className="flex items-center gap-3">
       <Label className="w-24 shrink-0 text-sm text-muted-foreground">设备</Label>
       <div className="flex items-center gap-1">
-        {(["cuda", "cpu"] as const).map((device) => (
+        {options.map((device) => (
           <button
             key={device}
             type="button"

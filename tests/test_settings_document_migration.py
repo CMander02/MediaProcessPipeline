@@ -313,8 +313,8 @@ def test_flat_config_load_migrates_default_service_registry(isolated_settings_fi
         "capability": "llm",
     }
     assert data["runtime_model_bindings"]["asr"] == {
-        "provider_id": "qwen3",
-        "model_id": "Qwen/Qwen3-ASR",
+        "provider_id": "qwen3_gguf",
+        "model_id": "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0",
         "capability": "asr",
     }
 

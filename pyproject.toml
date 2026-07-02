@@ -13,6 +13,8 @@ dependencies = [
     # AI - OpenAI-compatible API (直连各 provider)
     "openai>=1.50.0",
     "python-multipart>=0.0.21",
+    "numpy>=1.26.0",
+    "onnxruntime>=1.16.1",
     # CLI
     "typer>=0.15.0",
     "rich>=13.0.0",

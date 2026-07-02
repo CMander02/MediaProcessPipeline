@@ -4,8 +4,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
+from app.core import pipeline as pipeline_core  # noqa: E402
 from app.core.model_router import resolve_asr_binding  # noqa: E402
 from app.core.settings import RuntimeSettings  # noqa: E402
+from app.models import Task, TaskType  # noqa: E402
 
 
 def test_asr_task_option_override_beats_runtime_provider():
@@ -71,6 +73,80 @@ def test_asr_settings_qwen3_binding_includes_model_and_diarization_flags():
     assert binding.request_kwargs["aligner_model_path"] == "D:/models/qwen3-aligner"
 
 
+def test_asr_default_binding_uses_qwen3_gguf_hf_repo():
+    settings = RuntimeSettings()
+
+    binding = resolve_asr_binding(settings)
+
+    assert binding.provider == "qwen3_gguf"
+    assert binding.source == "settings"
+    assert binding.model == "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0"
+    assert binding.diarize is False
+    assert binding.chunk_strategy == "silero_onnx"
+    assert binding.request_kwargs["hf_repo"] == "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0"
+    assert binding.request_kwargs["alias"] == "Qwen3-ASR-1.7B"
+
+
+def test_asr_qwen3_gguf_binding_uses_local_model_pair_and_cpu():
+    settings = RuntimeSettings(
+        asr_provider="qwen3_gguf",
+        qwen3_gguf_model_path="D:/models/Qwen3-ASR-1.7B-Q8_0.gguf",
+        qwen3_gguf_mmproj_path="D:/models/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
+        qwen3_gguf_device="cpu",
+        qwen3_gguf_chunk_strategy="ffmpeg",
+        qwen3_gguf_ctx=2048,
+        qwen3_gguf_n_gpu_layers=0,
+        llama_cpp_binary_path="D:/tools/llama-server.exe",
+    )
+
+    binding = resolve_asr_binding(settings)
+
+    assert binding.provider == "qwen3_gguf"
+    assert binding.configured is True
+    assert binding.model == "D:/models/Qwen3-ASR-1.7B-Q8_0.gguf"
+    assert binding.chunk_strategy == "ffmpeg"
+    assert binding.request_kwargs["model_path"] == "D:/models/Qwen3-ASR-1.7B-Q8_0.gguf"
+    assert binding.request_kwargs["mmproj_path"] == "D:/models/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
+    assert binding.request_kwargs["device"] == "cpu"
+    assert binding.request_kwargs["ctx"] == 2048
+    assert binding.request_kwargs["n_gpu_layers"] == 0
+    assert binding.request_kwargs["binary_path"] == "D:/tools/llama-server.exe"
+
+
+def test_asr_qwen3_gguf_binding_rejects_partial_local_model_pair():
+    settings = RuntimeSettings(
+        asr_provider="qwen3_gguf",
+        qwen3_gguf_model_path="D:/models/Qwen3-ASR-1.7B-Q8_0.gguf",
+        qwen3_gguf_mmproj_path="",
+    )
+
+    binding = resolve_asr_binding(settings)
+
+    assert binding.provider == "qwen3_gguf"
+    assert binding.configured is False
+    assert "must be set together" in binding.reason
+
+
+def test_asr_qwen3_gguf_runtime_binding_local_path_uses_model_pair():
+    settings = RuntimeSettings(
+        qwen3_gguf_mmproj_path="D:/models/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
+        runtime_model_bindings={
+            "asr": {
+                "provider_id": "qwen3_gguf",
+                "model_id": "D:/models/Qwen3-ASR-1.7B-Q8_0.gguf",
+            }
+        },
+    )
+
+    binding = resolve_asr_binding(settings)
+
+    assert binding.provider == "qwen3_gguf"
+    assert binding.configured is True
+    assert binding.model == "D:/models/Qwen3-ASR-1.7B-Q8_0.gguf"
+    assert binding.request_kwargs["model_path"] == "D:/models/Qwen3-ASR-1.7B-Q8_0.gguf"
+    assert binding.request_kwargs["mmproj_path"] == "D:/models/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
+
+
 def test_asr_runtime_binding_uses_siliconflow_provider_model_metadata():
     settings = RuntimeSettings(
         siliconflow_api_key="flat-key",
@@ -119,3 +195,32 @@ def test_asr_runtime_binding_uses_siliconflow_provider_model_metadata():
     assert binding.request_kwargs["endpoint"] == "https://api.siliconflow.cn/v1/audio/transcriptions"
     assert binding.request_kwargs["default_params"]["request_format"] == "multipart"
     assert binding.request_kwargs["default_params"]["max_file_mb"] == 50
+
+
+def test_url_asr_fallback_prefers_configured_siliconflow(monkeypatch):
+    settings = RuntimeSettings(
+        asr_provider="qwen3",
+        siliconflow_api_base="https://api.siliconflow.cn",
+        siliconflow_api_key="sf-key",
+        siliconflow_asr_model="FunAudioLLM/SenseVoiceSmall",
+    )
+    monkeypatch.setattr(pipeline_core, "get_runtime_settings", lambda: settings)
+    task = Task(task_type=TaskType.PIPELINE, source="https://example.com/video.mp4")
+
+    provider, reason, is_api = pipeline_core._select_asr_provider_for_fallback(task)
+
+    assert provider == "siliconflow"
+    assert reason == "siliconflow_configured"
+    assert is_api is True
+
+
+def test_url_asr_fallback_uses_default_when_api_provider_missing(monkeypatch):
+    settings = RuntimeSettings(asr_provider="qwen3", siliconflow_api_key="")
+    monkeypatch.setattr(pipeline_core, "get_runtime_settings", lambda: settings)
+    task = Task(task_type=TaskType.PIPELINE, source="https://example.com/video.mp4")
+
+    provider, reason, is_api = pipeline_core._select_asr_provider_for_fallback(task)
+
+    assert provider == "qwen3"
+    assert reason == "default_asr_provider"
+    assert is_api is False

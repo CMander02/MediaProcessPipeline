@@ -133,7 +133,7 @@ class RuntimeSettings(BaseModel):
     generate_video_detail: bool = True
 
     # ASR
-    asr_provider: str = "qwen3"  # Supported: qwen3 (local), siliconflow (OpenAI-compatible API)
+    asr_provider: str = "qwen3_gguf"
 
     # Qwen3-ASR Settings
     qwen3_asr_model_path: str = ""  # Local path, empty = use HuggingFace
@@ -142,6 +142,19 @@ class RuntimeSettings(BaseModel):
     qwen3_batch_size: int = 32
     qwen3_max_new_tokens: int = 4096
     qwen3_device: str = "cuda"
+
+    # Qwen3-ASR GGUF through llama.cpp
+    llama_cpp_binary_path: str = ""
+    qwen3_gguf_model_path: str = ""
+    qwen3_gguf_mmproj_path: str = ""
+    qwen3_gguf_hf_repo: str = "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0"
+    qwen3_gguf_device: str = "auto"  # auto | cuda | cpu
+    qwen3_gguf_ctx: int = 4096
+    qwen3_gguf_n_gpu_layers: int = 99
+    qwen3_gguf_timeout_sec: float = 300.0
+    qwen3_gguf_keepalive_sec: float = 300.0
+    qwen3_gguf_chunk_strategy: str = "silero_onnx"  # silero_onnx | silero_torch | ffmpeg
+    silero_onnx_model_path: str = ""
 
     # SiliconFlow ASR (OpenAI-compatible /audio/transcriptions)
     # ffmpeg chunking keeps API-only installs free of torch/torchaudio.
@@ -294,9 +307,25 @@ class RuntimeSettings(BaseModel):
     @classmethod
     def _validate_asr_provider(cls, value: str) -> str:
         provider = value.strip().lower()
-        if provider not in {"qwen3", "siliconflow"}:
-            raise ValueError("asr_provider must be one of: qwen3, siliconflow")
+        if provider not in {"qwen3", "qwen3_gguf", "siliconflow"}:
+            raise ValueError("asr_provider must be one of: qwen3, qwen3_gguf, siliconflow")
         return provider
+
+    @field_validator("qwen3_gguf_device")
+    @classmethod
+    def _validate_qwen3_gguf_device(cls, value: str) -> str:
+        device = value.strip().lower()
+        if device not in {"auto", "cuda", "cpu"}:
+            raise ValueError("qwen3_gguf_device must be one of: auto, cuda, cpu")
+        return device
+
+    @field_validator("qwen3_gguf_chunk_strategy")
+    @classmethod
+    def _validate_qwen3_gguf_chunk_strategy(cls, value: str) -> str:
+        strategy = value.strip().lower()
+        if strategy not in {"silero_onnx", "silero_torch", "ffmpeg"}:
+            raise ValueError("qwen3_gguf_chunk_strategy must be one of: silero_onnx, silero_torch, ffmpeg")
+        return strategy
 
     @field_validator("siliconflow_asr_chunk_strategy")
     @classmethod
@@ -580,7 +609,7 @@ _RUNTIME_BINDING_SPECS: dict[str, tuple[str, str, str]] = {
     "analyze": ("deepseek", "deepseek_analyze_model", "llm"),
     "summary": ("deepseek", "deepseek_summary_model", "llm"),
     "mindmap": ("deepseek", "deepseek_mindmap_model", "llm"),
-    "asr": ("qwen3", "", "asr"),
+    "asr": ("qwen3_gguf", "", "asr"),
     "vision": ("custom-vision-default", "vlm_model", "vlm"),
     "embedding": ("custom-embedding-default", "kb_embedding_model", "embedding"),
 }
@@ -1548,7 +1577,13 @@ def _default_runtime_model_bindings(data: dict[str, Any]) -> dict[str, dict[str,
             provider_id = _canonical_provider_id(data.get("asr_provider") or fallback_provider)
 
         model_id = _str_value(data.get(model_field)).strip() if model_field else ""
-        if provider_id == "qwen3":
+        if provider_id == "qwen3_gguf":
+            model_id = _str_value(
+                data.get("qwen3_gguf_model_path")
+                or data.get("qwen3_gguf_hf_repo")
+                or "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0"
+            ).strip()
+        elif provider_id == "qwen3":
             model_id = _str_value(data.get("qwen3_asr_model_path") or "Qwen/Qwen3-ASR").strip()
         elif provider_id == "siliconflow" and key == "asr":
             model_id = _str_value(data.get("siliconflow_asr_model")).strip()
@@ -1634,7 +1669,7 @@ def _sync_flat_from_runtime_model_bindings(data: dict[str, Any]) -> None:
             data["custom_active_profile_id"] = llm_provider.removeprefix("custom-")
 
     asr = binding("asr")
-    if asr.get("provider_id") in {"qwen3", "siliconflow"}:
+    if asr.get("provider_id") in {"qwen3", "qwen3_gguf", "siliconflow"}:
         data["asr_provider"] = asr["provider_id"]
         if asr["provider_id"] == "siliconflow" and asr.get("model_id"):
             data["siliconflow_asr_model"] = asr["model_id"]

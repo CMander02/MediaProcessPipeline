@@ -1,9 +1,4 @@
-"""Recognition service entrypoint.
-
-Qwen3-ASR is the only supported ASR provider today. The provider boundary keeps
-the rest of the pipeline from importing Qwen3 directly, so a future wholesale
-model switch has one clear integration point.
-"""
+"""Recognition service entrypoint."""
 
 import asyncio
 import logging
@@ -15,7 +10,7 @@ from app.services.recognition.base import ASRService
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_ASR_PROVIDERS = {"qwen3", "siliconflow"}
+SUPPORTED_ASR_PROVIDERS = {"qwen3", "qwen3_gguf", "siliconflow"}
 
 __all__ = [
     "SUPPORTED_ASR_PROVIDERS",
@@ -37,6 +32,10 @@ def get_asr_service(provider: str | None = None) -> ASRService:
         from app.services.recognition.qwen3_asr import get_qwen3_service
 
         return get_qwen3_service()
+    if provider_id == "qwen3_gguf":
+        from app.services.recognition.qwen3_gguf_asr import get_qwen3_gguf_service
+
+        return get_qwen3_gguf_service()
     if provider_id == "siliconflow":
         from app.services.recognition.siliconflow_asr import get_siliconflow_service
 
@@ -47,9 +46,11 @@ def get_asr_service(provider: str | None = None) -> ASRService:
 
 def release_asr_models() -> None:
     """Release ASR-owned GPU resources without binding queue.py to a provider."""
+    from app.services.recognition.qwen3_gguf_asr import release_qwen3_gguf_service
     from app.services.recognition.qwen3_asr import release_qwen3_service
     from app.services.recognition.siliconflow_asr import release_siliconflow_service
 
+    release_qwen3_gguf_service()
     release_qwen3_service()
     release_siliconflow_service()
 
@@ -62,6 +63,7 @@ async def transcribe_audio(
     provider: str | None = None,
     diarize: bool = True,
     chunk_strategy: str | None = None,
+    hotwords: list[str] | None = None,
 ) -> dict[str, Any]:
     """Transcribe audio with the configured ASR provider and optionally write an SRT file."""
     from app.core.model_router import resolve_asr_binding
@@ -81,11 +83,20 @@ async def transcribe_audio(
     service = get_asr_service(provider_id)
 
     def _run_transcribe() -> dict[str, Any]:
+        if provider_id == "qwen3_gguf":
+            return service.transcribe(
+                audio_path,
+                language=binding.language,
+                diarize=binding.diarize,
+                num_speakers=binding.num_speakers,
+                chunk_strategy=binding.chunk_strategy,
+                hotwords=hotwords,
+            )
         if provider_id == "siliconflow":
             return service.transcribe(
                 audio_path,
                 language=binding.language,
-                diarize=False,
+                diarize=binding.diarize,
                 num_speakers=binding.num_speakers,
                 chunk_strategy=binding.chunk_strategy,
             )

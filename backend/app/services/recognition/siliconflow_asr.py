@@ -18,6 +18,7 @@ import httpx
 
 from app.core.settings import get_runtime_settings
 from app.models import TranscriptSegment
+from app.services.recognition.chunking import ASRChunker
 
 logger = logging.getLogger(__name__)
 
@@ -306,57 +307,27 @@ class SiliconFlowASRService:
             f"max_chunk={max_chunk}s, chunk_strategy={strategy})"
         )
 
-        waveform = None
-        sample_rate = None
-        use_torchaudio_export = False
-        if strategy in {"vad", "auto"}:
-            try:
-                chunks, waveform, sample_rate = self._vad_chunks(str(audio_file), max_chunk)
-                use_torchaudio_export = True
-                logger.info(f"VAD produced {len(chunks)} chunks; uploading serially")
-            except ImportError as e:
-                if strategy == "vad":
-                    raise RuntimeError(
-                        "SiliconFlow VAD chunking requires local model dependencies. "
-                        "Install them with `uv sync --extra local-asr`, or set "
-                        "siliconflow_asr_chunk_strategy=ffmpeg."
-                    ) from e
-                logger.info("VAD chunking unavailable; falling back to ffmpeg fixed chunks")
-                chunks = self._fixed_chunks(str(audio_file), max_chunk)
-            except Exception:
-                if strategy == "vad":
-                    raise
-                logger.warning(
-                    "VAD chunking failed; falling back to ffmpeg fixed chunks",
-                    exc_info=True,
-                )
-                chunks = self._fixed_chunks(str(audio_file), max_chunk)
-        else:
-            chunks = self._fixed_chunks(str(audio_file), max_chunk)
-        if not use_torchaudio_export:
-            logger.info(f"ffmpeg fixed chunking produced {len(chunks)} chunks; uploading serially")
+        chunker = ASRChunker(silero_onnx_model_path=str(getattr(rt, "silero_onnx_model_path", "") or ""))
+        allow_fallback = strategy != "vad"
+        chunks = chunker.chunks(
+            audio_file,
+            strategy=strategy,
+            max_duration=max_chunk,
+            allow_fallback=allow_fallback,
+        )
+        logger.info(f"ASR chunking produced {len(chunks)} chunks; uploading serially")
 
         segments: list[dict[str, Any]] = []
         with httpx.Client(timeout=timeout) as client:
             for i, chunk in enumerate(chunks):
-                chunk_duration = float(chunk["end"]) - float(chunk["start"])
+                chunk_duration = float(chunk.end) - float(chunk.start)
                 if chunk_duration < 0.1:
                     continue
 
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     tmp_path = tmp.name
                 try:
-                    if use_torchaudio_export:
-                        import torchaudio
-
-                        start_sample = int(chunk["start"] * sample_rate)
-                        end_sample = int(chunk["end"] * sample_rate)
-                        chunk_wav = waveform[:, start_sample:end_sample]
-                        if chunk_wav.shape[1] < 1600:  # < 0.1s at 16 kHz
-                            continue
-                        torchaudio.save(tmp_path, chunk_wav, sample_rate)
-                    else:
-                        self._export_chunk_ffmpeg(str(audio_file), chunk, tmp_path)
+                    chunker.export_wav(audio_file, chunk, tmp_path)
                     text = self._post_chunk(
                         client,
                         url,
@@ -369,14 +340,14 @@ class SiliconFlowASRService:
                     if text:
                         segments.append(
                             {
-                                "start": round(chunk["start"], 3),
-                                "end": round(chunk["end"], 3),
+                                "start": round(chunk.start, 3),
+                                "end": round(chunk.end, 3),
                                 "text": text,
                             }
                         )
                     logger.info(
                         f"  chunk {i + 1}/{len(chunks)} "
-                        f"[{chunk['start']:.1f}s-{chunk['end']:.1f}s]: "
+                        f"[{chunk.start:.1f}s-{chunk.end:.1f}s]: "
                         f"{len(text)} chars"
                     )
                 except Exception as e:

@@ -10,9 +10,20 @@ import { api } from "@/lib/api"
 const { mockSettings } = vi.hoisted(() => ({
   mockSettings: {
     llm_provider: "deepseek",
-    asr_provider: "qwen3",
+    asr_provider: "qwen3_gguf",
     qwen3_asr_model_path: "",
     qwen3_device: "cuda",
+    llama_cpp_binary_path: "",
+    qwen3_gguf_model_path: "",
+    qwen3_gguf_mmproj_path: "",
+    qwen3_gguf_hf_repo: "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0",
+    qwen3_gguf_device: "auto",
+    qwen3_gguf_ctx: 4096,
+    qwen3_gguf_n_gpu_layers: 99,
+    qwen3_gguf_timeout_sec: 300,
+    qwen3_gguf_keepalive_sec: 300,
+    qwen3_gguf_chunk_strategy: "silero_onnx",
+    silero_onnx_model_path: "",
     local_llm_model_path: "",
     local_llm_n_gpu_layers: -1,
     local_llm_n_ctx: 16384,
@@ -343,7 +354,7 @@ describe("SettingsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Local Models" }))
 
     expect(await screen.findByPlaceholderText("搜索本地模型...")).toBeInTheDocument()
-    expect(await screen.findByRole("heading", { name: "Qwen3-ASR" })).toBeInTheDocument()
+    expect(await screen.findByRole("heading", { name: "Qwen3-ASR GGUF" })).toBeInTheDocument()
     expect(screen.queryByText("默认 ASR")).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /SiliconFlow ASR/ })).not.toBeInTheDocument()
     expect(screen.getByText("Diarization")).toBeInTheDocument()

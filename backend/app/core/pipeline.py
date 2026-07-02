@@ -21,6 +21,7 @@ from app.core.database import get_task_store
 from app.core.events import TaskEvent, get_event_bus
 from app.core.settings import get_runtime_settings
 from app.core.logging_setup import log_event
+from app.core.source_resolver import SourceFlow, flow_from_metadata, resolve_source_flow
 from app.models import MediaMetadata, Task, TaskStatus, TaskType
 
 logger = logging.getLogger(__name__)
@@ -64,32 +65,13 @@ def pipeline_steps_schema() -> list[dict[str, str]]:
 def _detect_source_type(source: str) -> str:
     """Detect the type of media source."""
     source_lower = source.lower()
-    if "youtube.com" in source_lower or "youtu.be" in source_lower:
-        return "youtube"
-    elif "bilibili.com" in source_lower or "b23.tv" in source_lower:
-        return "bilibili"
-    elif "xiaoyuzhoufm.com/episode/" in source_lower:
-        return "xiaoyuzhou"
-    elif "podcasts.apple.com" in source_lower:
-        return "apple_podcast"
-    elif "xiaohongshu.com" in source_lower or "xhslink.com" in source_lower:
-        return "xiaohongshu"
-    elif "zhihu.com" in source_lower:
-        return "zhihu"
-    elif source_lower.startswith(("http://", "https://")):
-        try:
-            from app.services.ingestion.ytdlp import _is_generic_webpage_url
-            if _is_generic_webpage_url(source):
-                return "webpage"
-        except Exception:
-            pass
+    if source_lower.startswith(("http://", "https://")):
         return "url"
-    elif any(source_lower.endswith(ext) for ext in [".mp4", ".mkv", ".avi", ".webm", ".mov"]):
+    if any(source_lower.endswith(ext) for ext in [".mp4", ".mkv", ".avi", ".webm", ".mov"]):
         return "local_video"
-    elif any(source_lower.endswith(ext) for ext in [".mp3", ".wav", ".flac", ".m4a", ".ogg"]):
+    if any(source_lower.endswith(ext) for ext in [".mp3", ".wav", ".flac", ".m4a", ".ogg"]):
         return "local_audio"
-    else:
-        return "unknown"
+    return "unknown"
 
 
 def _platform_prefer_subtitles(source_type: str) -> bool:
@@ -607,6 +589,11 @@ def _release_uvr_gpu_resources() -> None:
         pass
 
 
+def _is_transcript_too_short_for_uvr_fallback(transcript: str, *, min_chars: int = 30) -> bool:
+    normalized = re.sub(r"\s+", "", transcript or "")
+    return len(normalized) < min_chars
+
+
 def _require_audio_file(path: str | None, *, stage: str) -> str:
     """Return a concrete audio path or raise a stage-specific error."""
     if not path:
@@ -670,6 +657,158 @@ def _cleanup_extracted_audio(task_dir: Path, audio_path: str | None, media_type:
 # Step update — writes to TaskStore + publishes events
 # ---------------------------------------------------------------------------
 
+def _flow_step_ids(task: Task) -> list[str]:
+    flow = task.flow or {}
+    return [str(step.get("id")) for step in flow.get("steps", []) if isinstance(step, dict) and step.get("id")]
+
+
+async def _set_task_flow(
+    task: Task,
+    source_flow: SourceFlow,
+    *,
+    status: str = "processing",
+    current_step: str | None = None,
+) -> None:
+    previous = task.flow or {}
+    previous_done = previous.get("completed_steps") if isinstance(previous.get("completed_steps"), list) else []
+    snapshot = source_flow.snapshot(status=status, current_step=current_step or previous.get("current_step"))
+    snapshot["completed_steps"] = [step for step in previous_done if step in {s["id"] for s in snapshot["steps"]}]
+    task.flow = snapshot
+    task.platform = source_flow.platform
+    task.content_subtype = source_flow.content_subtype
+    get_task_store().update_status(task.id, task.status, flow=task.flow)
+
+    if previous.get("id") != source_flow.flow_id:
+        await get_event_bus().publish(TaskEvent(task.id, "flow_selected", {
+            "stage": "resolve",
+            "step_id": snapshot.get("current_step"),
+            "level": "info",
+            "message": source_flow.label,
+            "flow": snapshot,
+            "platform": source_flow.platform,
+            "content_subtype": source_flow.content_subtype,
+        }))
+
+
+async def _update_flow_step(
+    task: Task,
+    step_id: str,
+    *,
+    completed: bool = False,
+    status: str | None = None,
+    message: str | None = None,
+    level: str = "info",
+) -> None:
+    if not task.flow:
+        return
+
+    flow = dict(task.flow)
+    step_ids = _flow_step_ids(task)
+    if step_id not in step_ids:
+        return
+
+    completed_steps = flow.get("completed_steps")
+    if not isinstance(completed_steps, list):
+        completed_steps = []
+    if completed and step_id not in completed_steps:
+        completed_steps = [*completed_steps, step_id]
+
+    index = step_ids.index(step_id)
+    total = len(step_ids)
+    flow["current_step"] = step_id
+    flow["current_step_index"] = index
+    flow["current_step_label"] = next(
+        (step.get("label") for step in flow.get("steps", []) if step.get("id") == step_id),
+        step_id,
+    )
+    flow["completed_steps"] = completed_steps
+    flow["total_steps"] = total
+    flow["progress"] = (len(completed_steps) / total) if total else 0.0
+    flow["status"] = status or flow.get("status") or "processing"
+    task.flow = flow
+    get_task_store().update_status(task.id, task.status, flow=task.flow)
+
+    await get_event_bus().publish(TaskEvent(task.id, "flow_step", {
+        "stage": step_id,
+        "step_id": step_id,
+        "completed": completed,
+        "level": level,
+        "message": message or flow["current_step_label"],
+        "flow": flow,
+    }))
+
+
+async def _emit_timeline_event(
+    task: Task,
+    event_type: str,
+    *,
+    stage: str,
+    step_id: str | None = None,
+    level: str = "info",
+    message: str,
+    data: dict[str, Any] | None = None,
+) -> None:
+    payload = {
+        "stage": stage,
+        "step_id": step_id or stage,
+        "level": level,
+        "message": message,
+    }
+    if data:
+        payload.update(data)
+    await get_event_bus().publish(TaskEvent(task.id, event_type, payload))
+
+
+async def _update_flow_from_metadata(
+    task: Task,
+    source_flow: SourceFlow,
+    metadata: MediaMetadata,
+    *,
+    has_subtitle: bool = False,
+    force_asr: bool = False,
+    api_fallback: bool = False,
+    current_step: str | None = None,
+    preferred_asr_provider: str | None = None,
+) -> SourceFlow:
+    resolved = flow_from_metadata(
+        source_flow,
+        metadata,
+        has_subtitle=has_subtitle,
+        force_asr=force_asr,
+        api_fallback=api_fallback,
+        preferred_asr_provider=preferred_asr_provider,
+    )
+    await _set_task_flow(task, resolved, status="processing", current_step=current_step)
+    return resolved
+
+
+def _select_asr_provider_for_fallback(task: Task) -> tuple[str | None, str, bool]:
+    """Choose the ASR provider when URL media enters API fallback."""
+    from app.core.model_router import resolve_asr_binding
+
+    rt = get_runtime_settings()
+    explicit = str(task.options.get("asr_provider") or "").strip()
+    if explicit:
+        return explicit, "task_option", explicit == "siliconflow"
+
+    try:
+        runtime_binding = resolve_asr_binding(rt)
+        if runtime_binding.provider == "siliconflow" and runtime_binding.configured:
+            return "siliconflow", "runtime_api_provider", True
+    except Exception as exc:
+        log_event(logger, logging.DEBUG, "asr.runtime_provider.resolve_failed", error=exc)
+
+    try:
+        siliconflow_binding = resolve_asr_binding(rt, task_options={"asr_provider": "siliconflow"})
+        if siliconflow_binding.configured:
+            return "siliconflow", "siliconflow_configured", True
+    except Exception as exc:
+        log_event(logger, logging.DEBUG, "asr.siliconflow_provider.resolve_failed", error=exc)
+
+    default_provider = str(getattr(rt, "asr_provider", "") or "").strip() or None
+    return default_provider, "default_asr_provider", False
+
+
 async def _update_step(
     task: Task,
     step: PipelineStep,
@@ -708,6 +847,7 @@ async def _update_step(
         "progress": task.progress,
         "message": task.message,
     }))
+    await _update_flow_step(task, str(step), completed=completed, message=task.message)
 
 
 async def _run_voiceprint_step(
@@ -1379,10 +1519,25 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     source = _clean_source_path(task.source)
     platform_subtitle = None
     source_type = _detect_source_type(source)
-    use_platform_subtitles = (
-        _platform_prefer_subtitles(source_type)
-        and not task.options.get("force_asr", False)
+    force_asr = bool(rt.force_asr or task.options.get("force_asr", False))
+    initial_flow = resolve_source_flow(
+        source,
+        prefer_platform_subtitles=True,
+        force_asr=force_asr,
+        task_options=task.options,
     )
+    use_platform_subtitles = (
+        initial_flow.try_subtitles
+        and _platform_prefer_subtitles(initial_flow.route_type)
+        and not force_asr
+    )
+    source_flow = resolve_source_flow(
+        source,
+        prefer_platform_subtitles=use_platform_subtitles,
+        force_asr=force_asr,
+        task_options=task.options,
+    )
+    route_type = source_flow.route_type
 
     # Resolve pre-created task dir
     task_dir = None
@@ -1397,9 +1552,14 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         logging.INFO,
         "pipeline.started",
         source_type=source_type,
+        platform=source_flow.platform,
+        flow_id=source_flow.flow_id,
         completed_steps=",".join(sorted(str(s) for s in done)) or "none",
         download_worker_call=_download_worker_call,
     )
+    await _set_task_flow(task, source_flow, status="processing", current_step=(task.flow or {}).get("current_step") or "resolve")
+    if "resolve" not in ((task.flow or {}).get("completed_steps") or []):
+        await _update_flow_step(task, "resolve", completed=True, message="来源已识别")
     await _raise_if_cancelled(task.id)
 
     # Variables that later steps depend on — populated either by running the
@@ -1408,6 +1568,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     vocals_path: str | None = None
     metadata: "MediaMetadata | None" = None
     has_subtitle: bool = False
+    uvr_fallback_reason: str | None = None
     srt: str = ""
     transcript: str = ""
     polished: str | None = None
@@ -1712,10 +1873,10 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         else:
             # ── URL source: probe metadata + subtitle first ──
             # 1. Resolve title for task_dir naming
-            if source_type == "bilibili":
+            if route_type == "bilibili":
                 bv_match = re.search(r'(BV[0-9A-Za-z]+)', source)
                 title = bv_match.group(1) if bv_match else None
-            elif source_type == "youtube":
+            elif route_type == "youtube":
                 yt_match = re.search(r'(?:v=|youtu\.be/)([\w-]{11})', source)
                 title = yt_match.group(1) if yt_match else None
                 if not title:
@@ -1723,7 +1884,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(source, download=False)
                         title = info.get("title", "unknown") if info else "unknown"
-            elif source_type in ("xiaohongshu", "zhihu", "xiaoyuzhou", "apple_podcast", "webpage"):
+            elif route_type in ("xiaohongshu", "zhihu", "xiaoyuzhou", "apple_podcast", "webpage"):
                 # Title will be resolved during the actual download step; use task id as placeholder.
                 title = None
             else:
@@ -1735,10 +1896,8 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             if not task_dir:
                 task_dir = create_task_dir(task.id, title or str(task.id)[:8])
 
-            # 2. Decide whether to attempt fast path
-            force_asr = rt.force_asr or task.options.get("force_asr", False)
-
-            if use_platform_subtitles and not force_asr and source_type not in ("xiaohongshu", "zhihu", "xiaoyuzhou", "apple_podcast", "webpage"):
+            if use_platform_subtitles and not force_asr and route_type not in ("xiaohongshu", "zhihu", "xiaoyuzhou", "apple_podcast", "webpage"):
+                await _update_flow_step(task, "subtitle_probe", message="探测平台字幕")
                 # Probe: fetch metadata + subtitle (lightweight, no video download)
                 try:
                     probe_metadata = await fetch_ytdlp_metadata(source)
@@ -1768,7 +1927,20 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         log_event(logger, logging.WARNING, "subtitle.probe.failed", error=e)
                         probe_subtitle = None
 
+                if probe_metadata and not probe_subtitle:
+                    await _emit_timeline_event(
+                        task,
+                        "subtitle.missing",
+                        stage="subtitle",
+                        step_id="subtitle_probe",
+                        level="warning",
+                        message="未发现可用平台字幕",
+                        data={"diagnostics": getattr(probe_metadata, "extra", {}).get("subtitle_diagnostics", [])},
+                    )
+                    await _update_flow_step(task, "subtitle_probe", completed=True, level="warning", message="平台字幕不可用")
+
                 if probe_metadata and probe_subtitle:
+                    await _update_flow_step(task, "subtitle_probe", completed=True, message="平台字幕可用")
                     # ── FAST PATH: subtitle + video download in parallel ──
                     log_event(
                         logger,
@@ -1777,6 +1949,14 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         subtitle_path=probe_subtitle.get("subtitle_path"),
                     )
                     metadata = probe_metadata
+                    source_flow = await _update_flow_from_metadata(
+                        task,
+                        source_flow,
+                        metadata,
+                        has_subtitle=True,
+                        force_asr=force_asr,
+                        current_step="subtitle_probe",
+                    )
 
                     # Rename task_dir to real title
                     real_title = metadata.title
@@ -1905,6 +2085,13 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
             # Notes take a different branch entirely — no GPU, no audio.
             if metadata.content_subtype in {"image_note", "text_note"}:
+                source_flow = await _update_flow_from_metadata(
+                    task,
+                    source_flow,
+                    metadata,
+                    force_asr=force_asr,
+                    current_step="download",
+                )
                 _sync_task_from_metadata(task, metadata)
                 meta_path = write_metadata_json(task_dir, metadata, status="processing")
                 await _emit_file_ready(task, "metadata.json", str(meta_path))
@@ -1921,6 +2108,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
             # Try to download platform subtitles (for full pipeline, still useful)
             if use_platform_subtitles:
+                await _update_flow_step(task, "subtitle_probe", message="探测平台字幕")
                 try:
                     sub_dir = task_dir / "subtitles"
                     platform_subtitle = await download_subtitles(source, sub_dir)
@@ -1943,6 +2131,32 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     platform_subtitle = None
 
             has_subtitle = platform_subtitle is not None
+            if use_platform_subtitles:
+                await _update_flow_step(
+                    task,
+                    "subtitle_probe",
+                    completed=True,
+                    level="info" if has_subtitle else "warning",
+                    message="平台字幕可用" if has_subtitle else "平台字幕不可用",
+                )
+            source_flow = await _update_flow_from_metadata(
+                task,
+                source_flow,
+                metadata,
+                has_subtitle=has_subtitle,
+                force_asr=force_asr,
+                current_step="download",
+            )
+            if use_platform_subtitles and not has_subtitle:
+                await _emit_timeline_event(
+                    task,
+                    "subtitle.missing",
+                    stage="subtitle",
+                    step_id="subtitle_probe",
+                    level="warning",
+                    message="未发现可用平台字幕",
+                    data={"diagnostics": metadata.extra.get("subtitle_diagnostics", [])},
+                )
 
             # Write metadata.json immediately after download
             _sync_task_from_metadata(task, metadata)
@@ -1997,9 +2211,25 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     task.options.get("skip_separation", False)
                     or task.options.get("api_flow", False)
                     or has_subtitle
+                    or not source_flow.requires_uvr
                 )
                 if skip_separation:
                     vocals_path = audio_path
+                    if not has_subtitle:
+                        uvr_fallback_reason = "uvr.skipped"
+                        await _emit_timeline_event(
+                            task,
+                            uvr_fallback_reason,
+                            stage="uvr",
+                            step_id="separate",
+                            level="warning",
+                            message="已跳过 UVR，人声分离不参与本次转录",
+                            data={
+                                "skip_separation": bool(task.options.get("skip_separation", False)),
+                                "api_flow": bool(task.options.get("api_flow", False)),
+                                "requires_uvr": source_flow.requires_uvr,
+                            },
+                        )
                 else:
                     source_audio = _require_audio_file(audio_path, stage="UVR separation")
                     try:
@@ -2016,12 +2246,33 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                             metadata.extra["uvr_error"] = str(e)
                             metadata.extra["uvr_fallback"] = "original_audio"
                             vocals_path = source_audio
+                            uvr_fallback_reason = "uvr.failed"
+                            await _emit_timeline_event(
+                                task,
+                                uvr_fallback_reason,
+                                stage="uvr",
+                                step_id="separate",
+                                level="warning",
+                                message="UVR 处理失败，转录将使用原始音频",
+                                data={"error": str(e)},
+                            )
                         else:
                             vocals_path = preprocess.get("vocals_path") or source_audio
                             vocals_path = _require_audio_file(
                                 vocals_path,
                                 stage="UVR separation output",
                             )
+                            if preprocess.get("model_used") == "mock" or Path(vocals_path) == Path(source_audio):
+                                uvr_fallback_reason = "uvr.unavailable"
+                                await _emit_timeline_event(
+                                    task,
+                                    uvr_fallback_reason,
+                                    stage="uvr",
+                                    step_id="separate",
+                                    level="warning",
+                                    message="UVR 当前不可用，转录将使用原始音频",
+                                    data={"model_used": preprocess.get("model_used")},
+                                )
                     finally:
                         await asyncio.to_thread(_release_uvr_gpu_resources)
                     await _raise_if_cancelled(task.id)
@@ -2069,22 +2320,142 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     asr_provider = task.options.get("asr_provider")
                     if task.options.get("api_flow", False) and not asr_provider:
                         asr_provider = "siliconflow"
+                    asr_selection_reason = "task_option" if asr_provider else "settings"
+                    if (
+                        source_type == "url"
+                        and uvr_fallback_reason
+                        and source_flow.flow_id in {"url_media_asr", "url_platform_video_asr"}
+                    ):
+                        selected_provider, asr_selection_reason, selected_api = (
+                            (str(asr_provider), asr_selection_reason, str(asr_provider) == "siliconflow")
+                            if asr_provider
+                            else _select_asr_provider_for_fallback(task)
+                        )
+                        asr_provider = selected_provider
+                        if selected_api:
+                            source_flow = await _update_flow_from_metadata(
+                                task,
+                                source_flow,
+                                metadata,
+                                force_asr=force_asr,
+                                api_fallback=True,
+                                current_step="transcribe",
+                                preferred_asr_provider=asr_provider,
+                            )
+                            await _emit_timeline_event(
+                                task,
+                                "asr.api_fallback.selected",
+                                stage="asr",
+                                step_id="transcribe",
+                                level="info",
+                                message="已选择 API ASR fallback",
+                                data={
+                                    "provider": asr_provider,
+                                    "reason": asr_selection_reason,
+                                    "uvr_reason": uvr_fallback_reason,
+                                },
+                            )
+                        else:
+                            await _emit_timeline_event(
+                                task,
+                                "diagnostic",
+                                stage="asr",
+                                step_id="transcribe",
+                                level="info",
+                                message="继续使用当前默认 ASR",
+                                data={
+                                    "provider": asr_provider,
+                                    "reason": asr_selection_reason,
+                                    "uvr_reason": uvr_fallback_reason,
+                                },
+                            )
                     asr_audio_path = _require_audio_file(vocals_path, stage="ASR transcription")
-                    recognition = await transcribe_audio(
-                        asr_audio_path,
-                        output_dir=task_dir,
-                        num_speakers=num_speakers,
-                        provider=asr_provider,
-                        diarize=not task.options.get("disable_diarization", False),
-                        chunk_strategy=task.options.get("asr_chunk_strategy"),
+                    await _emit_timeline_event(
+                        task,
+                        "asr.started",
+                        stage="asr",
+                        step_id="transcribe",
+                        level="info",
+                        message="开始 ASR 转录",
+                        data={"provider": asr_provider or "settings", "selection_reason": asr_selection_reason},
                     )
+                    try:
+                        recognition = await transcribe_audio(
+                            asr_audio_path,
+                            output_dir=task_dir,
+                            num_speakers=num_speakers,
+                            provider=asr_provider,
+                            diarize=not task.options.get("disable_diarization", False),
+                            chunk_strategy=task.options.get("asr_chunk_strategy"),
+                            hotwords=task.options.get("hotwords"),
+                        )
+                    except Exception as e:
+                        await _emit_timeline_event(
+                            task,
+                            "asr.failed",
+                            stage="asr",
+                            step_id="transcribe",
+                            level="error",
+                            message="ASR 转录失败",
+                            data={"provider": asr_provider or "settings", "error": str(e)},
+                        )
+                        raise
                     await _raise_if_cancelled(task.id)
                     transcript = " ".join(s["text"] for s in recognition.get("segments", []))
+                    if (
+                        Path(asr_audio_path) != Path(audio_path)
+                        and _is_transcript_too_short_for_uvr_fallback(transcript)
+                    ):
+                        original_asr_audio = _require_audio_file(
+                            audio_path,
+                            stage="ASR fallback original audio",
+                        )
+                        metadata.extra["uvr_fallback"] = "asr_too_short_original_audio"
+                        metadata.extra["uvr_transcript_chars"] = len(re.sub(r"\s+", "", transcript or ""))
+                        uvr_fallback_reason = "uvr.asr_too_short"
+                        await _emit_timeline_event(
+                            task,
+                            uvr_fallback_reason,
+                            stage="asr",
+                            step_id="transcribe",
+                            level="warning",
+                            message="UVR 后转写文本过短，改用原始音频重新 ASR",
+                            data={
+                                "provider": asr_provider or "settings",
+                                "segments": len(recognition.get("segments", [])),
+                                "transcript_chars": metadata.extra["uvr_transcript_chars"],
+                                "fallback_audio": original_asr_audio,
+                            },
+                        )
+                        recognition = await transcribe_audio(
+                            original_asr_audio,
+                            output_dir=task_dir,
+                            num_speakers=num_speakers,
+                            provider=asr_provider,
+                            diarize=not task.options.get("disable_diarization", False),
+                            chunk_strategy=task.options.get("asr_chunk_strategy"),
+                            hotwords=task.options.get("hotwords"),
+                        )
+                        await _raise_if_cancelled(task.id)
+                        transcript = " ".join(s["text"] for s in recognition.get("segments", []))
                     srt = recognition.get("srt", "")
                     polished = None
                     polished_md = None
                     subtitle_source = "asr"
                     recognition_segments = recognition.get("segments", [])
+                    await _emit_timeline_event(
+                        task,
+                        "asr.completed",
+                        stage="asr",
+                        step_id="transcribe",
+                        level="info",
+                        message="ASR 转录完成",
+                        data={
+                            "provider": asr_provider or "settings",
+                            "segments": len(recognition_segments),
+                            "language": recognition.get("language"),
+                        },
+                    )
 
                     asr_error = _extract_internal_asr_error(recognition_segments)
                     if asr_error:
@@ -2379,6 +2750,12 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
         task.status = TaskStatus.COMPLETED
         task.progress = 1.0
         task.completed_at = datetime.now()
+        if task.flow:
+            flow = dict(task.flow)
+            flow["status"] = "completed"
+            flow["progress"] = 1.0
+            flow["completed_steps"] = [step.get("id") for step in flow.get("steps", []) if isinstance(step, dict)]
+            task.flow = flow
 
         store.update_status(
             task_id,
@@ -2387,6 +2764,7 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
             result=task.result,
             completed_at=task.completed_at,
             error=None,
+            flow=task.flow,
         )
         await bus.publish(TaskEvent(task_id, "completed", {
             "output_dir": task.result.get("output_dir") if task.result else None,
@@ -2410,11 +2788,16 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
         current = store.get(task_id) or task
         output_dir = current.result.get("output_dir") if current.result else None
         update_metadata_status(Path(output_dir) if output_dir else None, "cancelled")
+        flow = current.flow or task.flow
+        if flow:
+            flow = dict(flow)
+            flow["status"] = "cancelled"
         store.update_status(
             task_id,
             TaskStatus.CANCELLED,
             completed_at=datetime.now(),
             message="已取消",
+            flow=flow,
         )
         await bus.publish(TaskEvent(task_id, "cancelled"))
         raise
@@ -2436,14 +2819,19 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
         current = store.get(task_id) or task
         output_dir = current.result.get("output_dir") if current.result else None
         update_metadata_status(Path(output_dir) if output_dir else None, "failed")
+        flow = current.flow or task.flow
+        if flow:
+            flow = dict(flow)
+            flow["status"] = "failed"
 
         store.update_status(
             task_id,
             TaskStatus.FAILED,
             error=str(e),
             completed_at=datetime.now(),
+            flow=flow,
         )
-        await bus.publish(TaskEvent(task_id, "failed", {"error": str(e)}))
+        await bus.publish(TaskEvent(task_id, "failed", {"error": str(e), "stage": task.current_step}))
 
     finally:
         # Offload local GGUF model after each task to free VRAM.

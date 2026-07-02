@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     completed_at    TEXT,
     current_step    TEXT,
     steps           TEXT NOT NULL DEFAULT '[]',
-    completed_steps TEXT NOT NULL DEFAULT '[]'
+    completed_steps TEXT NOT NULL DEFAULT '[]',
+    flow            TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
@@ -60,6 +61,21 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_artifacts_task_id ON task_artifacts(task_id);
+
+CREATE TABLE IF NOT EXISTS task_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    stage      TEXT,
+    step_id    TEXT,
+    level      TEXT NOT NULL DEFAULT 'info',
+    message    TEXT,
+    data       TEXT NOT NULL DEFAULT '{}',
+    timestamp  TEXT NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_events_task_id_id ON task_events(task_id, id);
 """
 
 # Columns added after initial schema — applied idempotently via ALTER TABLE
@@ -67,6 +83,7 @@ _MIGRATIONS = [
     "ALTER TABLE tasks ADD COLUMN platform TEXT",
     "ALTER TABLE tasks ADD COLUMN uploader_id TEXT",
     "ALTER TABLE tasks ADD COLUMN content_subtype TEXT",
+    "ALTER TABLE tasks ADD COLUMN flow TEXT",
     "CREATE INDEX IF NOT EXISTS idx_tasks_platform ON tasks(platform)",
 ]
 
@@ -141,6 +158,7 @@ def _task_to_row(task: Task) -> dict:
         "current_step": task.current_step,
         "steps": json.dumps(task.steps, ensure_ascii=False),
         "completed_steps": json.dumps(task.completed_steps, ensure_ascii=False),
+        "flow": json.dumps(task.flow, ensure_ascii=False) if task.flow else None,
         "platform": platform,
         "uploader_id": uploader_id,
         "content_subtype": content_subtype,
@@ -167,6 +185,7 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         current_step=row["current_step"],
         steps=json.loads(row["steps"]),
         completed_steps=json.loads(row["completed_steps"]),
+        flow=json.loads(row["flow"]) if "flow" in keys and row["flow"] else None,
         platform=row["platform"] if "platform" in keys else None,
         uploader_id=row["uploader_id"] if "uploader_id" in keys else None,
         content_subtype=row["content_subtype"] if "content_subtype" in keys else None,
@@ -250,6 +269,9 @@ class TaskStore:
             elif key == "completed_steps":
                 sets.append("completed_steps = ?")
                 vals.append(json.dumps(value, ensure_ascii=False))
+            elif key == "flow":
+                sets.append("flow = ?")
+                vals.append(json.dumps(value, ensure_ascii=False) if value else None)
 
         vals.append(str(task_id))
         with _db_lock:
@@ -258,6 +280,65 @@ class TaskStore:
                 vals,
             )
             conn.commit()
+
+    def add_event(
+        self,
+        task_id: UUID | str,
+        event_type: str,
+        *,
+        stage: str | None = None,
+        step_id: str | None = None,
+        level: str = "info",
+        message: str | None = None,
+        data: dict[str, Any] | None = None,
+        timestamp: str | None = None,
+    ) -> None:
+        """Persist one task timeline event."""
+        conn = _get_conn()
+        now = timestamp or datetime.now().isoformat()
+        payload = data or {}
+        with _db_lock:
+            conn.execute(
+                """
+                INSERT INTO task_events
+                    (task_id, event_type, stage, step_id, level, message, data, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(task_id),
+                    event_type,
+                    stage,
+                    step_id,
+                    level,
+                    message,
+                    json.dumps(payload, ensure_ascii=False),
+                    now,
+                ),
+            )
+            conn.commit()
+
+    def list_events(self, task_id: UUID | str, limit: int = 1000) -> list[dict[str, Any]]:
+        """Return persisted timeline events for a task in chronological order."""
+        conn = _get_conn()
+        cur = conn.execute(
+            """
+            SELECT id, task_id, event_type, stage, step_id, level, message, data, timestamp
+            FROM task_events
+            WHERE task_id = ?
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (str(task_id), limit),
+        )
+        events: list[dict[str, Any]] = []
+        for row in cur.fetchall():
+            event = dict(row)
+            try:
+                event["data"] = json.loads(event["data"]) if event["data"] else {}
+            except json.JSONDecodeError:
+                event["data"] = {}
+            events.append(event)
+        return events
 
     def save_artifact(
         self,

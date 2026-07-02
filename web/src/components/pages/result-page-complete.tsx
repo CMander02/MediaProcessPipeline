@@ -25,7 +25,7 @@ import { useViewPosition } from "@/hooks/use-view-position"
 import { useTaskSSE, type FileReadyEvent, type StepEvent } from "@/hooks/use-task-sse"
 import { parseSRT, subtitlesToSRT, type Subtitle } from "@/lib/srt"
 import { navigate } from "@/lib/router"
-import { api } from "@/lib/api"
+import { api, type TaskFlowSnapshot, type TaskTimelineEvent } from "@/lib/api"
 import { openExternalUrl } from "@/lib/tauri"
 import { usePipelineSteps } from "@/lib/constants"
 import { MediaPlayer } from "@/components/result/media-player"
@@ -82,6 +82,28 @@ function firstHttpUrl(...values: unknown[]): string | null {
     if (/^https?:\/\//i.test(trimmed)) return trimmed
   }
   return null
+}
+
+function timelineEventKey(event: TaskTimelineEvent): string {
+  return `${event.id}:${event.event_type}:${event.timestamp}`
+}
+
+function timelineTime(timestamp: string): string {
+  return timestamp.split("T")[1]?.slice(0, 8) ?? ""
+}
+
+function timelineMessage(event: TaskTimelineEvent): string {
+  if (event.message) return event.message
+  if (typeof event.data.error === "string") return event.data.error
+  if (typeof event.data.reason === "string") return event.data.reason
+  return event.event_type
+}
+
+function timelineLevelClass(level: string): string {
+  if (level === "error") return "text-destructive"
+  if (level === "warning") return "text-amber-600 dark:text-amber-400"
+  if (level === "debug") return "text-muted-foreground"
+  return "text-foreground"
 }
 
 function resolveSourceUrl(metadata: Record<string, unknown>): string | null {
@@ -174,6 +196,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const [completedSteps, setCompletedSteps] = useState<string[]>([])
   const [currentStep, setCurrentStep] = useState<string | null>(null)
   const [taskError, setTaskError] = useState<string | null>(null)
+  const [taskFlow, setTaskFlow] = useState<TaskFlowSnapshot | null>(null)
+  const [timelineEvents, setTimelineEvents] = useState<TaskTimelineEvent[]>([])
 
   // Media URL state — may change when source/ is deleted after completion
   const [mediaUrl, setMediaUrl] = useState<string | null>(null)
@@ -189,6 +213,14 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
       initialTime: savedPos.current.mediaTime,
       onTimeUpdate: updateMediaTime,
     })
+
+  const mergeTimelineEvent = useCallback((event: TaskTimelineEvent) => {
+    setTimelineEvents((prev) => {
+      const key = timelineEventKey(event)
+      if (prev.some((item) => timelineEventKey(item) === key)) return prev
+      return [...prev, event].slice(-200)
+    })
+  }, [])
 
   const sep = archivePath.includes("\\") ? "\\" : "/"
 
@@ -375,11 +407,34 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
       setCurrentStep(task.current_step)
       setCompletedSteps(task.completed_steps ?? [])
       setTaskError(task.error)
+      setTaskFlow(task.flow ?? null)
       const descs = task.result?.image_descriptions as ImageDescription[] | undefined
       if (descs && descs.length > 0) setImageDescriptions(descs)
       return task
     } catch {
       return null
+    }
+  }, [resolvedTaskId])
+
+  useEffect(() => {
+    if (!resolvedTaskId) return
+    let cancelled = false
+    Promise.all([
+      api.tasks.get(resolvedTaskId),
+      api.tasks.timeline(resolvedTaskId),
+    ])
+      .then(([task, timeline]) => {
+        if (cancelled) return
+        setTaskStatus(task.status)
+        setCurrentStep(task.current_step)
+        setCompletedSteps(task.completed_steps ?? [])
+        setTaskError(task.error)
+        setTaskFlow(task.flow ?? null)
+        setTimelineEvents(timeline.events ?? [])
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
     }
   }, [resolvedTaskId])
 
@@ -431,6 +486,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
       setTaskStatus(data.status)
       setCurrentStep(data.current_step)
       setCompletedSteps(data.completed_steps ?? [])
+      if (data.flow) setTaskFlow(data.flow)
       if (data.error) setTaskError(data.error)
     },
     onStep(data: StepEvent) {
@@ -441,6 +497,12 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
           prev.includes(data.step) ? prev : [...prev, data.step],
         )
       }
+    },
+    onFlow(data) {
+      if (data.flow) setTaskFlow(data.flow)
+    },
+    onTimeline(event) {
+      mergeTimelineEvent(event)
     },
     onFileReady(data: FileReadyEvent) {
       const { file, path } = data
@@ -548,6 +610,10 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const [titleDraft, setTitleDraft] = useState("")
   const isProcessing = taskStatus === "processing" || taskStatus === "queued"
   const hasContent = summary || transcript || mindmap
+  const flowCompletedSteps = taskFlow?.completed_steps ?? []
+  const recentTimelineEvents = timelineEvents
+    .filter((event) => event.event_type !== "file_ready")
+    .slice(-8)
 
   useEffect(() => {
     if (isPureWebpage && activeTab === "transcript") {
@@ -782,6 +848,60 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
               </div>
             )
           })}
+        </div>
+      )}
+
+      {(taskFlow || recentTimelineEvents.length > 0) && (
+        <div className="shrink-0 border-b bg-background px-4 py-2">
+          {taskFlow && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <span className="font-medium text-foreground">{taskFlow.label}</span>
+              <span className="text-muted-foreground">{taskFlow.platform}</span>
+              <span className="text-blue-600 dark:text-blue-400">
+                {taskFlow.current_step_label ?? taskFlow.current_step ?? "准备中"}
+              </span>
+              <span className="text-muted-foreground">
+                {Math.round((taskFlow.progress ?? 0) * 100)}%
+              </span>
+            </div>
+          )}
+          {taskFlow?.steps?.length ? (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              {taskFlow.steps.map((step) => {
+                const isDone = flowCompletedSteps.includes(step.id)
+                const isCurrent = taskFlow.current_step === step.id
+                return (
+                  <span
+                    key={step.id}
+                    className={cn(
+                      "inline-flex h-5 items-center rounded px-1.5 text-[10px]",
+                      isDone && "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
+                      isCurrent && !isDone && "bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300",
+                      !isDone && !isCurrent && "bg-muted text-muted-foreground",
+                    )}
+                  >
+                    {step.label}
+                  </span>
+                )
+              })}
+            </div>
+          ) : null}
+          {recentTimelineEvents.length > 0 && (
+            <div className="mt-2 max-h-24 overflow-y-auto font-mono text-[11px] leading-5">
+              {recentTimelineEvents.map((event) => (
+                <div key={timelineEventKey(event)} className="flex min-w-0 gap-2">
+                  <span className="shrink-0 text-muted-foreground">{timelineTime(event.timestamp)}</span>
+                  <span className={cn("shrink-0 w-28 truncate", timelineLevelClass(event.level))}>
+                    {event.event_type}
+                  </span>
+                  <span className="min-w-0 truncate text-muted-foreground">
+                    {event.stage ? `${event.stage}: ` : ""}
+                    {timelineMessage(event)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

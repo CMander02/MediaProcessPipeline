@@ -22,6 +22,40 @@ export interface Task {
   current_step: string | null
   steps: string[]
   completed_steps: string[]
+  flow?: TaskFlowSnapshot | null
+}
+
+export interface TaskFlowStep {
+  id: string
+  label: string
+}
+
+export interface TaskFlowSnapshot {
+  id: string
+  label: string
+  platform: string
+  branch?: string
+  content_subtype?: string
+  current_step: string | null
+  current_step_index: number
+  current_step_label?: string
+  total_steps: number
+  progress: number
+  status: string
+  steps: TaskFlowStep[]
+  completed_steps?: string[]
+}
+
+export interface TaskTimelineEvent {
+  id: number
+  task_id: string
+  event_type: string
+  stage?: string | null
+  step_id?: string | null
+  level: "debug" | "info" | "warning" | "error" | string
+  message?: string | null
+  data: Record<string, unknown>
+  timestamp: string
 }
 
 export interface TaskStats {
@@ -38,6 +72,17 @@ export interface Settings extends RuntimeSettings {
   asr_provider: string
   qwen3_asr_model_path: string
   qwen3_device: string
+  llama_cpp_binary_path: string
+  qwen3_gguf_model_path: string
+  qwen3_gguf_mmproj_path: string
+  qwen3_gguf_hf_repo: string
+  qwen3_gguf_device: string
+  qwen3_gguf_ctx: number
+  qwen3_gguf_n_gpu_layers: number
+  qwen3_gguf_timeout_sec: number
+  qwen3_gguf_keepalive_sec: number
+  qwen3_gguf_chunk_strategy: string
+  silero_onnx_model_path: string
   local_llm_model_path: string
   local_llm_n_gpu_layers: number
   local_llm_n_ctx: number
@@ -199,6 +244,8 @@ export const api = {
       return get<Task[]>(`/api/tasks?${params}`)
     },
     get: (id: string) => get<Task>(`/api/tasks/${id}`),
+    timeline: (id: string, limit = 1000) =>
+      get<{ task_id: string; events: TaskTimelineEvent[] }>(`/api/tasks/${id}/timeline?limit=${limit}`),
     cancel: (id: string) => post<{ message: string }>(`/api/tasks/${id}/cancel`),
     delete: (id: string) => httpDelete<{ message: string }>(`/api/tasks/${id}`),
     stats: () => get<TaskStats>("/api/tasks/stats"),

@@ -1079,6 +1079,10 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "asr_provider",
         "qwen3_asr_model_path", "qwen3_aligner_model_path",
         "qwen3_enable_timestamps", "qwen3_batch_size", "qwen3_max_new_tokens", "qwen3_device",
+        "llama_cpp_binary_path", "qwen3_gguf_model_path", "qwen3_gguf_mmproj_path",
+        "qwen3_gguf_hf_repo", "qwen3_gguf_device", "qwen3_gguf_ctx",
+        "qwen3_gguf_n_gpu_layers", "qwen3_gguf_timeout_sec", "qwen3_gguf_keepalive_sec",
+        "qwen3_gguf_chunk_strategy", "silero_onnx_model_path",
         "siliconflow_api_base", "siliconflow_api_key", "siliconflow_asr_model",
         "siliconflow_asr_language", "siliconflow_asr_max_chunk_sec",
         "siliconflow_asr_timeout_sec", "siliconflow_asr_chunk_strategy",
@@ -1100,6 +1104,8 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
     "paths": [
         "data_root",
         "qwen3_asr_model_path", "qwen3_aligner_model_path",
+        "llama_cpp_binary_path", "qwen3_gguf_model_path", "qwen3_gguf_mmproj_path",
+        "silero_onnx_model_path",
         "uvr_model_dir",
         "pyannote_model_path", "pyannote_segmentation_path", "pyannote_embedding_path",
         "local_llm_model_path",
@@ -1297,7 +1303,7 @@ def config_preset(
             "polish_provider": "",
         },
         "local-models": {
-            "asr_provider": "qwen3",
+            "asr_provider": "qwen3_gguf",
             "enable_diarization": True,
             "enable_voiceprint": True,
             "polish_provider": "local",

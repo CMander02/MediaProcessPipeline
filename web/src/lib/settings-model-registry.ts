@@ -6,7 +6,7 @@ import type {
   ServiceModelType,
 } from "./settings-schema"
 
-export type ModelProvider = LlmProvider | "siliconflow" | "qwen3" | "vlm" | "kb_embedding"
+export type ModelProvider = LlmProvider | "siliconflow" | "qwen3" | "qwen3_gguf" | "vlm" | "kb_embedding"
 
 export interface ModelRegistryEntry {
   value: string
@@ -107,6 +107,13 @@ export const MODEL_REGISTRY: ModelRegistryEntry[] = [
     stages: ["asr"],
   },
   {
+    value: "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0",
+    label: "Qwen3-ASR GGUF",
+    provider: "qwen3_gguf",
+    capabilities: ["asr", "local"],
+    stages: ["asr"],
+  },
+  {
     value: "Qwen/Qwen3-ASR",
     label: "Qwen3-ASR",
     provider: "qwen3",
@@ -136,6 +143,7 @@ const FREE_TEXT_PROVIDERS = new Set<ModelProvider>([
   "local",
   "siliconflow",
   "qwen3",
+  "qwen3_gguf",
   "vlm",
   "kb_embedding",
 ])

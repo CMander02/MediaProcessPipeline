@@ -77,6 +77,7 @@ def test_backend_api_smoke_triggers_core_boundaries(tmp_path, monkeypatch):
     task_data = task.json()
     assert task_data["status"] == "queued"
     assert queue.submitted == [UUID(task_data["id"])]
+    assert task_data["flow"]["id"] == "url_media_asr"
 
     listed = client.get("/api/tasks")
     assert listed.status_code == 200
@@ -137,6 +138,33 @@ def test_backend_settings_and_platform_api_smoke(tmp_path, monkeypatch):
     update = client.put("/api/pipeline/platforms/youtube", json={"preferred_quality": "1080p"})
     assert update.status_code == 200
     assert update.json() == {"ok": True}
+
+
+def test_task_timeline_returns_persisted_events(tmp_path, monkeypatch):
+    client, _queue = _client(tmp_path, monkeypatch)
+    task_response = client.post(
+        "/api/tasks",
+        json={"task_type": "pipeline", "source": "https://example.com/video.mp4", "options": {}},
+    )
+    task_id = task_response.json()["id"]
+
+    database.get_task_store().add_event(
+        task_id,
+        "asr.api_fallback.selected",
+        stage="asr",
+        step_id="transcribe",
+        level="info",
+        message="已选择 API ASR fallback",
+        data={"provider": "siliconflow"},
+    )
+
+    response = client.get(f"/api/tasks/{task_id}/timeline")
+
+    assert response.status_code == 200
+    events = response.json()["events"]
+    assert events[-1]["event_type"] == "asr.api_fallback.selected"
+    assert events[-1]["stage"] == "asr"
+    assert events[-1]["data"]["provider"] == "siliconflow"
 
 
 def test_archive_thumbnail_uses_first_image_note_image(tmp_path, monkeypatch):

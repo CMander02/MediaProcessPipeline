@@ -4,6 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
+from app.core.pipeline import _is_transcript_too_short_for_uvr_fallback  # noqa: E402
 from app.core.model_router import resolve_pipeline_model_bindings  # noqa: E402
 from app.core.settings import RuntimeSettings  # noqa: E402
 
@@ -47,6 +48,11 @@ def test_pipeline_binding_without_subtitle_uses_asr_and_polish_provider():
     assert binding.run_subtitle_processor is False
     assert binding.asr.provider == "qwen3"
     assert binding.polish.provider == "local"
+
+
+def test_uvr_fallback_detects_too_short_transcript():
+    assert _is_transcript_too_short_for_uvr_fallback("好。") is True
+    assert _is_transcript_too_short_for_uvr_fallback("这是一段足够长的转写文本，用来确认 UVR 后的 ASR 结果可以继续进入后续流程。") is False
 
 
 def test_pipeline_binding_for_image_note_uses_vlm_when_images_are_present():

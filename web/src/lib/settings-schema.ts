@@ -2,7 +2,7 @@ export const DEEPSEEK_STAGES = ["analyze", "polish", "summary", "mindmap"] as co
 
 export type DeepSeekStage = (typeof DEEPSEEK_STAGES)[number]
 export type LlmProvider = "local" | "deepseek" | "custom" | "anthropic" | "openai"
-export type AsrProvider = "qwen3" | "siliconflow"
+export type AsrProvider = "qwen3" | "qwen3_gguf" | "siliconflow"
 export type DeviceValue = "cuda" | "cpu" | "auto"
 export type ModelCapability = "llm" | "vlm" | "chat" | "fast" | "thinking" | "reasoning" | "vision" | "asr" | "embedding" | "rerank" | "local" | "json"
 export type ServiceModelType = "llm" | "vlm" | "embedding" | "rerank" | "asr"
@@ -111,6 +111,17 @@ export interface RuntimeSettings {
   qwen3_asr_model_path?: string
   qwen3_aligner_model_path?: string
   qwen3_device?: DeviceValue | string
+  llama_cpp_binary_path?: string
+  qwen3_gguf_model_path?: string
+  qwen3_gguf_mmproj_path?: string
+  qwen3_gguf_hf_repo?: string
+  qwen3_gguf_device?: DeviceValue | string
+  qwen3_gguf_ctx?: number
+  qwen3_gguf_n_gpu_layers?: number
+  qwen3_gguf_timeout_sec?: number
+  qwen3_gguf_keepalive_sec?: number
+  qwen3_gguf_chunk_strategy?: string
+  silero_onnx_model_path?: string
   siliconflow_api_base?: string
   siliconflow_api_key?: string
   siliconflow_asr_model?: string

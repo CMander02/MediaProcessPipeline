@@ -55,6 +55,7 @@ class EventBus:
 
     async def publish(self, event: TaskEvent) -> None:
         """Publish an event to all matching subscribers."""
+        self._persist_event(event)
         async with self._lock:
             # Append to log buffer
             self._log_buffer.append(event)
@@ -74,6 +75,26 @@ class EventBus:
                     q.put_nowait(event)
                 except asyncio.QueueFull:
                     pass
+
+    def _persist_event(self, event: TaskEvent) -> None:
+        data = event.data or {}
+        level = str(data.get("level") or _level_for_event(event.event_type)).lower()
+        message_value = data.get("message") or data.get("error") or data.get("detail")
+        try:
+            from app.core.database import get_task_store
+
+            get_task_store().add_event(
+                event.task_id,
+                event.event_type,
+                stage=_as_optional_str(data.get("stage") or data.get("step")),
+                step_id=_as_optional_str(data.get("step_id") or data.get("step")),
+                level=level,
+                message=str(message_value) if message_value is not None else None,
+                data=data,
+                timestamp=event.timestamp,
+            )
+        except Exception:
+            logger.debug("task_event.persist_failed", exc_info=True)
 
     def subscribe_global(self, maxsize: int = 256) -> asyncio.Queue[TaskEvent]:
         """Subscribe to ALL task events. Returns a queue to read from."""
@@ -117,3 +138,19 @@ def get_event_bus() -> EventBus:
     if _bus is None:
         _bus = EventBus()
     return _bus
+
+
+def _level_for_event(event_type: str) -> str:
+    if event_type in {"failed", "error"}:
+        return "error"
+    if event_type == "warning":
+        return "warning"
+    if event_type == "diagnostic":
+        return "debug"
+    return "info"
+
+
+def _as_optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)

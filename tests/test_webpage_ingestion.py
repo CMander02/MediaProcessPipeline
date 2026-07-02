@@ -6,6 +6,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.services.ingestion import ytdlp  # noqa: E402
 from app.services.ingestion.platform.webpage import api as webpage_api  # noqa: E402
+from app.core.source_resolver import resolve_source_flow  # noqa: E402
 from app.core.pipeline import _detect_source_type, _rewrite_ingest_paths_after_task_dir_move  # noqa: E402
 from app.models import MediaMetadata  # noqa: E402
 
@@ -105,8 +106,13 @@ def test_generic_webpage_detection_skips_direct_media():
 
 
 def test_pipeline_detects_generic_webpage_before_ytdlp_title_probe():
-    assert _detect_source_type("https://lilianweng.github.io/posts/2026-06-24-scaling-laws/") == "webpage"
+    page = "https://lilianweng.github.io/posts/2026-06-24-scaling-laws/"
+    assert _detect_source_type(page) == "url"
     assert _detect_source_type("https://example.com/video.mp4") == "url"
+    flow = resolve_source_flow(page)
+    assert flow.platform == "webpage"
+    assert flow.content_subtype == "text_note"
+    assert flow.flow_id == "url_webpage_note"
 
 
 def test_rewrite_webpage_asset_paths_after_task_dir_rename(tmp_path):

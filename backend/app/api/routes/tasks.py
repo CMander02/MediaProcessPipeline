@@ -24,6 +24,7 @@ from app.core.pipeline import (
     _clean_source_path, create_task_dir, write_metadata_json,
 )
 from app.core.queue import get_task_queue
+from app.core.source_resolver import resolve_source_flow
 from app.models import Task, TaskCreate, TaskStatus
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -84,10 +85,24 @@ async def create_task(task_create: TaskCreate):
         title = "download"
         media_type = "unknown"
 
+    source_flow = resolve_source_flow(
+        source,
+        prefer_platform_subtitles=True,
+        force_asr=bool(task.options.get("force_asr", False)),
+        task_options=task.options,
+    )
+    task.flow = source_flow.snapshot(status="queued", current_step="resolve")
+    task.platform = source_flow.platform
+    task.content_subtype = source_flow.content_subtype
+
     task_dir = create_task_dir(task.id, title)
     write_metadata_json(task_dir, {
         "title": title,
         "source_url": source,
+        "source_type": source_flow.source_type,
+        "platform": source_flow.platform,
+        "content_subtype": source_flow.content_subtype,
+        "flow_id": source_flow.flow_id,
         "media_type": media_type,
     }, status="queued")
 
@@ -180,6 +195,16 @@ async def get_history(status: str | None = None, limit: int = 50, offset: int = 
     }
 
 
+@router.get("/{task_id}/timeline")
+async def get_task_timeline(task_id: UUID, limit: int = 1000):
+    """Return persisted timeline events for a task."""
+    store = get_task_store()
+    task = store.get(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    return {"task_id": str(task_id), "events": store.list_events(task_id, limit=limit)}
+
+
 # ---------------------------------------------------------------------------
 # Dynamic-path routes (/{task_id} AFTER all fixed paths)
 # ---------------------------------------------------------------------------
@@ -244,6 +269,7 @@ async def stream_task_events(task_id: UUID):
                     "message": task.message or "",
                     "current_step": task.current_step,
                     "completed_steps": task.completed_steps,
+                    "flow": task.flow,
                     "error": task.error,
                 },
             }, ensure_ascii=False)

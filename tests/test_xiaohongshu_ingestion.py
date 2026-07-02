@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.core import database, pipeline as pipeline_core, settings as settings_module  # noqa: E402
+from app.core.source_resolver import resolve_source_flow  # noqa: E402
 from app.core.settings import RuntimeSettings  # noqa: E402
 from app.models import MediaMetadata, MediaType, Task, TaskStatus, TaskType  # noqa: E402
 from app.core.pipeline import (  # noqa: E402
@@ -51,7 +52,8 @@ def test_xiaohongshu_share_text_with_bili_like_tokens_stays_xiaohongshu():
     cleaned = _clean_source_path(share_text)
 
     assert cleaned == "https://xhslink.com/a/ABcdEFgH"
-    assert _detect_source_type(cleaned) == "xiaohongshu"
+    assert _detect_source_type(cleaned) == "url"
+    assert resolve_source_flow(cleaned).platform == "xiaohongshu"
     assert ytdlp._is_xiaohongshu_url(share_text)
     assert not ytdlp._is_bilibili_url(share_text)
 
@@ -69,7 +71,8 @@ def test_xiaohongshu_pc_share_text_routes_to_xiaohongshu():
     cleaned = _clean_source_path(share_text)
 
     assert cleaned.startswith("https://www.xiaohongshu.com/discovery/item/6a37ac8b000000001101d922")
-    assert _detect_source_type(cleaned) == "xiaohongshu"
+    assert _detect_source_type(cleaned) == "url"
+    assert resolve_source_flow(cleaned).platform == "xiaohongshu"
     assert ytdlp._is_xiaohongshu_url(share_text)
     assert not ytdlp._is_bilibili_url(share_text)
 
@@ -82,7 +85,9 @@ def test_xiaohongshu_xsec_token_starting_with_abv_does_not_extract_bvid(tmp_path
         "&xsec_source=pc_share"
     )
 
-    assert _detect_source_type(_clean_source_path(url)) == "xiaohongshu"
+    cleaned = _clean_source_path(url)
+    assert _detect_source_type(cleaned) == "url"
+    assert resolve_source_flow(cleaned).platform == "xiaohongshu"
     assert ytdlp._is_xiaohongshu_url(url)
     assert not ytdlp._is_bilibili_url(url)
     assert ytdlp._extract_bilibili_bvid(url) is None

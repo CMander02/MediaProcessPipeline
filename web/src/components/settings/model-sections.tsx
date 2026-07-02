@@ -112,12 +112,7 @@ export function PurposeModelBindings({ settings, updateSetting }: PurposeModelBi
       label: "ASR",
       description: "语音识别，可选择本地模型或 ASR API。",
       options: asrOptions,
-      fallback: bindingValue(
-        runtimeBindings.asr,
-        String(settings.asr_provider ?? "qwen3") === "siliconflow" ? "siliconflow" : "qwen3",
-        String(settings.asr_provider ?? "qwen3") === "siliconflow" ? settings.siliconflow_asr_model : "Qwen/Qwen3-ASR",
-        "Qwen/Qwen3-ASR",
-      ),
+      fallback: asrBindingValue(settings, runtimeBindings.asr),
     },
     {
       key: "vision",
@@ -933,6 +928,22 @@ function bindingValue(
   return modelValue(fallbackProvider, model, fallbackModel)
 }
 
+function asrBindingValue(settings: Settings, binding: RuntimeModelBinding | undefined): string {
+  const provider = String(settings.asr_provider ?? "qwen3_gguf")
+  if (provider === "siliconflow") {
+    return bindingValue(binding, "siliconflow", settings.siliconflow_asr_model, "FunAudioLLM/SenseVoiceSmall")
+  }
+  if (provider === "qwen3") {
+    return bindingValue(binding, "qwen3", settings.qwen3_asr_model_path, "Qwen/Qwen3-ASR")
+  }
+  return bindingValue(
+    binding,
+    "qwen3_gguf",
+    settings.qwen3_gguf_model_path || settings.qwen3_gguf_hf_repo,
+    "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0",
+  )
+}
+
 function getRuntimeModelBindings(settings: Settings): Record<string, RuntimeModelBinding> {
   const raw = settings.runtime_model_bindings
   return raw && typeof raw === "object" ? raw : {}
@@ -961,6 +972,10 @@ function getProviderModelOptions(settings: Settings, capability: string): ModelB
   })
   if (capability === "asr") {
     options.unshift({ value: modelValue("qwen3", "Qwen/Qwen3-ASR"), label: "Qwen3-ASR · 本地" })
+    options.unshift({
+      value: modelValue("qwen3_gguf", String(settings.qwen3_gguf_model_path || settings.qwen3_gguf_hf_repo || "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0")),
+      label: "Qwen3-ASR GGUF · 本地",
+    })
   }
   if (capability === "llm") {
     options.push({ value: modelValue("local", "local-hf"), label: "本地 HF 模型" })
@@ -1267,13 +1282,21 @@ export function LocalModelSettings({
   uvrDetection,
 }: LocalModelSettingsProps) {
   const [query, setQuery] = useState("")
-  const [selectedId, setSelectedId] = useState("qwen3-asr")
+  const [selectedId, setSelectedId] = useState("qwen3-gguf")
   const entries: ModelListItem[] = [
+    {
+      id: "qwen3-gguf",
+      title: "Qwen3-ASR GGUF",
+      description: "llama.cpp 本地语音识别",
+      badge: "GG",
+      status: String(settings.asr_provider ?? "qwen3_gguf") === "qwen3_gguf" ? "ON" : undefined,
+    },
     {
       id: "qwen3-asr",
       title: "Qwen3-ASR",
-      description: "本地语音识别",
+      description: "Torch 兼容语音识别",
       badge: "QA",
+      status: String(settings.asr_provider ?? "") === "qwen3" ? "ON" : undefined,
     },
     {
       id: "diarization",
@@ -1306,8 +1329,129 @@ export function LocalModelSettings({
         description={activeItem.description}
       />
 
+      {activeItem.id === "qwen3-gguf" && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <Label className="w-24 shrink-0 text-sm text-muted-foreground">Provider</Label>
+            <Button
+              size="sm"
+              variant={String(settings.asr_provider ?? "qwen3_gguf") === "qwen3_gguf" ? "default" : "outline"}
+              onClick={() => updateSetting("asr_provider", "qwen3_gguf")}
+              className="h-8"
+            >
+              设为本地 ASR
+            </Button>
+          </div>
+          <SettingRow
+            label="llama.cpp"
+            settingKey="llama_cpp_binary_path"
+            value={String(settings.llama_cpp_binary_path ?? "")}
+            onSave={updateSetting}
+            saving={saving}
+            saved={saved}
+            placeholder="留空自动查找 llama-server / llama"
+          />
+          <SettingRow
+            label="模型"
+            settingKey="qwen3_gguf_model_path"
+            value={String(settings.qwen3_gguf_model_path ?? "")}
+            onSave={updateSetting}
+            saving={saving}
+            saved={saved}
+            placeholder="可选：Qwen3-ASR-1.7B-Q8_0.gguf"
+          />
+          <SettingRow
+            label="mmproj"
+            settingKey="qwen3_gguf_mmproj_path"
+            value={String(settings.qwen3_gguf_mmproj_path ?? "")}
+            onSave={updateSetting}
+            saving={saving}
+            saved={saved}
+            placeholder="可选：mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
+          />
+          <SettingRow
+            label="HF Repo"
+            settingKey="qwen3_gguf_hf_repo"
+            value={String(settings.qwen3_gguf_hf_repo ?? "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0")}
+            onSave={updateSetting}
+            saving={saving}
+            saved={saved}
+            placeholder="ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0"
+          />
+          <DeviceChoice
+            value={String(settings.qwen3_gguf_device ?? "auto")}
+            options={["auto", "cuda", "cpu"]}
+            onChange={(value) => updateSetting("qwen3_gguf_device", value)}
+          />
+          <div className="flex items-center gap-3">
+            <Label className="w-24 shrink-0 text-sm text-muted-foreground">切块</Label>
+            <select
+              value={String(settings.qwen3_gguf_chunk_strategy ?? "silero_onnx")}
+              onChange={(event) => updateSetting("qwen3_gguf_chunk_strategy", event.target.value)}
+              className="h-8 min-w-52 rounded-md border border-input bg-background px-3 text-sm"
+            >
+              <option value="silero_onnx">Silero ONNX</option>
+              <option value="silero_torch">Silero Torch</option>
+              <option value="ffmpeg">ffmpeg 固定切块</option>
+            </select>
+          </div>
+          <SettingRow
+            label="Silero"
+            settingKey="silero_onnx_model_path"
+            value={String(settings.silero_onnx_model_path ?? "")}
+            onSave={updateSetting}
+            saving={saving}
+            saved={saved}
+            placeholder="可选：silero_vad.onnx"
+          />
+          <SettingRow
+            label="Context"
+            settingKey="qwen3_gguf_ctx"
+            value={String(settings.qwen3_gguf_ctx ?? 4096)}
+            onSave={(key, value) => updateSetting(key, Number(value))}
+            saving={saving}
+            saved={saved}
+          />
+          <SettingRow
+            label="GPU 层"
+            settingKey="qwen3_gguf_n_gpu_layers"
+            value={String(settings.qwen3_gguf_n_gpu_layers ?? 99)}
+            onSave={(key, value) => updateSetting(key, Number(value))}
+            saving={saving}
+            saved={saved}
+          />
+          <SettingRow
+            label="超时"
+            settingKey="qwen3_gguf_timeout_sec"
+            value={String(settings.qwen3_gguf_timeout_sec ?? 300)}
+            onSave={(key, value) => updateSetting(key, Number(value))}
+            saving={saving}
+            saved={saved}
+          />
+          <SettingRow
+            label="保活"
+            settingKey="qwen3_gguf_keepalive_sec"
+            value={String(settings.qwen3_gguf_keepalive_sec ?? 300)}
+            onSave={(key, value) => updateSetting(key, Number(value))}
+            saving={saving}
+            saved={saved}
+          />
+        </div>
+      )}
+
       {activeItem.id === "qwen3-asr" && (
         <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <Label className="w-24 shrink-0 text-sm text-muted-foreground">Provider</Label>
+            <Button
+              size="sm"
+              variant={String(settings.asr_provider ?? "") === "qwen3" ? "default" : "outline"}
+              onClick={() => updateSetting("asr_provider", "qwen3")}
+              className="h-8"
+            >
+              设为本地 ASR
+            </Button>
+          </div>
           <PathPickerRow
             label="模型路径"
             settingKey="qwen3_asr_model_path"
