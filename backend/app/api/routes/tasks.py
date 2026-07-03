@@ -61,9 +61,10 @@ async def create_task(task_create: TaskCreate):
     """Create a new processing task and submit it to the queue."""
     from pathlib import Path
 
+    source = _clean_source_path(task_create.source)
     task = Task(
         task_type=task_create.task_type,
-        source=task_create.source,
+        source=source,
         options=task_create.options,
         webhook_url=task_create.webhook_url,
         status=TaskStatus.QUEUED,
@@ -74,7 +75,6 @@ async def create_task(task_create: TaskCreate):
     )
 
     # Create task directory immediately so frontend can navigate to result page
-    source = _clean_source_path(task_create.source)
     if source.startswith(("http://", "https://")):
         _validate_public_http_url(source)
 
@@ -82,7 +82,7 @@ async def create_task(task_create: TaskCreate):
         title = Path(source).stem
         media_type = "video" if Path(source).suffix.lower() in {".mp4", ".mkv", ".avi", ".webm", ".mov"} else "audio"
     else:
-        title = "download"
+        title = str(task.id)
         media_type = "unknown"
 
     source_flow = resolve_source_flow(

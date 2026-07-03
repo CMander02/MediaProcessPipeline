@@ -223,6 +223,9 @@ class RuntimeSettings(BaseModel):
     # Reduces peak VRAM by preventing download+GPU overlap.
     # Recommended False for machines with ≤16 GB VRAM.
     pipeline_overlap: bool = True
+    # Shared outbound HTTP proxy for platform APIs and asset downloads.
+    # Empty = use environment/system proxy. "direct"/"none" disables proxy use.
+    network_proxy: str = ""
 
     # YouTube (yt-dlp)
     # Path to a Netscape-format cookies.txt exported from a logged-in browser.

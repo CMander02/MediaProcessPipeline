@@ -16,6 +16,8 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from app.core.network import urllib_urlopen
+
 logger = logging.getLogger(__name__)
 
 _PYPI_URL = "https://pypi.org/pypi/yt-dlp/json"
@@ -45,7 +47,7 @@ def _installed_version() -> str | None:
 def _pypi_latest() -> tuple[str | None, datetime | None]:
     try:
         req = urllib.request.Request(_PYPI_URL, headers={"User-Agent": "mpp-version-check"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib_urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
     except Exception as e:
         logger.debug(f"yt-dlp PyPI lookup failed: {e}")

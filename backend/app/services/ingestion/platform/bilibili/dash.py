@@ -23,6 +23,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from app.core.network import urllib_urlopen
+
 logger = logging.getLogger(__name__)
 
 # HTTP headers required for Bilibili CDN
@@ -59,7 +61,7 @@ def _download_stream(url: str, dest: Path, title: str, referer: str, cookie: str
 
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib_urlopen(req, timeout=60) as resp:
             total = int(resp.headers.get("Content-Length", 0))
             downloaded = 0
             with open(dest, "wb") as f:
@@ -140,6 +142,7 @@ def download_video(
     bvid: str,
     output_dir: Path,
     qn: int = 64,
+    page_number: int = 1,
 ) -> tuple[Path, dict[str, Any]]:
     """Download a Bilibili video and mux it into an mp4 file.
 
@@ -166,7 +169,8 @@ def download_video(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    referer = f"https://www.bilibili.com/video/{bvid}"
+    page_number = max(int(page_number or 1), 1)
+    referer = f"https://www.bilibili.com/video/{bvid}" + (f"?p={page_number}" if page_number > 1 else "")
     cookie = get_cookie() if is_logged_in() else ""
 
     # If not logged in, cap quality at 360P
@@ -184,12 +188,20 @@ def download_video(
     pages: list[dict] = view_data.get("pages", [])
     if not pages:
         raise RuntimeError(f"No pages found for {bvid}")
-    first_page = pages[0]
-    cid: int = first_page.get("cid", 0)
-    duration: int = first_page.get("duration", view_data.get("duration", 0))
+    selected_page = _select_page(pages, page_number)
+    selected_page_number = int(selected_page.get("page") or page_number)
+    cid: int = selected_page.get("cid", 0)
+    duration: int = selected_page.get("duration", view_data.get("duration", 0))
+    part_title = str(selected_page.get("part") or "").strip()
 
-    title = _sanitize_filename(title_raw)
-    logger.info(f"Video title: {title_raw!r}  aid={aid}  cid={cid}  duration={duration}s")
+    display_title = title_raw
+    if len(pages) > 1 and part_title and part_title != title_raw:
+        display_title = f"{title_raw} P{selected_page_number} {part_title}"
+
+    title = _sanitize_filename(display_title)
+    logger.info(
+        f"Video title: {display_title!r} aid={aid} cid={cid} page={selected_page_number} duration={duration}s"
+    )
 
     # ----- 2. Fetch DASH playurl -----
     logger.info(f"Fetching DASH playurl for {bvid} qn={qn} fnval=16")
@@ -272,12 +284,25 @@ def download_video(
 
     info_dict: dict[str, Any] = {
         "title": title_raw,
+        "display_title": display_title,
         "aid": aid,
         "cid": cid,
         "duration": duration,
         "actual_qn": actual_qn,
+        "page_number": selected_page_number,
+        "part": part_title,
+        "pages_count": len(pages),
     }
     return mp4_path, info_dict
+
+
+def _select_page(pages: list[dict], page_number: int) -> dict:
+    page_number = max(int(page_number or 1), 1)
+    for page in pages:
+        if int(page.get("page") or 0) == page_number:
+            return page
+    index = min(page_number - 1, len(pages) - 1)
+    return pages[index]
 
 
 def extract_audio(video_path: Path, audio_path: Path) -> None:

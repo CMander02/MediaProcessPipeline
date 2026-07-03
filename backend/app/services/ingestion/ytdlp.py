@@ -2,11 +2,11 @@
 
 import hashlib
 import logging
-import os
 import re
 import subprocess
 import sys
 import threading
+import urllib.request
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +15,8 @@ from urllib.parse import parse_qs, urlparse
 
 from app.core.config import get_settings
 from app.core.logging_setup import log_event
+from app.core.network import runtime_proxy_url as shared_runtime_proxy_url
+from app.core.network import urllib_urlopen
 from app.core.settings import get_runtime_settings
 from app.models import ChapterInfo, MediaMetadata, MediaType
 
@@ -50,12 +52,66 @@ def _host_matches(value: str, suffixes: tuple[str, ...]) -> bool:
     return False
 
 
+def _is_bilibili_article_url(url: str) -> bool:
+    for candidate in _candidate_urls(url):
+        if "://" not in candidate:
+            candidate = f"https://{candidate}"
+        parsed = urlparse(candidate)
+        host = (parsed.hostname or "").lower()
+        if not (host == "bilibili.com" or host.endswith(".bilibili.com")):
+            continue
+        path = parsed.path.rstrip("/")
+        if re.match(r"^/read/(?:cv\d+|mobile|readlist)", path, re.IGNORECASE):
+            return True
+        if re.match(r"^/h5/note-app/view", path, re.IGNORECASE):
+            return True
+    return False
+
+
+def _is_bilibili_image_note_url(url: str) -> bool:
+    for candidate in _candidate_urls(url):
+        if "://" not in candidate:
+            candidate = f"https://{candidate}"
+        parsed = urlparse(candidate)
+        host = (parsed.hostname or "").lower()
+        path = parsed.path.rstrip("/")
+        if host == "t.bilibili.com" or host.endswith(".t.bilibili.com"):
+            return bool(re.match(r"^/(?:dynamic/)?\d+$", path, re.IGNORECASE))
+        if not (host == "bilibili.com" or host.endswith(".bilibili.com")):
+            continue
+        if re.match(r"^/(?:opus|dynamic)/\d+$", path, re.IGNORECASE):
+            return True
+        if re.match(r"^/h5/dynamic/detail/\d+$", path, re.IGNORECASE):
+            return True
+    return False
+
+
+def _is_bilibili_video_url(url: str) -> bool:
+    if not _extract_http_urls(url):
+        return bool(re.fullmatch(r'(?:BV[0-9A-Za-z]+|av\d+)', url.strip(), re.IGNORECASE))
+
+    for candidate in _candidate_urls(url):
+        if "://" not in candidate:
+            candidate = f"https://{candidate}"
+        parsed = urlparse(candidate)
+        host = (parsed.hostname or "").lower()
+        path = parsed.path
+        query = parse_qs(parsed.query)
+        if host == "b23.tv" or host.endswith(".b23.tv"):
+            return True
+        if not (host == "bilibili.com" or host.endswith(".bilibili.com")):
+            continue
+        if re.search(r"/(?:video/)?(?:BV[0-9A-Za-z]{10}|av\d+)(?:/|$)", path, re.IGNORECASE):
+            return True
+        if query.get("bvid") or query.get("aid"):
+            return True
+        if path.startswith("/x/web-interface/view"):
+            return True
+    return False
+
+
 def _is_bilibili_url(url: str) -> bool:
-    if _host_matches(url, ("bilibili.com", "b23.tv")):
-        return True
-    if _extract_http_urls(url):
-        return False
-    return bool(re.fullmatch(r'(?:BV[0-9A-Za-z]+|av\d+)', url.strip(), re.IGNORECASE))
+    return _is_bilibili_video_url(url)
 
 
 def _is_xiaoyuzhou_url(url: str) -> bool:
@@ -98,6 +154,8 @@ def _is_generic_webpage_url(url: str) -> bool:
     if not _extract_http_urls(url) and not url.strip().startswith(("http://", "https://")):
         return False
     if _is_direct_media_url(url):
+        return False
+    if _is_bilibili_video_url(url):
         return False
     if _host_matches(url, (
         "youtube.com", "youtu.be", "vimeo.com",
@@ -150,7 +208,6 @@ def _extract_bilibili_bvid(url: str) -> str | None:
 
     try:
         import json
-        import urllib.request
 
         req = urllib.request.Request(
             f"https://api.bilibili.com/x/web-interface/view?aid={aid}",
@@ -159,13 +216,58 @@ def _extract_bilibili_bvid(url: str) -> str | None:
                 "Referer": f"https://www.bilibili.com/video/av{aid}/",
             },
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib_urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read()).get("data", {})
         bvid = data.get("bvid")
         return str(bvid) if bvid else None
     except Exception as e:
         log_event(logger, logging.WARNING, "bilibili.bvid.resolve_failed", aid=aid, error=e)
         return None
+
+
+def _extract_bilibili_page_number(url: str) -> int:
+    """Return the selected Bilibili page number from ?p=, defaulting to 1."""
+    for candidate in _candidate_urls(url):
+        if "://" not in candidate:
+            candidate = f"https://{candidate}"
+        parsed = urlparse(candidate)
+        query = parse_qs(parsed.query)
+        for key in ("p", "page"):
+            values = query.get(key) or []
+            if not values:
+                continue
+            try:
+                page_number = int(values[0])
+            except (TypeError, ValueError):
+                continue
+            return max(page_number, 1)
+    return 1
+
+
+def _select_bilibili_page(view_data: dict[str, Any], page_number: int) -> dict[str, Any]:
+    pages = view_data.get("pages") or []
+    if not pages:
+        return {}
+    page_number = max(int(page_number or 1), 1)
+    for page in pages:
+        if int(page.get("page") or 0) == page_number:
+            return page
+    index = min(page_number - 1, len(pages) - 1)
+    return pages[index]
+
+
+def _bilibili_canonical_video_url(bvid: str, page_number: int = 1) -> str:
+    suffix = f"?p={page_number}" if page_number > 1 else ""
+    return f"https://www.bilibili.com/video/{bvid}{suffix}"
+
+
+def _bilibili_display_title(view_data: dict[str, Any], page: dict[str, Any], page_number: int) -> str:
+    title = str(view_data.get("title") or "").strip()
+    part = str(page.get("part") or "").strip()
+    pages = view_data.get("pages") or []
+    if len(pages) > 1 and part and part != title:
+        return f"{title} P{page_number} {part}".strip()
+    return title or part
 
 
 class YoutubeNetworkError(RuntimeError):
@@ -292,13 +394,7 @@ def youtube_proxy_url() -> str | None:
             return ""
         return _normalize_proxy_url(configured)
 
-    for key in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"):
-        value = os.environ.get(key, "").strip()
-        if value:
-            return _normalize_proxy_url(value)
-
-    detected = _proxy_from_windows_user_settings()
-    return detected or None
+    return shared_runtime_proxy_url()
 
 
 def ytdlp_base_opts(ydl_logger: _YtdlpLogger | None = None) -> dict[str, Any]:
@@ -530,6 +626,10 @@ class YtdlpService:
             output_dir = Path(rt.data_root).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        if _is_bilibili_article_url(url):
+            return self._download_bilibili_article(url, output_dir)
+        if _is_bilibili_image_note_url(url):
+            return self._download_bilibili_note(url, output_dir)
         if _is_bilibili_url(url):
             return self._download_bilibili(url, output_dir)
         if _is_xiaoyuzhou_url(url):
@@ -637,7 +737,6 @@ class YtdlpService:
     def _fetch_bilibili_metadata(url: str) -> dict[str, Any]:
         """Fetch video metadata from Bilibili public API (no auth needed)."""
         import json
-        import urllib.request
 
         bvid = _extract_bilibili_bvid(url)
         if not bvid:
@@ -652,22 +751,35 @@ class YtdlpService:
                 f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}",
                 headers={"User-Agent": "Mozilla/5.0"},
             )
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib_urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read()).get("data", {})
 
+            page_number = _extract_bilibili_page_number(url)
+            selected_page = _select_bilibili_page(data, page_number)
+            selected_page_number = int(selected_page.get("page") or page_number)
             owner = data.get("owner", {})
+            title = _bilibili_display_title(data, selected_page, selected_page_number)
             info.update({
-                "title": data.get("title"),
+                "title": title or data.get("title"),
                 "description": data.get("desc"),
                 "uploader": owner.get("name"),
                 "uploader_id": str(owner.get("mid", "")) if owner.get("mid") else None,
-                "platform": "bilibili",
+                "platform": "bilibili_video",
                 "content_subtype": "video",
-                "duration": data.get("duration"),
+                "duration": selected_page.get("duration") or data.get("duration"),
                 "upload_date": datetime.fromtimestamp(data["pubdate"]).strftime("%Y%m%d") if data.get("pubdate") else None,
-                "webpage_url": f"https://www.bilibili.com/video/{bvid}",
+                "webpage_url": _bilibili_canonical_video_url(bvid, selected_page_number),
                 "thumbnail": data.get("pic"),
-                "extra": {"platform": "bilibili"},
+                "extra": {
+                    "platform": "bilibili_video",
+                    "bilibili_type": "video",
+                    "bvid": bvid,
+                    "aid": data.get("aid"),
+                    "cid": selected_page.get("cid"),
+                    "page_number": selected_page_number,
+                    "part": selected_page.get("part"),
+                    "pages_count": len(data.get("pages") or []),
+                },
             })
         except Exception as e:
             log_event(logger, logging.WARNING, "bilibili.view.failed", bvid=bvid, error=e)
@@ -678,13 +790,47 @@ class YtdlpService:
                 f"https://api.bilibili.com/x/tag/archive/tags?bvid={bvid}",
                 headers={"User-Agent": "Mozilla/5.0"},
             )
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib_urlopen(req, timeout=10) as resp:
                 tag_data = json.loads(resp.read()).get("data", [])
             info["tags"] = [t["tag_name"] for t in tag_data if t.get("tag_name")]
         except Exception as e:
             log_event(logger, logging.WARNING, "bilibili.tags.failed", bvid=bvid, error=e)
 
         return info
+
+    def _download_bilibili_article(self, url: str, output_dir: Path) -> dict[str, Any]:
+        """Process a Bilibili article through the generic webpage path."""
+        from app.services.ingestion.platform.webpage.api import download_webpage
+
+        info = download_webpage(url, output_dir)
+        info["platform"] = "bilibili_opus"
+        info["content_subtype"] = "text_note"
+        extra = info.setdefault("extra", {})
+        if isinstance(extra, dict):
+            extra["platform"] = "bilibili_opus"
+            extra["bilibili_type"] = "article"
+            extra.setdefault("source_platform", "webpage")
+        return {
+            "url": url,
+            "title": info.get("title", "bilibili_article"),
+            "file_path": None,
+            "video_path": None,
+            "info": info,
+        }
+
+    def _download_bilibili_note(self, url: str, output_dir: Path) -> dict[str, Any]:
+        """Fetch Bilibili opus/dynamic metadata; images are downloaded by the note branch."""
+        from app.services.ingestion.platform.bilibili.note import fetch_metadata as fetch_bilibili_note
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        info = fetch_bilibili_note(url)
+        return {
+            "url": url,
+            "title": info.get("title", "bilibili_opus"),
+            "file_path": None,
+            "video_path": None,
+            "info": info,
+        }
 
     def _download_bilibili(self, url: str, output_dir: Path) -> dict[str, Any]:
         """Download Bilibili video using native DASH API (replaces BBDown)."""
@@ -704,15 +850,16 @@ class YtdlpService:
         if not bvid:
             raise RuntimeError(f"Cannot extract Bilibili video id from URL: {url}")
 
-        log_event(logger, logging.INFO, "bilibili.download.started", bvid=bvid, qn=qn)
-        video_file, info = download_video(bvid, output_dir, qn=qn)
+        page_number = _extract_bilibili_page_number(url)
+        log_event(logger, logging.INFO, "bilibili.download.started", bvid=bvid, qn=qn, page=page_number)
+        video_file, info = download_video(bvid, output_dir, qn=qn, page_number=page_number)
 
         title = video_file.stem
         audio_file = output_dir / f"{title}.wav"
         extract_audio(video_file, audio_file)
 
         meta = self._fetch_bilibili_metadata(url)
-        meta["title"] = info.get("title", title)
+        meta["title"] = info.get("display_title") or info.get("title") or title
 
         return {
             "url": url,
@@ -896,7 +1043,9 @@ class YtdlpService:
             log_event(logger, logging.WARNING, "bilibili.view.no_pages", bvid=bvid)
             diagnostics.append({"stage": "view", "status": "failed", "reason": "no_pages"})
             return empty
-        page = pages[0]
+        page_number = _extract_bilibili_page_number(url)
+        page = _select_bilibili_page(view_data, page_number)
+        selected_page_number = int(page.get("page") or page_number)
         cid = int(page.get("cid") or 0)
         video_duration = float(page.get("duration") or view_data.get("duration") or 0)
 
@@ -908,6 +1057,7 @@ class YtdlpService:
                 "reason": "missing_aid_or_cid",
                 "aid": aid,
                 "cid": cid,
+                "page": selected_page_number,
             })
             return empty
 
@@ -984,10 +1134,10 @@ class YtdlpService:
 
             try:
                 req = urllib.request.Request(sub_url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=15) as resp:
+                with urllib_urlopen(req, timeout=15) as resp:
                     sub_json = json.loads(resp.read())
             except Exception as e:
-                log_event(logger, logging.WARNING, "bilibili.subtitle.download_failed", bvid=bvid, lang=lan, type=t_label.lower(), error=e)
+                log_event(logger, logging.WARNING, "bilibili.subtitle.download_failed", bvid=bvid, page=selected_page_number, lang=lan, type=t_label.lower(), error=e)
                 diagnostics.append({
                     "stage": "download",
                     "status": "failed",
@@ -1044,7 +1194,7 @@ class YtdlpService:
 
             srt_path = output_dir / f"{bvid}.{lan}.srt"
             srt_path.write_text(_bili_json_to_srt(body), encoding="utf-8")
-            log_event(logger, logging.INFO, "bilibili.subtitle.saved", bvid=bvid, lang=lan, type=t_label.lower(), cues=len(body), path=srt_path)
+            log_event(logger, logging.INFO, "bilibili.subtitle.saved", bvid=bvid, page=selected_page_number, lang=lan, type=t_label.lower(), cues=len(body), path=srt_path)
             saved_tracks.append({
                 "path": str(srt_path),
                 "lang": lan,
@@ -1108,7 +1258,7 @@ class YtdlpService:
         def _get_json(api_url: str, timeout: int = 10) -> dict | None:
             try:
                 req = urllib.request.Request(api_url, headers=headers)
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                with urllib_urlopen(req, timeout=timeout) as resp:
                     return json.loads(resp.read())
             except Exception as e:
                 log_event(logger, logging.WARNING, "bilibili.legacy_api.failed", api=api_url[:60], error=e)
@@ -1120,7 +1270,8 @@ class YtdlpService:
         pages = view_resp["data"].get("pages") or []
         if not pages:
             return empty
-        page = pages[0]
+        page_number = _extract_bilibili_page_number(url)
+        page = _select_bilibili_page(view_resp["data"], page_number)
         cid = page["cid"]
         video_duration = float(page.get("duration") or view_resp["data"].get("duration") or 0)
 
@@ -1149,7 +1300,7 @@ class YtdlpService:
                 continue
             try:
                 req = urllib.request.Request(sub_url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=15) as resp:
+                with urllib_urlopen(req, timeout=15) as resp:
                     sub_json = json.loads(resp.read())
             except Exception as e:
                 log_event(logger, logging.WARNING, "bilibili.subtitle.download_failed", bvid=bvid, lang=lan, type=t_label.lower(), engine=engine, error=e)
@@ -1196,6 +1347,25 @@ class YtdlpService:
         Returns the same info dict format as download() so extract_metadata() works.
         Bilibili: uses public API. YouTube/other: uses yt-dlp --skip-download.
         """
+        if _is_bilibili_article_url(url):
+            from app.services.ingestion.platform.webpage.api import (
+                fetch_metadata as fetch_webpage_metadata,
+            )
+
+            info = fetch_webpage_metadata(url)
+            info["platform"] = "bilibili_opus"
+            info["content_subtype"] = "text_note"
+            extra = info.setdefault("extra", {})
+            if isinstance(extra, dict):
+                extra["platform"] = "bilibili_opus"
+                extra["bilibili_type"] = "article"
+            return info
+        if _is_bilibili_image_note_url(url):
+            from app.services.ingestion.platform.bilibili.note import (
+                fetch_metadata as fetch_bilibili_note_metadata,
+            )
+
+            return fetch_bilibili_note_metadata(url)
         if _is_bilibili_url(url):
             info = self._fetch_bilibili_metadata(url)
             return info

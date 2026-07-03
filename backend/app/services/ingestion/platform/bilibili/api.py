@@ -10,6 +10,8 @@ import time
 import urllib.parse
 import urllib.request
 
+from app.core.network import urllib_urlopen
+
 from .auth import get_cookie, get_wbi_keys
 
 logger = logging.getLogger(__name__)
@@ -71,7 +73,7 @@ def http_json(url: str, cookie: str = "", referer: str = _REFERER) -> dict:
         headers["Cookie"] = cookie
 
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    with urllib_urlopen(req, timeout=15) as resp:
         if resp.status != 200:
             raise RuntimeError(f"HTTP {resp.status} for {url[:80]}")
         body = json.loads(resp.read())

@@ -101,6 +101,31 @@ def test_backend_api_smoke_triggers_core_boundaries(tmp_path, monkeypatch):
     assert delete_staged.json() == {"deleted": True}
 
 
+def test_create_task_normalizes_schemeless_bilibili_opus(tmp_path, monkeypatch):
+    client, queue = _client(tmp_path, monkeypatch)
+
+    task = client.post(
+        "/api/tasks",
+        json={
+            "task_type": "pipeline",
+            "source": "bilibili.com/opus/1220469846869803016?spm_id_from=333.1365.0.0",
+        },
+    )
+
+    assert task.status_code == 200
+    data = task.json()
+    assert data["source"] == "https://bilibili.com/opus/1220469846869803016?spm_id_from=333.1365.0.0"
+    assert data["platform"] == "bilibili_opus"
+    assert data["content_subtype"] == "image_note"
+    assert data["flow"]["id"] == "url_image_note"
+    assert queue.submitted == [UUID(data["id"])]
+
+    metadata_path = Path(data["result"]["output_dir"]) / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["source_url"] == data["source"]
+    assert metadata["platform"] == "bilibili_opus"
+
+
 def test_backend_settings_and_platform_api_smoke(tmp_path, monkeypatch):
     client, _queue = _client(tmp_path, monkeypatch)
 

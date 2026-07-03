@@ -218,6 +218,23 @@ export function SettingsPanel() {
                 </CardContent>
               </Card>
 
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">网络</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <SettingRow
+                    label="代理"
+                    settingKey="network_proxy"
+                    value={String(settings.network_proxy ?? "")}
+                    onSave={updateSetting}
+                    saving={saving}
+                    saved={saved}
+                    placeholder="http://127.0.0.1:7897"
+                  />
+                </CardContent>
+              </Card>
+
               {/* Security */}
               <Card>
                 <CardHeader className="pb-3">

@@ -58,6 +58,14 @@ def test_xiaohongshu_share_text_with_bili_like_tokens_stays_xiaohongshu():
     assert not ytdlp._is_bilibili_url(share_text)
 
 
+def test_schemeless_bilibili_opus_source_is_normalized_to_https():
+    cleaned = _clean_source_path("bilibili.com/opus/1220469846869803016?spm_id_from=333.1365.0.0")
+
+    assert cleaned == "https://bilibili.com/opus/1220469846869803016?spm_id_from=333.1365.0.0"
+    assert _detect_source_type(cleaned) == "url"
+    assert resolve_source_flow(cleaned).platform == "bilibili_opus"
+
+
 def test_xiaohongshu_pc_share_text_routes_to_xiaohongshu():
     share_text = (
         "26 【传说中deepseek融资会议Q&A - blh | 小红书 - 你的生活兴趣社区】 "
@@ -171,7 +179,7 @@ def test_xiaohongshu_image_download_retries_transient_urlopen_error(tmp_path, mo
             raise xhs_api.urllib.error.URLError("ssl eof")
         return FakeResponse()
 
-    monkeypatch.setattr(xhs_api.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(xhs_api, "urllib_urlopen", fake_urlopen)
     monkeypatch.setattr(xhs_api.time, "sleep", lambda _seconds: None)
 
     dest = tmp_path / "00.jpg"
@@ -179,6 +187,65 @@ def test_xiaohongshu_image_download_retries_transient_urlopen_error(tmp_path, mo
 
     assert calls == 2
     assert dest.read_bytes() == b"abc"
+
+
+def test_xiaohongshu_image_download_records_candidate_diagnostics(tmp_path, monkeypatch):
+    calls: list[str] = []
+
+    class FakeResponse:
+        status = 200
+        headers = {"Content-Length": "3"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size):
+            return b"abc" if not hasattr(self, "_sent") else b""
+
+    def fake_urlopen(req, timeout):
+        url = req.full_url
+        calls.append(url)
+        if "ci.xiaohongshu.com" in url:
+            raise xhs_api.urllib.error.URLError("ssl eof")
+        response = FakeResponse()
+        response._sent = False
+
+        def read_once(_size):
+            if response._sent:
+                return b""
+            response._sent = True
+            return b"abc"
+
+        response.read = read_once
+        return response
+
+    monkeypatch.setattr(xhs_api, "urllib_urlopen", fake_urlopen)
+    monkeypatch.setattr(xhs_api.time, "sleep", lambda _seconds: None)
+
+    info = {
+        "webpage_url": "https://www.xiaohongshu.com/explore/demo",
+        "extra": {
+            "image_url_candidates": [[
+                "https://ci.xiaohongshu.com/abc/demo.jpg",
+                "https://sns-webpic-qc.xhscdn.com/abc/demo.jpg?imageView2/2/w/1080",
+            ]],
+        },
+    }
+
+    paths = xhs_api.download_images(info, tmp_path)
+
+    assert [p.name for p in paths] == ["00.jpg"]
+    assert len(calls) == 2
+    diagnostics = info["extra"]["image_download_diagnostics"]
+    assert diagnostics["success"] == 1
+    attempts = diagnostics["images"][0]["attempts"]
+    assert [attempt["status"] for attempt in attempts] == ["failed", "success"]
+    assert attempts[0]["classification"] == "tls_or_cdn_rejected"
+    assert attempts[0]["request"]["cookie_state"] in {"anonymous_webId", "runtime_cookie"}
+    assert attempts[1]["url_kind"] == "preview_or_cdn"
 
 
 def test_image_note_fallback_outputs_do_not_use_llm_placeholder():
@@ -253,6 +320,95 @@ async def test_image_note_llm_connection_error_writes_fallback_archive(tmp_path,
     assert (task_dir / "mindmap.md").exists()
     analysis = json.loads((task_dir / "analysis.json").read_text(encoding="utf-8"))
     assert analysis["_fallback"]["reason"] == "llm_failed"
+
+
+@pytest.mark.asyncio
+async def test_image_note_vlm_records_each_image_status(tmp_path, monkeypatch):
+    database.reset_db_path(tmp_path)
+    settings = RuntimeSettings(
+        data_root=str(tmp_path),
+        vlm_api_base="https://vlm.example/v1",
+        vlm_api_key="vlm-key",
+        vlm_model="vision-model",
+        kb_enabled=False,
+    )
+    monkeypatch.setattr(settings_module, "_runtime_settings", settings)
+    monkeypatch.setattr(pipeline_core, "get_runtime_settings", lambda: settings)
+    monkeypatch.setattr(pipeline_core, "_schedule_kb_index", lambda *_args, **_kwargs: None)
+
+    from app.core.model_router import EndpointBinding
+    import app.core.model_router as model_router
+    import app.services.analysis.vlm as vlm_module
+
+    def fake_resolve_vlm_binding(_rt):
+        return EndpointBinding(
+            capability="vlm",
+            model="vision-model",
+            api_base="https://vlm.example/v1",
+            api_key="vlm-key",
+            configured=True,
+            request_kwargs={"concurrency": 2, "timeout_sec": 3},
+        )
+
+    class FakeVLM:
+        def describe_image(self, path, _binding):
+            if Path(path).name == "00.jpg":
+                return {
+                    "kind": "text",
+                    "text": "第一张 OCR",
+                    "payload_meta": {"source_bytes": 3, "payload_bytes": 3},
+                    "duration_ms": 12,
+                }
+            return {
+                "kind": "text",
+                "text": "",
+                "payload_meta": {"source_bytes": 3, "payload_bytes": 3},
+                "duration_ms": 10,
+            }
+
+    def fake_download_images(_info, output_dir):
+        images_dir = output_dir / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        first = images_dir / "00.jpg"
+        second = images_dir / "01.jpg"
+        first.write_bytes(b"abc")
+        second.write_bytes(b"def")
+        return [first, second]
+
+    monkeypatch.setattr(model_router, "resolve_vlm_binding", fake_resolve_vlm_binding)
+    monkeypatch.setattr(vlm_module, "get_vlm_service", lambda: FakeVLM())
+    monkeypatch.setattr(xhs_api, "download_images", fake_download_images)
+
+    store = database.get_task_store()
+    task = Task(
+        id=uuid4(),
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.PROCESSING,
+        source="https://www.xiaohongshu.com/explore/demo",
+    )
+    store.save(task)
+
+    task_dir = tmp_path / "archive"
+    task_dir.mkdir()
+    metadata = MediaMetadata(
+        title="多图 caption",
+        source_url=task.source,
+        platform="xiaohongshu",
+        media_type=MediaType.OTHER,
+        content_subtype="image_note",
+        description="正文足够触发 fallback 汇总",
+    )
+
+    await pipeline_core._process_image_note(task, metadata, task_dir, {"extra": {"image_urls": ["a", "b"]}})
+
+    by_index = {item["index"]: item for item in task.result["image_descriptions"]}
+    assert by_index[0]["status"] == "completed"
+    assert by_index[1]["status"] == "failed"
+    assert by_index[1]["error"] == "VLM returned empty caption text"
+    assert (task_dir / "descriptions" / "00.md").read_text(encoding="utf-8") == "第一张 OCR"
+    assert "VLM caption 失败" in (task_dir / "descriptions" / "01.md").read_text(encoding="utf-8")
+    warning_codes = [warning["code"] for warning in task.result["warnings"]]
+    assert "note_vlm_partial_failed" in warning_codes
 
 
 def test_xiaohongshu_initial_state_video_stream_is_parsed():

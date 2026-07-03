@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 
+from app.core.network import httpx_client_kwargs
 from app.core.settings import get_runtime_settings
 from app.models import TranscriptSegment
 from app.services.recognition.chunking import ASRChunker
@@ -318,7 +319,7 @@ class SiliconFlowASRService:
         logger.info(f"ASR chunking produced {len(chunks)} chunks; uploading serially")
 
         segments: list[dict[str, Any]] = []
-        with httpx.Client(timeout=timeout) as client:
+        with httpx.Client(timeout=timeout, **httpx_client_kwargs(url)) as client:
             for i, chunk in enumerate(chunks):
                 chunk_duration = float(chunk.end) - float(chunk.start)
                 if chunk_duration < 0.1:

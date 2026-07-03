@@ -422,9 +422,10 @@ def _create_direct_task(source: str, options: dict):
     )
     from app.models import Task, TaskStatus, TaskType
 
+    clean_source = _clean_source_path(source)
     task = Task(
         task_type=TaskType.PIPELINE,
-        source=source,
+        source=clean_source,
         options=options,
         status=TaskStatus.QUEUED,
         current_step=PipelineStep.DOWNLOAD,
@@ -433,7 +434,6 @@ def _create_direct_task(source: str, options: dict):
         completed_steps=[],
     )
 
-    clean_source = _clean_source_path(source)
     if _looks_like_local_path(clean_source):
         path = Path(clean_source)
         title = path.stem
@@ -443,7 +443,7 @@ def _create_direct_task(source: str, options: dict):
             else "audio"
         )
     else:
-        title = "download"
+        title = str(task.id)
         media_type = "unknown"
 
     task_dir = create_task_dir(task.id, title)

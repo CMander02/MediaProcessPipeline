@@ -22,6 +22,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from app.core.network import httpx_client_kwargs, urllib_urlopen
 from app.core.logging_setup import log_event
 from app.core.settings import get_runtime_settings
 
@@ -278,7 +279,12 @@ def _download_binary(url: str, *, referer: str) -> tuple[bytes, str]:
     try:
         import httpx
 
-        with httpx.Client(headers=headers, follow_redirects=True, timeout=timeout) as client:
+        with httpx.Client(
+            headers=headers,
+            follow_redirects=True,
+            timeout=timeout,
+            **httpx_client_kwargs(url),
+        ) as client:
             resp = client.get(url)
             resp.raise_for_status()
             content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
@@ -287,17 +293,35 @@ def _download_binary(url: str, *, referer: str) -> tuple[bytes, str]:
         log_event(logger, logging.DEBUG, "webpage.image.httpx_failed", url=url, error=exc)
 
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib_urlopen(req, timeout=timeout) as resp:
         content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
         return resp.read(_MAX_IMAGE_BYTES + 1), content_type
 
 
 def _image_download_candidates(url: str) -> list[str]:
-    candidates = [url]
+    candidates = []
+    for candidate in _bilibili_image_candidates(url):
+        if candidate not in candidates:
+            candidates.append(candidate)
+    if url not in candidates:
+        candidates.append(url)
     proxy_url = _image_proxy_url(url)
     if proxy_url:
         candidates.append(proxy_url)
     return candidates
+
+
+def _bilibili_image_candidates(url: str) -> list[str]:
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if not (host == "hdslb.com" or host.endswith(".hdslb.com")):
+        return []
+    path = parsed.path
+    if "@" not in path:
+        return [url]
+    original_path = path.split("@", 1)[0]
+    original = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, original_path, "", "", ""))
+    return [original, url]
 
 
 def _image_proxy_url(url: str) -> str:
@@ -325,7 +349,12 @@ def _get_text(url: str, *, headers: dict[str, str], timeout: float, label: str) 
     try:
         import httpx
 
-        with httpx.Client(headers=headers, follow_redirects=True, timeout=timeout) as client:
+        with httpx.Client(
+            headers=headers,
+            follow_redirects=True,
+            timeout=timeout,
+            **httpx_client_kwargs(url),
+        ) as client:
             resp = client.get(url)
             resp.raise_for_status()
             return resp.text, (resp.headers.get("Content-Type") or "").lower()
@@ -334,7 +363,7 @@ def _get_text(url: str, *, headers: dict[str, str], timeout: float, label: str) 
 
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib_urlopen(req, timeout=timeout) as resp:
             return resp.read().decode("utf-8", errors="replace"), (resp.headers.get("Content-Type") or "").lower()
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:500]

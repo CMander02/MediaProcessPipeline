@@ -8,6 +8,8 @@ const PLATFORM_ICONS: Record<string, { src: string; label: string }> = {
   apple_podcast: { src: applePodcastsSvg, label: "Apple Podcasts" },
   apple: { src: applePodcastsSvg, label: "Apple Podcasts" },
   bilibili: { src: bilibiliSvg, label: "Bilibili" },
+  bilibili_opus: { src: bilibiliSvg, label: "Bilibili" },
+  bilibili_video: { src: bilibiliSvg, label: "Bilibili" },
   bili: { src: bilibiliSvg, label: "Bilibili" },
   xiaohongshu: { src: xiaohongshuSvg, label: "小红书" },
   xhs: { src: xiaohongshuSvg, label: "小红书" },

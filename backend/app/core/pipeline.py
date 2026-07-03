@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import time
+import urllib.parse
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -21,6 +22,7 @@ from app.core.database import get_task_store
 from app.core.events import TaskEvent, get_event_bus
 from app.core.settings import get_runtime_settings
 from app.core.logging_setup import log_event
+from app.core.source_normalization import normalize_source_input
 from app.core.source_resolver import SourceFlow, flow_from_metadata, resolve_source_flow
 from app.models import MediaMetadata, Task, TaskStatus, TaskType
 
@@ -62,8 +64,60 @@ def pipeline_steps_schema() -> list[dict[str, str]]:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _canonical_image_url(value: Any) -> str:
+    raw = str(value or "").strip()
+    if raw.startswith("//"):
+        raw = f"https:{raw}"
+    if raw.startswith("http://"):
+        raw = "https://" + raw[len("http://"):]
+    if not raw.startswith("https://"):
+        return ""
+    parsed = urllib.parse.urlparse(raw)
+    path = urllib.parse.unquote(parsed.path)
+    if "@" in path:
+        path = path.split("@", 1)[0]
+    return urllib.parse.urlunparse(("https", parsed.netloc.lower(), path, "", "", ""))
+
+
+def _localize_note_markdown_image_refs(text: str, metadata: MediaMetadata, image_paths: list[Path]) -> str:
+    extra = metadata.extra if isinstance(metadata.extra, dict) else {}
+    if metadata.platform != "bilibili_opus" or extra.get("bilibili_type") != "article":
+        return text
+    image_urls = extra.get("image_urls")
+    image_candidates = extra.get("image_url_candidates")
+    if not isinstance(image_urls, list) or not image_paths:
+        return text
+
+    mapping: dict[str, str] = {}
+    for fallback_idx, path in enumerate(image_paths):
+        idx = int(path.stem) if path.stem.isdigit() else fallback_idx
+        local_path = f"images/{path.name}"
+        urls: list[Any] = []
+        if 0 <= idx < len(image_urls):
+            urls.append(image_urls[idx])
+        if isinstance(image_candidates, list) and 0 <= idx < len(image_candidates):
+            group = image_candidates[idx]
+            if isinstance(group, list):
+                urls.extend(group)
+        for url in urls:
+            key = _canonical_image_url(url)
+            if key:
+                mapping[key] = local_path
+    if not mapping:
+        return text
+
+    def replace(match: re.Match[str]) -> str:
+        key = _canonical_image_url(match.group(2))
+        local_path = mapping.get(key)
+        if not local_path:
+            return match.group(0)
+        return f"{match.group(1)}{local_path}{match.group(3)}"
+
+    return re.sub(r"(!\[[^\]]*]\()([^)]+)(\))", replace, text)
+
 def _detect_source_type(source: str) -> str:
     """Detect the type of media source."""
+    source = _clean_source_path(source)
     source_lower = source.lower()
     if source_lower.startswith(("http://", "https://")):
         return "url"
@@ -85,8 +139,9 @@ def _platform_prefer_subtitles(source_type: str) -> bool:
     if source_type == "webpage":
         return False
 
+    platform_config_key = "bilibili" if source_type in {"bilibili", "bilibili_video", "bilibili_opus"} else source_type
     supported_platforms = {"bilibili", "youtube", "xiaoyuzhou", "xiaohongshu", "zhihu", "apple_podcast"}
-    platform_cfg = configs.get(source_type) if source_type in supported_platforms else None
+    platform_cfg = configs.get(platform_config_key) if platform_config_key in supported_platforms else None
     if isinstance(platform_cfg, dict) and "prefer_subtitle" in platform_cfg:
         return bool(platform_cfg["prefer_subtitle"])
     return bool(rt.prefer_platform_subtitles)
@@ -341,21 +396,7 @@ def _clean_source_path(source: str) -> str:
     the Xiaohongshu mobile/web app:
       '77 【标题 | 小红书】 😆 n7715oGO82X4J5v 😆 https://www.xiaohongshu.com/...'
     """
-    source = source.strip()
-    if (source.startswith('"') and source.endswith('"')) or \
-       (source.startswith("'") and source.endswith("'")):
-        source = source[1:-1]
-    url_match = re.search(r'https?://[^\s<>"\'，。！？；、]+', source)
-    if url_match and (
-        source.startswith(("http://", "https://"))
-        or (
-            not source.startswith(("ftp://", "rtmp://"))
-            and not (len(source) >= 2 and source[1] == ":")
-            and not source.startswith("/")
-        )
-    ):
-        source = url_match.group(0)
-    return source
+    return normalize_source_input(source)
 
 
 def _looks_like_local_path(source: str) -> bool:
@@ -1216,6 +1257,16 @@ def _image_note_index(position: int, path: Path) -> int:
         return position
 
 
+def _note_image_download_diagnostics(ingest_info: dict) -> dict[str, Any] | None:
+    if not isinstance(ingest_info, dict):
+        return None
+    extra = ingest_info.get("extra")
+    if not isinstance(extra, dict):
+        return None
+    diagnostics = extra.get("image_download_diagnostics")
+    return diagnostics if isinstance(diagnostics, dict) else None
+
+
 async def _process_image_note(
     task: Task,
     metadata: "MediaMetadata",
@@ -1256,6 +1307,8 @@ async def _process_image_note(
     else:
         if metadata.platform == "zhihu":
             from app.services.ingestion.platform.zhihu.api import download_images
+        elif metadata.platform in {"bilibili", "bilibili_opus"}:
+            from app.services.ingestion.platform.bilibili.note import download_images
         else:
             from app.services.ingestion.platform.xiaohongshu.api import download_images
         try:
@@ -1273,6 +1326,13 @@ async def _process_image_note(
             )
             image_warning_recorded = True
             image_paths = []
+    image_download_diagnostics = _note_image_download_diagnostics(ingest_info)
+    if image_download_diagnostics:
+        metadata.extra["image_download_diagnostics"] = image_download_diagnostics
+        task.result = dict(task.result or {})
+        task.result["image_download_diagnostics"] = image_download_diagnostics
+        get_task_store().update_status(task.id, task.status, result=task.result)
+        write_metadata_json(task_dir, metadata, status="processing")
     if metadata.content_subtype == "image_note" and not image_paths and not image_warning_recorded:
         log_event(logger, logging.WARNING, "note.images.empty", platform=metadata.platform)
         _append_task_warning(
@@ -1280,7 +1340,15 @@ async def _process_image_note(
             "note_images_empty",
             "没有获得图片文件，已继续处理正文。",
             platform=metadata.platform,
+            diagnostics=image_download_diagnostics,
         )
+
+    if source_text and image_paths:
+        localized_source_text = _localize_note_markdown_image_refs(source_text, metadata, image_paths)
+        if localized_source_text != source_text:
+            source_text = localized_source_text
+            metadata.description = source_text
+            await _write_text_artifact(task, task_dir, "source.md", source_text)
 
     await _raise_if_cancelled(task.id)
 
@@ -1305,15 +1373,82 @@ async def _process_image_note(
                         path,
                         vlm_binding,
                     )
-                    return {"index": idx, "image_path": str(path), **result}
+                    if not str(result.get("text") or "").strip():
+                        error_message = "VLM returned empty caption text"
+                        payload = {
+                            "index": idx,
+                            "file": path.name,
+                            "error": error_message,
+                            "payload_meta": result.get("payload_meta"),
+                            "duration_ms": result.get("duration_ms"),
+                        }
+                        log_event(logger, logging.WARNING, "vlm.image.failed", index=idx, file=path.name, error=error_message)
+                        await _emit_timeline_event(
+                            task,
+                            "vlm.image.failed",
+                            stage="analyze",
+                            step_id="analyze",
+                            level="warning",
+                            message=f"图片 {idx + 1} caption 失败",
+                            data=payload,
+                        )
+                        return {
+                            "index": idx,
+                            "image_path": str(path),
+                            "kind": result.get("kind", "content"),
+                            "text": "",
+                            "status": "failed",
+                            "error": error_message,
+                            "payload_meta": result.get("payload_meta"),
+                            "duration_ms": result.get("duration_ms"),
+                        }
+                    payload = {"index": idx, "file": path.name, "chars": len(result.get("text") or "")}
+                    if result.get("payload_meta"):
+                        payload["payload_meta"] = result["payload_meta"]
+                    if result.get("duration_ms") is not None:
+                        payload["duration_ms"] = result["duration_ms"]
+                    await _emit_timeline_event(
+                        task,
+                        "vlm.image.completed",
+                        stage="analyze",
+                        step_id="analyze",
+                        level="info",
+                        message=f"图片 {idx + 1} caption 完成",
+                        data=payload,
+                    )
+                    return {"index": idx, "image_path": str(path), "status": "completed", **result}
                 except Exception as e:
-                    log_event(logger, logging.WARNING, "vlm.image.failed", index=idx, file=path.name, error=e)
-                    return {"index": idx, "image_path": str(path), "kind": "content", "text": ""}
+                    error_message = _safe_pipeline_error(e)
+                    log_event(logger, logging.WARNING, "vlm.image.failed", index=idx, file=path.name, error=error_message)
+                    await _emit_timeline_event(
+                        task,
+                        "vlm.image.failed",
+                        stage="analyze",
+                        step_id="analyze",
+                        level="warning",
+                        message=f"图片 {idx + 1} caption 失败",
+                        data={"index": idx, "file": path.name, "error": error_message},
+                    )
+                    return {
+                        "index": idx,
+                        "image_path": str(path),
+                        "kind": "content",
+                        "text": "",
+                        "status": "failed",
+                        "error": error_message,
+                    }
 
         descriptions = list(await _aio.gather(*[_describe(i, p) for i, p in enumerate(image_paths)]))
     else:
         for i, p in enumerate(image_paths):
-            descriptions.append({"index": _image_note_index(i, p), "image_path": str(p), "kind": "content", "text": ""})
+            descriptions.append({
+                "index": _image_note_index(i, p),
+                "image_path": str(p),
+                "kind": "content",
+                "text": "",
+                "status": "skipped",
+                "error": vlm_binding.reason or "VLM not configured",
+            })
         if image_paths:
             log_event(
                 logger,
@@ -1327,11 +1462,15 @@ async def _process_image_note(
 
     # Write per-image description files
     desc_dir = task_dir / "descriptions"
-    desc_dir.mkdir(exist_ok=True)
+    desc_dir.mkdir(parents=True, exist_ok=True)
     for d in descriptions:
+        desc_path = desc_dir / f"{d['index']:02d}.md"
         if d.get("text"):
-            desc_path = desc_dir / f"{d['index']:02d}.md"
             desc_path.write_text(d["text"], encoding="utf-8")
+        elif d.get("status") == "failed":
+            desc_path.write_text(f"VLM caption 失败：{d.get('error') or 'unknown error'}\n", encoding="utf-8")
+        elif d.get("status") == "skipped":
+            desc_path.write_text(f"VLM caption 跳过：{d.get('error') or 'not configured'}\n", encoding="utf-8")
 
     # Combine all descriptions into a pseudo-transcript
     combined_parts = []
@@ -1351,6 +1490,17 @@ async def _process_image_note(
     task.result = task.result or {}
     task.result["image_descriptions"] = descriptions
     task.result["output_dir"] = str(task_dir)
+    if image_download_diagnostics:
+        task.result["image_download_diagnostics"] = image_download_diagnostics
+    failed_vlm = [d for d in descriptions if d.get("status") == "failed"]
+    if failed_vlm:
+        _append_task_warning(
+            task,
+            "note_vlm_partial_failed",
+            "部分图片 caption 失败，已保留失败原因。",
+            failed=len(failed_vlm),
+            total=len(descriptions),
+        )
     get_task_store().update_status(task.id, task.status, result=task.result)
 
     # Analyze + summarize + mindmap using combined text
@@ -1490,7 +1640,9 @@ async def _process_image_note(
     write_metadata_json(task_dir, metadata, status="completed")
     await _update_step(task, PipelineStep.ARCHIVE, completed=True)
 
-    warnings = list((task.result or {}).get("warnings") or [])
+    existing_result = dict(task.result or {})
+    warnings = list(existing_result.get("warnings") or [])
+    image_download_diagnostics = existing_result.get("image_download_diagnostics")
     task.result = {
         "metadata": metadata.model_dump(mode="json"),
         "image_descriptions": descriptions,
@@ -1499,6 +1651,8 @@ async def _process_image_note(
         "analysis": analysis,
         "content_subtype": metadata.content_subtype,
     }
+    if image_download_diagnostics:
+        task.result["image_download_diagnostics"] = image_download_diagnostics
     if warnings:
         task.result["warnings"] = warnings
 
@@ -1542,6 +1696,9 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
     rt = get_runtime_settings()
     source = _clean_source_path(task.source)
+    if source != task.source:
+        task.source = source
+        get_task_store().save(task)
     platform_subtitle = None
     source_type = _detect_source_type(source)
     force_asr = bool(rt.force_asr or task.options.get("force_asr", False))
@@ -1871,7 +2028,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                             # Try to infer platform from NFO source_url
                             su = nfo_meta["source_url"]
                             if "bilibili.com" in su:
-                                metadata.platform = "bilibili"
+                                metadata.platform = "bilibili_video"
                             elif "youtube.com" in su or "youtu.be" in su:
                                 metadata.platform = "youtube"
 
@@ -1898,7 +2055,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         else:
             # ── URL source: probe metadata + subtitle first ──
             # 1. Resolve title for task_dir naming
-            if route_type == "bilibili":
+            if route_type in {"bilibili", "bilibili_video"}:
                 bv_match = re.search(r'(BV[0-9A-Za-z]+)', source)
                 title = bv_match.group(1) if bv_match else None
             elif route_type == "youtube":
@@ -1909,7 +2066,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(source, download=False)
                         title = info.get("title", "unknown") if info else "unknown"
-            elif route_type in ("xiaohongshu", "zhihu", "xiaoyuzhou", "apple_podcast", "webpage"):
+            elif route_type in ("xiaohongshu", "zhihu", "bilibili_opus", "xiaoyuzhou", "apple_podcast", "webpage"):
                 # Title will be resolved during the actual download step; use task id as placeholder.
                 title = None
             else:
@@ -1919,9 +2076,9 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     title = info.get("title", "unknown") if info else "unknown"
 
             if not task_dir:
-                task_dir = create_task_dir(task.id, title or str(task.id)[:8])
+                task_dir = create_task_dir(task.id, title or str(task.id))
 
-            if use_platform_subtitles and not force_asr and route_type not in ("xiaohongshu", "zhihu", "xiaoyuzhou", "apple_podcast", "webpage"):
+            if use_platform_subtitles and not force_asr and route_type not in ("xiaohongshu", "zhihu", "bilibili_opus", "xiaoyuzhou", "apple_podcast", "webpage"):
                 await _update_flow_step(task, "subtitle_probe", message="探测平台字幕")
                 # Probe: fetch metadata + subtitle (lightweight, no video download)
                 try:

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import base64
+import io
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -49,13 +51,42 @@ def _detect_media_type(data: bytes, suffix: str) -> str:
     return media_type_map.get(suffix, "image/jpeg")
 
 
-def _encode_image(image_path: Path) -> tuple[str, str]:
-    """Return (base64_data, media_type) for an image file."""
-    suffix = image_path.suffix.lower().lstrip(".")
+def _prepare_image_bytes(image_path: Path, *, max_edge: int = 1800) -> tuple[bytes, str, dict[str, Any]]:
     raw = image_path.read_bytes()
-    media_type = _detect_media_type(raw, suffix)
+    original_media_type = _detect_media_type(raw, image_path.suffix.lower().lstrip("."))
+    meta: dict[str, Any] = {
+        "source_bytes": len(raw),
+        "payload_bytes": len(raw),
+        "media_type": original_media_type,
+    }
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(raw)) as image:
+            meta["source_size"] = list(image.size)
+            image = image.convert("RGB")
+            if max(image.size) > max_edge:
+                image.thumbnail((max_edge, max_edge))
+            output = io.BytesIO()
+            image.save(output, format="JPEG", quality=88, optimize=True)
+            prepared = output.getvalue()
+            if prepared and len(prepared) < len(raw):
+                meta["payload_bytes"] = len(prepared)
+                meta["payload_size"] = list(image.size)
+                meta["media_type"] = "image/jpeg"
+                return prepared, "image/jpeg", meta
+    except Exception as exc:
+        meta["prepare_error"] = str(exc)
+    return raw, original_media_type, meta
+
+
+def _encode_image(image_path: Path) -> tuple[str, str, dict[str, Any]]:
+    """Return (base64_data, media_type, payload_meta) for an image file."""
+    suffix = image_path.suffix.lower().lstrip(".")
+    raw, media_type, meta = _prepare_image_bytes(image_path)
+    media_type = media_type or _detect_media_type(raw, suffix)
     data = base64.b64encode(raw).decode("ascii")
-    return data, media_type
+    return data, media_type, meta
 
 
 def _parse_response(text: str) -> dict[str, str]:
@@ -95,7 +126,7 @@ class VLMService:
             or self._model != binding.model
         ):
             from app.services.analysis._openai_client import make_openai_client
-            self._client = make_openai_client(binding.api_base, binding.api_key)
+            self._client = make_openai_client(binding.api_base, binding.api_key, max_retries=0)
             self._model = binding.model
             self._api_base = binding.api_base
             self._api_key = binding.api_key
@@ -105,15 +136,16 @@ class VLMService:
         self,
         image_path: Path,
         binding: EndpointBinding | None = None,
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         """Classify and describe/OCR a single image. Returns {kind, text}."""
         from app.core.settings import get_runtime_settings
         rt = get_runtime_settings()
         binding = binding or resolve_vlm_binding(rt)
         client, model = self._get_client(binding)
 
-        b64, media_type = _encode_image(image_path)
+        b64, media_type, payload_meta = _encode_image(image_path)
         timeout_sec = int(binding.request_kwargs.get("timeout_sec") or 90)
+        started = time.monotonic()
         response = client.chat.completions.create(
             model=model,
             max_tokens=int(binding.request_kwargs.get("max_tokens") or rt.vlm_max_tokens),
@@ -159,6 +191,9 @@ class VLMService:
             retry_text = (retry.choices[0].message.content or "").strip()
             if retry_text:
                 result = {"kind": "text", "text": retry_text}
+        duration_ms = int((time.monotonic() - started) * 1000)
+        result["payload_meta"] = payload_meta
+        result["duration_ms"] = duration_ms
         log_event(
             logger,
             logging.INFO,
@@ -166,6 +201,11 @@ class VLMService:
             file=image_path.name,
             kind=result["kind"],
             chars=len(result["text"]),
+            payload_bytes=payload_meta.get("payload_bytes"),
+            source_bytes=payload_meta.get("source_bytes"),
+            source_size=payload_meta.get("source_size"),
+            payload_size=payload_meta.get("payload_size"),
+            duration_ms=duration_ms,
         )
         return result
 

@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import shutil
+import ssl
 import subprocess
 import time
 import urllib.error
@@ -23,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.core.network import runtime_proxy_url, urllib_urlopen
 from app.core.settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,14 @@ _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
 )
+
+
+class ImageDownloadError(RuntimeError):
+    """Image candidate download failed with structured diagnostics."""
+
+    def __init__(self, message: str, diagnostics: dict[str, Any]):
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 
 @dataclass(frozen=True)
@@ -53,7 +63,7 @@ def resolve_url(value: str) -> str:
     short = _SHORT_LINK_RE.search(value)
     if short:
         req = urllib.request.Request(short.group(0), headers=_headers())
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urllib_urlopen(req, timeout=20) as resp:
             return resp.geturl()
 
     full = _FULL_URL_RE.search(value)
@@ -184,6 +194,7 @@ def download_video(info: dict[str, Any], output_dir: Path) -> tuple[Path, Path]:
 def download_images(info: dict[str, Any], output_dir: Path) -> list[Path]:
     """Download all images from an image_note and return their local paths."""
     extra = info.get("extra") or {}
+    info["extra"] = extra
     image_urls: list[str] = extra.get("image_urls") or []
     image_url_candidates = extra.get("image_url_candidates") or []
     if not image_url_candidates:
@@ -195,20 +206,78 @@ def download_images(info: dict[str, Any], output_dir: Path) -> list[Path]:
     images_dir.mkdir(parents=True, exist_ok=True)
     referer = str(info.get("webpage_url") or "https://www.xiaohongshu.com/")
     paths: list[Path] = []
+    diagnostics: dict[str, Any] = {
+        "platform": "xiaohongshu",
+        "referer": referer,
+        "image_count": len(image_url_candidates),
+        "success": 0,
+        "failed": 0,
+        "failed_indices": [],
+        "images": [],
+    }
     for idx, candidates in enumerate(image_url_candidates):
         urls = [url for url in candidates if isinstance(url, str) and url.startswith("http")]
         if not urls:
+            diagnostics["images"].append({
+                "index": idx,
+                "status": "skipped",
+                "reason": "no_http_candidates",
+                "candidate_count": 0,
+                "attempts": [],
+            })
             continue
         ext = _guess_image_ext_from_urls(urls)
         dest = images_dir / f"{idx:02d}.{ext}"
         if dest.exists():
             paths.append(dest)
+            diagnostics["success"] += 1
+            diagnostics["images"].append({
+                "index": idx,
+                "status": "completed",
+                "reason": "already_exists",
+                "path": str(dest),
+                "candidate_count": len(urls),
+                "attempts": [],
+            })
             continue
+        if idx:
+            time.sleep(1.2)
         try:
-            _download_file_candidates(urls, dest, referer=referer)
+            record = _download_file_candidates(urls, dest, referer=referer)
             paths.append(dest)
-        except Exception as e:
+            diagnostics["success"] += 1
+            diagnostics["images"].append({
+                "index": idx,
+                "status": "completed",
+                "path": str(dest),
+                "candidate_count": len(urls),
+                **record,
+            })
+        except ImageDownloadError as e:
+            diagnostics["failed"] += 1
+            diagnostics["failed_indices"].append(idx)
+            diagnostics["images"].append({
+                "index": idx,
+                "status": "failed",
+                "candidate_count": len(urls),
+                "error": str(e),
+                **e.diagnostics,
+            })
             logger.warning(f"Failed to download XHS image {idx}: {e}")
+        except Exception as e:
+            diagnostics["failed"] += 1
+            diagnostics["failed_indices"].append(idx)
+            diagnostics["images"].append({
+                "index": idx,
+                "status": "failed",
+                "candidate_count": len(urls),
+                "error": str(e),
+                "attempts": [],
+            })
+            logger.warning(f"Failed to download XHS image {idx}: {e}")
+    if diagnostics["failed_indices"]:
+        diagnostics["url_refresh_probe"] = _probe_image_url_freshness(info, image_url_candidates)
+    extra["image_download_diagnostics"] = diagnostics
     return paths
 
 
@@ -248,6 +317,7 @@ def _headers(referer: str = "https://www.xiaohongshu.com/") -> dict[str, str]:
             "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
             "image/webp,image/apng,image/*,*/*;q=0.8"
         ),
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         "Cookie": "webId=anonymous",
     }
     cookie = (get_runtime_settings().xiaohongshu_cookie or "").strip()
@@ -258,7 +328,7 @@ def _headers(referer: str = "https://www.xiaohongshu.com/") -> dict[str, str]:
 
 def _fetch_text(url: str, referer: str) -> str:
     req = urllib.request.Request(url, headers=_headers(referer))
-    with urllib.request.urlopen(req, timeout=25) as resp:
+    with urllib_urlopen(req, timeout=25) as resp:
         raw = resp.read()
         encoding = resp.headers.get_content_charset() or "utf-8"
     try:
@@ -387,7 +457,7 @@ def _extract_image_url_candidates(note: dict[str, Any]) -> list[list[str]]:
             if not isinstance(value, str) or not value.startswith("http"):
                 return
             normalized = _normalize_url(value)
-            for candidate in (normalized, _transform_image_to_original(normalized)):
+            for candidate in (_transform_image_to_original(normalized), normalized):
                 if candidate and candidate not in candidates:
                     candidates.append(candidate)
 
@@ -488,22 +558,166 @@ def _dedupe_path(path: Path) -> Path:
         counter += 1
 
 
-def _download_file_candidates(urls: list[str], dest: Path, referer: str) -> None:
+def _download_file_candidates(urls: list[str], dest: Path, referer: str) -> dict[str, Any]:
     last_error: Exception | None = None
     seen: set[str] = set()
-    for url in urls:
+    attempts: list[dict[str, Any]] = []
+    for order, url in enumerate(urls):
         if url in seen:
             continue
         seen.add(url)
+        attempt = _download_attempt_record(order, url, referer)
         try:
-            _download_file(url, dest, referer=referer)
-            return
+            _download_file(url, dest, referer=referer, attempts=1)
+            attempt["status"] = "success"
+            if dest.exists():
+                attempt["bytes"] = dest.stat().st_size
+            attempts.append(attempt)
+            return {"attempts": attempts}
         except Exception as e:
             last_error = e
+            attempt.update(_download_error_details(e))
+            attempts.append(attempt)
             logger.warning(f"Xiaohongshu image download URL failed: {e}")
             dest.unlink(missing_ok=True)
             dest.with_name(dest.name + ".part").unlink(missing_ok=True)
-    raise RuntimeError(f"All Xiaohongshu image URLs failed: {last_error}")
+    detail = " | ".join(
+        f"{item.get('url_redacted')} -> {item.get('error_type')}: {item.get('error')}"
+        for item in attempts[-3:]
+    )
+    raise ImageDownloadError(
+        f"All Xiaohongshu image URLs failed: {last_error}; candidates: {detail}",
+        {"attempts": attempts},
+    )
+
+
+def _download_attempt_record(order: int, url: str, referer: str) -> dict[str, Any]:
+    parsed = urllib.parse.urlparse(url)
+    headers = _headers(referer)
+    cookie = (get_runtime_settings().xiaohongshu_cookie or "").strip()
+    return {
+        "order": order,
+        "status": "pending",
+        "url_redacted": _redact_url_for_log(url),
+        "host": parsed.hostname,
+        "path_tail": Path(parsed.path).name[:48],
+        "query_keys": sorted(urllib.parse.parse_qs(parsed.query).keys()),
+        "url_kind": _classify_image_candidate_url(url),
+        "request": {
+            "referer": referer,
+            "headers": sorted(k for k in headers.keys() if k.lower() != "cookie"),
+            "cookie_state": "runtime_cookie" if cookie else "anonymous_webId",
+            "proxy": _proxy_diagnostics(url),
+        },
+    }
+
+
+def _classify_image_candidate_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host == "ci.xiaohongshu.com":
+        return "original"
+    if "xhscdn.com" in host:
+        return "preview_or_cdn"
+    return "candidate"
+
+
+def _proxy_diagnostics(url: str) -> dict[str, Any]:
+    proxy = runtime_proxy_url()
+    if proxy == "":
+        return {"mode": "direct"}
+    if proxy is None:
+        return {"mode": "client_default"}
+    return {"mode": "configured", "url": _redact_proxy_for_log(proxy)}
+
+
+def _redact_proxy_for_log(proxy: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(proxy)
+        host = parsed.hostname or ""
+        port = f":{parsed.port}" if parsed.port else ""
+        return urllib.parse.urlunparse((parsed.scheme, f"{host}{port}", "", "", "", ""))
+    except Exception:
+        return proxy.split("@")[-1]
+
+
+def _download_error_details(error: Exception) -> dict[str, Any]:
+    root = error.__cause__ or error
+    detail: dict[str, Any] = {
+        "status": "failed",
+        "error_type": type(root).__name__,
+        "error": str(root)[:500],
+        "classification": _classify_download_error(root),
+    }
+    if isinstance(root, urllib.error.HTTPError):
+        detail["http_status"] = root.code
+        detail["http_reason"] = root.reason
+    elif isinstance(root, urllib.error.URLError):
+        detail["url_error_reason"] = str(root.reason)
+    return detail
+
+
+def _classify_download_error(error: Exception) -> str:
+    text = str(error).lower()
+    if isinstance(error, urllib.error.HTTPError):
+        if error.code in {401, 403}:
+            return "headers_cookie_referer_or_auth"
+        if error.code in {404, 410}:
+            return "url_expired_or_invalid"
+        if error.code == 429:
+            return "access_frequency_limited"
+        return "http_error"
+    if isinstance(error, ssl.SSLError) or "ssl" in text or "eof" in text or "handshake" in text:
+        return "tls_or_cdn_rejected"
+    if "timed out" in text or "timeout" in text:
+        return "network_timeout_or_rate_limit"
+    if "connection reset" in text or "connection aborted" in text:
+        return "cdn_or_proxy_rejected"
+    return "network_or_cdn_error"
+
+
+def _probe_image_url_freshness(info: dict[str, Any], old_candidates: list[list[str]]) -> dict[str, Any]:
+    source = str(info.get("original_url") or info.get("webpage_url") or "").strip()
+    if not source:
+        return {"status": "skipped", "reason": "no_source_url"}
+    try:
+        refreshed = fetch_metadata(source)
+        new_candidates = (refreshed.get("extra") or {}).get("image_url_candidates") or []
+        old_fingerprints = [_candidate_fingerprint(group[0]) for group in old_candidates if group]
+        new_fingerprints = [_candidate_fingerprint(group[0]) for group in new_candidates if group]
+        return {
+            "status": "completed",
+            "old_groups": len(old_candidates),
+            "new_groups": len(new_candidates),
+            "changed": old_fingerprints != new_fingerprints,
+            "old_first": old_fingerprints[:5],
+            "new_first": new_fingerprints[:5],
+        }
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:500],
+        }
+
+
+def _candidate_fingerprint(url: str) -> dict[str, Any]:
+    parsed = urllib.parse.urlparse(url)
+    return {
+        "host": parsed.hostname,
+        "path_tail": Path(parsed.path).name[:48],
+        "query_keys": sorted(urllib.parse.parse_qs(parsed.query).keys()),
+        "kind": _classify_image_candidate_url(url),
+    }
+
+
+def _redact_url_for_log(url: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        tail = Path(parsed.path).name
+        return f"{parsed.netloc}/.../{tail[:32]}"
+    except Exception:
+        return url[:80]
 
 
 def _download_file(url: str, dest: Path, referer: str, attempts: int = 2, timeout_sec: int = 25) -> None:
@@ -515,7 +729,7 @@ def _download_file(url: str, dest: Path, referer: str, attempts: int = 2, timeou
         part.unlink(missing_ok=True)
         req = urllib.request.Request(url, headers=_headers(referer))
         try:
-            with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            with urllib_urlopen(req, timeout=timeout_sec) as resp:
                 total = int(resp.headers.get("Content-Length", 0))
                 with open(part, "wb") as f:
                     while True:
@@ -578,7 +792,7 @@ def _download_file_resumable(url: str, dest: Path, referer: str, attempts: int =
             headers["Range"] = f"bytes={downloaded}-"
         req = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib_urlopen(req, timeout=120) as resp:
                 status = getattr(resp, "status", 200)
                 content_length = int(resp.headers.get("Content-Length", 0))
                 content_range = resp.headers.get("Content-Range", "")

@@ -140,6 +140,7 @@ export interface RuntimeSettings {
 
   api_token?: string
   data_root?: string
+  network_proxy?: string
 
   [key: string]: unknown
 }

@@ -18,6 +18,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
+from app.core.network import urllib_urlopen
 from app.core.settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ def download_images(info: dict[str, Any], output_dir: Path) -> list[Path]:
             paths.append(dest)
             continue
         req = urllib.request.Request(url, headers=_headers(referer))
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib_urlopen(req, timeout=30) as resp:
             dest.write_bytes(resp.read())
         paths.append(dest)
     return paths

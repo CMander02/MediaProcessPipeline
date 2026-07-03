@@ -12,6 +12,8 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+from app.core.network import urllib_urlopen
+
 logger = logging.getLogger(__name__)
 
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -87,7 +89,7 @@ def _nav_request() -> Optional[dict]:
             "https://api.bilibili.com/x/web-interface/nav",
             headers=headers,
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib_urlopen(req, timeout=10) as resp:
             body = json.loads(resp.read())
         if body.get("code") == 0:
             return body.get("data") or {}

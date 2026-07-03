@@ -23,6 +23,8 @@ export interface Task {
   steps: string[]
   completed_steps: string[]
   flow?: TaskFlowSnapshot | null
+  content_subtype?: string | null
+  platform?: string | null
 }
 
 export interface TaskFlowStep {

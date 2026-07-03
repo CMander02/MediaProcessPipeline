@@ -34,7 +34,7 @@ def test_resolver_keeps_platform_identity_for_known_urls():
     xyz = resolve_source_flow("https://www.xiaoyuzhoufm.com/episode/6a045472e1eb34a939553f46")
     apple = resolve_source_flow("https://podcasts.apple.com/us/podcast/show/id123456?i=654321")
 
-    assert bili.platform == "bilibili"
+    assert bili.platform == "bilibili_video"
     assert bili.flow_id == "url_platform_video_subtitle"
     assert xhs.platform == "xiaohongshu"
     assert xhs.content_subtype == "image_note"
@@ -42,6 +42,38 @@ def test_resolver_keeps_platform_identity_for_known_urls():
     assert xyz.flow_id == "podcast_asr"
     assert apple.platform == "apple_podcast"
     assert apple.flow_id == "podcast_asr"
+
+
+def test_resolver_maps_bilibili_opus_to_image_note_flow():
+    flow = resolve_source_flow("https://www.bilibili.com/opus/1220490883646881792")
+
+    assert flow.platform == "bilibili_opus"
+    assert flow.route_type == "bilibili_opus"
+    assert flow.content_subtype == "image_note"
+    assert flow.flow_id == "url_image_note"
+    assert flow.ingestor == "bilibili_opus"
+    assert flow.requires_uvr is False
+
+
+def test_resolver_maps_schemeless_bilibili_opus_to_image_note_flow():
+    flow = resolve_source_flow("bilibili.com/opus/1220469846869803016?spm_id_from=333.1365.0.0")
+
+    assert flow.source_type == "url"
+    assert flow.platform == "bilibili_opus"
+    assert flow.route_type == "bilibili_opus"
+    assert flow.content_subtype == "image_note"
+    assert flow.flow_id == "url_image_note"
+
+
+def test_resolver_maps_bilibili_read_to_note_flow():
+    flow = resolve_source_flow("https://www.bilibili.com/read/cv12345678")
+
+    assert flow.platform == "bilibili_opus"
+    assert flow.route_type == "bilibili_opus"
+    assert flow.content_subtype == "text_note"
+    assert flow.flow_id == "url_webpage_note"
+    assert flow.ingestor == "bilibili_opus"
+    assert flow.requires_uvr is False
 
 
 def test_flow_from_metadata_promotes_url_media_to_api_fallback():

@@ -33,6 +33,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.core.network import urllib_urlopen
+
 logger = logging.getLogger(__name__)
 
 _CHUNK_SIZE = 1024 * 1024
@@ -243,7 +245,7 @@ def _itunes_lookup(entity_id: str, entity: str | None = None) -> dict[str, Any]:
         params["entity"] = entity
     url = "https://itunes.apple.com/lookup?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers=_HEADERS)
-    with urllib.request.urlopen(req, timeout=20) as resp:
+    with urllib_urlopen(req, timeout=20) as resp:
         raw = resp.read()
     try:
         data = json.loads(raw.decode("utf-8"))
@@ -267,7 +269,7 @@ def _select_rss_item(
 ) -> dict[str, Any] | None:
     """Fetch RSS and pick the item that best matches the requested episode."""
     req = urllib.request.Request(feed_url, headers=_HEADERS)
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib_urlopen(req, timeout=30) as resp:
         raw = resp.read()
 
     try:
@@ -466,7 +468,7 @@ def _dedupe_path(path: Path) -> Path:
 
 def _download_file(url: str, dest: Path) -> None:
     req = urllib.request.Request(url, headers=_HEADERS)
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with urllib_urlopen(req, timeout=60) as resp:
         total = int(resp.headers.get("Content-Length", 0))
         downloaded = 0
         with open(dest, "wb") as f:

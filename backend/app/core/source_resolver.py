@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from app.core.source_normalization import normalize_source_input
+
 
 @dataclass(frozen=True)
 class FlowStep:
@@ -33,7 +35,8 @@ class SourceFlow:
             return self.source_type
         if self.platform in {
             "youtube",
-            "bilibili",
+            "bilibili_video",
+            "bilibili_opus",
             "xiaohongshu",
             "zhihu",
             "xiaoyuzhou",
@@ -158,6 +161,7 @@ def resolve_source_flow(
     force_asr: bool = False,
     task_options: dict[str, Any] | None = None,
 ) -> SourceFlow:
+    source = normalize_source_input(source)
     source_type = "url" if source.lower().startswith(("http://", "https://")) else _local_source_type(source)
     if source_type != "url":
         media_subtype = "audio" if source_type == "local_audio" else "video"
@@ -190,9 +194,23 @@ def resolve_source_flow(
         try_subtitles = bool(prefer_platform_subtitles and not force_asr)
         flow_id = "url_platform_video_subtitle" if try_subtitles else "url_platform_video_asr"
         branch = "subtitle" if try_subtitles else "asr"
+    elif ytdlp._is_bilibili_article_url(source):
+        platform = "bilibili_opus"
+        content_subtype = "text_note"
+        ingestor = "bilibili_opus"
+        flow_id = "url_webpage_note"
+        branch = "note"
+        requires_uvr = False
+    elif ytdlp._is_bilibili_image_note_url(source):
+        platform = "bilibili_opus"
+        content_subtype = "image_note"
+        ingestor = "bilibili_opus"
+        flow_id = "url_image_note"
+        branch = "note"
+        requires_uvr = False
     elif ytdlp._is_bilibili_url(source):
-        platform = "bilibili"
-        ingestor = "bilibili"
+        platform = "bilibili_video"
+        ingestor = "bilibili_video"
         try_subtitles = bool(prefer_platform_subtitles and not force_asr)
         flow_id = "url_platform_video_subtitle" if try_subtitles else "url_platform_video_asr"
         branch = "subtitle" if try_subtitles else "asr"
@@ -281,7 +299,7 @@ def flow_from_metadata(
         flow_id = "url_platform_video_subtitle"
         branch = "subtitle"
         requires_uvr = False
-    elif platform in {"youtube", "bilibili", "xiaohongshu", "douyin", "tiktok", "twitter", "weibo"}:
+    elif platform in {"youtube", "bilibili", "bilibili_video", "xiaohongshu", "douyin", "tiktok", "twitter", "weibo"}:
         flow_id = "url_platform_video_asr"
         branch = "asr"
         requires_uvr = True

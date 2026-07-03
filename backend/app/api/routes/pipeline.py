@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 
 from app.core.settings import get_runtime_settings
 from app.core.pipeline import pipeline_steps_schema
+from app.core.source_normalization import normalize_source_input
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +196,7 @@ def sweep_stale_staging(max_age_hours: float = 24.0) -> int:
 @router.get("/probe")
 async def probe_url(url: str):
     """Extract metadata from a URL without downloading (for hotword suggestions)."""
+    url = normalize_source_input(url)
     _validate_url(url)
     import asyncio
 
@@ -306,14 +308,18 @@ async def delete_archive(req: ArchiveDeleteRequest):
     conn = _get_conn()
     archive_dir_str = str(archive_dir.resolve())
     # Search for task whose result JSON contains this output_dir path
-    rows = conn.execute("SELECT id, result FROM tasks WHERE result IS NOT NULL").fetchall()
+    rows = conn.execute("SELECT id, status, result FROM tasks WHERE result IS NOT NULL").fetchall()
     for row in rows:
         try:
             result = json.loads(row["result"]) if isinstance(row["result"], str) else row["result"]
             if result and str(Path(result.get("output_dir", "")).resolve()) == archive_dir_str:
+                if str(row["status"]) in {"queued", "processing"}:
+                    raise HTTPException(409, "Archive directory is used by an active task")
                 store.delete(UUID(row["id"]))
                 task_deleted = True
                 break
+        except HTTPException:
+            raise
         except (json.JSONDecodeError, TypeError, ValueError):
             continue
 

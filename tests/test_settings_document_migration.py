@@ -198,7 +198,7 @@ async def test_provider_model_payload_uses_urllib_fallback_on_httpx_timeout(monk
     captured: dict[str, Any] = {}
 
     class TimeoutClient:
-        def __init__(self, timeout: float):
+        def __init__(self, timeout: float, **_kwargs):
             self.timeout = timeout
 
         async def __aenter__(self):

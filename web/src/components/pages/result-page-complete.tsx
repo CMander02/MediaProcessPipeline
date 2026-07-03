@@ -3,6 +3,7 @@
  * Loads files progressively and subscribes to SSE for real-time updates.
  */
 import { useCallback, useEffect, useRef, useState } from "react"
+import type { ReactNode } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import {
@@ -16,6 +17,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { Progress } from "@/components/ui/progress"
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
 import { PlatformIcon } from "@/components/platform-icon"
 import { SpeakerMergeDialog, type SpeakerMergeInfo } from "@/components/speaker-merge-dialog"
@@ -25,9 +27,8 @@ import { useViewPosition } from "@/hooks/use-view-position"
 import { useTaskSSE, type FileReadyEvent, type StepEvent } from "@/hooks/use-task-sse"
 import { parseSRT, subtitlesToSRT, type Subtitle } from "@/lib/srt"
 import { navigate } from "@/lib/router"
-import { api, type TaskFlowSnapshot, type TaskTimelineEvent } from "@/lib/api"
+import { api, type Task, type TaskFlowSnapshot, type TaskTimelineEvent } from "@/lib/api"
 import { openExternalUrl } from "@/lib/tauri"
-import { usePipelineSteps } from "@/lib/constants"
 import { MediaPlayer } from "@/components/result/media-player"
 import { SpeakerPanel } from "@/components/result/speaker-panel"
 import { TranscriptTab, type MindmapTocNode } from "@/components/result/transcript-tab"
@@ -99,11 +100,21 @@ function timelineMessage(event: TaskTimelineEvent): string {
   return event.event_type
 }
 
-function timelineLevelClass(level: string): string {
-  if (level === "error") return "text-destructive"
-  if (level === "warning") return "text-amber-600 dark:text-amber-400"
-  if (level === "debug") return "text-muted-foreground"
-  return "text-foreground"
+function timelineStatusText(event: TaskTimelineEvent, stepLabels: Record<string, string> = {}): string {
+  if (event.event_type === "queued") return "任务已进入队列"
+  if (event.event_type === "processing") return "开始处理任务"
+  if (event.event_type === "completed") return "处理完成"
+  if (event.event_type === "failed") return timelineMessage(event)
+  const stepLabel = (event.step_id && stepLabels[event.step_id]) || (event.stage && stepLabels[event.stage])
+  const message = timelineMessage(event)
+  if (message && message !== event.stage && message !== event.step_id) return message
+  return stepLabel ?? message
+}
+
+function timelineStatusClass(level: string): string {
+  if (level === "error") return "border-destructive/40 bg-destructive/5 text-destructive"
+  if (level === "warning") return "border-amber-300/60 bg-amber-50 text-amber-700 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-300"
+  return "border-border bg-muted/40 text-muted-foreground"
 }
 
 function resolveSourceUrl(metadata: Record<string, unknown>): string | null {
@@ -159,8 +170,190 @@ function NoteMarkdown({ content, archivePath, sep }: { content: string; archiveP
   )
 }
 
+type ArticleMarkdownSegment =
+  | { kind: "markdown"; content: string }
+  | { kind: "figure"; alt: string; src: string; caption: string | null }
+
+function markdownHasInlineImages(content: string | null): boolean {
+  if (!content) return false
+  return /!\[[^\]]*]\([^)]+\)|<img\s/i.test(content)
+}
+
+function unescapeMarkdownText(value: string): string {
+  return value.replace(/\\([\\[\]])/g, "$1")
+}
+
+function normalizeCaptionText(value: string): string {
+  return unescapeMarkdownText(value).replace(/\s+/g, " ").trim()
+}
+
+function parseArticleMarkdownSegments(content: string): ArticleMarkdownSegment[] {
+  const lines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n")
+  const segments: ArticleMarkdownSegment[] = []
+  const pending: string[] = []
+
+  const flushPending = () => {
+    const markdown = pending.join("\n").trim()
+    if (markdown) segments.push({ kind: "markdown", content: markdown })
+    pending.length = 0
+  }
+
+  for (let i = 0; i < lines.length;) {
+    const match = lines[i].match(/^!\[([^\]]*(?:\\][^\]]*)*)]\(([^)]+)\)\s*$/)
+    if (!match) {
+      pending.push(lines[i])
+      i += 1
+      continue
+    }
+
+    const alt = unescapeMarkdownText(match[1]).trim()
+    const src = match[2].trim()
+    let cursor = i + 1
+    while (cursor < lines.length && lines[cursor].trim() === "") cursor += 1
+
+    const captionStart = cursor
+    const captionLines: string[] = []
+    while (cursor < lines.length && lines[cursor].trim() !== "") {
+      captionLines.push(lines[cursor])
+      cursor += 1
+    }
+    const caption = captionLines.join("\n").trim()
+    const shouldConsumeCaption =
+      Boolean(caption) &&
+      alt !== "图片" &&
+      normalizeCaptionText(caption) === normalizeCaptionText(alt)
+
+    flushPending()
+    segments.push({
+      kind: "figure",
+      alt,
+      src,
+      caption: shouldConsumeCaption ? caption : null,
+    })
+    i = shouldConsumeCaption ? cursor : i + 1
+
+    if (!shouldConsumeCaption && captionStart > i) {
+      while (i < captionStart && lines[i]?.trim() === "") {
+        pending.push(lines[i])
+        i += 1
+      }
+    }
+  }
+
+  flushPending()
+  return segments
+}
+
+function ArticleNoteMarkdown({ content, archivePath, sep }: { content: string; archivePath: string; sep: string }) {
+  const segments = parseArticleMarkdownSegments(content)
+  const markdownComponents = {
+    img: ({ src, alt }: { src?: string; alt?: string }) => (
+      <img
+        src={resolveNoteMediaSrc(src, archivePath, sep)}
+        alt={alt ?? ""}
+        className="mx-auto my-4 max-h-[520px] w-full rounded-md object-contain"
+        loading="lazy"
+      />
+    ),
+    a: ({ href, children }: { href?: string; children?: ReactNode }) => (
+      <a href={href} target="_blank" rel="noreferrer">{children}</a>
+    ),
+  }
+
+  return (
+    <div className="prose prose-sm max-w-none dark:prose-invert">
+      {segments.map((segment, index) => {
+        if (segment.kind === "markdown") {
+          return (
+            <MarkdownRenderer key={`markdown-${index}`} components={markdownComponents}>
+              {segment.content}
+            </MarkdownRenderer>
+          )
+        }
+        return (
+          <figure key={`figure-${index}`} className="my-5">
+            <img
+              src={resolveNoteMediaSrc(segment.src, archivePath, sep)}
+              alt={segment.alt}
+              className="mx-auto max-h-[640px] w-full rounded-md object-contain"
+              loading="lazy"
+            />
+            {segment.caption ? (
+              <figcaption className="mx-auto mt-2 max-w-2xl text-center text-xs leading-6 text-muted-foreground [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_p]:m-0">
+                <MarkdownRenderer
+                  components={{
+                    a: ({ href, children }) => (
+                      <a href={href} target="_blank" rel="noreferrer">{children}</a>
+                    ),
+                  }}
+                >
+                  {segment.caption}
+                </MarkdownRenderer>
+              </figcaption>
+            ) : null}
+          </figure>
+        )
+      })}
+    </div>
+  )
+}
+
+function ArticleNoteReader({
+  content,
+  archivePath,
+  sep,
+  descriptions,
+  isProcessing,
+}: {
+  content: string | null
+  archivePath: string
+  sep: string
+  descriptions: ImageDescription[]
+  isProcessing?: boolean
+}) {
+  const showLocalImages = !markdownHasInlineImages(content)
+  const localImages = showLocalImages ? descriptions.filter((item) => item.image_path) : []
+
+  return (
+    <div className="h-full overflow-y-auto rounded-lg border bg-background">
+      <div className="mx-auto max-w-3xl px-6 py-6">
+        {content ? (
+          <ArticleNoteMarkdown content={content} archivePath={archivePath} sep={sep} />
+        ) : isProcessing ? (
+          <div className="flex h-40 items-center justify-center text-muted-foreground">
+            <HugeiconsIcon icon={Loading03Icon} className="mr-2 h-4 w-4 animate-spin" />
+            <span className="text-sm">等待正文...</span>
+          </div>
+        ) : (
+          <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
+            暂无正文
+          </div>
+        )}
+        {localImages.length > 0 && (
+          <div className="mt-6 space-y-6">
+            {localImages.map((item) => (
+              <figure key={item.index} className="space-y-2">
+                <img
+                  src={api.filesystem.mediaUrl(item.image_path)}
+                  alt={`图片 ${item.index + 1}`}
+                  className="mx-auto max-h-[640px] w-full rounded-md object-contain"
+                  loading="lazy"
+                />
+                {item.text ? (
+                  <figcaption className="whitespace-pre-wrap text-xs leading-6 text-muted-foreground">
+                    {item.text}
+                  </figcaption>
+                ) : null}
+              </figure>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
-  const pipelineSteps = usePipelineSteps()
   const { archives, refresh: refreshArchives } = useArchives()
   const [archive, setArchive] = useState<ArchiveItem | null>(null)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
@@ -202,10 +395,45 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   // Media URL state — may change when source/ is deleted after completion
   const [mediaUrl, setMediaUrl] = useState<string | null>(null)
 
+  useEffect(() => {
+    setArchive(null)
+    setResolvedTaskId(taskIdProp !== undefined ? taskIdProp : undefined)
+    setSummary(null)
+    setTranscript(null)
+    setIsPolished(false)
+    setMindmap(null)
+    setMindmapTree(null)
+    setDetail(null)
+    setSubtitles([])
+    setSubtitleTracks([])
+    setActiveTrackLang(null)
+    setPolishedLang(null)
+    setSubtitleSourceType(null)
+    setSourceUrl(null)
+    setPlatform(null)
+    setUploader(null)
+    setContentSubtype(null)
+    setNoteText(null)
+    setImageDescriptions([])
+    setActiveImageIdx(0)
+    setTaskStatus(null)
+    setCompletedSteps([])
+    setCurrentStep(null)
+    setTaskError(null)
+    setTaskFlow(null)
+    setTimelineEvents([])
+    setMediaUrl(null)
+  }, [archivePath, taskIdProp])
+
   // Persist and restore viewing position
   const { updateMediaTime, updateActiveTab, getSavedPosition } = useViewPosition(archivePath)
   const savedPos = useRef(getSavedPosition())
   const [activeTab, setActiveTab] = useState(savedPos.current.activeTab || "summary")
+
+  useEffect(() => {
+    const restored = getSavedPosition()
+    setActiveTab(restored.activeTab || "summary")
+  }, [archivePath, taskIdProp, getSavedPosition])
 
   const { bindMedia, currentTime, duration, currentSegmentIndex, autoScroll, seekTo, onManualScroll } =
     useMediaSync({
@@ -293,25 +521,50 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     setMergeInfo(null)
   }
 
+  const applyMetadataState = useCallback((metadata: Record<string, unknown>) => {
+    setSourceUrl(resolveSourceUrl(metadata))
+    setPlatform((metadata.platform as string | null) ?? null)
+    setUploader((metadata.uploader as string | null) ?? null)
+    setContentSubtype((metadata.content_subtype as string | null) ?? null)
+    setNoteText((metadata.description as string | null) ?? null)
+
+    const extra = asRecord(metadata.extra)
+    const tracks = (extra?.subtitle_tracks as SubtitleTrackInfo[] | undefined) ?? []
+    setSubtitleTracks(tracks)
+    const polished = tracks.find((t) => t.polished)
+    setPolishedLang(polished?.lang ?? null)
+    if (polished) setActiveTrackLang((current) => current ?? polished.lang)
+    if (tracks.some((t) => t.type === "asr")) setSubtitleSourceType("asr")
+    else if (tracks.length > 0) setSubtitleSourceType("platform")
+  }, [])
+
+  const applyTaskSnapshot = useCallback((task: Task) => {
+    setTaskStatus(task.status)
+    setCurrentStep(task.current_step)
+    setCompletedSteps(task.completed_steps ?? [])
+    setTaskError(task.error)
+    setTaskFlow(task.flow ?? null)
+
+    const metadata = asRecord(asRecord(task.result)?.metadata)
+    if (metadata) {
+      applyMetadataState(metadata)
+    } else if (task.content_subtype) {
+      setContentSubtype(task.content_subtype)
+    } else if (task.flow?.content_subtype) {
+      setContentSubtype(task.flow.content_subtype)
+    }
+
+    const descs = asRecord(task.result)?.image_descriptions as ImageDescription[] | undefined
+    if (descs && descs.length > 0) setImageDescriptions(descs)
+  }, [applyMetadataState])
+
   // Find archive from list
   useEffect(() => {
     const found = archives.find((a) => a.path === archivePath)
     if (found) {
       setArchive(found)
       const meta = (found.metadata || {}) as Record<string, unknown>
-      setSourceUrl(resolveSourceUrl(meta))
-      setPlatform((meta.platform as string | null) ?? null)
-      setUploader((meta.uploader as string | null) ?? null)
-      setContentSubtype((meta.content_subtype as string | null) ?? null)
-      setNoteText((meta.description as string | null) ?? null)
-      const extra = (meta.extra || {}) as Record<string, unknown>
-      const tracks = (extra.subtitle_tracks as SubtitleTrackInfo[] | undefined) ?? []
-      setSubtitleTracks(tracks)
-      const polished = tracks.find((t) => t.polished)
-      setPolishedLang(polished?.lang ?? null)
-      if (polished && !activeTrackLang) setActiveTrackLang(polished.lang)
-      if (tracks.some((t) => t.type === "asr")) setSubtitleSourceType("asr")
-      else if (tracks.length > 0) setSubtitleSourceType("platform")
+      applyMetadataState(meta)
       // Resolve taskId from archive list if not already known from URL
       if (resolvedTaskId === undefined) {
         setResolvedTaskId(found.task_id ?? null)
@@ -323,7 +576,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         setTaskStatus("completed")
       }
     }
-  }, [archives, archivePath, taskIdProp])
+  }, [archives, archivePath, taskIdProp, resolvedTaskId, applyMetadataState])
 
   // Resolve media URL
   const resolveMediaUrl = useCallback((arch: ArchiveItem | null) => {
@@ -403,18 +656,12 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     if (!resolvedTaskId) return null
     try {
       const task = await api.tasks.get(resolvedTaskId)
-      setTaskStatus(task.status)
-      setCurrentStep(task.current_step)
-      setCompletedSteps(task.completed_steps ?? [])
-      setTaskError(task.error)
-      setTaskFlow(task.flow ?? null)
-      const descs = task.result?.image_descriptions as ImageDescription[] | undefined
-      if (descs && descs.length > 0) setImageDescriptions(descs)
+      applyTaskSnapshot(task)
       return task
     } catch {
       return null
     }
-  }, [resolvedTaskId])
+  }, [resolvedTaskId, applyTaskSnapshot])
 
   useEffect(() => {
     if (!resolvedTaskId) return
@@ -425,18 +672,14 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     ])
       .then(([task, timeline]) => {
         if (cancelled) return
-        setTaskStatus(task.status)
-        setCurrentStep(task.current_step)
-        setCompletedSteps(task.completed_steps ?? [])
-        setTaskError(task.error)
-        setTaskFlow(task.flow ?? null)
+        applyTaskSnapshot(task)
         setTimelineEvents(timeline.events ?? [])
       })
       .catch(() => {})
     return () => {
       cancelled = true
     }
-  }, [resolvedTaskId])
+  }, [resolvedTaskId, applyTaskSnapshot])
 
   // Load image descriptions for image_note content type
   const loadImageDescriptions = useCallback(async () => {
@@ -454,7 +697,27 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     }
     // Fall back: probe numbered image files on disk (count limited by images/ directory)
     const descs: ImageDescription[] = []
-    for (let i = 0; i < 30; i++) {
+    try {
+      const imagesDir = archivePath + sep + "images"
+      const listing = await api.filesystem.browse(imagesDir, "file")
+      const images = (listing.items ?? [])
+        .filter((item) => !item.is_dir && /\.(?:jpe?g|png|webp|gif|bmp)$/i.test(item.name))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+      for (const item of images) {
+        const stem = item.name.replace(/\.[^.]+$/, "")
+        const descPath = archivePath + sep + "descriptions" + sep + `${stem}.md`
+        let text = ""
+        try { text = (await api.filesystem.read(descPath)).content ?? "" } catch {}
+        const index = Number.parseInt(stem, 10)
+        descs.push({
+          index: Number.isFinite(index) ? index : descs.length,
+          image_path: item.path,
+          kind: "content",
+          text,
+        })
+      }
+    } catch {}
+    for (let i = descs.length > 0 ? 30 : 0; i < 30; i++) {
       const imgPath = archivePath + sep + "images" + sep + `${String(i).padStart(2, "0")}.jpg`
       const descPath = archivePath + sep + "descriptions" + sep + `${String(i).padStart(2, "0")}.md`
       try {
@@ -589,6 +852,10 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const sourceHref = firstHttpUrl(sourceUrl)
   const isImageNote = contentSubtype === "image_note"
   const isTextNote = contentSubtype === "text_note"
+  const archiveMetadata = (archive?.metadata || {}) as Record<string, unknown>
+  const archiveExtra = asRecord(archiveMetadata.extra)
+  const bilibiliType = typeof archiveExtra?.bilibili_type === "string" ? archiveExtra.bilibili_type : null
+  const isArticleNote = platform === "bilibili_opus" && bilibiliType === "article"
   const isPureWebpage = platform === "webpage" && isTextNote
   const isNoteContent = isImageNote || isTextNote
   const headerMediaIcon = isImageNote || archive?.has_image
@@ -599,7 +866,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
       ? Video01Icon
       : MusicNote01Icon
   const headerMediaLabel = isImageNote || archive?.has_image
-    ? "图文"
+    ? isArticleNote ? "专栏" : "图文"
     : isTextNote
       ? "正文"
     : mediaType === "video"
@@ -610,18 +877,43 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const [titleDraft, setTitleDraft] = useState("")
   const isProcessing = taskStatus === "processing" || taskStatus === "queued"
   const showFlowDiagnostics = isProcessing || taskStatus === "failed"
-  const hasContent = summary || transcript || mindmap
   const flowCompletedSteps = taskFlow?.completed_steps ?? []
   const recentTimelineEvents = timelineEvents
     .filter((event) => event.event_type !== "file_ready")
     .slice(-8)
+  const flowStepLabels = Object.fromEntries((taskFlow?.steps ?? []).map((step) => [step.id, step.label]))
+  const seenStatusLabels = new Set<string>()
+  const latestStatusEvents = recentTimelineEvents
+    .slice()
+    .reverse()
+    .filter((event) => {
+      const label = timelineStatusText(event, flowStepLabels)
+      if (seenStatusLabels.has(label)) return false
+      seenStatusLabels.add(label)
+      return true
+    })
+    .slice(0, 3)
+    .reverse()
+  const latestStatusEvent = latestStatusEvents[latestStatusEvents.length - 1]
+  const flowProgress = Math.round((taskFlow?.progress ?? 0) * 100)
+  const flowStatusLabel = taskFlow?.current_step_label ?? taskFlow?.current_step ?? timelineStatusText(latestStatusEvent ?? {
+    id: 0,
+    task_id: "",
+    event_type: isProcessing ? "processing" : "queued",
+    level: "info",
+    data: {},
+    timestamp: "",
+  }, flowStepLabels)
 
   useEffect(() => {
     if (isPureWebpage && activeTab === "transcript") {
       setActiveTab("summary")
       updateActiveTab("summary")
+    } else if ((!isImageNote || isArticleNote) && activeTab === "source") {
+      setActiveTab("summary")
+      updateActiveTab("summary")
     }
-  }, [activeTab, isPureWebpage, updateActiveTab])
+  }, [activeTab, isArticleNote, isImageNote, isPureWebpage, updateActiveTab])
 
   // Sync title from archive
   useEffect(() => {
@@ -654,6 +946,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
 
   const getTabContent = () => {
     if (activeTab === "summary") return { content: summary, suffix: "摘要", ext: "md" }
+    if (activeTab === "source" && isImageNote) return { content: noteText, suffix: "原帖", ext: "md" }
     if (activeTab === "transcript" && isTextNote && !isPureWebpage) return { content: noteText, suffix: "正文", ext: "md" }
     if (activeTab === "transcript") return { content: transcript, suffix: "字幕", ext: "srt" }
     if (activeTab === "mindmap") return { content: mindmap, suffix: "导图", ext: "md" }
@@ -802,72 +1095,25 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         </DropdownMenu>
       </div>
 
-      {/* Pipeline progress bar (visible when processing) */}
-      {isProcessing && (
-        <div className="shrink-0 flex items-center gap-1 px-4 py-1.5 border-b bg-muted/30">
-          {pipelineSteps.map((step, i) => {
-            const isDone = completedSteps.includes(step.id)
-            const isCurrent = currentStep === step.id
-            return (
-              <div key={step.id} className="flex items-center gap-1">
-                <div className="flex items-center gap-1">
-                  <div
-                    className={cn(
-                      "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-colors",
-                      isDone && "border-emerald-500 bg-emerald-500 text-white",
-                      isCurrent && !isDone && "border-blue-500 bg-blue-50 dark:bg-blue-950",
-                      !isDone && !isCurrent && "border-muted-foreground/30",
-                    )}
-                  >
-                    {isDone ? (
-                      <HugeiconsIcon icon={Tick02Icon} className="h-2.5 w-2.5" />
-                    ) : isCurrent ? (
-                      <HugeiconsIcon icon={Loading03Icon} className="h-2.5 w-2.5 animate-spin text-blue-600" />
-                    ) : (
-                      <span className="h-1 w-1 rounded-full bg-muted-foreground/20" />
-                    )}
-                  </div>
-                  <span
-                    className={cn(
-                      "text-[10px] whitespace-nowrap",
-                      isDone && "text-emerald-700 dark:text-emerald-400",
-                      isCurrent && "text-blue-700 dark:text-blue-400",
-                      !isDone && !isCurrent && "text-muted-foreground",
-                    )}
-                  >
-                    {step.name}
-                  </span>
-                </div>
-                {i < pipelineSteps.length - 1 && (
-                  <div
-                    className={cn(
-                      "h-px w-4 mx-0.5",
-                      isDone ? "bg-emerald-400" : "bg-border",
-                    )}
-                  />
-                )}
-              </div>
-            )
-          })}
-        </div>
-      )}
-
       {showFlowDiagnostics && (taskFlow || recentTimelineEvents.length > 0) && (
-        <div className="shrink-0 border-b bg-background px-4 py-2">
+        <div className="shrink-0 border-b bg-background px-4 py-3">
           {taskFlow && (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-              <span className="font-medium text-foreground">{taskFlow.label}</span>
-              <span className="text-muted-foreground">{taskFlow.platform}</span>
-              <span className="text-blue-600 dark:text-blue-400">
-                {taskFlow.current_step_label ?? taskFlow.current_step ?? "准备中"}
-              </span>
-              <span className="text-muted-foreground">
-                {Math.round((taskFlow.progress ?? 0) * 100)}%
-              </span>
-            </div>
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
+                  <span className="font-medium text-foreground">{taskFlow.label}</span>
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                    {taskFlow.platform}
+                  </span>
+                  <span className="text-blue-600 dark:text-blue-400">{flowStatusLabel}</span>
+                </div>
+                <span className="shrink-0 text-sm tabular-nums text-muted-foreground">{flowProgress}%</span>
+              </div>
+              <Progress value={flowProgress} className="mt-2 h-1.5" />
+            </>
           )}
           {taskFlow?.steps?.length ? (
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
               {taskFlow.steps.map((step) => {
                 const isDone = flowCompletedSteps.includes(step.id)
                 const isCurrent = taskFlow.current_step === step.id
@@ -875,31 +1121,39 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                   <span
                     key={step.id}
                     className={cn(
-                      "inline-flex h-5 items-center rounded px-1.5 text-[10px]",
-                      isDone && "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
-                      isCurrent && !isDone && "bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300",
-                      !isDone && !isCurrent && "bg-muted text-muted-foreground",
+                      "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs transition-colors",
+                      isDone && "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
+                      isCurrent && !isDone && "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-300",
+                      !isDone && !isCurrent && "border-border bg-muted/30 text-muted-foreground",
                     )}
                   >
+                    {isDone ? (
+                      <HugeiconsIcon icon={Tick02Icon} className="h-3 w-3" />
+                    ) : isCurrent ? (
+                      <HugeiconsIcon icon={Loading03Icon} className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <span className="h-1.5 w-1.5 rounded-full bg-current opacity-35" />
+                    )}
                     {step.label}
                   </span>
                 )
               })}
             </div>
           ) : null}
-          {recentTimelineEvents.length > 0 && (
-            <div className="mt-2 max-h-24 overflow-y-auto font-mono text-[11px] leading-5">
-              {recentTimelineEvents.map((event) => (
-                <div key={timelineEventKey(event)} className="flex min-w-0 gap-2">
-                  <span className="shrink-0 text-muted-foreground">{timelineTime(event.timestamp)}</span>
-                  <span className={cn("shrink-0 w-28 truncate", timelineLevelClass(event.level))}>
-                    {event.event_type}
-                  </span>
-                  <span className="min-w-0 truncate text-muted-foreground">
-                    {event.stage ? `${event.stage}: ` : ""}
-                    {timelineMessage(event)}
-                  </span>
-                </div>
+          {latestStatusEvents.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {latestStatusEvents.map((event) => (
+                <span
+                  key={timelineEventKey(event)}
+                  className={cn(
+                    "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
+                    timelineStatusClass(event.level),
+                  )}
+                  title={timelineStatusText(event, flowStepLabels)}
+                >
+                  <span className="shrink-0 tabular-nums opacity-70">{timelineTime(event.timestamp)}</span>
+                  <span className="min-w-0 truncate">{timelineStatusText(event, flowStepLabels)}</span>
+                </span>
               ))}
             </div>
           )}
@@ -922,7 +1176,15 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
           {/* Center panel — media preview */}
           <ResizablePanel defaultSize="50%" minSize="20%" maxSize="70%">
             <div className="h-full overflow-y-auto p-4 space-y-3">
-              {isImageNote ? (
+              {isArticleNote ? (
+                <ArticleNoteReader
+                  content={noteText}
+                  archivePath={archivePath}
+                  sep={sep}
+                  descriptions={imageDescriptions}
+                  isProcessing={isProcessing}
+                />
+              ) : isImageNote ? (
                 <div className="h-full">
                   <ImageNoteViewer
                     archivePath={archivePath}
@@ -979,6 +1241,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                 <div className="shrink-0 flex items-center gap-2">
                   <TabsList>
                     <TabsTrigger value="summary">摘要</TabsTrigger>
+                    {isImageNote && !isArticleNote && <TabsTrigger value="source">原帖</TabsTrigger>}
                     {!isPureWebpage && (
                       <TabsTrigger value="transcript">
                         {isImageNote ? "图片" : isTextNote ? "正文" : "字幕"}
@@ -1035,6 +1298,25 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                     )}
                   </div>
                 </TabsContent>
+
+                {isImageNote && (
+                  <TabsContent value="source" className="mt-3 relative flex-1">
+                    <div className="absolute inset-0 overflow-y-auto rounded-md border p-5 text-sm leading-7">
+                      {noteText ? (
+                        <NoteMarkdown content={noteText} archivePath={archivePath} sep={sep} />
+                      ) : isProcessing ? (
+                        <div className="flex h-full items-center justify-center text-muted-foreground">
+                          <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
+                          <span className="text-sm">等待原帖正文...</span>
+                        </div>
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
+                          暂无原帖正文
+                        </div>
+                      )}
+                    </div>
+                  </TabsContent>
+                )}
 
                 {!isPureWebpage && (
                   <TabsContent value="transcript" className="mt-3 relative flex-1">

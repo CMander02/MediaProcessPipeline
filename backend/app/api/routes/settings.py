@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from app.core.network import httpx_client_kwargs, urllib_urlopen
 from app.core.settings import (
     SETTINGS_FILE,
     RuntimeSettings,
@@ -121,7 +122,7 @@ async def _fetch_siliconflow_models_payload(api_base: str, api_key: str) -> Any:
 
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=20.0, **httpx_client_kwargs(url)) as client:
             response = await client.get(url, headers=headers)
     except httpx.TimeoutException as e:
         return await _fetch_json_with_urllib(url, headers, timeout=30.0, label="SiliconFlow models")
@@ -157,7 +158,7 @@ async def _fetch_json_with_urllib(
 
         request = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with urllib_urlopen(request, timeout=timeout) as response:
                 body = response.read()
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:500] if e.fp else str(e)
@@ -646,7 +647,7 @@ async def _fetch_provider_models_payload(provider: dict[str, Any]) -> Any:
     import httpx
 
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=20.0, **httpx_client_kwargs(url)) as client:
             response = await client.get(url, headers=headers)
     except httpx.TimeoutException as e:
         return await _fetch_json_with_urllib(url, headers, timeout=30.0, label="Provider models")
@@ -798,7 +799,7 @@ async def query_provider_balance(provider_id: str):
     import httpx
 
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=20.0, **httpx_client_kwargs(url)) as client:
             response = await client.request(method, url, headers={"Authorization": f"Bearer {api_key}"})
     except httpx.TimeoutException as e:
         raise HTTPException(status_code=504, detail="Provider balance request timed out.") from e
