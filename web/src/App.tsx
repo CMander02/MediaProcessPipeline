@@ -8,15 +8,44 @@ import { ResultPageWrapper } from "@/components/pages/result-page-wrapper"
 import { SettingsPage } from "@/components/pages/settings-page"
 import { TaskQueueDropdown } from "@/components/task-queue-dropdown"
 import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger } from "@/components/ui/select"
+import { PlatformIcon } from "@/components/platform-icon"
+import {
+  MEDIA_FILTER_OPTIONS,
+  SOURCE_FILTER_OPTIONS,
+  type MediaFilter,
+  type SourceFilter,
+  type SourceFilterOption,
+} from "@/lib/archive-filters"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { ComputerTerminal01Icon, FolderOpenIcon, PlusSignIcon, Settings01Icon, Search01Icon } from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
 
+const SOURCE_ICON_PLATFORMS = new Set([
+  "apple_podcast",
+  "bilibili",
+  "webpage",
+  "x",
+  "xiaohongshu",
+  "youtube",
+  "zhihu",
+])
+
+function SourceFilterIcon({ option, className }: { option: SourceFilterOption; className?: string }) {
+  if (option.platform && SOURCE_ICON_PLATFORMS.has(option.platform)) {
+    return <PlatformIcon platform={option.platform} className={className ?? "size-4 shrink-0"} iconOnly />
+  }
+  return <HugeiconsIcon icon={FolderOpenIcon} className={className ?? "size-4 shrink-0 text-muted-foreground"} />
+}
+
 export default function App() {
   const route = useRoute()
   const [search, setSearch] = useState("")
-  const [mediaFilter, setMediaFilter] = useState<"all" | "video" | "audio" | "image">("all")
+  const [mediaFilter, setMediaFilter] = useState<MediaFilter>("all")
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all")
   const showLibraryTools = route.page === "files"
+  const selectedMediaFilter = MEDIA_FILTER_OPTIONS.find((option) => option.value === mediaFilter) ?? MEDIA_FILTER_OPTIONS[0]
+  const selectedSourceFilter = SOURCE_FILTER_OPTIONS.find((option) => option.value === sourceFilter) ?? SOURCE_FILTER_OPTIONS[0]
 
   // Startup page routing
   useEffect(() => {
@@ -50,32 +79,34 @@ export default function App() {
     <div className="flex h-screen flex-col bg-background">
       {/* Header */}
       <header className="shrink-0 border-b bg-card">
-        <div className="flex items-center h-12 px-4 gap-1">
-          <img src="/favicon.svg" className="mr-2 h-5 w-5" alt="" aria-hidden="true" />
-          <span className="text-sm font-semibold mr-4">MPP</span>
+        <div className="flex min-h-12 flex-wrap items-center gap-2 px-3 py-2 sm:px-4">
+          <div className="flex shrink-0 items-center gap-2">
+            <img src="/favicon.svg" className="h-5 w-5" alt="" aria-hidden="true" />
+            <span className="text-sm font-semibold">MPP</span>
+          </div>
 
           {/* Nav links */}
-          <nav className="flex items-center gap-0.5">
+          <nav className="flex shrink-0 items-center gap-0.5">
             {navItems.map((item) => (
               <button
                 key={item.page}
                 onClick={() => navigate(`#/${item.page}`)}
                 className={cn(
-                  "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors",
+                  "flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors sm:px-3",
                   route.page === item.page
                     ? "bg-primary/10 text-primary font-medium"
                     : "text-muted-foreground hover:text-foreground hover:bg-muted",
                 )}
               >
                 <HugeiconsIcon icon={item.icon} className="h-4 w-4" />
-                {item.label}
+                <span>{item.label}</span>
               </button>
             ))}
           </nav>
 
           {showLibraryTools ? (
-            <div className="flex items-center gap-2 ml-6 flex-1">
-              <div className="relative max-w-xs flex-1">
+            <div className="order-last flex w-full min-w-0 items-center gap-2 md:order-none md:ml-4 md:w-auto md:flex-1">
+              <div className="relative min-w-[140px] flex-1 md:max-w-xs">
                 <HugeiconsIcon icon={Search01Icon} className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={search}
@@ -85,27 +116,43 @@ export default function App() {
                   autoComplete="off"
                 />
               </div>
-              <div className="flex rounded-md border text-xs">
-                {(["all", "video", "audio", "image"] as const).map((f) => (
-                  <button
-                    key={f}
-                    onClick={() => setMediaFilter(f)}
-                    className={cn(
-                      "px-2.5 py-1 transition-colors",
-                      mediaFilter === f
-                        ? "bg-primary text-primary-foreground"
-                        : "text-muted-foreground hover:text-foreground",
-                      f === "all" && "rounded-l-md",
-                      f === "image" && "rounded-r-md",
-                    )}
-                  >
-                    {f === "all" ? "全部" : f === "video" ? "视频" : f === "audio" ? "音频" : "图文"}
-                  </button>
-                ))}
-              </div>
+              <Select value={mediaFilter} onValueChange={(value) => setMediaFilter(value as MediaFilter)}>
+                <SelectTrigger size="sm" className="h-8 w-[92px] shrink-0">
+                  <span className="truncate">{selectedMediaFilter.label}</span>
+                </SelectTrigger>
+                <SelectContent position="popper" align="end">
+                  <SelectGroup>
+                    {MEDIA_FILTER_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <Select value={sourceFilter} onValueChange={(value) => setSourceFilter(value as SourceFilter)}>
+                <SelectTrigger size="sm" className="h-8 w-[142px] shrink-0">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <SourceFilterIcon option={selectedSourceFilter} />
+                    <span className="truncate">{selectedSourceFilter.label}</span>
+                  </span>
+                </SelectTrigger>
+                <SelectContent position="popper" align="end">
+                  <SelectGroup>
+                    {SOURCE_FILTER_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        <span className="flex items-center gap-2">
+                          <SourceFilterIcon option={option} />
+                          <span>{option.label}</span>
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
             </div>
           ) : (
-            <div className="ml-6 flex-1" />
+            <div className="min-w-0 flex-1" />
           )}
 
           {/* Task queue dropdown */}
@@ -129,7 +176,7 @@ export default function App() {
 
       {/* Page content */}
       <main className="flex-1 min-h-0">
-        {route.page === "files" && <FilesPage search={search} mediaFilter={mediaFilter} />}
+        {route.page === "files" && <FilesPage search={search} mediaFilter={mediaFilter} sourceFilter={sourceFilter} />}
         {route.page === "submit" && <SubmitPage />}
         {route.page === "backend" && <BackendPage />}
         {route.page === "result" && <ResultPageWrapper />}

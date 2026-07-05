@@ -12,6 +12,7 @@ class TaskStatus(StrEnum):
     PENDING = "pending"
     QUEUED = "queued"
     PROCESSING = "processing"
+    PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"

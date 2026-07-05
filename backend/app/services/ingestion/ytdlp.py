@@ -4,7 +4,6 @@ import hashlib
 import logging
 import re
 import subprocess
-import sys
 import threading
 import urllib.request
 from collections import deque
@@ -148,6 +147,46 @@ def _is_apple_podcast_url(url: str) -> bool:
 
 def _is_youtube_url(url: str) -> bool:
     return _host_matches(url, ("youtube.com", "youtu.be"))
+
+
+def _is_twitter_url(url: str) -> bool:
+    return _host_matches(url, ("x.com", "twitter.com"))
+
+
+def _clean_twitter_title(title: str) -> str:
+    title = re.sub(r"\s*/\s*X\s*$", "", title or "").strip()
+    title = re.sub(r"\s+on\s+X:\s+.*$", " on X", title).strip()
+    return title
+
+
+def _clean_twitter_text(text: str) -> str:
+    lines = [line.strip() for line in (text or "").splitlines()]
+    stop_markers = {
+        "New to X?",
+        "Relevant people",
+        "Terms",
+        "Don't miss what's happening",
+        "People on X are the first to know.",
+    }
+    drop_exact = {
+        "",
+        "Post",
+        "Log in",
+        "Sign up",
+        "Sign up with Google",
+        "Sign up with Apple",
+        "Create account",
+    }
+    cleaned: list[str] = []
+    for line in lines:
+        if line in stop_markers:
+            break
+        if line in drop_exact:
+            continue
+        if line.startswith("By signing up,"):
+            break
+        cleaned.append(line)
+    return "\n".join(cleaned).strip()
 
 
 def _is_generic_webpage_url(url: str) -> bool:
@@ -339,46 +378,6 @@ def _normalize_proxy_url(raw: str) -> str:
     return proxy
 
 
-def _proxy_from_windows_user_settings() -> str:
-    """Return the current Windows user proxy as a yt-dlp-compatible URL."""
-    if sys.platform != "win32":
-        return ""
-    try:
-        import winreg
-
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
-            enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
-            if not enabled:
-                return ""
-            proxy_server, _ = winreg.QueryValueEx(key, "ProxyServer")
-    except OSError:
-        return ""
-
-    raw = str(proxy_server or "").strip()
-    if not raw:
-        return ""
-    if ";" not in raw and "=" not in raw:
-        return _normalize_proxy_url(raw)
-
-    entries: dict[str, str] = {}
-    for part in raw.split(";"):
-        if "=" not in part:
-            continue
-        scheme, value = part.split("=", 1)
-        entries[scheme.strip().lower()] = value.strip()
-
-    for scheme in ("https", "http"):
-        if entries.get(scheme):
-            return _normalize_proxy_url(entries[scheme])
-    if entries.get("socks"):
-        socks_proxy = entries["socks"]
-        if "://" not in socks_proxy:
-            socks_proxy = f"socks5://{socks_proxy}"
-        return socks_proxy
-    return ""
-
-
 def youtube_proxy_url() -> str | None:
     """Resolve proxy for YouTube yt-dlp calls.
 
@@ -404,9 +403,9 @@ def ytdlp_base_opts(ydl_logger: _YtdlpLogger | None = None) -> dict[str, Any]:
     an infinite loop in the log.
 
     Proxy handling: YouTube requests may run inside the cmd-launched daemon,
-    which often does not inherit PowerShell-scoped proxy variables. Resolve a
-    dedicated runtime setting first, then process/env proxy, then the Windows
-    user proxy, and pass it explicitly to yt-dlp.
+    which often does not inherit PowerShell-scoped proxy variables. Resolve the
+    dedicated runtime setting first, then the shared app proxy resolution, and
+    pass it explicitly to yt-dlp.
 
     EJS solver: YouTube's n-parameter signature challenge now requires a JS
     runtime via yt-dlp's EJS subsystem. Without it, extraction succeeds for
@@ -689,6 +688,8 @@ class YtdlpService:
                 with yt_dlp.YoutubeDL(meta_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
             except Exception as e:
+                if _is_twitter_url(url):
+                    return self._download_twitter_webpage_note(url, output_dir, e)
                 if is_youtube_network_error(e, url):
                     raise _youtube_network_error(url, e) from e
                 raise
@@ -965,6 +966,109 @@ class YtdlpService:
             "video_path": None,
             "info": info,
         }
+
+    def _download_twitter_webpage_note(
+        self,
+        url: str,
+        output_dir: Path,
+        fallback_error: Exception | None = None,
+    ) -> dict[str, Any]:
+        """Fallback for X/Twitter status/article links unsupported by yt-dlp."""
+        output_dir.mkdir(parents=True, exist_ok=True)
+        info = self._fetch_twitter_webpage_note(url, fallback_error=fallback_error)
+        extra = info.setdefault("extra", {})
+        if isinstance(extra, dict):
+            extra["source_markdown_path"] = str(output_dir / "source.md")
+            extra.setdefault("image_count", 0)
+        (output_dir / "source.md").write_text(str(info.get("description") or ""), encoding="utf-8")
+        return {
+            "url": url,
+            "title": info.get("title", "x_status"),
+            "file_path": None,
+            "video_path": None,
+            "info": info,
+        }
+
+    def _fetch_twitter_webpage_note(
+        self,
+        url: str,
+        fallback_error: Exception | None = None,
+    ) -> dict[str, Any]:
+        page = self._scrape_twitter_page(url)
+        resolved_url = page.get("url") or url
+        title = _clean_twitter_title(str(page.get("title") or "")) or "X post"
+        body_text = _clean_twitter_text(str(page.get("text") or ""))
+        markdown = f"# {title}\n\nSource: {resolved_url}\n\n{body_text}".strip() + "\n"
+        uploader = page.get("uploader")
+        thumbnail = page.get("thumbnail")
+        extra = {
+            "platform": "twitter",
+            "scrape_engine": "playwright",
+            "twitter_type": page.get("type") or "status",
+            "article_url": page.get("article_url"),
+            "status_url": resolved_url,
+        }
+        if fallback_error:
+            extra["ytdlp_error"] = str(fallback_error)
+        return {
+            "id": resolved_url,
+            "title": title,
+            "description": markdown,
+            "webpage_url": resolved_url,
+            "original_url": url,
+            "platform": "twitter",
+            "content_subtype": "text_note",
+            "media_type": "image",
+            "uploader": uploader,
+            "thumbnail": thumbnail,
+            "extra": extra,
+        }
+
+    def _scrape_twitter_page(self, url: str) -> dict[str, Any]:
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as e:
+            raise RuntimeError("Playwright is required for X article/status fallback.") from e
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+                ),
+                locale="en-US",
+            )
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(3000)
+            data = page.evaluate(
+                """() => {
+                    const meta = (name, property = name) => {
+                        const byName = document.querySelector(`meta[name="${name}"]`);
+                        const byProp = document.querySelector(`meta[property="${property}"]`);
+                        return (byName?.getAttribute("content") || byProp?.getAttribute("content") || "").trim();
+                    };
+                    const links = Array.from(document.querySelectorAll("a")).map((a) => ({
+                        href: a.href,
+                        text: (a.innerText || "").trim(),
+                    }));
+                    const article = links.find((item) => /\\/i\\/article\\/\\d+/.test(item.href));
+                    const author = Array.from(document.querySelectorAll('a[href^="/"], a[href^="https://x.com/"]'))
+                        .map((a) => (a.innerText || "").trim())
+                        .find((text) => text && !text.includes("\\n") && !text.startsWith("@"));
+                    return {
+                        url: location.href,
+                        title: document.title || meta("title", "og:title"),
+                        text: document.body.innerText || "",
+                        uploader: author || "",
+                        thumbnail: meta("twitter:image", "og:image"),
+                        article_url: article?.href || "",
+                        type: article ? "article_card" : "status",
+                    };
+                }"""
+            )
+            browser.close()
+        return data if isinstance(data, dict) else {}
 
     def _download_bilibili_subtitle(
         self,
@@ -1407,6 +1511,8 @@ class YtdlpService:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as e:
+            if _is_twitter_url(url):
+                return self._fetch_twitter_webpage_note(url, fallback_error=e)
             if is_youtube_network_error(e, url):
                 raise _youtube_network_error(url, e) from e
             raise
@@ -1621,6 +1727,8 @@ class YtdlpService:
         )
         if isinstance(info.get("extra"), dict):
             metadata.extra.update(info["extra"])
+        if info.get("thumbnail"):
+            metadata.extra.setdefault("thumbnail", info["thumbnail"])
         return metadata
 
     def download_subtitles(

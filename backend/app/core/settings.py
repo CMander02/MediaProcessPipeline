@@ -257,6 +257,9 @@ class RuntimeSettings(BaseModel):
     # Optional raw Cookie header copied from a logged-in browser. Public notes
     # often work without it, but some notes require a browser session.
     xiaohongshu_cookie: str = ""
+    # Playwright storage_state JSON saved from an interactive browser login.
+    # Empty = data/auth/xiaohongshu_storage_state.json under data_root.
+    xiaohongshu_storage_state_path: str = ""
 
     # Zhihu
     # Headless Chromium can be blocked on answer pages; the fallback uses a real
@@ -279,7 +282,8 @@ class RuntimeSettings(BaseModel):
     vlm_api_key: str = ""
     vlm_model: str = "Qwen/Qwen3.5-4B"
     vlm_max_tokens: int = 1024
-    vlm_concurrency: int = 3
+    vlm_concurrency: int = 1
+    vlm_timeout_sec: float = 180.0
 
     # Knowledge base — sqlite-vec vector search over subtitles + summaries
     kb_enabled: bool = True

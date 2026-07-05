@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.api.routes.filesystem import router  # noqa: E402
+from app.api.routes import filesystem as filesystem_route  # noqa: E402
 from app.core import settings as settings_module  # noqa: E402
 from app.core.settings import RuntimeSettings  # noqa: E402
 
@@ -21,7 +21,7 @@ def _client(tmp_path: Path, monkeypatch) -> TestClient:
         RuntimeSettings(data_root=str(tmp_path)),
     )
     app = FastAPI()
-    app.include_router(router, prefix="/api")
+    app.include_router(filesystem_route.router, prefix="/api")
     return TestClient(app)
 
 
@@ -93,3 +93,28 @@ def test_media_endpoint_rejects_unsatisfiable_ranges(tmp_path, monkeypatch):
 
     assert response.status_code == 416
     assert response.headers["content-range"] == "bytes */10"
+
+
+def test_open_folder_endpoint_opens_data_root_child(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    opened: list[list[str]] = []
+
+    monkeypatch.setattr(filesystem_route.subprocess, "Popen", lambda args: opened.append(list(args)))
+
+    response = client.post("/api/filesystem/open-folder", json={"path": str(archive_dir)})
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert opened
+
+
+def test_open_folder_endpoint_rejects_outside_data_root(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    outside = tmp_path.parent / "outside-folder"
+    outside.mkdir(exist_ok=True)
+
+    response = client.post("/api/filesystem/open-folder", json={"path": str(outside)})
+
+    assert response.status_code == 403

@@ -222,7 +222,7 @@ class ArchiveService:
 
             # Determine processing status
             meta_status = metadata.get("status", "completed")  # backward compat
-            processing = meta_status in ("queued", "processing")
+            processing = meta_status in ("queued", "processing", "paused")
 
             # Resolve task_id: prefer DB lookup, fallback to metadata.json, then dir name heuristic
             task_id = (

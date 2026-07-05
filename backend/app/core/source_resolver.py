@@ -42,6 +42,7 @@ class SourceFlow:
             "xiaoyuzhou",
             "apple_podcast",
             "webpage",
+            "twitter",
         }:
             return self.platform
         return "url"
@@ -194,6 +195,11 @@ def resolve_source_flow(
         try_subtitles = bool(prefer_platform_subtitles and not force_asr)
         flow_id = "url_platform_video_subtitle" if try_subtitles else "url_platform_video_asr"
         branch = "subtitle" if try_subtitles else "asr"
+    elif ytdlp._is_twitter_url(source):
+        platform = "twitter"
+        ingestor = "ytdlp"
+        flow_id = "url_platform_video_asr"
+        branch = "asr"
     elif ytdlp._is_bilibili_article_url(source):
         platform = "bilibili_opus"
         content_subtype = "text_note"

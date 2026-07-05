@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from typing import Any
 
+from app.core.network import runtime_proxy_url
 from app.core.settings import get_runtime_settings
 from app.models import TranscriptSegment
 
@@ -203,28 +204,10 @@ class Qwen3ASRService:
 
     def _configure_huggingface_proxy(self, rt: Any) -> None:
         """Make Hugging Face/pyannote network calls use a deterministic proxy."""
-        configured = str(getattr(rt, "hf_proxy", "") or "").strip()
-        if configured.lower() in {"none", "direct", "off", "false", "0"}:
+        proxy = runtime_proxy_url("hf_proxy")
+        if proxy == "":
             logger.info("Hugging Face proxy disabled by hf_proxy setting")
             return
-
-        proxy = configured
-        if not proxy:
-            for key in (
-                "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy",
-                "HTTP_PROXY", "http_proxy",
-            ):
-                value = os.environ.get(key)
-                if value:
-                    proxy = value
-                    break
-
-        if not proxy:
-            try:
-                from app.services.ingestion.ytdlp import _proxy_from_windows_user_settings
-                proxy = _proxy_from_windows_user_settings()
-            except Exception:
-                proxy = ""
 
         if not proxy:
             return

@@ -8,7 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.core import database, pipeline as pipeline_core, settings as settings_module  # noqa: E402
+from app.core import database, pipeline as pipeline_core, queue as queue_module, settings as settings_module  # noqa: E402
 from app.core.source_resolver import resolve_source_flow  # noqa: E402
 from app.core.settings import RuntimeSettings  # noqa: E402
 from app.models import MediaMetadata, MediaType, Task, TaskStatus, TaskType  # noqa: E402
@@ -41,6 +41,19 @@ def test_xiaohongshu_url_detection_and_post_info():
 
     assert info.post_id == "6a04606b000000003503392c"
     assert info.xsec_token == "ABLQRfvRqGgEZfMdnklHHK2gAVm2dVI65ti2IHgicBFks="
+
+
+def test_xiaohongshu_title_fallback_uses_first_description_line():
+    title = xhs_api._extract_note_title(
+        {
+            "title": "",
+            "displayTitle": None,
+            "desc": "「2026鹰角嘉年华」《明日方舟：终末地》参展情报公开\n【活动时间】：2026年7月30日-8月2日",
+        },
+        "6a4675a400000000170092de",
+    )
+
+    assert title == "「2026鹰角嘉年华」《明日方舟：终末地》参展情报公开"
 
 
 def test_xiaohongshu_share_text_with_bili_like_tokens_stays_xiaohongshu():
@@ -248,6 +261,55 @@ def test_xiaohongshu_image_download_records_candidate_diagnostics(tmp_path, monk
     assert attempts[1]["url_kind"] == "preview_or_cdn"
 
 
+def test_xiaohongshu_image_candidate_download_uses_short_timeout(tmp_path, monkeypatch):
+    captured: dict[str, int] = {}
+
+    def fake_download_file(_url, dest, *, referer, attempts, timeout_sec, should_cancel=None):
+        captured["attempts"] = attempts
+        captured["timeout_sec"] = timeout_sec
+        dest.write_bytes(b"abc")
+
+    monkeypatch.setattr(xhs_api, "_download_file", fake_download_file)
+
+    result = xhs_api._download_file_candidates(
+        ["https://ci.xiaohongshu.com/abc/demo.jpg"],
+        tmp_path / "00.jpg",
+        "https://www.xiaohongshu.com/",
+    )
+
+    assert result["attempts"][0]["status"] == "success"
+    assert captured == {"attempts": 1, "timeout_sec": xhs_api._IMAGE_CANDIDATE_TIMEOUT_SEC}
+
+
+def test_xiaohongshu_image_download_stops_after_task_cancel(tmp_path, monkeypatch):
+    calls: list[str] = []
+
+    def fake_urlopen(req, timeout):
+        calls.append(req.full_url)
+        raise xhs_api.urllib.error.URLError("timed out")
+
+    monkeypatch.setattr(xhs_api, "urllib_urlopen", fake_urlopen)
+    monkeypatch.setattr(xhs_api.time, "sleep", lambda _seconds: None)
+
+    info = {
+        "webpage_url": "https://www.xiaohongshu.com/explore/demo",
+        "extra": {
+            "image_url_candidates": [[
+                "https://ci.xiaohongshu.com/abc/demo.jpg",
+                "https://sns-webpic-qc.xhscdn.com/abc/demo.jpg",
+            ]],
+        },
+    }
+
+    with pytest.raises(xhs_api.ImageDownloadCancelled):
+        xhs_api.download_images(info, tmp_path, should_cancel=lambda: bool(calls))
+
+    assert calls == ["https://ci.xiaohongshu.com/abc/demo.jpg"]
+    diagnostics = info["extra"]["image_download_diagnostics"]
+    assert diagnostics["cancelled"] is True
+    assert diagnostics["success"] == 0
+
+
 def test_image_note_fallback_outputs_do_not_use_llm_placeholder():
     text = "### 笔记正文\nDeepSeek 招聘讨论，包含大厂履历和 AI 公司经验等内容。"
     summary = _fallback_note_summary(text)
@@ -279,10 +341,14 @@ async def test_image_note_llm_connection_error_writes_fallback_archive(tmp_path,
 
     monkeypatch.setattr(analysis_module, "analyze_content", fail_analyze)
 
-    def fail_download(*_args, **_kwargs):
-        raise RuntimeError("expired image urls")
+    def fake_download_images(_info, output_dir):
+        images_dir = output_dir / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        image = images_dir / "00.jpg"
+        image.write_bytes(b"abc")
+        return [image]
 
-    monkeypatch.setattr(xhs_api, "download_images", fail_download)
+    monkeypatch.setattr(xhs_api, "download_images", fake_download_images)
 
     store = database.get_task_store()
     task = Task(
@@ -313,7 +379,6 @@ async def test_image_note_llm_connection_error_writes_fallback_archive(tmp_path,
     )
 
     warning_codes = [warning["code"] for warning in task.result["warnings"]]
-    assert "note_images_download_failed" in warning_codes
     assert "note_llm_failed" in warning_codes
     assert task.result["archive"]["files"]["summary"].endswith("summary.md")
     assert (task_dir / "summary.md").exists()
@@ -399,7 +464,8 @@ async def test_image_note_vlm_records_each_image_status(tmp_path, monkeypatch):
         description="正文足够触发 fallback 汇总",
     )
 
-    await pipeline_core._process_image_note(task, metadata, task_dir, {"extra": {"image_urls": ["a", "b"]}})
+    with pytest.raises(RuntimeError, match="VLM caption 失败"):
+        await pipeline_core._process_image_note(task, metadata, task_dir, {"extra": {"image_urls": ["a", "b"]}})
 
     by_index = {item["index"]: item for item in task.result["image_descriptions"]}
     assert by_index[0]["status"] == "completed"
@@ -409,6 +475,247 @@ async def test_image_note_vlm_records_each_image_status(tmp_path, monkeypatch):
     assert "VLM caption 失败" in (task_dir / "descriptions" / "01.md").read_text(encoding="utf-8")
     warning_codes = [warning["code"] for warning in task.result["warnings"]]
     assert "note_vlm_partial_failed" in warning_codes
+
+
+@pytest.mark.asyncio
+async def test_image_note_resume_reuses_successful_vlm_captions(tmp_path, monkeypatch):
+    database.reset_db_path(tmp_path)
+    settings = RuntimeSettings(
+        data_root=str(tmp_path),
+        vlm_api_base="https://vlm.example/v1",
+        vlm_api_key="vlm-key",
+        vlm_model="vision-model",
+        kb_enabled=False,
+    )
+    monkeypatch.setattr(settings_module, "_runtime_settings", settings)
+    monkeypatch.setattr(pipeline_core, "get_runtime_settings", lambda: settings)
+    monkeypatch.setattr(pipeline_core, "_schedule_kb_index", lambda *_args, **_kwargs: None)
+
+    from app.core.model_router import EndpointBinding
+    import app.core.model_router as model_router
+    import app.services.analysis.vlm as vlm_module
+
+    def fake_resolve_vlm_binding(_rt):
+        return EndpointBinding(
+            capability="vlm",
+            model="vision-model",
+            api_base="https://vlm.example/v1",
+            api_key="vlm-key",
+            configured=True,
+            request_kwargs={"concurrency": 2, "timeout_sec": 3},
+        )
+
+    class FirstFakeVLM:
+        def describe_image(self, path, _binding):
+            if Path(path).name == "00.jpg":
+                return {"kind": "text", "text": "第一张 OCR", "duration_ms": 12}
+            return {"kind": "text", "text": "", "duration_ms": 10}
+
+    second_calls: list[str] = []
+
+    class SecondFakeVLM:
+        def describe_image(self, path, _binding):
+            second_calls.append(Path(path).name)
+            if Path(path).name == "00.jpg":
+                raise AssertionError("successful caption should be reused")
+            return {"kind": "text", "text": "第二张 OCR", "duration_ms": 11}
+
+    def fake_download_images(_info, output_dir):
+        images_dir = output_dir / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        first = images_dir / "00.jpg"
+        second = images_dir / "01.jpg"
+        first.write_bytes(b"abc")
+        second.write_bytes(b"def")
+        return [first, second]
+
+    monkeypatch.setattr(model_router, "resolve_vlm_binding", fake_resolve_vlm_binding)
+    monkeypatch.setattr(vlm_module, "get_vlm_service", lambda: FirstFakeVLM())
+    monkeypatch.setattr(xhs_api, "download_images", fake_download_images)
+
+    store = database.get_task_store()
+    task = Task(
+        id=uuid4(),
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.PROCESSING,
+        source="https://www.xiaohongshu.com/explore/demo",
+    )
+    store.save(task)
+
+    task_dir = tmp_path / "archive"
+    task_dir.mkdir()
+    metadata = MediaMetadata(
+        title="多图 caption",
+        source_url=task.source,
+        platform="xiaohongshu",
+        media_type=MediaType.OTHER,
+        content_subtype="image_note",
+        description="正文足够触发 fallback 汇总",
+    )
+    ingest_info = {"extra": {"image_urls": ["a", "b"]}}
+
+    with pytest.raises(RuntimeError, match="VLM caption 失败"):
+        await pipeline_core._process_image_note(task, metadata, task_dir, ingest_info)
+
+    monkeypatch.setattr(vlm_module, "get_vlm_service", lambda: SecondFakeVLM())
+    await pipeline_core._process_image_note(task, metadata, task_dir, ingest_info)
+
+    by_index = {item["index"]: item for item in task.result["image_descriptions"]}
+    assert second_calls == ["01.jpg"]
+    assert by_index[0]["status"] == "completed"
+    assert by_index[0]["reused"] is True
+    assert by_index[0]["text"] == "第一张 OCR"
+    assert by_index[1]["status"] == "completed"
+    assert by_index[1]["text"] == "第二张 OCR"
+    assert (task_dir / "summary.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_image_note_download_worker_downloads_images_before_handoff(tmp_path, monkeypatch):
+    database.reset_db_path(tmp_path)
+    settings = RuntimeSettings(data_root=str(tmp_path), kb_enabled=False)
+    monkeypatch.setattr(settings_module, "_runtime_settings", settings)
+    monkeypatch.setattr(pipeline_core, "get_runtime_settings", lambda: settings)
+
+    import app.services.ingestion as ingestion_module
+
+    info = {
+        "id": "demo",
+        "title": "下载前置",
+        "description": "正文",
+        "platform": "xiaohongshu",
+        "content_subtype": "image_note",
+        "media_type": "other",
+        "webpage_url": "https://www.xiaohongshu.com/explore/demo",
+        "source_url": "https://www.xiaohongshu.com/explore/demo",
+        "extra": {
+            "platform": "xiaohongshu",
+            "image_urls": ["https://ci.xiaohongshu.com/demo/00.jpg"],
+            "image_url_candidates": [["https://ci.xiaohongshu.com/demo/00.jpg"]],
+        },
+    }
+
+    async def fake_download_media(_source, output_dir):
+        return {
+            "file_path": None,
+            "video_path": None,
+            "metadata": dict(info),
+            "info": dict(info),
+        }
+
+    def fake_download_images(ingest_info, output_dir):
+        images_dir = output_dir / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        image = images_dir / "00.jpg"
+        image.write_bytes(b"image")
+        ingest_info.setdefault("extra", {})["image_download_diagnostics"] = {
+            "success": 1,
+            "failed": 0,
+            "image_count": 1,
+        }
+        return [image]
+
+    class FakeQueue:
+        def __init__(self) -> None:
+            self.advanced: list[str] = []
+
+        async def advance_to_gpu(self, task_id):
+            self.advanced.append(str(task_id))
+
+    fake_queue = FakeQueue()
+    monkeypatch.setattr(ingestion_module, "download_media", fake_download_media)
+    monkeypatch.setattr(xhs_api, "download_images", fake_download_images)
+    monkeypatch.setattr(queue_module, "get_task_queue", lambda: fake_queue)
+
+    store = database.get_task_store()
+    task_dir = tmp_path / str(uuid4())
+    task_dir.mkdir()
+    task = Task(
+        id=uuid4(),
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.PROCESSING,
+        source="https://www.xiaohongshu.com/explore/demo",
+        result={"output_dir": str(task_dir)},
+    )
+    store.save(task)
+
+    await pipeline_core.run_pipeline(task, _download_worker_call=True)
+
+    saved = store.get(task.id)
+    assert saved is not None
+    assert "download" in saved.completed_steps
+    assert fake_queue.advanced == [str(task.id)]
+    result_info = saved.result["_image_ingest_info"]
+    downloaded = result_info["extra"]["downloaded_image_paths"]
+    assert len(downloaded) == 1
+    assert Path(downloaded[0]).exists()
+    assert saved.result["image_download_result"] == {"expected": 1, "downloaded": 1, "failed": 0}
+
+
+@pytest.mark.asyncio
+async def test_image_note_download_worker_fails_when_all_images_missing(tmp_path, monkeypatch):
+    database.reset_db_path(tmp_path)
+    settings = RuntimeSettings(data_root=str(tmp_path), kb_enabled=False)
+    monkeypatch.setattr(settings_module, "_runtime_settings", settings)
+    monkeypatch.setattr(pipeline_core, "get_runtime_settings", lambda: settings)
+
+    import app.services.ingestion as ingestion_module
+
+    info = {
+        "id": "demo",
+        "title": "图片失败",
+        "description": "正文",
+        "platform": "xiaohongshu",
+        "content_subtype": "image_note",
+        "media_type": "other",
+        "webpage_url": "https://www.xiaohongshu.com/explore/demo",
+        "source_url": "https://www.xiaohongshu.com/explore/demo",
+        "extra": {
+            "platform": "xiaohongshu",
+            "image_urls": ["https://ci.xiaohongshu.com/demo/00.jpg"],
+            "image_url_candidates": [["https://ci.xiaohongshu.com/demo/00.jpg"]],
+        },
+    }
+
+    async def fake_download_media(_source, output_dir=None):
+        return {
+            "file_path": None,
+            "video_path": None,
+            "metadata": dict(info),
+            "info": dict(info),
+        }
+
+    def fake_download_images(ingest_info, _output_dir):
+        ingest_info.setdefault("extra", {})["image_download_diagnostics"] = {
+            "success": 0,
+            "failed": 1,
+            "failed_indices": [0],
+            "image_count": 1,
+        }
+        return []
+
+    monkeypatch.setattr(ingestion_module, "download_media", fake_download_media)
+    monkeypatch.setattr(xhs_api, "download_images", fake_download_images)
+
+    store = database.get_task_store()
+    task_dir = tmp_path / str(uuid4())
+    task_dir.mkdir()
+    task = Task(
+        id=uuid4(),
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.PROCESSING,
+        source="https://www.xiaohongshu.com/explore/demo",
+        result={"output_dir": str(task_dir)},
+    )
+    store.save(task)
+
+    with pytest.raises(RuntimeError, match="0/1"):
+        await pipeline_core.run_pipeline(task, _download_worker_call=True)
+
+    saved = store.get(task.id)
+    assert saved is not None
+    assert "download" not in saved.completed_steps
+    assert saved.result["image_download_result"] == {"expected": 1, "downloaded": 0, "failed": 1}
 
 
 def test_xiaohongshu_initial_state_video_stream_is_parsed():

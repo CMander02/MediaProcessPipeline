@@ -21,19 +21,28 @@ _SYSTEM_PROMPT = (
     "1. First line: 'KIND: text' if the image is primarily text (screenshot, slide, post, article, "
     "infographic with text, diagram with labels) or 'KIND: content' if it is primarily visual "
     "(photo, illustration, product shot, scenery, face).\n"
-    "2. Remaining lines: If KIND is 'text', extract all readable text from the image faithfully "
-    "(OCR). If KIND is 'content', write 1-3 sentences in Chinese describing the main subject and "
-    "key visual details.\n"
-    "Respond in the same language as the text in the image (default Chinese)."
+    "2. Remaining lines: If KIND is 'text', extract all readable text faithfully (OCR), preserving "
+    "headings, paragraphs, labels, numbers, punctuation, mixed Chinese/English text, UI text, "
+    "watermarks, screen text, handwritten text, and background signs. If KIND is 'content', write "
+    "a detailed Chinese description that covers people, objects, scene, composition, colors, "
+    "relationships, visible actions, and every readable word in the image, including small text "
+    "on screens, whiteboards, posters, clothing, labels, logos, watermarks, and captions. Do not "
+    "identify unknown people by face; transcribe only names or identities that are visibly written "
+    "in the image. Mark uncertain text with '疑似'.\n"
+    "Respond in the same language as the text in the image where practical, defaulting to Chinese."
 )
 
 _OCR_RETRY_PROMPT = (
     "这是一张以文字信息为主的图片。请直接提取所有可读文字，保持原文语言、段落顺序和编号。"
-    "如果有标题、列表、括号、英文术语或代码，请完整保留。只输出提取结果。"
+    "如果有标题、列表、括号、英文术语、代码、UI 文案、水印、背景屏幕、白板、海报、标识或人名，"
+    "请完整保留。看不清但能推测的文字用“疑似”标注。只输出提取结果。"
 )
 
 _USER_IMAGE_PROMPT = (
-    "请分析这张图片。若图片主要包含文字，请完整 OCR；若主要是照片或插画，请用中文描述主要内容。"
+    "请细致分析这张图片。先判断图片是文字为主还是视觉内容为主。文字为主时完整 OCR 所有可读文字；"
+    "视觉内容为主时用中文详细描述画面，并额外列出所有可读文字，包括背景屏幕、白板、海报、门牌、"
+    "衣物、标签、logo、水印、字幕、界面元素中的文字。人物身份只依据画面里可见文字描述，"
+    "不要根据人脸猜测。"
 )
 
 
@@ -146,9 +155,10 @@ class VLMService:
         b64, media_type, payload_meta = _encode_image(image_path)
         timeout_sec = int(binding.request_kwargs.get("timeout_sec") or 90)
         started = time.monotonic()
+        max_tokens = max(2048, int(binding.request_kwargs.get("max_tokens") or rt.vlm_max_tokens))
         response = client.chat.completions.create(
             model=model,
-            max_tokens=int(binding.request_kwargs.get("max_tokens") or rt.vlm_max_tokens),
+            max_tokens=max_tokens,
             timeout=timeout_sec,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
@@ -169,7 +179,7 @@ class VLMService:
         if not result["text"].strip():
             retry = client.chat.completions.create(
                 model=model,
-                max_tokens=max(2048, int(binding.request_kwargs.get("max_tokens") or rt.vlm_max_tokens)),
+                max_tokens=max_tokens,
                 timeout=timeout_sec,
                 messages=[
                     {"role": "system", "content": _OCR_RETRY_PROMPT},

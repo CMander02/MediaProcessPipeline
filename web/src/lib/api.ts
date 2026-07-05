@@ -9,7 +9,7 @@ import type { ProviderConfig, ProviderModelRecord, RuntimeSettings } from "./set
 export interface Task {
   id: string
   task_type: string
-  status: "pending" | "queued" | "processing" | "completed" | "failed" | "cancelled"
+  status: "pending" | "queued" | "processing" | "paused" | "completed" | "failed" | "cancelled"
   source: string
   options: Record<string, unknown>
   progress: number
@@ -67,6 +67,18 @@ export interface TaskStats {
   queued?: number
   failed?: number
   cancelled?: number
+  paused?: number
+}
+
+export interface XiaohongshuAuthStatus {
+  configured_cookie: boolean
+  storage_state_path: string
+  storage_state_exists: boolean
+  cookie_count: number
+  login_cookie: boolean
+  updated_at?: string
+  auth_status?: string
+  error?: string
 }
 
 export interface Settings extends RuntimeSettings {
@@ -249,7 +261,10 @@ export const api = {
     timeline: (id: string, limit = 1000) =>
       get<{ task_id: string; events: TaskTimelineEvent[] }>(`/api/tasks/${id}/timeline?limit=${limit}`),
     cancel: (id: string) => post<{ message: string }>(`/api/tasks/${id}/cancel`),
-    delete: (id: string) => httpDelete<{ message: string }>(`/api/tasks/${id}`),
+    pause: (id: string) => post<{ message: string }>(`/api/tasks/${id}/pause`),
+    resume: (id: string) => post<{ message: string }>(`/api/tasks/${id}/resume`),
+    checkpointRerun: (id: string) => post<{ message: string }>(`/api/tasks/${id}/checkpoint-rerun`),
+    delete: (id: string) => httpDelete<{ message: string; deleted_paths?: string[]; errors?: Array<Record<string, string>> }>(`/api/tasks/${id}`),
     stats: () => get<TaskStats>("/api/tasks/stats"),
   },
 
@@ -308,6 +323,8 @@ export const api = {
         error?: string
         items: Array<{ name: string; path: string; is_dir: boolean; size: number | null }>
       }>(`/api/filesystem/browse?path=${encodeURIComponent(path)}&mode=${mode}`),
+    openFolder: (path: string) =>
+      post<{ success: boolean; path: string }>("/api/filesystem/open-folder", { path }),
     scanFolder: (path: string, recursive = true) =>
       get<{ success: boolean; files: { path: string; name: string; size: number }[]; count: number }>(
         `/api/filesystem/scan-folder?path=${encodeURIComponent(path)}&recursive=${recursive}`,
@@ -384,6 +401,13 @@ export const api = {
       ),
   },
 
+  xiaohongshu: {
+    status: () =>
+      get<XiaohongshuAuthStatus>("/api/pipeline/xiaohongshu/auth/status"),
+    login: (timeoutSec = 180) =>
+      post<XiaohongshuAuthStatus>("/api/pipeline/xiaohongshu/auth/login", { timeout_sec: timeoutSec }),
+  },
+
   platforms: {
     list: () =>
       get<{
@@ -399,6 +423,11 @@ export const api = {
           subtitle_strict_validation?: boolean
           subtitle_min_coverage?: number
           subtitle_allow_legacy_fallback?: boolean
+          image_strategy_order?: string[]
+          fail_on_missing_images?: boolean
+          storage_state_path?: string
+          storage_state_exists?: boolean
+          login_cookie?: boolean
         }>
       }>("/api/pipeline/platforms"),
     update: (id: string, config: {
@@ -409,6 +438,8 @@ export const api = {
       subtitle_strict_validation?: boolean
       subtitle_min_coverage?: number
       subtitle_allow_legacy_fallback?: boolean
+      image_strategy_order?: string[]
+      fail_on_missing_images?: boolean
     }) =>
       put<{ ok: boolean }>(`/api/pipeline/platforms/${id}`, config),
   },

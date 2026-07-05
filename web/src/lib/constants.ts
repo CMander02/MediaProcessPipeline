@@ -43,6 +43,7 @@ export function usePipelineSteps() {
 export const STATUS_CONFIG: Record<string, { label: string; color: string; dot: string }> = {
   queued: { label: "排队中", color: "text-amber-600", dot: "bg-amber-500" },
   processing: { label: "处理中", color: "text-blue-600", dot: "bg-blue-500" },
+  paused: { label: "已暂停", color: "text-slate-600", dot: "bg-slate-400" },
   completed: { label: "已完成", color: "text-emerald-600", dot: "bg-emerald-500" },
   failed: { label: "失败", color: "text-red-600", dot: "bg-red-500" },
   cancelled: { label: "已取消", color: "text-muted-foreground", dot: "bg-muted-foreground" },

@@ -887,6 +887,7 @@ def resolve_vlm_binding(rt: RuntimeSettings) -> EndpointBinding:
                 request_kwargs={
                     "max_tokens": rt.vlm_max_tokens,
                     "concurrency": rt.vlm_concurrency,
+                    "timeout_sec": rt.vlm_timeout_sec,
                     **provider_binding.request_kwargs.get("default_params", {}),
                 },
             )
@@ -919,6 +920,7 @@ def resolve_vlm_binding(rt: RuntimeSettings) -> EndpointBinding:
         request_kwargs={
             "max_tokens": rt.vlm_max_tokens,
             "concurrency": rt.vlm_concurrency,
+            "timeout_sec": rt.vlm_timeout_sec,
         },
     )
 

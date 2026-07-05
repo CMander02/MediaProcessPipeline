@@ -3,6 +3,8 @@
 import logging
 import mimetypes
 import os
+import subprocess
+import sys
 from email.utils import formatdate
 from pathlib import Path
 from typing import Literal
@@ -17,6 +19,10 @@ router = APIRouter(prefix="/filesystem", tags=["filesystem"])
 class WriteFileRequest(BaseModel):
     path: str
     content: str
+
+
+class OpenFolderRequest(BaseModel):
+    path: str
 
 
 @router.get("/browse")
@@ -104,6 +110,38 @@ async def browse_directory(
             "path": path,
             "items": [],
         }
+
+
+@router.post("/open-folder")
+async def open_folder(req: OpenFolderRequest):
+    """Open a local folder in the system file manager."""
+    try:
+        target = Path(req.path).expanduser().resolve()
+
+        from app.core.settings import get_runtime_settings
+
+        data_root = Path(get_runtime_settings().data_root).resolve()
+        try:
+            target.relative_to(data_root)
+        except ValueError:
+            raise HTTPException(403, "Access denied: path outside data directory")
+
+        if not target.exists():
+            raise HTTPException(404, "Path not found")
+
+        folder = target if target.is_dir() else target.parent
+        if os.name == "nt":
+            subprocess.Popen(["explorer.exe", str(folder)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(folder)])
+        else:
+            subprocess.Popen(["xdg-open", str(folder)])
+        return {"success": True, "path": str(folder)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"open_folder error: {e}")
+        raise HTTPException(500, "Failed to open folder") from e
 
 
 @router.get("/read")

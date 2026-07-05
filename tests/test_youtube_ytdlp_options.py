@@ -15,7 +15,7 @@ def _clear_proxy_env(monkeypatch):
 
 def test_youtube_proxy_setting_is_passed_to_ytdlp(monkeypatch):
     _clear_proxy_env(monkeypatch)
-    monkeypatch.setattr(ytdlp, "_proxy_from_windows_user_settings", lambda: "")
+    monkeypatch.setattr(ytdlp, "shared_runtime_proxy_url", lambda: None)
     monkeypatch.setattr(
         ytdlp,
         "get_runtime_settings",
@@ -25,9 +25,9 @@ def test_youtube_proxy_setting_is_passed_to_ytdlp(monkeypatch):
     assert ytdlp.ytdlp_base_opts()["proxy"] == "http://127.0.0.1:7897"
 
 
-def test_windows_user_proxy_is_used_when_setting_is_empty(monkeypatch):
+def test_empty_youtube_proxy_uses_shared_runtime_proxy(monkeypatch):
     _clear_proxy_env(monkeypatch)
-    monkeypatch.setattr(ytdlp, "_proxy_from_windows_user_settings", lambda: "http://127.0.0.1:7897")
+    monkeypatch.setattr(ytdlp, "shared_runtime_proxy_url", lambda: "http://127.0.0.1:7897")
     monkeypatch.setattr(ytdlp, "get_runtime_settings", lambda: RuntimeSettings(youtube_proxy=""))
 
     assert ytdlp.youtube_proxy_url() == "http://127.0.0.1:7897"
@@ -51,7 +51,7 @@ def test_youtube_rate_limit_errors_are_classified():
 
 def test_ytdlp_base_opts_routes_output_to_logger(monkeypatch):
     _clear_proxy_env(monkeypatch)
-    monkeypatch.setattr(ytdlp, "_proxy_from_windows_user_settings", lambda: "")
+    monkeypatch.setattr(ytdlp, "shared_runtime_proxy_url", lambda: None)
     monkeypatch.setattr(ytdlp, "get_runtime_settings", lambda: RuntimeSettings(youtube_proxy=""))
 
     opts = ytdlp.ytdlp_base_opts()

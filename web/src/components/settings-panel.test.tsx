@@ -54,7 +54,8 @@ const { mockSettings } = vi.hoisted(() => ({
     vlm_api_key: "",
     vlm_model: "qwen2.5-vl-7b-instruct",
     vlm_max_tokens: 1024,
-    vlm_concurrency: 3,
+    vlm_concurrency: 1,
+    vlm_timeout_sec: 180,
     kb_embedding_model: "qwen3-embedding-0.6b",
     jina_reader_enabled: true,
     jina_reader_api_base: "https://r.jina.ai",
@@ -230,6 +231,22 @@ vi.mock("@/lib/api", () => ({
     bilibili: {
       status: vi.fn().mockResolvedValue({ logged_in: false, message: "未登录" }),
     },
+    xiaohongshu: {
+      status: vi.fn().mockResolvedValue({
+        configured_cookie: false,
+        storage_state_path: "",
+        storage_state_exists: false,
+        cookie_count: 0,
+        login_cookie: false,
+      }),
+      login: vi.fn().mockResolvedValue({
+        configured_cookie: false,
+        storage_state_path: "",
+        storage_state_exists: false,
+        cookie_count: 0,
+        login_cookie: false,
+      }),
+    },
     platforms: {
       list: vi.fn().mockResolvedValue({
         platforms: [
@@ -242,6 +259,13 @@ vi.mock("@/lib/api", () => ({
             subtitle_strict_validation: true,
             subtitle_min_coverage: 0.6,
             subtitle_allow_legacy_fallback: false,
+          },
+          {
+            id: "xiaohongshu",
+            preferred_quality: null,
+            prefer_subtitle: false,
+            image_strategy_order: ["raw_url", "cdn_fallback", "browser_request", "browser_interactive"],
+            fail_on_missing_images: true,
           },
         ],
       }),

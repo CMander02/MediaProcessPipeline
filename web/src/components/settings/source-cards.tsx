@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { Tick02Icon } from "@hugeicons/core-free-icons"
+import { ArrowDown01Icon, ArrowUp01Icon, Loading03Icon, Tick02Icon } from "@hugeicons/core-free-icons"
 
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
@@ -153,6 +154,262 @@ export function YoutubeCard({ settings, updateSetting, saving, saved }: YoutubeC
               <option key={item} value={item}>{item === "" ? "（不使用）" : item}</option>
             ))}
           </select>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+interface XiaohongshuCardProps {
+  settings: Settings
+  updateSetting: (key: string, value: unknown) => Promise<void>
+  saving: Record<string, boolean>
+  saved: Record<string, boolean>
+}
+
+const XHS_IMAGE_STRATEGIES = [
+  {
+    id: "browser_interactive",
+    label: "浏览器点击采集",
+    description: "打开页面，滚动并切换图片后抓取资源",
+  },
+  {
+    id: "browser_request",
+    label: "浏览器会话请求",
+    description: "使用登录态浏览器上下文请求图片",
+  },
+  {
+    id: "cdn_fallback",
+    label: "CDN 原图候选",
+    description: "尝试多个小红书图片 CDN 原图地址",
+  },
+  {
+    id: "raw_url",
+    label: "页面原始 URL",
+    description: "使用页面数据中直接给出的图片地址",
+  },
+] as const
+
+type XhsImageStrategy = (typeof XHS_IMAGE_STRATEGIES)[number]["id"]
+
+interface XiaohongshuPlatformConfig {
+  image_strategy_order: XhsImageStrategy[]
+  fail_on_missing_images: boolean
+}
+
+function normalizeXhsStrategyOrder(value: unknown): XhsImageStrategy[] {
+  const valid = new Set<XhsImageStrategy>(XHS_IMAGE_STRATEGIES.map((item) => item.id))
+  const source = Array.isArray(value) ? value : ["raw_url", "cdn_fallback", "browser_request"]
+  const order: XhsImageStrategy[] = []
+  source.forEach((item) => {
+    const id = String(item) as XhsImageStrategy
+    if (valid.has(id) && !order.includes(id)) order.push(id)
+  })
+  XHS_IMAGE_STRATEGIES.forEach((item) => {
+    if (!order.includes(item.id)) order.push(item.id)
+  })
+  return order
+}
+
+export function XiaohongshuCard({ settings, updateSetting, saving, saved }: XiaohongshuCardProps) {
+  const [status, setStatus] = useState<{
+    configured_cookie: boolean
+    storage_state_path: string
+    storage_state_exists: boolean
+    cookie_count: number
+    login_cookie: boolean
+    updated_at?: string
+    error?: string
+  } | null>(null)
+  const [platformConfig, setPlatformConfig] = useState<XiaohongshuPlatformConfig | null>(null)
+  const [savingOrder, setSavingOrder] = useState(false)
+  const [savedOrder, setSavedOrder] = useState(false)
+  const [loggingIn, setLoggingIn] = useState(false)
+
+  const refreshStatus = () => {
+    api.xiaohongshu.status()
+      .then(setStatus)
+      .catch((error) => {
+        setStatus({
+          configured_cookie: false,
+          storage_state_path: "",
+          storage_state_exists: false,
+          cookie_count: 0,
+          login_cookie: false,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      })
+  }
+
+  useEffect(() => {
+    refreshStatus()
+    api.platforms.list()
+      .then((result) => {
+        const xhs = result.platforms.find((platform) => platform.id === "xiaohongshu")
+        setPlatformConfig({
+          image_strategy_order: normalizeXhsStrategyOrder(xhs?.image_strategy_order),
+          fail_on_missing_images: Boolean(xhs?.fail_on_missing_images ?? true),
+        })
+      })
+      .catch(() => {
+        setPlatformConfig({
+          image_strategy_order: normalizeXhsStrategyOrder(undefined),
+          fail_on_missing_images: true,
+        })
+      })
+  }, [])
+
+  const handleLogin = async () => {
+    if (loggingIn) return
+    setLoggingIn(true)
+    try {
+      const next = await api.xiaohongshu.login(180)
+      setStatus(next)
+    } catch (error) {
+      setStatus((prev) => ({
+        configured_cookie: false,
+        storage_state_path: "",
+        storage_state_exists: false,
+        cookie_count: 0,
+        login_cookie: false,
+        ...prev,
+        error: error instanceof Error ? error.message : String(error),
+      }))
+    } finally {
+      setLoggingIn(false)
+    }
+  }
+
+  const statusLabel = status?.configured_cookie
+    ? "Cookie"
+    : status?.login_cookie
+      ? "已登录"
+      : status?.storage_state_exists && (status?.cookie_count ?? 0) > 0
+        ? "有会话"
+        : "未配置"
+
+  const moveStrategy = async (index: number, delta: -1 | 1) => {
+    if (!platformConfig || savingOrder) return
+    const nextIndex = index + delta
+    if (nextIndex < 0 || nextIndex >= platformConfig.image_strategy_order.length) return
+    const nextOrder = [...platformConfig.image_strategy_order]
+    const [item] = nextOrder.splice(index, 1)
+    nextOrder.splice(nextIndex, 0, item)
+    const previous = platformConfig
+    setPlatformConfig({ ...platformConfig, image_strategy_order: nextOrder })
+    setSavingOrder(true)
+    try {
+      await api.platforms.update("xiaohongshu", { image_strategy_order: nextOrder })
+      setSavedOrder(true)
+      setTimeout(() => setSavedOrder(false), 1500)
+    } catch {
+      setPlatformConfig(previous)
+    } finally {
+      setSavingOrder(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          小红书
+          <Badge variant="outline" className="text-[10px] px-1.5 py-0">{statusLabel}</Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <SettingRow
+          label="Cookie"
+          settingKey="xiaohongshu_cookie"
+          value={String(settings.xiaohongshu_cookie ?? "")}
+          onSave={updateSetting}
+          saving={saving}
+          saved={saved}
+          masked
+          placeholder="web_session=...; a1=..."
+        />
+        <SettingRow
+          label="登录态文件"
+          settingKey="xiaohongshu_storage_state_path"
+          value={String(settings.xiaohongshu_storage_state_path ?? "")}
+          onSave={updateSetting}
+          saving={saving}
+          saved={saved}
+          placeholder="留空使用 data/auth/xiaohongshu_storage_state.json"
+        />
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span>Cookies: {status?.cookie_count ?? 0}</span>
+          {status?.updated_at && <span>{new Date(status.updated_at).toLocaleString()}</span>}
+          {status?.error && <span className="text-destructive">{status.error}</span>}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button type="button" size="sm" onClick={handleLogin} disabled={loggingIn}>
+            {loggingIn && <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin" />}
+            打开登录
+          </Button>
+          <Button type="button" size="sm" variant="outline" onClick={refreshStatus}>
+            刷新状态
+          </Button>
+        </div>
+        <Separator />
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-medium text-muted-foreground">图片获取优先级</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">从上到下依次尝试，缺图会直接失败。</p>
+            </div>
+            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+              {platformConfig?.fail_on_missing_images && (
+                <Badge variant="outline" className="px-1.5 py-0 text-[10px]">缺图失败</Badge>
+              )}
+              {savingOrder && <span>保存中</span>}
+              {savedOrder && <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />}
+            </div>
+          </div>
+          <div className="space-y-2">
+            {(platformConfig?.image_strategy_order ?? normalizeXhsStrategyOrder(undefined)).map((id, index, order) => {
+              const item = XHS_IMAGE_STRATEGIES.find((strategy) => strategy.id === id)
+              if (!item) return null
+              return (
+                <div
+                  key={id}
+                  className="flex items-center gap-2 rounded-md border border-border/70 bg-background px-2 py-2"
+                >
+                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary">
+                    {index + 1}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium">{item.label}</div>
+                    <div className="truncate text-xs text-muted-foreground">{item.description}</div>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      aria-label={`${item.label} 上移`}
+                      disabled={index === 0 || savingOrder}
+                      onClick={() => moveStrategy(index, -1)}
+                    >
+                      <HugeiconsIcon icon={ArrowUp01Icon} className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      aria-label={`${item.label} 下移`}
+                      disabled={index === order.length - 1 || savingOrder}
+                      onClick={() => moveStrategy(index, 1)}
+                    >
+                      <HugeiconsIcon icon={ArrowDown01Icon} className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
         </div>
       </CardContent>
     </Card>

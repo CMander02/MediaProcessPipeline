@@ -9,7 +9,7 @@ import { api, type Settings } from "@/lib/api"
 import { usePreferences } from "@/hooks/use-preferences"
 import { SettingRow } from "@/components/settings/setting-controls"
 import { LocalModelSettings, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
-import { BilibiliCard, PlaceholderSection, YoutubeCard, ZhihuCard } from "@/components/settings/source-cards"
+import { BilibiliCard, PlaceholderSection, XiaohongshuCard, YoutubeCard, ZhihuCard } from "@/components/settings/source-cards"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Tick02Icon, Moon02Icon, Sun01Icon } from "@hugeicons/core-free-icons"
 
@@ -122,9 +122,9 @@ export function SettingsPanel() {
           {saveError}
         </div>
       )}
-      <div className="flex h-full min-h-0 gap-5">
+      <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row lg:gap-5">
         {/* Left sidebar */}
-        <nav className="sticky top-5 h-fit w-[220px] shrink-0 space-y-1 rounded-lg border bg-card p-2">
+        <nav className="w-full shrink-0 overflow-x-auto rounded-lg border bg-card p-1 lg:sticky lg:top-5 lg:h-fit lg:w-[220px] lg:space-y-1 lg:p-2">
           {TABS.map((tab) => {
             const isActive = activeTab === tab.id
 
@@ -133,7 +133,7 @@ export function SettingsPanel() {
                 <button
                   onClick={() => setActiveTab(tab.id)}
                   className={[
-                    "w-full text-left flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors",
+                    "inline-flex min-w-max items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors lg:flex lg:w-full",
                     isActive
                       ? "bg-primary/10 text-primary font-medium"
                       : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
@@ -155,7 +155,7 @@ export function SettingsPanel() {
         </nav>
 
         {/* Right content */}
-        <div className="min-w-0 flex-1 overflow-hidden [&_[data-slot=card]]:rounded-none [&_[data-slot=card]]:bg-transparent [&_[data-slot=card]]:py-0 [&_[data-slot=card]]:ring-0 [&_[data-slot=card]]:border-b [&_[data-slot=card]]:border-border/70 [&_[data-slot=card]]:pb-4 [&_[data-slot=card-header]]:px-0 [&_[data-slot=card-header]]:pb-1.5 [&_[data-slot=card-content]]:px-0">
+        <div className="min-h-0 min-w-0 flex-1 overflow-hidden [&_[data-slot=card]]:rounded-none [&_[data-slot=card]]:bg-transparent [&_[data-slot=card]]:py-0 [&_[data-slot=card]]:ring-0 [&_[data-slot=card]]:border-b [&_[data-slot=card]]:border-border/70 [&_[data-slot=card]]:pb-4 [&_[data-slot=card-header]]:px-0 [&_[data-slot=card-header]]:pb-1.5 [&_[data-slot=card-content]]:px-0">
           {/* ── Overall ── */}
           {activeTab === "overall" && (
             <div className="h-full min-h-0 space-y-4 overflow-y-auto pr-1">
@@ -275,6 +275,30 @@ export function SettingsPanel() {
                       <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
                     )}
                   </div>
+                  <div className="flex items-center gap-3">
+                    <Label className="w-24 shrink-0 text-sm text-muted-foreground">VLM 并发</Label>
+                    <select
+                      value={String(settings.vlm_concurrency ?? 1)}
+                      onChange={(e) => updateSetting("vlm_concurrency", Number(e.target.value))}
+                      className="h-8 rounded-md border border-input bg-background px-3 text-sm"
+                    >
+                      {[1, 2, 3, 4].map((n) => (
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                    {saved.vlm_concurrency && (
+                      <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
+                    )}
+                  </div>
+                  <SettingRow
+                    label="VLM 超时"
+                    settingKey="vlm_timeout_sec"
+                    value={String(settings.vlm_timeout_sec ?? 180)}
+                    onSave={(key, value) => updateSetting(key, Math.max(30, Number(value) || 180))}
+                    saving={saving}
+                    saved={saved}
+                    placeholder="180"
+                  />
                 </CardContent>
               </Card>
 
@@ -473,11 +497,7 @@ export function SettingsPanel() {
                 description="已支持公开单集页面：提取页面元数据、下载 m4a，并转为本地 ASR 使用的 wav。"
                 comingSoon={false}
               />
-              <PlaceholderSection
-                title="小红书"
-                description="已支持公开视频笔记：解析分享链接/短链、下载 mp4，并提取音频进入本地 ASR。私密或风控笔记可配置 Cookie 后重试。"
-                comingSoon={false}
-              />
+              <XiaohongshuCard settings={settings} updateSetting={updateSetting} saving={saving} saved={saved} />
               <ZhihuCard settings={settings} updateSetting={updateSetting} saving={saving} saved={saved} />
             </div>
           )}

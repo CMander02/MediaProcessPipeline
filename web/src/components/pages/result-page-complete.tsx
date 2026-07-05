@@ -15,6 +15,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Progress } from "@/components/ui/progress"
@@ -35,6 +36,7 @@ import { TranscriptTab, type MindmapTocNode } from "@/components/result/transcri
 import { SummaryTab } from "@/components/result/summary-tab"
 import { MindmapViewer } from "@/components/result/mindmap-viewer"
 import { ImageNoteViewer, type ImageDescription } from "@/components/result/image-note-viewer"
+import { ImageLightbox, type LightboxImage } from "@/components/result/image-lightbox"
 import { MarkdownRenderer } from "@/components/result/markdown-renderer"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
@@ -46,6 +48,9 @@ import {
   MoreHorizontalIcon,
   PencilEdit01Icon,
   Delete01Icon,
+  FolderOpenIcon,
+  PlayIcon,
+  RefreshIcon,
   Link01Icon,
   Gps01Icon,
   Video01Icon,
@@ -117,6 +122,27 @@ function timelineStatusClass(level: string): string {
   return "border-border bg-muted/40 text-muted-foreground"
 }
 
+function usePortraitResultLayout(): boolean {
+  const [portrait, setPortrait] = useState(() => {
+    if (typeof window === "undefined") return false
+    return window.matchMedia("(orientation: portrait)").matches
+  })
+
+  useEffect(() => {
+    const query = window.matchMedia("(orientation: portrait)")
+    const update = () => setPortrait(query.matches)
+    update()
+    query.addEventListener("change", update)
+    window.addEventListener("resize", update)
+    return () => {
+      query.removeEventListener("change", update)
+      window.removeEventListener("resize", update)
+    }
+  }, [])
+
+  return portrait
+}
+
 function resolveSourceUrl(metadata: Record<string, unknown>): string | null {
   const extra = asRecord(metadata.extra)
   const nested = asRecord(extra?.metadata) ?? asRecord(extra?.raw) ?? asRecord(extra?.info)
@@ -133,6 +159,39 @@ function resolveSourceUrl(metadata: Record<string, unknown>): string | null {
     nested?.original_url,
     nested?.webpage_url,
     nested?.url,
+  )
+}
+
+function firstTextValue(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value !== "string") continue
+    const trimmed = value.trim()
+    if (trimmed) return trimmed
+  }
+  return ""
+}
+
+function resolveRerunSource(metadata: Record<string, unknown>, archive: ArchiveItem | null, sourceUrl: string | null): string {
+  const extra = asRecord(metadata.extra)
+  const nested = asRecord(extra?.metadata) ?? asRecord(extra?.raw) ?? asRecord(extra?.info)
+  return firstTextValue(
+    metadata.source_url,
+    metadata.original_url,
+    metadata.webpage_url,
+    metadata.file_path,
+    metadata.url,
+    extra?.source_url,
+    extra?.original_url,
+    extra?.webpage_url,
+    extra?.file_path,
+    extra?.url,
+    nested?.source_url,
+    nested?.original_url,
+    nested?.webpage_url,
+    nested?.file_path,
+    nested?.url,
+    sourceUrl,
+    archive?.media_file,
   )
 }
 
@@ -246,6 +305,13 @@ function parseArticleMarkdownSegments(content: string): ArticleMarkdownSegment[]
 
 function ArticleNoteMarkdown({ content, archivePath, sep }: { content: string; archivePath: string; sep: string }) {
   const segments = parseArticleMarkdownSegments(content)
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
+  const figureImages: LightboxImage[] = segments
+    .filter((segment): segment is Extract<ArticleMarkdownSegment, { kind: "figure" }> => segment.kind === "figure")
+    .map((segment) => ({
+      src: resolveNoteMediaSrc(segment.src, archivePath, sep) ?? segment.src,
+      alt: segment.alt,
+    }))
   const markdownComponents = {
     img: ({ src, alt }: { src?: string; alt?: string }) => (
       <img
@@ -262,38 +328,59 @@ function ArticleNoteMarkdown({ content, archivePath, sep }: { content: string; a
 
   return (
     <div className="prose prose-sm max-w-none dark:prose-invert">
-      {segments.map((segment, index) => {
-        if (segment.kind === "markdown") {
+      {(() => {
+        let figureIndex = 0
+        return segments.map((segment, index) => {
+          if (segment.kind === "markdown") {
+            return (
+              <MarkdownRenderer key={`markdown-${index}`} components={markdownComponents}>
+                {segment.content}
+              </MarkdownRenderer>
+            )
+          }
+          const currentFigureIndex = figureIndex
+          figureIndex += 1
           return (
-            <MarkdownRenderer key={`markdown-${index}`} components={markdownComponents}>
-              {segment.content}
-            </MarkdownRenderer>
+            <figure key={`figure-${index}`} className="my-5">
+              <button
+                type="button"
+                className="block w-full"
+                onClick={() => setLightboxIndex(currentFigureIndex)}
+                title="查看大图"
+              >
+                <img
+                  src={resolveNoteMediaSrc(segment.src, archivePath, sep)}
+                  alt={segment.alt}
+                  className="mx-auto max-h-[640px] w-full rounded-md object-contain"
+                  loading="lazy"
+                />
+              </button>
+              {segment.caption ? (
+                <figcaption className="mx-auto mt-2 max-w-2xl text-center text-xs leading-6 text-muted-foreground [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_p]:m-0">
+                  <MarkdownRenderer
+                    components={{
+                      a: ({ href, children }) => (
+                        <a href={href} target="_blank" rel="noreferrer">{children}</a>
+                      ),
+                    }}
+                  >
+                    {segment.caption}
+                  </MarkdownRenderer>
+                </figcaption>
+              ) : null}
+            </figure>
           )
-        }
-        return (
-          <figure key={`figure-${index}`} className="my-5">
-            <img
-              src={resolveNoteMediaSrc(segment.src, archivePath, sep)}
-              alt={segment.alt}
-              className="mx-auto max-h-[640px] w-full rounded-md object-contain"
-              loading="lazy"
-            />
-            {segment.caption ? (
-              <figcaption className="mx-auto mt-2 max-w-2xl text-center text-xs leading-6 text-muted-foreground [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_p]:m-0">
-                <MarkdownRenderer
-                  components={{
-                    a: ({ href, children }) => (
-                      <a href={href} target="_blank" rel="noreferrer">{children}</a>
-                    ),
-                  }}
-                >
-                  {segment.caption}
-                </MarkdownRenderer>
-              </figcaption>
-            ) : null}
-          </figure>
-        )
-      })}
+        })
+      })()}
+      <ImageLightbox
+        images={figureImages}
+        index={lightboxIndex ?? 0}
+        open={lightboxIndex !== null}
+        onIndexChange={setLightboxIndex}
+        onOpenChange={(open) => {
+          if (!open) setLightboxIndex(null)
+        }}
+      />
     </div>
   )
 }
@@ -313,6 +400,11 @@ function ArticleNoteReader({
 }) {
   const showLocalImages = !markdownHasInlineImages(content)
   const localImages = showLocalImages ? descriptions.filter((item) => item.image_path) : []
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
+  const lightboxImages: LightboxImage[] = localImages.map((item) => ({
+    src: api.filesystem.mediaUrl(item.image_path),
+    alt: `图片 ${item.index + 1}`,
+  }))
 
   return (
     <div className="h-full overflow-y-auto rounded-lg border bg-background">
@@ -333,12 +425,19 @@ function ArticleNoteReader({
           <div className="mt-6 space-y-6">
             {localImages.map((item) => (
               <figure key={item.index} className="space-y-2">
-                <img
-                  src={api.filesystem.mediaUrl(item.image_path)}
-                  alt={`图片 ${item.index + 1}`}
-                  className="mx-auto max-h-[640px] w-full rounded-md object-contain"
-                  loading="lazy"
-                />
+                <button
+                  type="button"
+                  className="block w-full"
+                  onClick={() => setLightboxIndex(localImages.findIndex((image) => image.index === item.index))}
+                  title="查看大图"
+                >
+                  <img
+                    src={api.filesystem.mediaUrl(item.image_path)}
+                    alt={`图片 ${item.index + 1}`}
+                    className="mx-auto max-h-[640px] w-full rounded-md object-contain"
+                    loading="lazy"
+                  />
+                </button>
                 {item.text ? (
                   <figcaption className="whitespace-pre-wrap text-xs leading-6 text-muted-foreground">
                     {item.text}
@@ -349,6 +448,15 @@ function ArticleNoteReader({
           </div>
         )}
       </div>
+      <ImageLightbox
+        images={lightboxImages}
+        index={lightboxIndex ?? 0}
+        open={lightboxIndex !== null}
+        onIndexChange={setLightboxIndex}
+        onOpenChange={(open) => {
+          if (!open) setLightboxIndex(null)
+        }}
+      />
     </div>
   )
 }
@@ -357,6 +465,9 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const { archives, refresh: refreshArchives } = useArchives()
   const [archive, setArchive] = useState<ArchiveItem | null>(null)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [resuming, setResuming] = useState(false)
+  const [rerunning, setRerunning] = useState(false)
+  const [openingFolder, setOpeningFolder] = useState(false)
   // Resolve taskId: prefer prop (from URL), fall back to archive list lookup.
   // undefined = not yet resolved; null = confirmed no taskId; string = resolved
   const [resolvedTaskId, setResolvedTaskId] = useState<string | null | undefined>(
@@ -684,18 +795,17 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   // Load image descriptions for image_note content type
   const loadImageDescriptions = useCallback(async () => {
     if (!archivePath) return
-    // Preferred: read image_descriptions directly from task result (set by pipeline)
+    const resultDescriptions: ImageDescription[] = []
     if (resolvedTaskId) {
       try {
         const task = await api.tasks.get(resolvedTaskId)
         const descs = task.result?.image_descriptions as ImageDescription[] | undefined
         if (descs && descs.length > 0) {
-          setImageDescriptions(descs)
-          return
+          resultDescriptions.push(...descs)
         }
       } catch {}
     }
-    // Fall back: probe numbered image files on disk (count limited by images/ directory)
+    const resultByIndex = new Map(resultDescriptions.map((item) => [item.index, item]))
     const descs: ImageDescription[] = []
     try {
       const imagesDir = archivePath + sep + "images"
@@ -709,11 +819,13 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         let text = ""
         try { text = (await api.filesystem.read(descPath)).content ?? "" } catch {}
         const index = Number.parseInt(stem, 10)
+        const fromResult = Number.isFinite(index) ? resultByIndex.get(index) : undefined
         descs.push({
+          ...(fromResult ?? {}),
           index: Number.isFinite(index) ? index : descs.length,
           image_path: item.path,
-          kind: "content",
-          text,
+          kind: fromResult?.kind ?? "content",
+          text: (fromResult?.text || text || ""),
         })
       }
     } catch {}
@@ -725,10 +837,22 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         if (!check || !check.success) break
         let text = ""
         try { text = (await api.filesystem.read(descPath)).content ?? "" } catch {}
-        descs.push({ index: i, image_path: imgPath, kind: "content", text })
+        const fromResult = resultByIndex.get(i)
+        descs.push({
+          ...(fromResult ?? {}),
+          index: i,
+          image_path: imgPath,
+          kind: fromResult?.kind ?? "content",
+          text: fromResult?.text || text,
+        })
       } catch { break }
     }
-    if (descs.length > 0) setImageDescriptions(descs)
+    const merged = descs.length > 0 ? descs : resultDescriptions
+    if (merged.length > 0) {
+      const sorted = [...merged].sort((a, b) => a.index - b.index)
+      setImageDescriptions(sorted)
+      setActiveImageIdx((current) => sorted.some((item) => item.index === current) ? current : sorted[0].index)
+    }
   }, [archivePath, sep, resolvedTaskId])
 
   useEffect(() => {
@@ -981,6 +1105,351 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     void openExternalUrl(sourceHref)
   }, [sourceHref])
 
+  const handleResumeFromCheckpoint = useCallback(async () => {
+    if (resuming) return
+    if (!resolvedTaskId) {
+      window.alert("找不到历史任务记录，无法断点续做。")
+      return
+    }
+    setResuming(true)
+    try {
+      const task = await api.tasks.get(resolvedTaskId)
+      if (task.status !== "queued" && task.status !== "processing") {
+        await api.tasks.checkpointRerun(resolvedTaskId)
+      }
+      await refreshArchives()
+      navigate(`#/result/task/${resolvedTaskId}`)
+    } catch (error) {
+      window.alert(`断点续做失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setResuming(false)
+    }
+  }, [refreshArchives, resolvedTaskId, resuming])
+
+  const handleFullRerun = useCallback(async () => {
+    if (rerunning) return
+    setRerunning(true)
+    try {
+      let source = ""
+      let options: Record<string, unknown> = {}
+      if (resolvedTaskId) {
+        try {
+          const task = await api.tasks.get(resolvedTaskId)
+          source = task.source
+          options = task.options ?? {}
+        } catch {
+          source = ""
+        }
+      }
+      if (!source) {
+        source = resolveRerunSource((archive?.metadata ?? {}) as Record<string, unknown>, archive, sourceUrl)
+      }
+      if (!source) {
+        window.alert("找不到原始来源，无法重做。")
+        return
+      }
+      const task = await api.tasks.create(source, options)
+      navigate(`#/result/task/${task.id}`)
+    } catch (error) {
+      window.alert(`完整重做失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setRerunning(false)
+    }
+  }, [archive, resolvedTaskId, rerunning, sourceUrl])
+
+  const handleOpenLocalFolder = useCallback(async () => {
+    if (openingFolder) return
+    setOpeningFolder(true)
+    try {
+      await api.filesystem.openFolder(archivePath)
+    } catch (error) {
+      window.alert(`打开本地文件夹失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setOpeningFolder(false)
+    }
+  }, [archivePath, openingFolder])
+
+  const isPortraitLayout = usePortraitResultLayout()
+
+  const mediaPane = (
+    <div className={cn(
+      "h-full min-h-0 space-y-3",
+      isPortraitLayout ? "overflow-hidden p-0" : "overflow-y-auto p-4",
+    )}>
+      {isArticleNote ? (
+        <ArticleNoteReader
+          content={noteText}
+          archivePath={archivePath}
+          sep={sep}
+          descriptions={imageDescriptions}
+          isProcessing={isProcessing}
+        />
+      ) : isImageNote ? (
+        <div className="h-full">
+          <ImageNoteViewer
+            archivePath={archivePath}
+            descriptions={imageDescriptions}
+            activeIndex={activeImageIdx}
+            onImageIndexChange={setActiveImageIdx}
+            isProcessing={isProcessing}
+          />
+        </div>
+      ) : isTextNote ? (
+        <div className="h-full min-h-40 overflow-y-auto rounded-lg border bg-background p-5">
+          {noteText ? (
+            <NoteMarkdown content={noteText} archivePath={archivePath} sep={sep} />
+          ) : (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              暂无正文
+            </div>
+          )}
+        </div>
+      ) : mediaUrl ? (
+        <div className="sticky top-0 z-10 bg-background pb-2">
+          <MediaPlayer
+            src={mediaUrl}
+            type={mediaType}
+            bindMedia={bindMedia}
+            subtitleSrt={transcript ?? undefined}
+          />
+        </div>
+      ) : isProcessing ? (
+        <div className="flex items-center justify-center h-40 rounded-lg bg-muted/50">
+          <div className="text-center text-muted-foreground">
+            <HugeiconsIcon icon={Loading03Icon} className="h-6 w-6 animate-spin mx-auto mb-2" />
+            <p className="text-xs">正在下载媒体...</p>
+          </div>
+        </div>
+      ) : null}
+      {!isNoteContent && subtitles.length > 0 && (
+        <SpeakerPanel
+          subtitles={subtitles}
+          duration={duration}
+          currentTime={currentTime}
+          onSeek={seekTo}
+          onRenameSpeaker={handleRenameSpeaker}
+        />
+      )}
+    </div>
+  )
+
+  const contentPane = (
+    <div className={cn(
+      "h-full min-h-0 flex flex-col",
+      isPortraitLayout ? "p-0" : "p-4",
+    )}>
+      <Tabs value={activeTab} onValueChange={(v: any) => { setActiveTab(String(v)); updateActiveTab(String(v)) }} className="flex flex-col flex-1 min-h-0">
+        <div className="shrink-0 flex items-center gap-2">
+          <TabsList>
+            <TabsTrigger value="summary">摘要</TabsTrigger>
+            {isImageNote && !isArticleNote && <TabsTrigger value="source">原帖</TabsTrigger>}
+            {!isPureWebpage && (
+              <TabsTrigger value="transcript">
+                {isImageNote ? "图片" : isTextNote ? "正文" : "字幕"}
+                {!isNoteContent && transcript && !isPolished && isProcessing && (
+                  <span className="ml-1 text-[10px] text-amber-600">(原始)</span>
+                )}
+              </TabsTrigger>
+            )}
+            {(mindmap || isProcessing) && <TabsTrigger value="mindmap">导图</TabsTrigger>}
+            {detail && <TabsTrigger value="detail">详情</TabsTrigger>}
+          </TabsList>
+          {activeTab === "mindmap" && mindmapFit && (
+            <button
+              onClick={mindmapFit}
+              className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              title="回正视角"
+            >
+              <HugeiconsIcon icon={Gps01Icon} className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {getTabContent()?.content && (
+            <>
+              <button
+                onClick={handleCopy}
+                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                title="复制全部内容"
+              >
+                {copied ? <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" /> : <HugeiconsIcon icon={Copy01Icon} className="h-3.5 w-3.5" />}
+              </button>
+              <button
+                onClick={handleDownload}
+                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                title="下载为文件"
+              >
+                <HugeiconsIcon icon={Download01Icon} className="h-3.5 w-3.5" />
+              </button>
+            </>
+          )}
+        </div>
+
+        <TabsContent value="summary" className="mt-3 relative flex-1">
+          <div className="absolute inset-0 rounded-md border">
+            {summary ? (
+              <SummaryTab content={summary} />
+            ) : isProcessing ? (
+              <div className="flex items-center justify-center h-full text-muted-foreground">
+                <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
+                <span className="text-sm">等待分析完成...</span>
+              </div>
+            ) : (
+              <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+                暂无摘要
+              </div>
+            )}
+          </div>
+        </TabsContent>
+
+        {isImageNote && (
+          <TabsContent value="source" className="mt-3 relative flex-1">
+            <div className="absolute inset-0 overflow-y-auto rounded-md border p-5 text-sm leading-7">
+              {noteText ? (
+                <NoteMarkdown content={noteText} archivePath={archivePath} sep={sep} />
+              ) : isProcessing ? (
+                <div className="flex h-full items-center justify-center text-muted-foreground">
+                  <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
+                  <span className="text-sm">等待原帖正文...</span>
+                </div>
+              ) : (
+                <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
+                  暂无原帖正文
+                </div>
+              )}
+            </div>
+          </TabsContent>
+        )}
+
+        {!isPureWebpage && (
+          <TabsContent value="transcript" className="mt-3 relative flex-1">
+            <div className="absolute inset-0 rounded-md border flex flex-col">
+              {isImageNote ? (
+                imageDescriptions.length > 0 ? (
+                  <div className="overflow-y-auto flex-1 p-3 space-y-3">
+                    {imageDescriptions.map((d) => (
+                      <div
+                        key={d.index}
+                        className={cn(
+                          "rounded-md border p-2 cursor-pointer transition-colors text-sm",
+                          activeImageIdx === d.index ? "border-primary bg-primary/5" : "hover:bg-muted/30",
+                        )}
+                        onClick={() => setActiveImageIdx(d.index)}
+                      >
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <span className="text-[10px] font-medium text-muted-foreground tabular-nums">
+                            图片 {d.index + 1}
+                          </span>
+                          {d.kind === "text" && (
+                            <span className="rounded bg-sky-500/10 px-1 text-[9px] text-sky-600 dark:text-sky-400">文字</span>
+                          )}
+                        </div>
+                        {d.text ? (
+                          <p className="text-xs leading-relaxed whitespace-pre-wrap">{d.text}</p>
+                        ) : (
+                          <p className="text-xs text-muted-foreground italic">无描述</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : isProcessing ? (
+                  <div className="flex items-center justify-center h-full text-muted-foreground">
+                    <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
+                    <span className="text-sm">正在分析图片...</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center h-full text-muted-foreground text-sm">无图片数据</div>
+                )
+              ) : isTextNote ? (
+                noteText ? (
+                  <div className="overflow-y-auto flex-1 p-5 text-sm leading-7">
+                    <NoteMarkdown content={noteText} archivePath={archivePath} sep={sep} />
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+                    暂无正文
+                  </div>
+                )
+              ) : (
+                <>
+                  {subtitleTracks.length > 1 && (
+                    <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b bg-muted/20 overflow-x-auto">
+                      <span className="text-[10px] text-muted-foreground shrink-0">语言：</span>
+                      {subtitleTracks.map((t) => {
+                        const active = (activeTrackLang ?? polishedLang) === t.lang
+                        return (
+                          <button
+                            key={t.lang}
+                            onClick={() => selectTrack(t.lang)}
+                            className={cn(
+                              "shrink-0 rounded px-2 py-0.5 text-[11px] transition-colors",
+                              active
+                                ? "bg-primary text-primary-foreground"
+                                : "bg-muted hover:bg-muted/70 text-foreground",
+                            )}
+                            title={t.polished ? "已润色" : "原始字幕"}
+                          >
+                            {t.lang}
+                            {t.polished && <span className="ml-1 text-[9px] opacity-80">✓</span>}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                  {subtitles.length > 0 ? (
+                    <TranscriptTab
+                      subtitles={subtitles}
+                      currentSegmentIndex={currentSegmentIndex}
+                      autoScroll={autoScroll}
+                      onSegmentClick={(sub) => seekTo(sub.startTime)}
+                      currentTime={currentTime}
+                      tocTree={mindmapTree}
+                      onTocSeek={seekTo}
+                      onManualScroll={onManualScroll}
+                      srtPath={archivePath + sep + (
+                        activeTrackLang && !subtitleTracks.find((t) => t.lang === activeTrackLang)?.polished
+                          ? `transcript.${activeTrackLang}.srt`
+                          : (isPolished ? "transcript_polished.srt" : "transcript.srt")
+                      )}
+                      onSubtitlesChange={setSubtitles}
+                    />
+                  ) : isProcessing ? (
+                    <div className="flex items-center justify-center h-full text-muted-foreground">
+                      <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
+                      <span className="text-sm">等待转录完成...</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+                      无字幕数据
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </TabsContent>
+        )}
+
+        {(mindmap || isProcessing) && (
+          <TabsContent value="mindmap" className="mt-3 relative flex-1">
+            {mindmap ? (
+              <MindmapViewer markdown={mindmap} fillContainer title={displayTitle} onFitReady={(fn) => setMindmapFit(() => fn)} />
+            ) : isProcessing ? (
+              <div className="flex items-center justify-center h-full text-muted-foreground">
+                <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
+                <span className="text-sm">等待分析完成...</span>
+              </div>
+            ) : null}
+          </TabsContent>
+        )}
+        {detail && (
+          <TabsContent value="detail" className="mt-3 relative flex-1">
+            <div className="absolute inset-0 rounded-md border">
+              <SummaryTab content={detail} />
+            </div>
+          </TabsContent>
+        )}
+      </Tabs>
+    </div>
+  )
+
   return (
     <div className="flex h-full flex-col">
       {/* Top bar */}
@@ -1079,11 +1548,24 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon-sm">
+            <Button variant="ghost" size="icon-sm" aria-label="更多操作" title="更多操作">
               <HugeiconsIcon icon={MoreHorizontalIcon} className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            <DropdownMenuItem disabled={resuming} onClick={handleResumeFromCheckpoint}>
+              <HugeiconsIcon icon={resuming ? Loading03Icon : PlayIcon} className={resuming ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+              {resuming ? "续做中" : "断点续做"}
+            </DropdownMenuItem>
+            <DropdownMenuItem disabled={rerunning} onClick={handleFullRerun}>
+              <HugeiconsIcon icon={rerunning ? Loading03Icon : RefreshIcon} className={rerunning ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+              {rerunning ? "重做中" : "完整重做"}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem disabled={openingFolder} onClick={handleOpenLocalFolder}>
+              <HugeiconsIcon icon={openingFolder ? Loading03Icon : FolderOpenIcon} className={openingFolder ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+              打开本地文件夹
+            </DropdownMenuItem>
             <DropdownMenuItem
               variant="destructive"
               onClick={() => setShowDeleteDialog(true)}
@@ -1169,6 +1651,18 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
 
       {/* Main content area — three-column layout */}
       <div className="flex-1 min-h-0 relative">
+        {isPortraitLayout ? (
+          <div className="absolute inset-0 overflow-hidden p-3">
+            <div className="grid h-full min-h-0 grid-rows-[minmax(220px,42%)_minmax(0,1fr)] gap-3 sm:grid-cols-[minmax(260px,0.95fr)_minmax(300px,1fr)] sm:grid-rows-1">
+              <div className="min-h-0 overflow-hidden">
+                {mediaPane}
+              </div>
+              <div className="min-h-0 overflow-hidden">
+                {contentPane}
+              </div>
+            </div>
+          </div>
+        ) : (
         <ResizablePanelGroup
           orientation="horizontal"
           className="absolute inset-0"
@@ -1189,6 +1683,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                   <ImageNoteViewer
                     archivePath={archivePath}
                     descriptions={imageDescriptions}
+                    activeIndex={activeImageIdx}
                     onImageIndexChange={setActiveImageIdx}
                     isProcessing={isProcessing}
                   />
@@ -1449,6 +1944,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
             </div>
           </ResizablePanel>
         </ResizablePanelGroup>
+        )}
       </div>
 
       {/* Delete confirmation dialog */}
@@ -1457,6 +1953,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         onOpenChange={setShowDeleteDialog}
         title={displayTitle ?? ""}
         archivePath={archivePath}
+        taskId={resolvedTaskId ?? undefined}
+        taskDelete={Boolean(isProcessing && resolvedTaskId)}
         onDeleted={() => navigate("#/files")}
       />
 

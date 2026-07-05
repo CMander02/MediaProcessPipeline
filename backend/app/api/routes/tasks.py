@@ -221,7 +221,7 @@ async def get_task(task_id: UUID):
 
 @router.post("/{task_id}/cancel")
 async def cancel_task(task_id: UUID):
-    """Cancel a pending/queued task."""
+    """Cancel a pending, queued, paused, or running task."""
     queue = get_task_queue()
     if await queue.cancel(task_id):
         return {"message": "Cancelled", "task_id": str(task_id)}
@@ -233,12 +233,55 @@ async def cancel_task(task_id: UUID):
     raise HTTPException(400, f"Cannot cancel task in status: {task.status}")
 
 
+@router.post("/{task_id}/pause")
+async def pause_task(task_id: UUID):
+    """Pause a queued or running task while keeping checkpointed outputs."""
+    queue = get_task_queue()
+    if await queue.pause(task_id):
+        return {"message": "Paused", "task_id": str(task_id)}
+
+    store = get_task_store()
+    task = store.get(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    raise HTTPException(400, f"Cannot pause task in status: {task.status}")
+
+
+@router.post("/{task_id}/resume")
+async def resume_task(task_id: UUID):
+    """Resume a paused or failed task from its checkpoint."""
+    queue = get_task_queue()
+    if await queue.resume(task_id):
+        return {"message": "Resumed", "task_id": str(task_id)}
+
+    store = get_task_store()
+    task = store.get(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    raise HTTPException(400, f"Cannot resume task in status: {task.status}")
+
+
+@router.post("/{task_id}/checkpoint-rerun")
+async def checkpoint_rerun_task(task_id: UUID):
+    """Rerun a task in place from durable checkpointed files."""
+    queue = get_task_queue()
+    if await queue.rerun_from_checkpoint(task_id):
+        return {"message": "Checkpoint rerun queued", "task_id": str(task_id)}
+
+    store = get_task_store()
+    task = store.get(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    raise HTTPException(400, f"Cannot checkpoint-rerun task in status: {task.status}")
+
+
 @router.delete("/{task_id}")
 async def delete_task(task_id: UUID):
-    """Delete a task from the store."""
-    store = get_task_store()
-    if store.delete(task_id):
-        return {"message": "Deleted", "task_id": str(task_id)}
+    """Delete a task and its output directory when it is under data_root."""
+    queue = get_task_queue()
+    result = await queue.delete(task_id)
+    if result is not None:
+        return {"message": "Deleted", "task_id": str(task_id), **result}
     raise HTTPException(404, "Task not found")
 
 
@@ -279,7 +322,7 @@ async def stream_task_events(task_id: UUID):
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=30.0)
                     yield event.to_sse()
-                    if event.event_type in ("completed", "failed", "cancelled"):
+                    if event.event_type in ("completed", "failed", "cancelled", "deleted"):
                         break
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"

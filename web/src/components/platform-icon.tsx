@@ -1,5 +1,7 @@
 import applePodcastsSvg from "@/assets/platform-icons/apple-podcasts.svg"
 import bilibiliSvg from "@/assets/platform-icons/bilibili.svg"
+import webpageSvg from "@/assets/platform-icons/webpage.svg"
+import xTwitterSvg from "@/assets/platform-icons/x-twitter.svg"
 import xiaohongshuSvg from "@/assets/platform-icons/xiaohongshu.svg"
 import youtubeSvg from "@/assets/platform-icons/youtube.svg"
 import zhihuSvg from "@/assets/platform-icons/zhihu.svg"
@@ -11,6 +13,12 @@ const PLATFORM_ICONS: Record<string, { src: string; label: string }> = {
   bilibili_opus: { src: bilibiliSvg, label: "Bilibili" },
   bilibili_video: { src: bilibiliSvg, label: "Bilibili" },
   bili: { src: bilibiliSvg, label: "Bilibili" },
+  webpage: { src: webpageSvg, label: "Webpage" },
+  web: { src: webpageSvg, label: "Webpage" },
+  generic_webpage: { src: webpageSvg, label: "Webpage" },
+  twitter: { src: xTwitterSvg, label: "X" },
+  x: { src: xTwitterSvg, label: "X" },
+  x_twitter: { src: xTwitterSvg, label: "X" },
   xiaohongshu: { src: xiaohongshuSvg, label: "小红书" },
   xhs: { src: xiaohongshuSvg, label: "小红书" },
   youtube: { src: youtubeSvg, label: "YouTube" },

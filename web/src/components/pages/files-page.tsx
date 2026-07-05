@@ -3,6 +3,7 @@ import { useArchives } from "@/hooks/use-archives"
 import { usePreferences } from "@/hooks/use-preferences"
 import { navigate } from "@/lib/router"
 import { api } from "@/lib/api"
+import { sourceFilterFromMetadata, type MediaFilter, type SourceFilter } from "@/lib/archive-filters"
 import type { ArchiveItem } from "@/hooks/use-archives"
 import { ArchiveCard } from "@/components/archive-card"
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
@@ -16,17 +17,20 @@ const MIN_PAGE_SIZE = 1
 
 interface FilesPageProps {
   search: string
-  mediaFilter: "all" | "video" | "audio" | "image"
+  mediaFilter: MediaFilter
+  sourceFilter: SourceFilter
 }
 
-export function FilesPage({ search, mediaFilter }: FilesPageProps) {
+export function FilesPage({ search, mediaFilter, sourceFilter }: FilesPageProps) {
   const { archives, loading, refresh, removeArchive } = useArchives()
   const { update: updatePrefs } = usePreferences()
   const [page, setPage] = useState(1)
   const [pageInput, setPageInput] = useState("1")
   const [pageSize, setPageSize] = useState(PAGE_SIZE)
-  const [deleteTarget, setDeleteTarget] = useState<{ title: string; path: string } | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<{ title: string; path: string; taskId?: string; taskDelete?: boolean } | null>(null)
   const [rerunningPath, setRerunningPath] = useState<string | null>(null)
+  const [checkpointRerunningPath, setCheckpointRerunningPath] = useState<string | null>(null)
+  const [taskActionPath, setTaskActionPath] = useState<string | null>(null)
   const gridRef = useRef<HTMLDivElement>(null)
   const paginationRef = useRef<HTMLDivElement>(null)
 
@@ -40,6 +44,9 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
         return a.has_image || subtype === "image_note" || subtype === "text_note"
       })
     }
+    if (sourceFilter !== "all") {
+      list = list.filter((a) => sourceFilterFromMetadata(a.metadata) === sourceFilter)
+    }
     if (search.trim()) {
       const q = search.toLowerCase()
       list = list.filter((a) => a.title.toLowerCase().includes(q))
@@ -49,10 +56,10 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
       if (!!a.processing !== !!b.processing) return a.processing ? -1 : 1
       return 0
     })
-  }, [archives, search, mediaFilter])
+  }, [archives, search, mediaFilter, sourceFilter])
 
   // Reset page when filters change
-  useEffect(() => { setPage(1) }, [search, mediaFilter])
+  useEffect(() => { setPage(1) }, [search, mediaFilter, sourceFilter])
 
   // While any task is processing, poll for updates so the queue card progress stays fresh
   const anyProcessing = archives.some((a) => a.processing)
@@ -155,6 +162,40 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
     }
   }
 
+  const handleCheckpointRerun = async (archive: ArchiveItem) => {
+    if (!archive.task_id || checkpointRerunningPath) return
+    setCheckpointRerunningPath(archive.path)
+    try {
+      const task = await api.tasks.get(archive.task_id)
+      if (task.status === "queued" || task.status === "processing") {
+        handleOpen(archive.path, archive.task_id)
+        return
+      }
+      await api.tasks.checkpointRerun(archive.task_id)
+      setPage(1)
+      await refresh(true)
+      navigate(`#/result/task/${archive.task_id}`)
+    } catch (e) {
+      window.alert(`断点续做失败：${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setCheckpointRerunningPath(null)
+    }
+  }
+
+  const handleTaskAction = async (archive: ArchiveItem, action: "pause" | "resume") => {
+    if (!archive.task_id || taskActionPath) return
+    setTaskActionPath(archive.path)
+    try {
+      if (action === "pause") await api.tasks.pause(archive.task_id)
+      if (action === "resume") await api.tasks.resume(archive.task_id)
+      await refresh(true)
+    } catch (e) {
+      window.alert(`${action === "pause" ? "暂停" : "恢复"}失败：${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setTaskActionPath(null)
+    }
+  }
+
   const commitPageInput = () => {
     const parsed = Number.parseInt(pageInput, 10)
     if (!Number.isFinite(parsed)) {
@@ -175,13 +216,13 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
   }
 
   return (
-    <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_auto] gap-2 px-4 pt-3 pb-1">
+    <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_auto] gap-2 px-3 pt-3 pb-1 sm:px-4">
       {/* Grid */}
       {filtered.length > 0 ? (
         <div
           ref={gridRef}
           data-testid="archive-grid"
-          className="grid h-full min-h-0 grid-cols-[repeat(auto-fill,minmax(220px,1fr))] content-between gap-x-4 gap-y-3 overflow-hidden"
+          className="grid h-full min-h-0 grid-cols-[repeat(auto-fill,minmax(min(240px,100%),1fr))] content-between gap-x-4 gap-y-3 overflow-hidden"
         >
           {paged.map((a) => (
             <ArchiveCard
@@ -189,10 +230,20 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
               archive={a}
               compact
               onClick={() => handleOpen(a.path, a.task_id)}
-              onDelete={() => setDeleteTarget({ title: a.title, path: a.path })}
+              onDelete={() => setDeleteTarget({
+                title: a.title,
+                path: a.path,
+                taskId: a.task_id,
+                taskDelete: Boolean(a.processing && a.task_id),
+              })}
               onRenamed={() => refresh(true)}
               onRerun={() => handleRerun(a)}
+              onCheckpointRerun={a.task_id ? () => handleCheckpointRerun(a) : undefined}
+              onPause={a.task_id ? () => handleTaskAction(a, "pause") : undefined}
+              onResume={a.task_id ? () => handleTaskAction(a, "resume") : undefined}
               rerunning={rerunningPath === a.path}
+              checkpointRerunning={checkpointRerunningPath === a.path}
+              taskActionBusy={taskActionPath === a.path}
             />
           ))}
         </div>
@@ -257,6 +308,8 @@ export function FilesPage({ search, mediaFilter }: FilesPageProps) {
           onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}
           title={deleteTarget.title}
           archivePath={deleteTarget.path}
+          taskId={deleteTarget.taskId}
+          taskDelete={deleteTarget.taskDelete}
           onDeleted={() => removeArchive(deleteTarget.path)}
         />
       )}

@@ -15,6 +15,7 @@ def test_vlm_binding_resolves_openai_compatible_endpoint():
         vlm_model="qwen2.5-vl-72b-instruct",
         vlm_max_tokens=2048,
         vlm_concurrency=5,
+        vlm_timeout_sec=240,
     )
 
     binding = resolve_vlm_binding(settings)
@@ -25,7 +26,7 @@ def test_vlm_binding_resolves_openai_compatible_endpoint():
     assert binding.model == "qwen2.5-vl-72b-instruct"
     assert binding.api_base == "https://vlm.example/v1"
     assert binding.api_key == "vlm-key"
-    assert binding.request_kwargs == {"max_tokens": 2048, "concurrency": 5}
+    assert binding.request_kwargs == {"max_tokens": 2048, "concurrency": 5, "timeout_sec": 240}
 
 
 def test_vlm_binding_uses_siliconflow_defaults_when_vlm_endpoint_is_empty():

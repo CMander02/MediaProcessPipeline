@@ -13,7 +13,7 @@ from copy import deepcopy
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.core.network import urllib_urlopen
 
@@ -102,7 +102,12 @@ def fetch_metadata(value: str) -> dict[str, Any]:
     }
 
 
-def download_images(info: dict[str, Any], output_dir: Path) -> list[Path]:
+def download_images(
+    info: dict[str, Any],
+    output_dir: Path,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+) -> list[Path]:
     """Download Bilibili opus images and return local paths."""
     extra = info.get("extra") or {}
     image_urls: list[str] = extra.get("image_urls") or []
@@ -117,6 +122,7 @@ def download_images(info: dict[str, Any], output_dir: Path) -> list[Path]:
     referer = str(info.get("webpage_url") or "https://www.bilibili.com/")
     paths: list[Path] = []
     for idx, candidates in enumerate(image_url_candidates):
+        _raise_if_image_download_cancelled(should_cancel)
         urls = [url for url in candidates if isinstance(url, str) and url.startswith("http")]
         if not urls:
             continue
@@ -126,9 +132,11 @@ def download_images(info: dict[str, Any], output_dir: Path) -> list[Path]:
             paths.append(dest)
             continue
         try:
-            _download_file_candidates(urls, dest, referer=referer)
+            _download_file_candidates(urls, dest, referer=referer, should_cancel=should_cancel)
             paths.append(dest)
         except Exception as exc:
+            if should_cancel and should_cancel():
+                raise
             logger.warning("Failed to download Bilibili image %s: %s", idx, exc)
     return paths
 
@@ -735,17 +743,43 @@ def _fetch_article_webpage_markdown(article_url: str, fallback: str) -> str:
     return fallback
 
 
-def _download_file_candidates(urls: list[str], dest: Path, referer: str) -> None:
+def _raise_if_image_download_cancelled(should_cancel: Callable[[], bool] | None) -> None:
+    if should_cancel and should_cancel():
+        raise RuntimeError("Bilibili image download cancelled")
+
+
+def _sleep_with_cancel(seconds: float, should_cancel: Callable[[], bool] | None) -> None:
+    deadline = time.monotonic() + seconds
+    while True:
+        _raise_if_image_download_cancelled(should_cancel)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, 0.2))
+
+
+def _download_file_candidates(
+    urls: list[str],
+    dest: Path,
+    referer: str,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+) -> None:
     last_error: Exception | None = None
     seen: set[str] = set()
     for url in urls:
+        _raise_if_image_download_cancelled(should_cancel)
         if url in seen:
             continue
         seen.add(url)
         try:
-            _download_file(url, dest, referer=referer)
+            _download_file(url, dest, referer=referer, should_cancel=should_cancel)
             return
         except Exception as exc:
+            if should_cancel and should_cancel():
+                dest.unlink(missing_ok=True)
+                dest.with_name(dest.name + ".part").unlink(missing_ok=True)
+                raise
             last_error = exc
             logger.warning("Bilibili image download URL failed: %s", exc)
             dest.unlink(missing_ok=True)
@@ -753,7 +787,15 @@ def _download_file_candidates(urls: list[str], dest: Path, referer: str) -> None
     raise RuntimeError(f"All Bilibili image URLs failed: {last_error}")
 
 
-def _download_file(url: str, dest: Path, referer: str, attempts: int = 2, timeout_sec: int = 30) -> None:
+def _download_file(
+    url: str,
+    dest: Path,
+    referer: str,
+    attempts: int = 2,
+    timeout_sec: int = 30,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+) -> None:
     last_error: Exception | None = None
     part = dest.with_name(dest.name + ".part")
     headers = {
@@ -766,6 +808,7 @@ def _download_file(url: str, dest: Path, referer: str, attempts: int = 2, timeou
     if cookie:
         headers["Cookie"] = cookie
     for attempt in range(1, attempts + 1):
+        _raise_if_image_download_cancelled(should_cancel)
         downloaded = 0
         dest.unlink(missing_ok=True)
         part.unlink(missing_ok=True)
@@ -773,8 +816,10 @@ def _download_file(url: str, dest: Path, referer: str, attempts: int = 2, timeou
         try:
             with urllib_urlopen(req, timeout=timeout_sec) as resp:
                 total = int(resp.headers.get("Content-Length", 0))
+                _raise_if_image_download_cancelled(should_cancel)
                 with open(part, "wb") as f:
                     while True:
+                        _raise_if_image_download_cancelled(should_cancel)
                         chunk = resp.read(_CHUNK_SIZE)
                         if not chunk:
                             break
@@ -786,12 +831,16 @@ def _download_file(url: str, dest: Path, referer: str, attempts: int = 2, timeou
             logger.info("Downloaded Bilibili image: %s bytes -> %s", f"{downloaded:,}", dest.name)
             return
         except Exception as exc:
+            if should_cancel and should_cancel():
+                dest.unlink(missing_ok=True)
+                part.unlink(missing_ok=True)
+                raise
             last_error = exc
             dest.unlink(missing_ok=True)
             part.unlink(missing_ok=True)
             if attempt >= attempts:
                 raise RuntimeError(f"Bilibili image download failed after {attempts} attempts: {last_error}") from exc
-            time.sleep(min(attempt, 3))
+            _sleep_with_cancel(min(attempt, 3), should_cancel)
 
 
 def _guess_image_ext(urls: list[str]) -> str:

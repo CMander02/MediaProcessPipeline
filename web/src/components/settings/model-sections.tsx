@@ -1566,15 +1566,15 @@ function ModelListLayout({
     : items
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-[minmax(280px,320px)_minmax(0,1fr)] gap-4 overflow-hidden">
-      <aside className="flex min-h-0 flex-col overflow-hidden rounded-lg border bg-card/40 p-3">
+    <div className="grid h-full min-h-0 grid-cols-1 gap-4 overflow-y-auto xl:grid-cols-[minmax(280px,320px)_minmax(0,1fr)] xl:overflow-hidden">
+      <aside className="flex flex-col rounded-lg border bg-card/40 p-3 xl:min-h-0 xl:overflow-hidden">
         <input
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
           placeholder={searchPlaceholder}
           className="mb-3 h-9 rounded-full border border-input bg-background px-4 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary"
         />
-        <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+        <div className="max-h-56 space-y-1 overflow-y-auto pr-1 xl:min-h-0 xl:max-h-none xl:flex-1">
           {visibleItems.map((item) => {
             const active = item.id === selectedId
             return (
@@ -1606,7 +1606,7 @@ function ModelListLayout({
         {footer}
       </aside>
 
-      <section className="min-h-0 min-w-0 overflow-hidden rounded-lg border bg-background">
+      <section className="min-h-[360px] min-w-0 overflow-hidden rounded-lg border bg-background xl:min-h-0">
         <div className="h-full space-y-5 overflow-y-auto p-5 pr-4">{children}</div>
       </section>
     </div>

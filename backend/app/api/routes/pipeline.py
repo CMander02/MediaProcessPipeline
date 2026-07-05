@@ -1,10 +1,13 @@
 """Direct pipeline operation routes."""
 
+import asyncio
 import json
 import logging
 import re
 import shutil
 import subprocess
+import io
+import urllib.request
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
@@ -23,6 +26,7 @@ from urllib.parse import urlparse
 from app.core.settings import get_runtime_settings
 from app.core.pipeline import pipeline_steps_schema
 from app.core.source_normalization import normalize_source_input
+from app.core.network import urllib_urlopen
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +73,118 @@ class AnalyzeRequest(BaseModel):
     text: str
 
 
+class XiaohongshuLoginRequest(BaseModel):
+    timeout_sec: int = 180
+
+
 _ALLOWED_MEDIA_EXTS = {
     ".mp4", ".mkv", ".avi", ".webm", ".mov", ".flv", ".wmv",
     ".mp3", ".wav", ".aac", ".flac", ".ogg", ".m4a", ".wma",
 }
+
+_THUMBNAIL_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+_THUMBNAIL_MEDIA_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+}
+_THUMBNAIL_MAX_BYTES = 12 * 1024 * 1024
+
+
+def _image_media_type(path: Path) -> str:
+    return _THUMBNAIL_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
+
+
+def _read_archive_metadata(archive_dir: Path) -> dict[str, Any]:
+    meta_path = archive_dir / "metadata.json"
+    if not meta_path.exists():
+        return {}
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _first_thumbnail_url(meta: dict[str, Any]) -> str | None:
+    candidates: list[Any] = [meta.get("thumbnail")]
+    extra = meta.get("extra")
+    if isinstance(extra, dict):
+        candidates.extend([
+            extra.get("thumbnail"),
+            extra.get("cover"),
+            extra.get("cover_url"),
+        ])
+    for value in candidates:
+        if isinstance(value, str):
+            url = value.strip()
+            if url.startswith("//"):
+                url = f"https:{url}"
+            if url.startswith(("http://", "https://")):
+                return url
+    return None
+
+
+def _cache_image_thumbnail_from_bytes(data: bytes, archive_dir: Path) -> Path | None:
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        return None
+
+    thumb_path = archive_dir / "thumbnail.jpg"
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image = ImageOps.exif_transpose(image)
+            if image.mode not in {"RGB", "L"}:
+                image = image.convert("RGB")
+            image.thumbnail((480, 480), Image.Resampling.LANCZOS)
+            image.save(thumb_path, "JPEG", quality=82, optimize=True)
+        return thumb_path if thumb_path.exists() else None
+    except Exception as e:
+        logger.debug("image thumbnail conversion failed: %s", e)
+        return None
+
+
+def _cache_image_thumbnail(source: Path, archive_dir: Path) -> Path | None:
+    try:
+        return _cache_image_thumbnail_from_bytes(source.read_bytes(), archive_dir)
+    except Exception as e:
+        logger.debug("image thumbnail read failed: %s", e)
+        return None
+
+
+def _cache_remote_thumbnail(url: str, archive_dir: Path) -> Path | None:
+    try:
+        _validate_url(url)
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                "Referer": f"{urlparse(url).scheme}://{urlparse(url).netloc}/",
+            },
+        )
+        with urllib_urlopen(req, timeout=12) as response:
+            data = response.read(_THUMBNAIL_MAX_BYTES + 1)
+        if len(data) > _THUMBNAIL_MAX_BYTES:
+            raise RuntimeError("thumbnail response too large")
+        return _cache_image_thumbnail_from_bytes(data, archive_dir)
+    except Exception as e:
+        logger.debug("remote thumbnail fetch failed: %s", e)
+        return None
+
+
+def _first_image_note_image(archive_dir: Path) -> Path | None:
+    image_dir = archive_dir / "images"
+    if not image_dir.is_dir():
+        return None
+    for image in sorted(image_dir.iterdir(), key=lambda item: item.name.lower()):
+        if image.is_file() and image.suffix.lower() in _THUMBNAIL_IMAGE_EXTS:
+            return image
+    return None
 
 
 @router.get("/steps")
@@ -408,8 +520,8 @@ async def rename_archive(req: ArchiveRenameRequest):
 async def archive_thumbnail(path: str):
     """Get or generate a thumbnail for an archive directory.
 
-    Checks for existing thumbnail.jpg/cover.jpg/cover.png, otherwise
-    extracts a frame at 3s from the source video via ffmpeg.
+    Uses a cached low-resolution thumbnail when available. Otherwise it tries
+    local cover art, image-note content, platform cover URL, then video frame.
     """
     archive_dir = Path(path)
     if not archive_dir.is_dir():
@@ -423,28 +535,31 @@ async def archive_thumbnail(path: str):
     except ValueError:
         raise HTTPException(403, "Cannot access paths outside data directory")
 
-    # Check for existing thumbnail / cover
-    for candidate in ["thumbnail.jpg", "cover.jpg", "cover.png"]:
-        thumb = archive_dir / candidate
-        if thumb.exists():
-            media_type = "image/png" if candidate.endswith(".png") else "image/jpeg"
-            return FileResponse(thumb, media_type=media_type)
+    cached = archive_dir / "thumbnail.jpg"
+    if cached.exists():
+        return FileResponse(cached, media_type="image/jpeg")
 
-    image_dir = archive_dir / "images"
-    if image_dir.is_dir():
-        image_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
-        media_types = {
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".png": "image/png",
-            ".webp": "image/webp",
-            ".gif": "image/gif",
-            ".bmp": "image/bmp",
-        }
-        for image in sorted(image_dir.iterdir(), key=lambda item: item.name.lower()):
-            ext = image.suffix.lower()
-            if image.is_file() and ext in image_exts:
-                return FileResponse(image, media_type=media_types.get(ext, "application/octet-stream"))
+    for candidate in ["cover.jpg", "cover.png", "cover.webp"]:
+        cover = archive_dir / candidate
+        if cover.exists():
+            thumb = _cache_image_thumbnail(cover, archive_dir)
+            if thumb:
+                return FileResponse(thumb, media_type="image/jpeg")
+            return FileResponse(cover, media_type=_image_media_type(cover))
+
+    first_image = _first_image_note_image(archive_dir)
+    if first_image:
+        thumb = _cache_image_thumbnail(first_image, archive_dir)
+        if thumb:
+            return FileResponse(thumb, media_type="image/jpeg")
+        return FileResponse(first_image, media_type=_image_media_type(first_image))
+
+    meta = _read_archive_metadata(archive_dir)
+    remote_thumb = _first_thumbnail_url(meta)
+    if remote_thumb:
+        thumb = _cache_remote_thumbnail(remote_thumb, archive_dir)
+        if thumb:
+            return FileResponse(thumb, media_type="image/jpeg")
 
     # Try to find video in archive directory
     video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov"}
@@ -455,15 +570,12 @@ async def archive_thumbnail(path: str):
             break
 
     if not video_file:
-        meta_path = archive_dir / "metadata.json"
-        if meta_path.exists():
+        source_url = meta.get("source_url", "")
+        if source_url:
             try:
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                source_url = meta.get("source_url", "")
-                if source_url:
-                    original = Path(source_url)
-                    if original.exists() and original.suffix.lower() in video_exts:
-                        video_file = original
+                original = Path(source_url)
+                if original.exists() and original.suffix.lower() in video_exts:
+                    video_file = original
             except Exception:
                 pass
 
@@ -556,6 +668,33 @@ async def bilibili_login_status():
         return {"logged_in": False, "message": str(e)}
 
 
+@router.get("/xiaohongshu/auth/status")
+async def xiaohongshu_auth_status():
+    """Return Xiaohongshu Cookie/storage-state auth status."""
+    from app.services.ingestion.platform.xiaohongshu.api import auth_state_status
+
+    status = auth_state_status()
+    status["auth_status"] = (
+        "cookie_configured"
+        if status.get("configured_cookie")
+        else "storage_state_ready"
+        if status.get("storage_state_exists") and status.get("cookie_count")
+        else "not_configured"
+    )
+    return status
+
+
+@router.post("/xiaohongshu/auth/login")
+async def xiaohongshu_auth_login(request: XiaohongshuLoginRequest):
+    """Open a browser for Xiaohongshu login and save Playwright storage_state."""
+    from app.services.ingestion.platform.xiaohongshu.api import interactive_login
+
+    try:
+        return await asyncio.to_thread(interactive_login, request.timeout_sec)
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
 @router.get("/platforms")
 async def get_platform_configs():
     """Get per-platform download strategy configs + auth status."""
@@ -570,11 +709,24 @@ async def get_platform_configs():
 
     bilibili_cfg = stored.get("bilibili", {})
     youtube_cfg = stored.get("youtube", {})
+    xiaohongshu_cfg = stored.get("xiaohongshu", {})
+    if not isinstance(xiaohongshu_cfg, dict):
+        xiaohongshu_cfg = {}
 
     try:
         bili_status = bili_logged_in()
     except Exception:
         bili_status = False
+    try:
+        from app.services.ingestion.platform.xiaohongshu.api import auth_state_status
+
+        xhs_auth = auth_state_status()
+    except Exception:
+        xhs_auth = {"configured_cookie": False, "storage_state_exists": False, "cookie_count": 0}
+    xhs_configured = bool(
+        xhs_auth.get("configured_cookie")
+        or (xhs_auth.get("storage_state_exists") and xhs_auth.get("cookie_count"))
+    )
 
     return {
         "platforms": [
@@ -628,9 +780,17 @@ async def get_platform_configs():
                 "id": "xiaohongshu",
                 "name": "小红书",
                 "status": "active",
-                "auth_status": "configured" if rt.xiaohongshu_cookie else "optional",
+                "auth_status": "configured" if xhs_configured else "optional",
                 "preferred_quality": None,
                 "prefer_subtitle": False,
+                "storage_state_path": xhs_auth.get("storage_state_path"),
+                "storage_state_exists": xhs_auth.get("storage_state_exists"),
+                "login_cookie": xhs_auth.get("login_cookie"),
+                "image_strategy_order": xiaohongshu_cfg.get(
+                    "image_strategy_order",
+                    ["raw_url", "cdn_fallback", "browser_request", "browser_interactive"],
+                ),
+                "fail_on_missing_images": xiaohongshu_cfg.get("fail_on_missing_images", True),
             },
             {
                 "id": "zhihu",

@@ -5,6 +5,7 @@ TaskStore + EventBus for state management instead of in-memory dicts.
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -147,11 +148,23 @@ def _platform_prefer_subtitles(source_type: str) -> bool:
     return bool(rt.prefer_platform_subtitles)
 
 
+_WIN_RESERVED_FILENAME_RE = re.compile(
+    r"^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(?:\..*)?$",
+    re.IGNORECASE,
+)
+
+
 def _sanitize_filename(name: str) -> str:
     """Sanitize string for use as filename."""
-    name = re.sub(r'[<>:"/\\|?*]', '_', name)
-    name = name.strip(' .')
-    return name[:100] if len(name) > 100 else name
+    name = str(name or "")
+    name = re.sub(r"[\x00-\x1f]+", " ", name)
+    name = re.sub(r'[<>:"/\\|?*]', "_", name)
+    name = re.sub(r"\s+", " ", name)
+    name = name.strip(" .")
+    if _WIN_RESERVED_FILENAME_RE.match(name):
+        name = f"_{name}"
+    name = name[:100].rstrip(" .")
+    return name
 
 
 def _unique_child_dir(parent: Path, dir_name: str, current_dir: Path | None = None) -> Path:
@@ -258,10 +271,16 @@ def update_metadata_status(task_dir: Path | None, status: str) -> None:
 
 
 async def _raise_if_cancelled(task_id: UUID) -> None:
-    """Honor cancellation requests between blocking pipeline phases."""
+    """Honor cancellation/pause requests between blocking pipeline phases."""
     task = get_task_store().get(task_id)
-    if task and task.status == TaskStatus.CANCELLED:
+    if task and task.status in {TaskStatus.CANCELLED, TaskStatus.PAUSED}:
         raise asyncio.CancelledError()
+
+
+def _task_download_cancelled(task_id: UUID) -> bool:
+    """Return True when a blocking downloader should stop promptly."""
+    task = get_task_store().get(task_id)
+    return task is None or task.status in {TaskStatus.CANCELLED, TaskStatus.PAUSED}
 
 
 async def _write_summary_files(
@@ -1267,6 +1286,260 @@ def _note_image_download_diagnostics(ingest_info: dict) -> dict[str, Any] | None
     return diagnostics if isinstance(diagnostics, dict) else None
 
 
+def _note_expected_image_count(ingest_info: dict) -> int:
+    if not isinstance(ingest_info, dict):
+        return 0
+    extra = ingest_info.get("extra")
+    if not isinstance(extra, dict):
+        return 0
+    candidates = extra.get("image_url_candidates")
+    if isinstance(candidates, list) and candidates:
+        return len(candidates)
+    urls = extra.get("image_urls")
+    if isinstance(urls, list):
+        return len(urls)
+    return 0
+
+
+def _note_should_fail_on_missing_images(ingest_info: dict) -> bool:
+    diagnostics = _note_image_download_diagnostics(ingest_info)
+    if isinstance(diagnostics, dict) and "fail_on_missing_images" in diagnostics:
+        return bool(diagnostics.get("fail_on_missing_images"))
+    return True
+
+
+def _note_image_download_failure_message(
+    expected: int,
+    downloaded: int,
+    diagnostics: dict[str, Any] | None,
+    fallback: dict[str, Any] | None = None,
+) -> str:
+    summary = diagnostics or fallback or {"expected": expected, "downloaded": downloaded}
+    return (
+        f"图文图片下载不完整：{downloaded}/{expected}，已停止后续处理。"
+        f"诊断: {json.dumps(summary, ensure_ascii=False)[:800]}"
+    )
+
+
+def _downloaded_note_image_paths(ingest_info: dict) -> list[Path]:
+    if not isinstance(ingest_info, dict):
+        return []
+    extra = ingest_info.get("extra")
+    if not isinstance(extra, dict):
+        return []
+    raw_paths = extra.get("downloaded_image_paths")
+    if not isinstance(raw_paths, list):
+        return []
+    paths: list[Path] = []
+    for value in raw_paths:
+        try:
+            path = Path(str(value))
+        except Exception:
+            continue
+        if path.exists() and path.is_file():
+            paths.append(path)
+    return paths
+
+
+def _existing_note_image_paths(task_dir: Path) -> list[Path]:
+    images_dir = task_dir / "images"
+    if not images_dir.exists():
+        return []
+    image_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"}
+    return sorted(
+        (
+            path
+            for path in images_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in image_exts
+        ),
+        key=lambda path: (_image_note_index(0, path), path.name),
+    )
+
+
+def _restored_note_image_descriptions(task: Task, task_dir: Path) -> dict[int, dict[str, Any]]:
+    restored: dict[int, dict[str, Any]] = {}
+    result = task.result if isinstance(task.result, dict) else {}
+    raw_descriptions = result.get("image_descriptions")
+    if isinstance(raw_descriptions, list):
+        for item in raw_descriptions:
+            if not isinstance(item, dict):
+                continue
+            try:
+                idx = int(item.get("index"))
+            except (TypeError, ValueError):
+                continue
+            text = str(item.get("text") or "").strip()
+            status = str(item.get("status") or ("completed" if text else "")).lower()
+            if status == "completed" and text:
+                restored[idx] = dict(item)
+
+    desc_dir = task_dir / "descriptions"
+    if desc_dir.exists():
+        for path in sorted(desc_dir.glob("*.md")):
+            try:
+                idx = int(path.stem)
+            except ValueError:
+                continue
+            if idx in restored:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8").strip()
+            except Exception:
+                continue
+            if (
+                not text
+                or text.startswith("VLM caption 失败")
+                or text.startswith("VLM caption 跳过")
+            ):
+                continue
+            restored[idx] = {
+                "index": idx,
+                "image_path": "",
+                "kind": "content",
+                "text": text,
+                "status": "completed",
+            }
+    return restored
+
+
+def _note_image_downloader(metadata: MediaMetadata):
+    if metadata.platform == "zhihu":
+        from app.services.ingestion.platform.zhihu.api import download_images
+    elif metadata.platform in {"bilibili", "bilibili_opus"}:
+        from app.services.ingestion.platform.bilibili.note import download_images
+    else:
+        from app.services.ingestion.platform.xiaohongshu.api import download_images
+    return download_images
+
+
+def _downloader_accepts_cancel(downloader: Any) -> bool:
+    try:
+        params = inspect.signature(downloader).parameters
+    except (TypeError, ValueError):
+        return False
+    return "should_cancel" in params or any(
+        param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
+    )
+
+
+def _run_note_image_downloader(
+    downloader: Any,
+    ingest_info: dict,
+    task_dir: Path,
+    task_id: UUID,
+) -> list[Path]:
+    should_cancel = lambda: _task_download_cancelled(task_id)
+    if should_cancel():
+        raise RuntimeError("note image download cancelled")
+    if _downloader_accepts_cancel(downloader):
+        return downloader(ingest_info, task_dir, should_cancel=should_cancel)
+    return downloader(ingest_info, task_dir)
+
+
+async def _download_note_images_for_download_step(
+    task: Task,
+    metadata: MediaMetadata,
+    task_dir: Path,
+    ingest_info: dict,
+) -> list[Path]:
+    """Download note images during the pipeline DOWNLOAD step."""
+    if metadata.content_subtype != "image_note":
+        return []
+    if not isinstance(ingest_info, dict):
+        ingest_info = {}
+    extra = ingest_info.get("extra")
+    if not isinstance(extra, dict):
+        extra = {}
+        ingest_info["extra"] = extra
+
+    expected = _note_expected_image_count(ingest_info)
+    if expected <= 0:
+        raise RuntimeError("图文笔记没有可下载的图片候选 URL")
+
+    await _emit_timeline_event(
+        task,
+        "note.images.download_started",
+        stage="download",
+        step_id="download",
+        level="info",
+        message="开始下载图文图片",
+        data={"platform": metadata.platform, "expected": expected},
+    )
+
+    try:
+        downloader = _note_image_downloader(metadata)
+        image_paths = await asyncio.get_event_loop().run_in_executor(
+            None,
+            _run_note_image_downloader,
+            downloader,
+            ingest_info,
+            task_dir,
+            task.id,
+        )
+    except Exception as exc:
+        if _task_download_cancelled(task.id):
+            raise asyncio.CancelledError() from exc
+        error_message = _safe_pipeline_error(exc)
+        extra["image_download_error"] = {
+            "error_type": type(exc).__name__,
+            "error": error_message,
+        }
+        metadata.extra["image_download_error"] = extra["image_download_error"]
+        image_paths = []
+        _append_task_warning(
+            task,
+            "note_images_download_failed",
+            "图片下载失败，已停止后续图像理解。",
+            platform=metadata.platform,
+            expected=expected,
+            error=error_message,
+        )
+
+    diagnostics = _note_image_download_diagnostics(ingest_info)
+    result = {
+        "expected": expected,
+        "downloaded": len(image_paths),
+        "failed": max(expected - len(image_paths), 0),
+    }
+    extra["downloaded_image_paths"] = [str(path) for path in image_paths]
+    extra["image_download_result"] = result
+    metadata.extra["downloaded_image_paths"] = extra["downloaded_image_paths"]
+    metadata.extra["image_download_result"] = result
+    if diagnostics:
+        metadata.extra["image_download_diagnostics"] = diagnostics
+
+    task.result = dict(task.result or {})
+    task.result["output_dir"] = str(task_dir)
+    task.result["_image_ingest_info"] = ingest_info
+    task.result["image_download_result"] = result
+    if diagnostics:
+        task.result["image_download_diagnostics"] = diagnostics
+    get_task_store().update_status(task.id, task.status, result=task.result)
+    write_metadata_json(task_dir, metadata, status="processing", task_id=str(task.id))
+
+    await _emit_timeline_event(
+        task,
+        "note.images.download_completed" if image_paths else "note.images.download_empty",
+        stage="download",
+        step_id="download",
+        level="info" if image_paths else "error",
+        message=f"图片下载完成：{len(image_paths)}/{expected}",
+        data={"platform": metadata.platform, **result, "diagnostics": diagnostics or {}},
+    )
+
+    if result["failed"] > 0 and _note_should_fail_on_missing_images(ingest_info):
+        raise RuntimeError(
+            _note_image_download_failure_message(
+                expected,
+                len(image_paths),
+                diagnostics,
+                extra.get("image_download_error") or result,
+            )
+        )
+
+    return image_paths
+
+
 async def _process_image_note(
     task: Task,
     metadata: "MediaMetadata",
@@ -1305,27 +1578,28 @@ async def _process_image_note(
     if metadata.content_subtype == "text_note":
         image_paths = []
     else:
-        if metadata.platform == "zhihu":
-            from app.services.ingestion.platform.zhihu.api import download_images
-        elif metadata.platform in {"bilibili", "bilibili_opus"}:
-            from app.services.ingestion.platform.bilibili.note import download_images
-        else:
-            from app.services.ingestion.platform.xiaohongshu.api import download_images
-        try:
-            image_paths = await _aio.get_event_loop().run_in_executor(
-                None, download_images, ingest_info, task_dir
-            )
-        except Exception as e:
-            error_message = _safe_pipeline_error(e)
-            log_event(logger, logging.WARNING, "note.images.download_failed", error=error_message)
-            _append_task_warning(
-                task,
-                "note_images_download_failed",
-                "图片下载失败，已继续处理正文。",
-                error=error_message,
-            )
-            image_warning_recorded = True
-            image_paths = []
+        image_paths = _downloaded_note_image_paths(ingest_info)
+        if not image_paths:
+            image_paths = _existing_note_image_paths(task_dir)
+        if not image_paths:
+            download_images = _note_image_downloader(metadata)
+            try:
+                image_paths = await _aio.get_event_loop().run_in_executor(
+                    None, _run_note_image_downloader, download_images, ingest_info, task_dir, task.id
+                )
+            except Exception as e:
+                if _task_download_cancelled(task.id):
+                    raise _aio.CancelledError() from e
+                error_message = _safe_pipeline_error(e)
+                log_event(logger, logging.WARNING, "note.images.download_failed", error=error_message)
+                _append_task_warning(
+                    task,
+                    "note_images_download_failed",
+                    "图片下载失败，已继续处理正文。",
+                    error=error_message,
+                )
+                image_warning_recorded = True
+                image_paths = []
     image_download_diagnostics = _note_image_download_diagnostics(ingest_info)
     if image_download_diagnostics:
         metadata.extra["image_download_diagnostics"] = image_download_diagnostics
@@ -1333,15 +1607,43 @@ async def _process_image_note(
         task.result["image_download_diagnostics"] = image_download_diagnostics
         get_task_store().update_status(task.id, task.status, result=task.result)
         write_metadata_json(task_dir, metadata, status="processing")
-    if metadata.content_subtype == "image_note" and not image_paths and not image_warning_recorded:
-        log_event(logger, logging.WARNING, "note.images.empty", platform=metadata.platform)
-        _append_task_warning(
-            task,
-            "note_images_empty",
-            "没有获得图片文件，已继续处理正文。",
-            platform=metadata.platform,
-            diagnostics=image_download_diagnostics,
-        )
+    if metadata.content_subtype == "image_note":
+        if not isinstance(extra, dict):
+            extra = {}
+            if isinstance(ingest_info, dict):
+                ingest_info["extra"] = extra
+        expected = _note_expected_image_count(ingest_info)
+        if expected > 0:
+            result = {
+                "expected": expected,
+                "downloaded": len(image_paths),
+                "failed": max(expected - len(image_paths), 0),
+            }
+            extra["downloaded_image_paths"] = [str(path) for path in image_paths]
+            extra["image_download_result"] = result
+            metadata.extra["downloaded_image_paths"] = extra["downloaded_image_paths"]
+            metadata.extra["image_download_result"] = result
+            task.result = dict(task.result or {})
+            task.result["image_download_result"] = result
+            if image_download_diagnostics:
+                task.result["image_download_diagnostics"] = image_download_diagnostics
+            get_task_store().update_status(task.id, task.status, result=task.result)
+            if result["failed"] > 0 and _note_should_fail_on_missing_images(ingest_info):
+                raise RuntimeError(
+                    _note_image_download_failure_message(
+                        expected,
+                        len(image_paths),
+                        image_download_diagnostics,
+                        extra.get("image_download_error") or result,
+                    )
+                )
+        elif not image_paths and not image_warning_recorded:
+            raise RuntimeError("图文笔记没有可下载的图片候选 URL")
+
+    task.result = dict(task.result or {})
+    task.result["output_dir"] = str(task_dir)
+    task.result["_image_ingest_info"] = ingest_info
+    get_task_store().update_status(task.id, task.status, result=task.result)
 
     if source_text and image_paths:
         localized_source_text = _localize_note_markdown_image_refs(source_text, metadata, image_paths)
@@ -1355,17 +1657,57 @@ async def _process_image_note(
     # Run VLM on each image (limited by vlm_concurrency)
     rt = get_runtime_settings()
     descriptions: list[dict] = []
+    restored_descriptions = _restored_note_image_descriptions(task, task_dir)
     from app.core.model_router import resolve_deepseek_llm_binding, resolve_llm_binding, resolve_vlm_binding
 
     vlm_binding = resolve_vlm_binding(rt)
     if image_paths and vlm_binding.configured:
         from app.services.analysis.vlm import get_vlm_service
         vlm = get_vlm_service()
-        sem = _aio.Semaphore(int(vlm_binding.request_kwargs.get("concurrency") or rt.vlm_concurrency))
+        try:
+            vlm_concurrency = max(1, int(vlm_binding.request_kwargs.get("concurrency") or rt.vlm_concurrency))
+        except (TypeError, ValueError):
+            vlm_concurrency = 1
+        sem = _aio.Semaphore(vlm_concurrency)
 
         async def _describe(position: int, path: Path) -> dict:
             idx = _image_note_index(position, path)
+            restored = restored_descriptions.get(idx)
+            if restored and str(restored.get("text") or "").strip():
+                await _emit_timeline_event(
+                    task,
+                    "vlm.image.reused",
+                    stage="analyze",
+                    step_id="analyze",
+                    level="info",
+                    message=f"图片 {idx + 1} caption 复用",
+                    data={"index": idx, "file": path.name},
+                )
+                return {
+                    **restored,
+                    "index": idx,
+                    "image_path": str(path),
+                    "status": "completed",
+                    "reused": True,
+                }
+            queued_at = time.monotonic()
             async with sem:
+                queue_wait_ms = int((time.monotonic() - queued_at) * 1000)
+                await _emit_timeline_event(
+                    task,
+                    "vlm.image.started",
+                    stage="analyze",
+                    step_id="analyze",
+                    level="info",
+                    message=f"图片 {idx + 1} caption 开始",
+                    data={
+                        "index": idx,
+                        "file": path.name,
+                        "queue_wait_ms": queue_wait_ms,
+                        "concurrency": vlm_concurrency,
+                        "timeout_sec": vlm_binding.request_kwargs.get("timeout_sec"),
+                    },
+                )
                 try:
                     result = await _aio.get_event_loop().run_in_executor(
                         None,
@@ -1381,6 +1723,7 @@ async def _process_image_note(
                             "error": error_message,
                             "payload_meta": result.get("payload_meta"),
                             "duration_ms": result.get("duration_ms"),
+                            "queue_wait_ms": queue_wait_ms,
                         }
                         log_event(logger, logging.WARNING, "vlm.image.failed", index=idx, file=path.name, error=error_message)
                         await _emit_timeline_event(
@@ -1401,8 +1744,14 @@ async def _process_image_note(
                             "error": error_message,
                             "payload_meta": result.get("payload_meta"),
                             "duration_ms": result.get("duration_ms"),
+                            "queue_wait_ms": queue_wait_ms,
                         }
-                    payload = {"index": idx, "file": path.name, "chars": len(result.get("text") or "")}
+                    payload = {
+                        "index": idx,
+                        "file": path.name,
+                        "chars": len(result.get("text") or ""),
+                        "queue_wait_ms": queue_wait_ms,
+                    }
                     if result.get("payload_meta"):
                         payload["payload_meta"] = result["payload_meta"]
                     if result.get("duration_ms") is not None:
@@ -1416,7 +1765,7 @@ async def _process_image_note(
                         message=f"图片 {idx + 1} caption 完成",
                         data=payload,
                     )
-                    return {"index": idx, "image_path": str(path), "status": "completed", **result}
+                    return {"index": idx, "image_path": str(path), "status": "completed", "queue_wait_ms": queue_wait_ms, **result}
                 except Exception as e:
                     error_message = _safe_pipeline_error(e)
                     log_event(logger, logging.WARNING, "vlm.image.failed", index=idx, file=path.name, error=error_message)
@@ -1427,7 +1776,7 @@ async def _process_image_note(
                         step_id="analyze",
                         level="warning",
                         message=f"图片 {idx + 1} caption 失败",
-                        data={"index": idx, "file": path.name, "error": error_message},
+                        data={"index": idx, "file": path.name, "error": error_message, "queue_wait_ms": queue_wait_ms},
                     )
                     return {
                         "index": idx,
@@ -1436,19 +1785,31 @@ async def _process_image_note(
                         "text": "",
                         "status": "failed",
                         "error": error_message,
+                        "queue_wait_ms": queue_wait_ms,
                     }
 
         descriptions = list(await _aio.gather(*[_describe(i, p) for i, p in enumerate(image_paths)]))
     else:
         for i, p in enumerate(image_paths):
-            descriptions.append({
-                "index": _image_note_index(i, p),
-                "image_path": str(p),
-                "kind": "content",
-                "text": "",
-                "status": "skipped",
-                "error": vlm_binding.reason or "VLM not configured",
-            })
+            idx = _image_note_index(i, p)
+            restored = restored_descriptions.get(idx)
+            if restored and str(restored.get("text") or "").strip():
+                descriptions.append({
+                    **restored,
+                    "index": idx,
+                    "image_path": str(p),
+                    "status": "completed",
+                    "reused": True,
+                })
+            else:
+                descriptions.append({
+                    "index": idx,
+                    "image_path": str(p),
+                    "kind": "content",
+                    "text": "",
+                    "status": "skipped",
+                    "error": vlm_binding.reason or "VLM not configured",
+                })
         if image_paths:
             log_event(
                 logger,
@@ -1497,11 +1858,25 @@ async def _process_image_note(
         _append_task_warning(
             task,
             "note_vlm_partial_failed",
-            "部分图片 caption 失败，已保留失败原因。",
+            "图片 caption 失败，已停止后续总结。",
             failed=len(failed_vlm),
             total=len(descriptions),
         )
     get_task_store().update_status(task.id, task.status, result=task.result)
+    if failed_vlm:
+        detail = [
+            {
+                "index": d.get("index"),
+                "file": Path(str(d.get("image_path") or "")).name,
+                "error": d.get("error"),
+                "queue_wait_ms": d.get("queue_wait_ms"),
+            }
+            for d in failed_vlm[:5]
+        ]
+        raise RuntimeError(
+            f"VLM caption 失败：{len(failed_vlm)}/{len(descriptions)}，已停止后续总结。"
+            f"诊断: {json.dumps(detail, ensure_ascii=False)[:800]}"
+        )
 
     # Analyze + summarize + mindmap using combined text
     video_metadata = {
@@ -2256,6 +2631,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
             # Notes take a different branch entirely — no GPU, no audio.
             if metadata.content_subtype in {"image_note", "text_note"}:
+                ingest_info = ingest.get("info") or ingest
                 source_flow = await _update_flow_from_metadata(
                     task,
                     source_flow,
@@ -2266,15 +2642,24 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 _sync_task_from_metadata(task, metadata)
                 meta_path = write_metadata_json(task_dir, metadata, status="processing")
                 await _emit_file_ready(task, "metadata.json", str(meta_path))
+
+                existing_result = dict(task.result or {})
+                existing_result["output_dir"] = str(task_dir)
+                existing_result["_image_ingest_info"] = ingest_info
+                task.result = existing_result
+                get_task_store().update_status(task.id, task.status, result=task.result)
+
+                if metadata.content_subtype == "image_note":
+                    await _download_note_images_for_download_step(task, metadata, task_dir, ingest_info)
+                    meta_path = write_metadata_json(task_dir, metadata, status="processing")
+                    await _emit_file_ready(task, "metadata.json", str(meta_path))
+
                 await _update_step(task, PipelineStep.DOWNLOAD, completed=True)
                 await _raise_if_cancelled(task.id)
-                # Store ingest_info (contains extra.image_urls) so it survives the hand-off
-                task.result = {"output_dir": str(task_dir), "_image_ingest_info": ingest.get("info") or ingest}
-                get_task_store().update_status(task.id, task.status, result=task.result)
                 if _download_worker_call:
                     await get_task_queue().advance_to_gpu(task.id)
                     return
-                await _process_image_note(task, metadata, task_dir, ingest.get("info") or ingest)
+                await _process_image_note(task, metadata, task_dir, ingest_info)
                 return
 
             # Try to download platform subtitles (for full pipeline, still useful)
@@ -2344,7 +2729,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
     # Note GPU-worker re-entry: DOWNLOAD is done, route directly to note branch.
     if metadata.content_subtype in {"image_note", "text_note"} and not _download_worker_call:
-        ingest_info = (task.result or {}).get("_image_ingest_info") or {}
+        ingest_info = (task.result or {}).get("_image_ingest_info") or {"extra": metadata.extra or {}}
         await _process_image_note(task, metadata, task_dir, ingest_info)
         return
 
@@ -2953,24 +3338,27 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
         log_event(
             logger,
             logging.INFO,
-            "task.cancelled",
+            "task.paused" if (store.get(task_id) or task).status == TaskStatus.PAUSED else "task.cancelled",
             duration_ms=round((time.perf_counter() - started_at) * 1000),
         )
         current = store.get(task_id) or task
         output_dir = current.result.get("output_dir") if current.result else None
-        update_metadata_status(Path(output_dir) if output_dir else None, "cancelled")
+        paused = current.status == TaskStatus.PAUSED
+        final_status = TaskStatus.PAUSED if paused else TaskStatus.CANCELLED
+        status_text = "paused" if paused else "cancelled"
+        update_metadata_status(Path(output_dir) if output_dir else None, status_text)
         flow = current.flow or task.flow
         if flow:
             flow = dict(flow)
-            flow["status"] = "cancelled"
+            flow["status"] = status_text
         store.update_status(
             task_id,
-            TaskStatus.CANCELLED,
-            completed_at=datetime.now(),
-            message="已取消",
+            final_status,
+            completed_at=None if paused else datetime.now(),
+            message="已暂停" if paused else "已取消",
             flow=flow,
         )
-        await bus.publish(TaskEvent(task_id, "cancelled"))
+        await bus.publish(TaskEvent(task_id, status_text, {"status": status_text}))
         raise
 
     except Exception as e:

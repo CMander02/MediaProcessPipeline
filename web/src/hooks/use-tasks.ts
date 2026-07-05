@@ -7,7 +7,7 @@ export function useTasks() {
   const [loading, setLoading] = useState(true)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hasActiveTasks = tasks.some((task) =>
-    task.status === "pending" || task.status === "queued" || task.status === "processing",
+    task.status === "pending" || task.status === "queued" || task.status === "processing" || task.status === "paused",
   )
 
   const refresh = useCallback(async () => {

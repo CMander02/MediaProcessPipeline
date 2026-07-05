@@ -11,6 +11,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import random
 import re
 import shutil
 import ssl
@@ -22,7 +23,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.core.network import runtime_proxy_url, urllib_urlopen
 from app.core.settings import get_runtime_settings
@@ -30,12 +31,40 @@ from app.core.settings import get_runtime_settings
 logger = logging.getLogger(__name__)
 
 _CHUNK_SIZE = 1024 * 1024
+_IMAGE_CANDIDATE_TIMEOUT_SEC = 20
+_IMAGE_CANDIDATE_ATTEMPTS = 1
+_IMAGE_ORIGINAL_HOSTS = (
+    "ci.xiaohongshu.com",
+    "sns-img-hw.xhscdn.com",
+    "sns-img-bd.xhscdn.com",
+    "sns-img-qn.xhscdn.com",
+    "sns-img-qc.xhscdn.com",
+)
+_XHS_IMAGE_STRATEGIES = (
+    "raw_url",
+    "cdn_fallback",
+    "browser_request",
+    "browser_interactive",
+)
+_XHS_DEFAULT_IMAGE_STRATEGY_ORDER = (
+    "raw_url",
+    "cdn_fallback",
+    "browser_request",
+    "browser_interactive",
+)
 _SHORT_LINK_RE = re.compile(r"https?://xhslink\.com/[A-Za-z0-9/]+")
 _FULL_URL_RE = re.compile(r"https?://(?:www\.)?xiaohongshu\.com/[^\s]+")
-_UA = (
+_UA_POOL = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
-)
+    "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_5) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+]
+_UA = random.choice(_UA_POOL)
 
 
 class ImageDownloadError(RuntimeError):
@@ -44,6 +73,10 @@ class ImageDownloadError(RuntimeError):
     def __init__(self, message: str, diagnostics: dict[str, Any]):
         super().__init__(message)
         self.diagnostics = diagnostics
+
+
+class ImageDownloadCancelled(RuntimeError):
+    """Image download was interrupted by task pause/cancel/delete."""
 
 
 @dataclass(frozen=True)
@@ -100,12 +133,7 @@ def fetch_metadata(value: str) -> dict[str, Any]:
     note_type = str(note.get("type") or "").lower()
     is_video = bool(video_url or note_type == "video" or note.get("video"))
 
-    title = (
-        note.get("title")
-        or note.get("displayTitle")
-        or note.get("desc")
-        or info.post_id
-    )
+    title = _extract_note_title(note, info.post_id)
     description = note.get("desc") or note.get("title")
     user = note.get("user") or note.get("userInfo") or {}
     published = _parse_xhs_timestamp(note.get("time") or note.get("lastUpdateTime"))
@@ -191,7 +219,12 @@ def download_video(info: dict[str, Any], output_dir: Path) -> tuple[Path, Path]:
     return video_path, wav_path
 
 
-def download_images(info: dict[str, Any], output_dir: Path) -> list[Path]:
+def download_images(
+    info: dict[str, Any],
+    output_dir: Path,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+) -> list[Path]:
     """Download all images from an image_note and return their local paths."""
     extra = info.get("extra") or {}
     info["extra"] = extra
@@ -205,80 +238,654 @@ def download_images(info: dict[str, Any], output_dir: Path) -> list[Path]:
     images_dir = output_dir / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
     referer = str(info.get("webpage_url") or "https://www.xiaohongshu.com/")
+    strategy_order = _xhs_image_strategy_order()
     paths: list[Path] = []
     diagnostics: dict[str, Any] = {
         "platform": "xiaohongshu",
         "referer": referer,
         "image_count": len(image_url_candidates),
+        "strategy_order": strategy_order,
+        "fail_on_missing_images": _xhs_fail_on_missing_images(),
         "success": 0,
         "failed": 0,
         "failed_indices": [],
         "images": [],
     }
-    for idx, candidates in enumerate(image_url_candidates):
-        urls = [url for url in candidates if isinstance(url, str) and url.startswith("http")]
-        if not urls:
-            diagnostics["images"].append({
-                "index": idx,
-                "status": "skipped",
-                "reason": "no_http_candidates",
-                "candidate_count": 0,
-                "attempts": [],
-            })
-            continue
-        ext = _guess_image_ext_from_urls(urls)
-        dest = images_dir / f"{idx:02d}.{ext}"
-        if dest.exists():
-            paths.append(dest)
-            diagnostics["success"] += 1
-            diagnostics["images"].append({
-                "index": idx,
-                "status": "completed",
-                "reason": "already_exists",
-                "path": str(dest),
-                "candidate_count": len(urls),
-                "attempts": [],
-            })
-            continue
-        if idx:
-            time.sleep(1.2)
-        try:
-            record = _download_file_candidates(urls, dest, referer=referer)
-            paths.append(dest)
-            diagnostics["success"] += 1
-            diagnostics["images"].append({
-                "index": idx,
-                "status": "completed",
-                "path": str(dest),
-                "candidate_count": len(urls),
-                **record,
-            })
-        except ImageDownloadError as e:
-            diagnostics["failed"] += 1
-            diagnostics["failed_indices"].append(idx)
-            diagnostics["images"].append({
-                "index": idx,
-                "status": "failed",
-                "candidate_count": len(urls),
-                "error": str(e),
-                **e.diagnostics,
-            })
-            logger.warning(f"Failed to download XHS image {idx}: {e}")
-        except Exception as e:
-            diagnostics["failed"] += 1
-            diagnostics["failed_indices"].append(idx)
-            diagnostics["images"].append({
-                "index": idx,
-                "status": "failed",
-                "candidate_count": len(urls),
-                "error": str(e),
-                "attempts": [],
-            })
-            logger.warning(f"Failed to download XHS image {idx}: {e}")
+    try:
+        for idx, candidates in enumerate(image_url_candidates):
+            _raise_if_image_download_cancelled(should_cancel)
+            urls = [url for url in candidates if isinstance(url, str) and url.startswith("http")]
+            if not urls:
+                diagnostics["images"].append({
+                    "index": idx,
+                    "status": "skipped",
+                    "reason": "no_http_candidates",
+                    "candidate_count": 0,
+                    "attempts": [],
+                })
+                continue
+            ext = _guess_image_ext_from_urls(urls)
+            dest = images_dir / f"{idx:02d}.{ext}"
+            if dest.exists():
+                paths.append(dest)
+                diagnostics["success"] += 1
+                diagnostics["images"].append({
+                    "index": idx,
+                    "status": "completed",
+                    "reason": "already_exists",
+                    "path": str(dest),
+                    "candidate_count": len(urls),
+                    "attempts": [],
+                })
+                continue
+            if idx:
+                _sleep_with_cancel(1.2, should_cancel)
+            try:
+                record = _download_image_with_strategy_order(
+                    info,
+                    urls,
+                    dest,
+                    referer=referer,
+                    strategy_order=strategy_order,
+                    should_cancel=should_cancel,
+                )
+                paths.append(dest)
+                diagnostics["success"] += 1
+                diagnostics["images"].append({
+                    "index": idx,
+                    "status": "completed",
+                    "path": str(dest),
+                    "candidate_count": len(urls),
+                    **record,
+                })
+            except ImageDownloadCancelled:
+                raise
+            except ImageDownloadError as e:
+                diagnostics["failed"] += 1
+                diagnostics["failed_indices"].append(idx)
+                diagnostics["images"].append({
+                    "index": idx,
+                    "status": "failed",
+                    "candidate_count": len(urls),
+                    "error": str(e),
+                    **e.diagnostics,
+                })
+                logger.warning(f"Failed to download XHS image {idx}: {e}")
+            except Exception as e:
+                diagnostics["failed"] += 1
+                diagnostics["failed_indices"].append(idx)
+                diagnostics["images"].append({
+                    "index": idx,
+                    "status": "failed",
+                    "candidate_count": len(urls),
+                    "error": str(e),
+                    "attempts": [],
+                })
+                logger.warning(f"Failed to download XHS image {idx}: {e}")
+    except ImageDownloadCancelled:
+        diagnostics["cancelled"] = True
+        extra["image_download_diagnostics"] = diagnostics
+        raise
     if diagnostics["failed_indices"]:
         diagnostics["url_refresh_probe"] = _probe_image_url_freshness(info, image_url_candidates)
     extra["image_download_diagnostics"] = diagnostics
     return paths
+
+
+def _xhs_platform_config() -> dict[str, Any]:
+    rt = get_runtime_settings()
+    try:
+        stored = json.loads(rt.platform_configs or "{}")
+    except Exception:
+        return {}
+    config = stored.get("xiaohongshu")
+    return config if isinstance(config, dict) else {}
+
+
+def _xhs_image_strategy_order() -> list[str]:
+    config = _xhs_platform_config()
+    raw = config.get("image_strategy_order")
+    if isinstance(raw, str):
+        raw_order: list[Any] = [item.strip() for item in raw.split(",")]
+    elif isinstance(raw, list):
+        raw_order = raw
+    else:
+        raw_order = []
+
+    order: list[str] = []
+    for item in raw_order:
+        value = str(item or "").strip()
+        if value in _XHS_IMAGE_STRATEGIES and value not in order:
+            order.append(value)
+    for value in _XHS_DEFAULT_IMAGE_STRATEGY_ORDER:
+        if value not in order:
+            order.append(value)
+    return order
+
+
+def _xhs_fail_on_missing_images() -> bool:
+    value = _xhs_platform_config().get("fail_on_missing_images", True)
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
+
+
+def _download_image_with_strategy_order(
+    info: dict[str, Any],
+    urls: list[str],
+    dest: Path,
+    referer: str,
+    strategy_order: list[str],
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    strategy_records: list[dict[str, Any]] = []
+    flattened_attempts: list[dict[str, Any]] = []
+    last_error: Exception | None = None
+
+    for strategy in strategy_order:
+        _raise_if_image_download_cancelled(should_cancel)
+        if strategy in {"raw_url", "cdn_fallback"}:
+            strategy_urls = _image_urls_for_strategy(urls, strategy)
+            if not strategy_urls:
+                strategy_records.append({
+                    "strategy": strategy,
+                    "status": "skipped",
+                    "reason": "no_matching_candidates",
+                    "attempts": [],
+                })
+                continue
+            try:
+                record = _download_file_candidates(
+                    strategy_urls,
+                    dest,
+                    referer=referer,
+                    strategy=strategy,
+                    should_cancel=should_cancel,
+                )
+                attempts = record.get("attempts", [])
+                flattened_attempts.extend(attempts)
+                return {
+                    "strategy": strategy,
+                    "attempts": flattened_attempts,
+                    "strategy_attempts": [
+                        *strategy_records,
+                        {"strategy": strategy, "status": "completed", "attempts": attempts},
+                    ],
+                }
+            except ImageDownloadCancelled:
+                raise
+            except ImageDownloadError as e:
+                last_error = e
+                attempts = e.diagnostics.get("attempts", [])
+                if isinstance(attempts, list):
+                    flattened_attempts.extend(attempts)
+                strategy_records.append({
+                    "strategy": strategy,
+                    "status": "failed",
+                    "error": str(e),
+                    **e.diagnostics,
+                })
+                continue
+
+        if strategy == "browser_request":
+            record = _download_image_with_browser_request(
+                info,
+                urls,
+                dest,
+                referer=referer,
+                should_cancel=should_cancel,
+            )
+        elif strategy == "browser_interactive":
+            record = _download_image_with_browser_interactive(
+                info,
+                urls,
+                dest,
+                referer=referer,
+                should_cancel=should_cancel,
+            )
+        else:
+            continue
+
+        attempts = record.get("attempts", [])
+        if isinstance(attempts, list):
+            flattened_attempts.extend(attempts)
+        strategy_records.append(record)
+        if record.get("status") == "completed" and dest.exists():
+            return {
+                "strategy": strategy,
+                "attempts": flattened_attempts,
+                "strategy_attempts": strategy_records,
+            }
+        last_error = RuntimeError(str(record.get("error") or record.get("reason") or f"{strategy} failed"))
+
+    raise ImageDownloadError(
+        f"All Xiaohongshu image strategies failed: {last_error}",
+        {"attempts": flattened_attempts, "strategy_attempts": strategy_records},
+    )
+
+
+def _image_urls_for_strategy(urls: list[str], strategy: str) -> list[str]:
+    selected: list[str] = []
+    for url in urls:
+        if not isinstance(url, str) or not url.startswith("http"):
+            continue
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or "").lower()
+        is_generated_cdn = host in _IMAGE_ORIGINAL_HOSTS and host != "ci.xiaohongshu.com"
+        if strategy == "cdn_fallback" and not is_generated_cdn:
+            continue
+        if strategy == "raw_url" and is_generated_cdn:
+            continue
+        if url not in selected:
+            selected.append(url)
+    return selected
+
+
+def _download_image_with_browser_request(
+    info: dict[str, Any],
+    urls: list[str],
+    dest: Path,
+    referer: str,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as e:
+        return {
+            "strategy": "browser_request",
+            "status": "failed",
+            "reason": "playwright_not_installed",
+            "error": str(e),
+            "attempts": [],
+        }
+
+    attempts: list[dict[str, Any]] = []
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            context = _new_xhs_browser_context(browser)
+            page = context.new_page()
+            try:
+                page.goto(referer, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(1200)
+            except Exception:
+                pass
+            ok = _download_image_via_browser_context(
+                context,
+                urls,
+                dest,
+                referer=referer,
+                attempts=attempts,
+                via="browser_request",
+                should_cancel=should_cancel,
+            )
+            browser.close()
+            if ok:
+                return {
+                    "strategy": "browser_request",
+                    "status": "completed",
+                    "reason": "browser_request",
+                    "path": str(dest),
+                    "candidate_count": len(urls),
+                    "attempts": attempts,
+                }
+    except ImageDownloadCancelled:
+        raise
+    except Exception as e:
+        attempts.append({
+            "status": "error",
+            "error": str(e),
+            "via": "browser_request",
+        })
+    return {
+        "strategy": "browser_request",
+        "status": "failed",
+        "reason": "browser_request_failed",
+        "candidate_count": len(urls),
+        "attempts": attempts,
+    }
+
+
+def _download_image_with_browser_interactive(
+    info: dict[str, Any],
+    urls: list[str],
+    dest: Path,
+    referer: str,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as e:
+        return {
+            "strategy": "browser_interactive",
+            "status": "failed",
+            "reason": "playwright_not_installed",
+            "error": str(e),
+            "attempts": [],
+        }
+
+    attempts: list[dict[str, Any]] = []
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            context = _new_xhs_browser_context(browser)
+            page = context.new_page()
+            discovered = _collect_xhs_browser_image_urls(page, referer, should_cancel=should_cancel)
+            target_urls = _match_browser_image_urls(discovered, urls)
+            if not target_urls:
+                target_urls = urls
+            ok = _download_image_via_browser_context(
+                context,
+                target_urls,
+                dest,
+                referer=referer,
+                attempts=attempts,
+                via="browser_interactive",
+                should_cancel=should_cancel,
+            )
+            browser.close()
+            if ok:
+                return {
+                    "strategy": "browser_interactive",
+                    "status": "completed",
+                    "reason": "browser_interactive",
+                    "path": str(dest),
+                    "candidate_count": len(target_urls),
+                    "discovered_count": len(discovered),
+                    "attempts": attempts,
+                }
+            return {
+                "strategy": "browser_interactive",
+                "status": "failed",
+                "reason": "browser_interactive_failed",
+                "candidate_count": len(target_urls),
+                "discovered_count": len(discovered),
+                "attempts": attempts,
+            }
+    except ImageDownloadCancelled:
+        raise
+    except Exception as e:
+        attempts.append({
+            "status": "error",
+            "error": str(e),
+            "via": "browser_interactive",
+        })
+        return {
+            "strategy": "browser_interactive",
+            "status": "failed",
+            "reason": "browser_interactive_failed",
+            "candidate_count": len(urls),
+            "attempts": attempts,
+        }
+
+
+def _new_xhs_browser_context(browser: Any) -> Any:
+    context_kwargs: dict[str, Any] = {
+        "locale": "zh-CN",
+        "user_agent": _UA,
+        "viewport": {"width": 1280, "height": 860},
+    }
+    storage_state = _storage_state_path()
+    if storage_state.exists():
+        context_kwargs["storage_state"] = str(storage_state)
+    return browser.new_context(**context_kwargs)
+
+
+def _collect_xhs_browser_image_urls(
+    page: Any,
+    referer: str,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+) -> list[str]:
+    seen: set[str] = set()
+
+    def add_url(value: Any) -> None:
+        if isinstance(value, str):
+            for part in re.split(r"[\s,]+", value):
+                url = part.strip()
+                if url.startswith("//"):
+                    url = f"https:{url}"
+                if url.startswith("http") and _looks_like_image_url(url):
+                    seen.add(_normalize_url(url))
+
+    try:
+        page.goto(referer, wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(1200)
+        for _ in range(5):
+            _raise_if_image_download_cancelled(should_cancel)
+            page.mouse.wheel(0, 700)
+            page.keyboard.press("ArrowRight")
+            page.wait_for_timeout(500)
+        raw_urls = page.evaluate(
+            """() => {
+              const urls = new Set();
+              const add = (value) => {
+                if (!value || typeof value !== "string") return;
+                value.split(/[\\s,]+/).forEach((part) => {
+                  const url = part.trim();
+                  if (url.startsWith("http") || url.startsWith("//")) urls.add(url);
+                });
+              };
+              document.querySelectorAll("img, source").forEach((node) => {
+                add(node.currentSrc);
+                add(node.src);
+                add(node.srcset);
+                add(node.getAttribute("data-src"));
+                add(node.getAttribute("data-original"));
+              });
+              performance.getEntriesByType("resource").forEach((entry) => add(entry.name));
+              return Array.from(urls);
+            }"""
+        )
+        if isinstance(raw_urls, list):
+            for url in raw_urls:
+                add_url(url)
+    except ImageDownloadCancelled:
+        raise
+    except Exception as e:
+        logger.warning("XHS browser interactive collection failed: %s", e)
+    return list(seen)
+
+
+def _looks_like_image_url(url: str) -> bool:
+    lower = url.lower()
+    return (
+        "xhscdn.com" in lower
+        or "xiaohongshu.com" in lower and ("/spectrum/" in lower or "/ci/" in lower or "/notes/" in lower)
+        or any(marker in lower for marker in (".jpg", ".jpeg", ".png", ".webp", "image"))
+    )
+
+
+def _match_browser_image_urls(discovered: list[str], target_urls: list[str]) -> list[str]:
+    target_ids = {_candidate_image_id(url) for url in target_urls}
+    target_ids.discard("")
+    selected: list[str] = []
+    for url in discovered:
+        image_id = _candidate_image_id(url)
+        if target_ids and image_id not in target_ids:
+            continue
+        if url not in selected:
+            selected.append(url)
+            for variant in _image_original_url_variants(url):
+                if variant not in selected:
+                    selected.append(variant)
+    return selected
+
+
+def _candidate_image_id(url: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return ""
+    parts = [part for part in parsed.path.split("/") if part]
+    if not parts:
+        return ""
+    return parts[-1].split("!")[0]
+
+
+def _download_image_via_browser_context(
+    context: Any,
+    urls: list[str],
+    dest: Path,
+    referer: str,
+    attempts: list[dict[str, Any]],
+    via: str,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+) -> bool:
+    seen: set[str] = set()
+    for url in urls:
+        _raise_if_image_download_cancelled(should_cancel)
+        if not isinstance(url, str) or not url.startswith("http") or url in seen:
+            continue
+        seen.add(url)
+        try:
+            response = context.request.get(
+                url,
+                headers=_headers(referer),
+                timeout=20000,
+            )
+            attempts.append({
+                "url_redacted": _redact_url_for_log(url),
+                "host": urllib.parse.urlparse(url).hostname,
+                "status": response.status,
+                "ok": response.ok,
+                "via": via,
+            })
+            if response.ok:
+                body = response.body()
+                if body:
+                    dest.write_bytes(body)
+                    return True
+        except Exception as e:
+            attempts.append({
+                "url_redacted": _redact_url_for_log(url),
+                "status": "error",
+                "error": str(e),
+                "via": via,
+            })
+            dest.unlink(missing_ok=True)
+    return False
+
+
+def _download_failed_images_with_browser(
+    info: dict[str, Any],
+    output_dir: Path,
+    image_url_candidates: list[list[str]],
+    failed_indices: list[int],
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+) -> list[dict[str, Any]]:
+    if not failed_indices:
+        return []
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return []
+
+    referer = str(info.get("webpage_url") or "https://www.xiaohongshu.com/")
+    images_dir = output_dir / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    storage_state = _storage_state_path()
+    records: list[dict[str, Any]] = []
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            context_kwargs: dict[str, Any] = {
+                "locale": "zh-CN",
+                "user_agent": _UA,
+                "viewport": {"width": 1280, "height": 860},
+            }
+            if storage_state.exists():
+                context_kwargs["storage_state"] = str(storage_state)
+            context = browser.new_context(**context_kwargs)
+            page = context.new_page()
+            try:
+                page.goto(referer, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(1500)
+            except Exception:
+                pass
+
+            for idx in failed_indices:
+                _raise_if_image_download_cancelled(should_cancel)
+                if idx < 0 or idx >= len(image_url_candidates):
+                    continue
+                urls = [url for url in image_url_candidates[idx] if isinstance(url, str) and url.startswith("http")]
+                if not urls:
+                    continue
+                dest = images_dir / f"{idx:02d}.{_guess_image_ext_from_urls(urls)}"
+                if dest.exists():
+                    records.append({
+                        "index": idx,
+                        "status": "completed",
+                        "reason": "already_exists_browser_fallback",
+                        "path": str(dest),
+                        "candidate_count": len(urls),
+                        "attempts": [],
+                    })
+                    continue
+                attempts: list[dict[str, Any]] = []
+                for url in urls:
+                    _raise_if_image_download_cancelled(should_cancel)
+                    try:
+                        response = context.request.get(
+                            url,
+                            headers=_headers(referer),
+                            timeout=15000,
+                        )
+                        attempts.append({
+                            "url": url,
+                            "status": response.status,
+                            "ok": response.ok,
+                            "via": "playwright_request",
+                        })
+                        if response.ok:
+                            body = response.body()
+                            if body:
+                                dest.write_bytes(body)
+                                records.append({
+                                    "index": idx,
+                                    "status": "completed",
+                                    "reason": "browser_fallback",
+                                    "path": str(dest),
+                                    "candidate_count": len(urls),
+                                    "attempts": attempts,
+                                })
+                                break
+                    except Exception as e:
+                        attempts.append({
+                            "url": url,
+                            "status": "error",
+                            "error": str(e),
+                            "via": "playwright_request",
+                        })
+                if not dest.exists():
+                    records.append({
+                        "index": idx,
+                        "status": "failed",
+                        "reason": "browser_fallback_failed",
+                        "candidate_count": len(urls),
+                        "attempts": attempts,
+                    })
+            browser.close()
+    except ImageDownloadCancelled:
+        raise
+    except Exception as e:
+        logger.warning("XHS browser image fallback failed: %s", e)
+    return [record for record in records if record.get("status") == "completed"]
 
 
 def _guess_image_ext_from_urls(urls: list[str]) -> str:
@@ -323,7 +930,113 @@ def _headers(referer: str = "https://www.xiaohongshu.com/") -> dict[str, str]:
     cookie = (get_runtime_settings().xiaohongshu_cookie or "").strip()
     if cookie:
         headers["Cookie"] = cookie
+    else:
+        storage_cookie = _storage_state_cookie_header()
+        if storage_cookie:
+            headers["Cookie"] = storage_cookie
     return headers
+
+
+def _storage_state_path() -> Path:
+    rt = get_runtime_settings()
+    configured = str(getattr(rt, "xiaohongshu_storage_state_path", "") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path(rt.data_root).resolve() / "auth" / "xiaohongshu_storage_state.json"
+
+
+def _storage_state_cookie_header() -> str:
+    path = _storage_state_path()
+    if not path.exists():
+        return ""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    cookies = raw.get("cookies") if isinstance(raw, dict) else None
+    if not isinstance(cookies, list):
+        return ""
+    parts: list[str] = []
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            continue
+        domain = str(cookie.get("domain") or "").lstrip(".").lower()
+        if not (domain == "xiaohongshu.com" or domain.endswith(".xiaohongshu.com")):
+            continue
+        name = str(cookie.get("name") or "").strip()
+        value = str(cookie.get("value") or "").strip()
+        if name and value:
+            parts.append(f"{name}={value}")
+    return "; ".join(parts)
+
+
+def auth_state_status() -> dict[str, Any]:
+    path = _storage_state_path()
+    status: dict[str, Any] = {
+        "configured_cookie": bool((get_runtime_settings().xiaohongshu_cookie or "").strip()),
+        "storage_state_path": str(path),
+        "storage_state_exists": path.exists(),
+        "cookie_count": 0,
+        "login_cookie": False,
+    }
+    if not path.exists():
+        return status
+    try:
+        status["updated_at"] = datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        cookies = raw.get("cookies") if isinstance(raw, dict) else []
+        names = []
+        if not isinstance(cookies, list):
+            cookies = []
+        for cookie in cookies:
+            if not isinstance(cookie, dict):
+                continue
+            domain = str(cookie.get("domain") or "").lstrip(".").lower()
+            if domain == "xiaohongshu.com" or domain.endswith(".xiaohongshu.com"):
+                name = str(cookie.get("name") or "")
+                names.append(name)
+        status["cookie_count"] = len(names)
+        status["login_cookie"] = "web_session" in names
+    except Exception as e:
+        status["error"] = str(e)
+    return status
+
+
+def interactive_login(timeout_sec: int = 180) -> dict[str, Any]:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as e:
+        raise RuntimeError("Playwright is not installed. Run `uv run playwright install chromium`.") from e
+
+    timeout_sec = max(30, min(int(timeout_sec), 600))
+    path = _storage_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=False,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        context_kwargs: dict[str, Any] = {
+            "locale": "zh-CN",
+            "viewport": {"width": 1280, "height": 860},
+            "user_agent": _UA,
+        }
+        if path.exists():
+            context_kwargs["storage_state"] = str(path)
+        context = browser.new_context(**context_kwargs)
+        page = context.new_page()
+        page.goto("https://www.xiaohongshu.com/explore", wait_until="domcontentloaded", timeout=30000)
+        start = time.time()
+        while time.time() - start < timeout_sec:
+            cookies = context.cookies("https://www.xiaohongshu.com")
+            if any(cookie.get("name") == "web_session" for cookie in cookies):
+                break
+            if page.is_closed():
+                break
+            page.wait_for_timeout(1000)
+        context.storage_state(path=str(path))
+        browser.close()
+    return auth_state_status()
 
 
 def _fetch_text(url: str, referer: str) -> str:
@@ -457,7 +1170,7 @@ def _extract_image_url_candidates(note: dict[str, Any]) -> list[list[str]]:
             if not isinstance(value, str) or not value.startswith("http"):
                 return
             normalized = _normalize_url(value)
-            for candidate in (_transform_image_to_original(normalized), normalized):
+            for candidate in [*_image_original_url_variants(normalized), normalized]:
                 if candidate and candidate not in candidates:
                     candidates.append(candidate)
 
@@ -475,20 +1188,33 @@ def _extract_image_url_candidates(note: dict[str, Any]) -> list[list[str]]:
 
 
 def _transform_image_to_original(value: str) -> str:
+    variants = _image_original_url_variants(value)
+    return variants[0] if variants else value
+
+
+def _image_original_url_variants(value: str) -> list[str]:
     try:
         parsed = urllib.parse.urlparse(value)
     except Exception:
-        return value
+        return [value]
+    path_parts = [s for s in parsed.path.split("/") if s]
     if "xhscdn.com" in parsed.netloc:
-        segments = [s for s in parsed.path.split("/") if s]
-        subdirs_and_id = segments[2:] if len(segments) > 2 else segments
-        if subdirs_and_id:
-            image_id = subdirs_and_id[-1].split("!")[0]
-            subdirs_and_id[-1] = image_id
-            return f"https://ci.xiaohongshu.com/{'/'.join(subdirs_and_id)}"
+        subdirs_and_id = path_parts[2:] if len(path_parts) > 2 else path_parts
+    elif parsed.netloc == "ci.xiaohongshu.com":
+        subdirs_and_id = path_parts
+    else:
+        return [value]
+    if not subdirs_and_id:
+        return [value]
+    image_id = subdirs_and_id[-1].split("!")[0]
+    subdirs_and_id[-1] = image_id
+    path = "/".join(subdirs_and_id)
+    variants = [f"https://{host}/{path}" for host in _IMAGE_ORIGINAL_HOSTS]
     if parsed.netloc == "ci.xiaohongshu.com":
-        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-    return value
+        canonical = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        if canonical not in variants:
+            variants.insert(0, canonical)
+    return variants
 
 
 def _extract_thumbnail(note: dict[str, Any], image_urls: list[str]) -> str | None:
@@ -526,6 +1252,26 @@ def _parse_xhs_timestamp(value: Any) -> datetime | None:
     return None
 
 
+def _clean_note_title(value: Any) -> str:
+    text = str(value or "").strip()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _extract_note_title(note: dict[str, Any], fallback: str) -> str:
+    for key in ("title", "displayTitle"):
+        title = _clean_note_title(note.get(key))
+        if title:
+            return title
+
+    description = str(note.get("desc") or "")
+    for line in description.splitlines():
+        title = _clean_note_title(line)
+        if title:
+            return title
+
+    return fallback
+
+
 def _nested_get(data: Any, path: list[str]) -> Any:
     cur = data
     for key in path:
@@ -558,22 +1304,42 @@ def _dedupe_path(path: Path) -> Path:
         counter += 1
 
 
-def _download_file_candidates(urls: list[str], dest: Path, referer: str) -> dict[str, Any]:
+def _download_file_candidates(
+    urls: list[str],
+    dest: Path,
+    referer: str,
+    *,
+    strategy: str = "direct",
+    should_cancel: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
     last_error: Exception | None = None
     seen: set[str] = set()
     attempts: list[dict[str, Any]] = []
     for order, url in enumerate(urls):
+        _raise_if_image_download_cancelled(should_cancel)
         if url in seen:
             continue
         seen.add(url)
         attempt = _download_attempt_record(order, url, referer)
+        attempt["strategy"] = strategy
         try:
-            _download_file(url, dest, referer=referer, attempts=1)
+            _download_file(
+                url,
+                dest,
+                referer=referer,
+                attempts=_IMAGE_CANDIDATE_ATTEMPTS,
+                timeout_sec=_IMAGE_CANDIDATE_TIMEOUT_SEC,
+                should_cancel=should_cancel,
+            )
             attempt["status"] = "success"
             if dest.exists():
                 attempt["bytes"] = dest.stat().st_size
             attempts.append(attempt)
             return {"attempts": attempts}
+        except ImageDownloadCancelled:
+            dest.unlink(missing_ok=True)
+            dest.with_name(dest.name + ".part").unlink(missing_ok=True)
+            raise
         except Exception as e:
             last_error = e
             attempt.update(_download_error_details(e))
@@ -720,10 +1486,34 @@ def _redact_url_for_log(url: str) -> str:
         return url[:80]
 
 
-def _download_file(url: str, dest: Path, referer: str, attempts: int = 2, timeout_sec: int = 25) -> None:
+def _raise_if_image_download_cancelled(should_cancel: Callable[[], bool] | None) -> None:
+    if should_cancel and should_cancel():
+        raise ImageDownloadCancelled("Xiaohongshu image download cancelled")
+
+
+def _sleep_with_cancel(seconds: float, should_cancel: Callable[[], bool] | None) -> None:
+    deadline = time.monotonic() + seconds
+    while True:
+        _raise_if_image_download_cancelled(should_cancel)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, 0.2))
+
+
+def _download_file(
+    url: str,
+    dest: Path,
+    referer: str,
+    attempts: int = 2,
+    timeout_sec: int = 25,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+) -> None:
     last_error: Exception | None = None
     part = dest.with_name(dest.name + ".part")
     for attempt in range(1, attempts + 1):
+        _raise_if_image_download_cancelled(should_cancel)
         downloaded = 0
         dest.unlink(missing_ok=True)
         part.unlink(missing_ok=True)
@@ -731,8 +1521,10 @@ def _download_file(url: str, dest: Path, referer: str, attempts: int = 2, timeou
         try:
             with urllib_urlopen(req, timeout=timeout_sec) as resp:
                 total = int(resp.headers.get("Content-Length", 0))
+                _raise_if_image_download_cancelled(should_cancel)
                 with open(part, "wb") as f:
                     while True:
+                        _raise_if_image_download_cancelled(should_cancel)
                         chunk = resp.read(_CHUNK_SIZE)
                         if not chunk:
                             break
@@ -743,6 +1535,10 @@ def _download_file(url: str, dest: Path, referer: str, attempts: int = 2, timeou
             part.replace(dest)
             logger.info(f"Downloaded Xiaohongshu file: {downloaded:,} bytes -> {dest.name}")
             return
+        except ImageDownloadCancelled:
+            dest.unlink(missing_ok=True)
+            part.unlink(missing_ok=True)
+            raise
         except Exception as e:
             last_error = e
             dest.unlink(missing_ok=True)
@@ -750,7 +1546,7 @@ def _download_file(url: str, dest: Path, referer: str, attempts: int = 2, timeou
             if attempt >= attempts:
                 raise RuntimeError(f"Xiaohongshu file download failed after {attempts} attempts: {last_error}") from e
             logger.warning(f"Xiaohongshu file download retry {attempt}/{attempts}: {e}")
-            time.sleep(min(attempt, 3))
+            _sleep_with_cancel(min(attempt, 3), should_cancel)
 
 
 def _video_download_urls(primary_url: str, info: dict[str, Any]) -> list[str]:

@@ -2,16 +2,18 @@ import { useState } from "react"
 import type { ArchiveItem } from "@/hooks/use-archives"
 import { formatDuration } from "@/lib/format"
 import { api } from "@/lib/api"
+import { cn } from "@/lib/utils"
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { RenameDialog } from "@/components/rename-dialog"
 import { PlatformIcon } from "@/components/platform-icon"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { Video01Icon, MusicNote01Icon, Note01Icon, Image01Icon, ListTreeIcon, FolderOpenIcon, PencilEdit01Icon, Delete01Icon, Loading03Icon, RefreshIcon } from "@hugeicons/core-free-icons"
+import { Video01Icon, MusicNote01Icon, Note01Icon, Image01Icon, ListTreeIcon, FolderOpenIcon, PencilEdit01Icon, Delete01Icon, Loading03Icon, RefreshIcon, PauseIcon, PlayIcon } from "@hugeicons/core-free-icons"
 
 interface ArchiveCardProps {
   archive: ArchiveItem
@@ -19,11 +21,29 @@ interface ArchiveCardProps {
   onDelete?: () => void
   onRenamed?: (newTitle: string) => void
   onRerun?: () => void
+  onCheckpointRerun?: () => void
+  onPause?: () => void
+  onResume?: () => void
   rerunning?: boolean
+  checkpointRerunning?: boolean
+  taskActionBusy?: boolean
   compact?: boolean
 }
 
-export function ArchiveCard({ archive, onClick, onDelete, onRenamed, onRerun, rerunning = false, compact = false }: ArchiveCardProps) {
+export function ArchiveCard({
+  archive,
+  onClick,
+  onDelete,
+  onRenamed,
+  onRerun,
+  onCheckpointRerun,
+  onPause,
+  onResume,
+  rerunning = false,
+  checkpointRerunning = false,
+  taskActionBusy = false,
+  compact = false,
+}: ArchiveCardProps) {
   const [imgError, setImgError] = useState(false)
   const [showRename, setShowRename] = useState(false)
   const contentSubtype = typeof archive.metadata?.content_subtype === "string"
@@ -32,6 +52,9 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed, onRerun, re
   const isImageNote = archive.has_image || contentSubtype === "image_note"
   const isTextNote = contentSubtype === "text_note"
   const mediaLabel = archive.has_video ? "视频" : isImageNote ? "图文" : isTextNote ? "正文" : "音频"
+  const metadataStatus = typeof archive.metadata?.status === "string" ? archive.metadata.status : null
+  const canPause = archive.processing && metadataStatus !== "paused" && Boolean(onPause)
+  const canResume = archive.processing && metadataStatus === "paused" && Boolean(onResume)
 
   const showThumbnail = !imgError && !isTextNote
   const thumbnailUrl = api.archives.thumbnailUrl(archive.path)
@@ -75,7 +98,13 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed, onRerun, re
             {archive.processing && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/20">
                 <div className="rounded-full bg-background/90 p-1.5">
-                  <HugeiconsIcon icon={Loading03Icon} className="h-5 w-5 animate-spin text-blue-500" />
+                  <HugeiconsIcon
+                    icon={metadataStatus === "paused" ? PauseIcon : Loading03Icon}
+                    className={cn(
+                      "h-5 w-5",
+                      metadataStatus === "paused" ? "text-slate-500" : "animate-spin text-blue-500",
+                    )}
+                  />
                 </div>
               </div>
             )}
@@ -133,10 +162,28 @@ export function ArchiveCard({ archive, onClick, onDelete, onRenamed, onRerun, re
           <HugeiconsIcon icon={FolderOpenIcon} className="h-4 w-4" />
           打开
         </ContextMenuItem>
+        <ContextMenuItem disabled={!onCheckpointRerun || checkpointRerunning} onClick={() => onCheckpointRerun?.()}>
+          <HugeiconsIcon icon={checkpointRerunning ? Loading03Icon : PlayIcon} className={checkpointRerunning ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+          {checkpointRerunning ? "续做中" : "断点续做"}
+        </ContextMenuItem>
         <ContextMenuItem disabled={!onRerun || rerunning} onClick={() => onRerun?.()}>
           <HugeiconsIcon icon={rerunning ? Loading03Icon : RefreshIcon} className={rerunning ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-          {rerunning ? "重做中" : "重做"}
+          {rerunning ? "重做中" : "完整重做"}
         </ContextMenuItem>
+        <ContextMenuSeparator />
+        {canPause && (
+          <ContextMenuItem disabled={taskActionBusy} onClick={() => onPause?.()}>
+            <HugeiconsIcon icon={taskActionBusy ? Loading03Icon : PauseIcon} className={taskActionBusy ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+            暂停
+          </ContextMenuItem>
+        )}
+        {canResume && (
+          <ContextMenuItem disabled={taskActionBusy} onClick={() => onResume?.()}>
+            <HugeiconsIcon icon={taskActionBusy ? Loading03Icon : PlayIcon} className={taskActionBusy ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+            恢复
+          </ContextMenuItem>
+        )}
+        {(canPause || canResume) && <ContextMenuSeparator />}
         <ContextMenuItem onClick={() => setShowRename(true)}>
           <HugeiconsIcon icon={PencilEdit01Icon} className="h-4 w-4" />
           重命名

@@ -18,6 +18,8 @@ interface DeleteConfirmDialogProps {
   onOpenChange: (open: boolean) => void
   title: string
   archivePath: string
+  taskId?: string | null
+  taskDelete?: boolean
   onDeleted: () => void
 }
 
@@ -26,6 +28,8 @@ export function DeleteConfirmDialog({
   onOpenChange,
   title,
   archivePath,
+  taskId,
+  taskDelete = false,
   onDeleted,
 }: DeleteConfirmDialogProps) {
   const [deleting, setDeleting] = useState(false)
@@ -33,7 +37,11 @@ export function DeleteConfirmDialog({
   const handleDelete = async () => {
     setDeleting(true)
     try {
-      await api.archives.delete(archivePath)
+      if (taskDelete && taskId) {
+        await api.tasks.delete(taskId)
+      } else {
+        await api.archives.delete(archivePath)
+      }
       onOpenChange(false)
       onDeleted()
     } catch (err) {
@@ -49,7 +57,9 @@ export function DeleteConfirmDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>确认删除</AlertDialogTitle>
           <AlertDialogDescription>
-            将删除「{title}」的所有文件（归档、转录、摘要等），此操作不可撤销。
+            {taskDelete
+              ? `将停止任务并删除「${title}」的任务记录和已生成文件，此操作不可撤销。`
+              : `将删除「${title}」的所有文件（归档、转录、摘要等），此操作不可撤销。`}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter className="border-t-0">

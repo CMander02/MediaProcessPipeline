@@ -37,6 +37,7 @@ logs/
 .coverage
 htmlcov/
 .pytest_cache/
+.ruff_cache/
 
 # uv
 uv.lock
@@ -51,6 +52,7 @@ data/
 *.srt
 
 # Runtime settings (contains API keys)
+config.json
 settings.json
 
 # Reference files and images (not code)
@@ -72,6 +74,8 @@ agentspace/
 
 # Test output (experiment results, generated PDFs)
 test_output/
+tmp_*.json
+tmp-electron-run/
 
 .agents/
 .experiment/

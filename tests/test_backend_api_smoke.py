@@ -25,6 +25,10 @@ class FakeQueue:
     def __init__(self) -> None:
         self.submitted: list[UUID] = []
         self.cancelled: list[UUID] = []
+        self.paused: list[UUID] = []
+        self.resumed: list[UUID] = []
+        self.checkpoint_rerun: list[UUID] = []
+        self.deleted: list[UUID] = []
 
     async def submit(self, task_id: UUID) -> None:
         self.submitted.append(task_id)
@@ -32,6 +36,22 @@ class FakeQueue:
     async def cancel(self, task_id: UUID) -> bool:
         self.cancelled.append(task_id)
         return False
+
+    async def pause(self, task_id: UUID) -> bool:
+        self.paused.append(task_id)
+        return False
+
+    async def resume(self, task_id: UUID, *, force: bool = False) -> bool:
+        self.resumed.append(task_id)
+        return False
+
+    async def rerun_from_checkpoint(self, task_id: UUID) -> bool:
+        self.checkpoint_rerun.append(task_id)
+        return False
+
+    async def delete(self, task_id: UUID):
+        self.deleted.append(task_id)
+        return None
 
 
 def _client(tmp_path: Path, monkeypatch) -> tuple[TestClient, FakeQueue]:
@@ -212,6 +232,28 @@ def test_archive_thumbnail_uses_first_image_note_image(tmp_path, monkeypatch):
     assert response.content == b"first-image"
 
 
+def test_archive_thumbnail_caches_low_res_first_image(tmp_path, monkeypatch):
+    Image = pytest.importorskip("PIL.Image")
+
+    client, _queue = _client(tmp_path, monkeypatch)
+    archive_dir = tmp_path / "image-note-real"
+    image_dir = archive_dir / "images"
+    image_dir.mkdir(parents=True)
+    (archive_dir / "metadata.json").write_text(
+        json.dumps({"title": "Bili opus", "platform": "bilibili_opus", "content_subtype": "image_note"}),
+        encoding="utf-8",
+    )
+    first_image = image_dir / "00.png"
+    Image.new("RGB", (1200, 800), color=(220, 10, 20)).save(first_image)
+
+    response = client.get("/api/pipeline/archives/thumbnail", params={"path": str(archive_dir)})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/jpeg")
+    assert (archive_dir / "thumbnail.jpg").exists()
+    assert response.content == (archive_dir / "thumbnail.jpg").read_bytes()
+
+
 def test_main_app_lifespan_auth_and_task_submission_smoke(tmp_path, monkeypatch):
     from app import main as app_main
     from app.services.ingestion import ytdlp_version
@@ -309,6 +351,157 @@ async def test_real_task_queue_hands_downloaded_task_to_gpu_worker(tmp_path, mon
 
     assert calls == [(task.id, True), (task.id, False)]
     assert store.get(task.id).status == TaskStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_real_task_queue_pause_and_resume_queued_task(tmp_path, monkeypatch):
+    settings = RuntimeSettings(data_root=str(tmp_path), max_download_concurrency=1)
+    monkeypatch.setattr(settings_module, "_runtime_settings", settings)
+    monkeypatch.setattr(queue_module, "_flush_gpu_models", lambda: None)
+    database.reset_db_path(tmp_path)
+
+    store = database.get_task_store()
+    task = Task(
+        id=uuid4(),
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.PENDING,
+        source="demo.mp4",
+    )
+    store.save(task)
+
+    task_queue = queue_module.TaskQueue()
+    await task_queue.submit(task.id)
+
+    assert task_queue.get_queue_snapshot() == [task.id]
+    assert await task_queue.pause(task.id) is True
+    assert store.get(task.id).status == TaskStatus.PAUSED
+    assert task_queue.get_queue_snapshot() == []
+
+    assert await task_queue.resume(task.id) is True
+    assert store.get(task.id).status == TaskStatus.QUEUED
+    assert task_queue.get_queue_snapshot() == [task.id]
+
+
+@pytest.mark.asyncio
+async def test_real_task_queue_resume_failed_task_from_checkpoint(tmp_path, monkeypatch):
+    settings = RuntimeSettings(data_root=str(tmp_path), max_download_concurrency=1)
+    monkeypatch.setattr(settings_module, "_runtime_settings", settings)
+    monkeypatch.setattr(queue_module, "_flush_gpu_models", lambda: None)
+    database.reset_db_path(tmp_path)
+
+    store = database.get_task_store()
+    output_dir = tmp_path / "failed-output"
+    output_dir.mkdir()
+    (output_dir / "metadata.json").write_text(json.dumps({"status": "failed"}), encoding="utf-8")
+    task = Task(
+        id=uuid4(),
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.FAILED,
+        source="https://example.com/video.mp4",
+        completed_steps=["download"],
+        result={"output_dir": str(output_dir)},
+        completed_at=datetime.now(),
+    )
+    store.save(task)
+
+    task_queue = queue_module.TaskQueue()
+
+    assert await task_queue.resume(task.id) is True
+    saved = store.get(task.id)
+    assert saved.status == TaskStatus.QUEUED
+    assert saved.completed_at is None
+    assert task_queue.get_queue_snapshot() == [task.id]
+    assert json.loads((output_dir / "metadata.json").read_text(encoding="utf-8"))["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_real_task_queue_checkpoint_rerun_completed_image_note(tmp_path, monkeypatch):
+    settings = RuntimeSettings(data_root=str(tmp_path), max_download_concurrency=1)
+    monkeypatch.setattr(settings_module, "_runtime_settings", settings)
+    monkeypatch.setattr(queue_module, "_flush_gpu_models", lambda: None)
+    database.reset_db_path(tmp_path)
+
+    store = database.get_task_store()
+    output_dir = tmp_path / "image-note-output"
+    images_dir = output_dir / "images"
+    images_dir.mkdir(parents=True)
+    (images_dir / "00.jpg").write_bytes(b"fake image")
+    (output_dir / "metadata.json").write_text(
+        json.dumps({"status": "completed", "title": "谈谈沐神最近在交大的演讲", "content_subtype": "image_note"}),
+        encoding="utf-8",
+    )
+    task = Task(
+        id=uuid4(),
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.COMPLETED,
+        source="https://example.com/note",
+        steps=["download", "separate", "transcribe", "voiceprint", "polish", "analyze", "archive"],
+        completed_steps=["download", "separate", "transcribe", "voiceprint", "polish", "analyze", "archive"],
+        result={
+            "output_dir": str(output_dir),
+            "metadata": {"content_subtype": "image_note"},
+            "image_descriptions": [{"index": 0, "image_path": str(images_dir / "00.jpg"), "text": ""}],
+        },
+        content_subtype="image_note",
+        completed_at=datetime.now(),
+    )
+    store.save(task)
+
+    task_queue = queue_module.TaskQueue()
+
+    assert await task_queue.rerun_from_checkpoint(task.id) is True
+    saved = store.get(task.id)
+    assert saved.status == TaskStatus.QUEUED
+    assert saved.completed_at is None
+    assert saved.completed_steps == ["download", "separate", "transcribe", "voiceprint", "polish"]
+    assert saved.current_step == "analyze"
+    assert task_queue.get_queue_snapshot() == [task.id]
+    assert json.loads((output_dir / "metadata.json").read_text(encoding="utf-8"))["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_real_task_queue_delete_running_task_removes_record_and_output_dir(tmp_path, monkeypatch):
+    settings = RuntimeSettings(
+        data_root=str(tmp_path),
+        max_download_concurrency=1,
+        pipeline_overlap=True,
+    )
+    monkeypatch.setattr(settings_module, "_runtime_settings", settings)
+    monkeypatch.setattr(queue_module, "_flush_gpu_models", lambda: None)
+    database.reset_db_path(tmp_path)
+
+    store = database.get_task_store()
+    output_dir = tmp_path / "running-output"
+    output_dir.mkdir()
+    (output_dir / "metadata.json").write_text(json.dumps({"status": "processing"}), encoding="utf-8")
+    task = Task(
+        id=uuid4(),
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.PENDING,
+        source="demo.mp4",
+        result={"output_dir": str(output_dir)},
+    )
+    store.save(task)
+
+    task_queue = queue_module.TaskQueue()
+    started = asyncio.Event()
+
+    async def fake_pipeline(_task_id: UUID, _download_worker_call: bool) -> None:
+        started.set()
+        await asyncio.sleep(30)
+
+    task_queue.set_pipeline(fake_pipeline)
+    await task_queue.start()
+    try:
+        await task_queue.submit(task.id)
+        await asyncio.wait_for(started.wait(), timeout=5)
+        result = await task_queue.delete(task.id)
+    finally:
+        await task_queue.stop()
+
+    assert result is not None
+    assert store.get(task.id) is None
+    assert not output_dir.exists()
 
 
 @pytest.mark.asyncio

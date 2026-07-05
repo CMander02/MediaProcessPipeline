@@ -47,6 +47,13 @@ CLI (mpp) / HTTP
 - **修改前端代码后必须 `cd web && npm run build`**，否则改动不会生效
 - 开发时也可用 `npm run dev` 启动 Vite dev server（端口 5173），但生产始终用 build 产物
 
+### 运行环境清理
+
+- 每次修改配置、重启服务、运行测试或做浏览器验证前，必须先完整关闭本项目历史前后端进程。
+- 清理范围包括后端 `uv run python -m app.cli serve` / `app.cli serve` 进程树，以及前端 `npm run web:dev` / `npm run dev` / `vite --host 127.0.0.1` 进程树。
+- 关闭后确认 `18000`、`5173`、`5174`、`4173` 等本项目常用端口无残留监听，再启动新的后端或前端。
+- 只关闭命令行或工作目录明确指向 `MediaProcessPipeline` 的进程，保留 Codex、MCP、Zotero、其他仓库任务等无关 Python/Node 进程。
+
 ### 通信协议
 
 - SSE (Server-Sent Events): `GET /api/tasks/events` (全局) 和 `GET /api/tasks/{id}/events` (单任务)

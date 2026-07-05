@@ -16,7 +16,7 @@ import urllib.request
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.core.network import urllib_urlopen
 from app.core.settings import get_runtime_settings
@@ -54,7 +54,12 @@ def fetch_metadata(url: str) -> dict[str, Any]:
     raise RuntimeError("Zhihu metadata not found. " + " | ".join(errors))
 
 
-def download_images(info: dict[str, Any], output_dir: Path) -> list[Path]:
+def download_images(
+    info: dict[str, Any],
+    output_dir: Path,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+) -> list[Path]:
     """Download embedded Zhihu images when present."""
     image_urls: list[str] = (info.get("extra") or {}).get("image_urls") or []
     if not image_urls:
@@ -65,15 +70,22 @@ def download_images(info: dict[str, Any], output_dir: Path) -> list[Path]:
     referer = str(info.get("webpage_url") or "https://www.zhihu.com/")
     paths: list[Path] = []
     for idx, url in enumerate(image_urls):
+        _raise_if_image_download_cancelled(should_cancel)
         dest = images_dir / f"{idx:02d}.{_guess_image_ext(url)}"
         if dest.exists():
             paths.append(dest)
             continue
         req = urllib.request.Request(url, headers=_headers(referer))
         with urllib_urlopen(req, timeout=30) as resp:
+            _raise_if_image_download_cancelled(should_cancel)
             dest.write_bytes(resp.read())
         paths.append(dest)
     return paths
+
+
+def _raise_if_image_download_cancelled(should_cancel: Callable[[], bool] | None) -> None:
+    if should_cancel and should_cancel():
+        raise RuntimeError("Zhihu image download cancelled")
 
 
 def _fetch_initial_state(url: str) -> dict[str, Any]:

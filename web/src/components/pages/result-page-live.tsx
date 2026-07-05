@@ -4,8 +4,18 @@ import { navigate } from "@/lib/router"
 import { STEP_NAME, usePipelineSteps } from "@/lib/constants"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { Tick02Icon, Loading03Icon, Cancel01Icon, ArrowLeft01Icon, CancelCircleIcon } from "@hugeicons/core-free-icons"
+import { Tick02Icon, Loading03Icon, Cancel01Icon, ArrowLeft01Icon, CancelCircleIcon, Delete01Icon, PauseIcon, PlayIcon } from "@hugeicons/core-free-icons"
 
 interface LogEntry {
   ts: string
@@ -33,6 +43,8 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
   const [task, setTask] = useState<Task | null>(null)
   const [flow, setFlow] = useState<TaskFlowSnapshot | null>(null)
   const [logs, setLogs] = useState<LogEntry[]>([])
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [actionBusy, setActionBusy] = useState<"pause" | "resume" | "delete" | "cancel" | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   // Fetch initial task state
@@ -85,7 +97,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
       try {
         const t = await api.tasks.get(taskId)
         setTask(t)
-        if (t.status === "completed" || t.status === "failed" || t.status === "cancelled") {
+        if (t.status === "completed" || t.status === "failed" || t.status === "cancelled" || t.status === "paused") {
           clearInterval(interval)
         }
       } catch {}
@@ -114,14 +126,60 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
   }, [task?.status, task?.result])
 
   const handleCancel = async () => {
+    setActionBusy("cancel")
     try {
       await api.tasks.cancel(taskId)
-    } catch {}
+    } catch {
+    } finally {
+      setActionBusy(null)
+    }
+  }
+
+  const handlePause = async () => {
+    setActionBusy("pause")
+    try {
+      await api.tasks.pause(taskId)
+      const next = await api.tasks.get(taskId)
+      setTask(next)
+      setFlow(next.flow ?? null)
+    } catch {
+    } finally {
+      setActionBusy(null)
+    }
+  }
+
+  const handleResume = async () => {
+    setActionBusy("resume")
+    try {
+      await api.tasks.resume(taskId)
+      const next = await api.tasks.get(taskId)
+      setTask(next)
+      setFlow(next.flow ?? null)
+    } catch {
+    } finally {
+      setActionBusy(null)
+    }
+  }
+
+  const handleDelete = async () => {
+    setActionBusy("delete")
+    try {
+      await api.tasks.delete(taskId)
+      setDeleteOpen(false)
+      navigate("#/files")
+    } catch {
+    } finally {
+      setActionBusy(null)
+    }
   }
 
   const isTerminal = task?.status === "completed" || task?.status === "failed" || task?.status === "cancelled"
+  const canPause = task?.status === "queued" || task?.status === "processing"
+  const canResume = task?.status === "paused"
+  const canDelete = task?.status === "queued" || task?.status === "processing" || task?.status === "paused"
 
   return (
+    <>
     <div className="h-full overflow-y-auto flex items-center justify-center">
       <div className="max-w-3xl w-full p-6 space-y-6">
         {/* Header */}
@@ -141,18 +199,39 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
                 task.status === "completed" && "text-emerald-600",
                 task.status === "failed" && "text-destructive",
                 task.status === "queued" && "text-amber-600",
+                task.status === "paused" && "text-slate-600",
                 task.status === "cancelled" && "text-muted-foreground",
               )}>
-                {task.status === "processing" ? "处理中..." : task.status === "completed" ? "已完成" : task.status === "failed" ? "失败" : task.status === "queued" ? "排队中" : "已取消"}
+                {task.status === "processing" ? "处理中..." : task.status === "completed" ? "已完成" : task.status === "failed" ? "失败" : task.status === "queued" ? "排队中" : task.status === "paused" ? "已暂停" : "已取消"}
                 {task.message && ` — ${task.message}`}
               </p>
             )}
           </div>
           {task && !isTerminal && (
-            <Button variant="outline" size="sm" onClick={handleCancel}>
-              <HugeiconsIcon icon={CancelCircleIcon} className="h-3.5 w-3.5 mr-1" />
-              取消
-            </Button>
+            <div className="flex shrink-0 items-center gap-1.5">
+              {canPause && (
+                <Button variant="outline" size="sm" onClick={handlePause} disabled={actionBusy !== null}>
+                  <HugeiconsIcon icon={actionBusy === "pause" ? Loading03Icon : PauseIcon} className={cn("h-3.5 w-3.5 mr-1", actionBusy === "pause" && "animate-spin")} />
+                  暂停
+                </Button>
+              )}
+              {canResume && (
+                <Button variant="outline" size="sm" onClick={handleResume} disabled={actionBusy !== null}>
+                  <HugeiconsIcon icon={actionBusy === "resume" ? Loading03Icon : PlayIcon} className={cn("h-3.5 w-3.5 mr-1", actionBusy === "resume" && "animate-spin")} />
+                  恢复
+                </Button>
+              )}
+              <Button variant="outline" size="sm" onClick={handleCancel} disabled={actionBusy !== null}>
+                <HugeiconsIcon icon={actionBusy === "cancel" ? Loading03Icon : CancelCircleIcon} className={cn("h-3.5 w-3.5 mr-1", actionBusy === "cancel" && "animate-spin")} />
+                取消
+              </Button>
+              {canDelete && (
+                <Button variant="destructive" size="sm" onClick={() => setDeleteOpen(true)} disabled={actionBusy !== null}>
+                  <HugeiconsIcon icon={Delete01Icon} className="h-3.5 w-3.5 mr-1" />
+                  删除
+                </Button>
+              )}
+            </div>
           )}
         </div>
 
@@ -162,6 +241,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
             const isCompleted = task?.completed_steps?.includes(step.id)
             const isCurrent = task?.current_step === step.id
             const isFailed = task?.status === "failed" && isCurrent
+            const isPaused = task?.status === "paused" && isCurrent
             return (
               <div key={step.id} className="flex items-center gap-1">
                 <div className="flex items-center gap-1.5">
@@ -169,17 +249,20 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
                     className={cn(
                       "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors",
                       isCompleted && "border-emerald-500 bg-emerald-500 text-white",
-                      isCurrent && !isFailed && "border-blue-500 bg-blue-50 dark:bg-blue-950",
+                      isCurrent && !isFailed && !isPaused && "border-blue-500 bg-blue-50 dark:bg-blue-950",
+                      isPaused && "border-slate-400 bg-slate-50 dark:bg-slate-950",
                       isFailed && "border-destructive bg-destructive/10",
                       !isCompleted && !isCurrent && "border-muted-foreground/30",
                     )}
                   >
                     {isCompleted ? (
                       <HugeiconsIcon icon={Tick02Icon} className="h-3 w-3" />
-                    ) : isCurrent && !isFailed ? (
+                    ) : isCurrent && !isFailed && !isPaused ? (
                       <HugeiconsIcon icon={Loading03Icon} className="h-3 w-3 animate-spin text-blue-600" />
                     ) : isFailed ? (
                       <HugeiconsIcon icon={Cancel01Icon} className="h-3 w-3 text-destructive" />
+                    ) : isPaused ? (
+                      <HugeiconsIcon icon={PauseIcon} className="h-3 w-3 text-slate-600" />
                     ) : (
                       <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/20" />
                     )}
@@ -188,7 +271,8 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
                     className={cn(
                       "text-xs whitespace-nowrap",
                       isCompleted && "text-emerald-700 dark:text-emerald-400 font-medium",
-                      isCurrent && !isFailed && "text-blue-700 dark:text-blue-400 font-medium",
+                      isCurrent && !isFailed && !isPaused && "text-blue-700 dark:text-blue-400 font-medium",
+                      isPaused && "text-slate-600 font-medium",
                       isFailed && "text-destructive font-medium",
                       !isCompleted && !isCurrent && "text-muted-foreground",
                     )}
@@ -274,5 +358,32 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
         )}
       </div>
     </div>
+    <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>删除任务</AlertDialogTitle>
+          <AlertDialogDescription>
+            将停止当前任务并删除已生成文件，此操作不可撤销。
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter className="border-t-0">
+          <AlertDialogCancel disabled={actionBusy === "delete"}>取消</AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            disabled={actionBusy === "delete"}
+            onClick={(event) => {
+              event.preventDefault()
+              handleDelete()
+            }}
+          >
+            {actionBusy === "delete" && (
+              <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-1" />
+            )}
+            删除
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   )
 }

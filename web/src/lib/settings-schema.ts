@@ -137,6 +137,12 @@ export interface RuntimeSettings {
   local_llm_n_ctx?: number
   local_llm_n_batch?: number
   polish_provider?: LlmProvider | "" | string
+  vlm_api_base?: string
+  vlm_api_key?: string
+  vlm_model?: string
+  vlm_max_tokens?: number
+  vlm_concurrency?: number
+  vlm_timeout_sec?: number
 
   api_token?: string
   data_root?: string
