@@ -2,15 +2,17 @@
 
 ## Current ASR Runtime
 
-The product ASR runtime is Qwen3-ASR. The backend uses the official `qwen-asr`
-Python package through `Qwen3ASRModel.from_pretrained(...)`; this is the
-supported in-process Transformers backend.
+The product ASR runtime is selected through `asr_provider`. The lightweight
+default is `qwen3_gguf`, which starts an external llama.cpp server and talks to
+it through an OpenAI-compatible local HTTP endpoint. API ASR is available
+through `siliconflow`, and the in-process Qwen3 package remains available as
+`qwen3`.
 
-`backend/app/services/recognition/__init__.py` owns provider selection. Today
-`asr_provider` only accepts `qwen3`, and unsupported values fail explicitly at
-settings validation/transcription startup instead of silently falling back.
+`backend/app/services/recognition/__init__.py` owns provider selection. The
+supported values are `qwen3_gguf`, `siliconflow`, and `qwen3`; unsupported
+values fail explicitly at settings validation/transcription startup.
 
-Qwen3-specific configuration remains intentionally scoped:
+Qwen3 package configuration remains intentionally scoped:
 
 - `qwen3_asr_model_path`
 - `qwen3_aligner_model_path`
@@ -19,15 +21,39 @@ Qwen3-specific configuration remains intentionally scoped:
 - `qwen3_max_new_tokens`
 - `qwen3_device`
 
+GGUF/llama.cpp configuration is isolated from the PyTorch path:
+
+- `llama_cpp_binary_path`
+- `qwen3_gguf_model_path`
+- `qwen3_gguf_mmproj_path`
+- `qwen3_gguf_hf_repo`
+- `qwen3_gguf_device`
+- `qwen3_gguf_chunk_strategy`
+
 Speaker diarization and voiceprint matching are optional capabilities attached
-to the current provider through narrow hooks:
+to providers through narrow hooks:
 
 - `get_pyannote_pipeline()`
 - `get_last_diarization()`
 - `release()`
 
-This means pipeline code does not need to import Qwen3 directly, while the
-existing Qwen3 behavior stays unchanged.
+This means pipeline code does not need to import Qwen3 or llama.cpp directly.
+
+## Dependency Profiles
+
+The base install is designed for API-first and VPS deployments:
+
+- Base: daemon, CLI, yt-dlp, OpenAI-compatible clients, LiteLLM, Playwright
+  Python package, Transformers utilities, and ffmpeg fixed ASR chunking.
+- `asr-api-vad`: adds `onnxruntime` for Silero ONNX VAD chunking.
+- `local-asr`: adds `torch`, `torchaudio`, `qwen-asr`, and `pyannote-audio`.
+- `uvr`: adds `torch`, `torchaudio`, and `audio-separator[gpu]`.
+- `hf-local-inference`: adds `torch` and `accelerate`; `transformers` is in
+  base.
+- `local-models`: installs the full local model stack.
+
+Playwright browser binaries are managed separately with
+`uv run playwright install chromium`.
 
 ## Performance Path
 
@@ -44,11 +70,12 @@ hidden optimization already active in this repo.
 
 Practical interpretation:
 
-- In-process Qwen3 is the stable default for product use.
-- vLLM should be introduced only if ASR throughput becomes the bottleneck and
-  the operational cost of running a separate ASR server is acceptable.
-- ForcedAligner should be preferred when timestamp quality matters; without it,
-  the current implementation falls back to Silero VAD chunk boundaries.
+- API ASR plus ffmpeg fixed chunking is the stable VPS path.
+- GGUF/llama.cpp keeps Python free of PyTorch for local ASR experiments.
+- In-process Qwen3 is the full local ASR path.
+- Silero ONNX VAD is an optional quality improvement for chunk boundaries.
+- ForcedAligner should be preferred when timestamp quality matters on the
+  in-process Qwen3 path.
 
 ## Environment Isolation
 
@@ -59,7 +86,7 @@ need is proven.
 
 Use this staged approach instead:
 
-1. Keep core runtime dependencies in the main `uv` environment.
+1. Keep API-first runtime dependencies in the main `uv` environment.
 2. Put provider-specific settings behind explicit provider namespaces.
 3. If a backend needs incompatible dependencies, run it out-of-process behind a
    small HTTP/client adapter.

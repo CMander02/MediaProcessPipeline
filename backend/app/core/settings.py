@@ -153,7 +153,7 @@ class RuntimeSettings(BaseModel):
     qwen3_gguf_n_gpu_layers: int = 99
     qwen3_gguf_timeout_sec: float = 300.0
     qwen3_gguf_keepalive_sec: float = 300.0
-    qwen3_gguf_chunk_strategy: str = "silero_onnx"  # silero_onnx | silero_torch | ffmpeg
+    qwen3_gguf_chunk_strategy: str = "ffmpeg"  # ffmpeg | silero_onnx | silero_torch
     silero_onnx_model_path: str = ""
 
     # SiliconFlow ASR (OpenAI-compatible /audio/transcriptions)
@@ -331,7 +331,7 @@ class RuntimeSettings(BaseModel):
     def _validate_qwen3_gguf_chunk_strategy(cls, value: str) -> str:
         strategy = value.strip().lower()
         if strategy not in {"silero_onnx", "silero_torch", "ffmpeg"}:
-            raise ValueError("qwen3_gguf_chunk_strategy must be one of: silero_onnx, silero_torch, ffmpeg")
+            raise ValueError("qwen3_gguf_chunk_strategy must be one of: ffmpeg, silero_onnx, silero_torch")
         return strategy
 
     @field_validator("siliconflow_asr_chunk_strategy")

@@ -82,7 +82,7 @@ def test_asr_default_binding_uses_qwen3_gguf_hf_repo():
     assert binding.source == "settings"
     assert binding.model == "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0"
     assert binding.diarize is False
-    assert binding.chunk_strategy == "silero_onnx"
+    assert binding.chunk_strategy == "ffmpeg"
     assert binding.request_kwargs["hf_repo"] == "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0"
     assert binding.request_kwargs["alias"] == "Qwen3-ASR-1.7B"
 

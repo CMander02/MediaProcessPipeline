@@ -1,6 +1,17 @@
 #!/bin/bash
 
-# Setup script for the project
+# Setup script for the project.
+#
+# Usage:
+#   ./scripts/setup.sh
+#   ./scripts/setup.sh local-models
+#
+# Extras:
+#   asr-api-vad          Silero ONNX VAD chunking for API ASR
+#   local-asr            local Qwen3-ASR + Pyannote
+#   uvr                  UVR vocal separation
+#   hf-local-inference   torch + accelerate for local HF inference
+#   local-models         full local model stack
 
 set -e
 
@@ -28,24 +39,29 @@ echo -e "${GREEN}Prerequisites OK${NC}"
 
 # Setup backend
 echo -e "\n${YELLOW}Setting up backend...${NC}"
-cd backend
+EXTRA="${1:-}"
 
-if [ ! -f .env ]; then
+if [ -f backend/.env.example ] && [ ! -f backend/.env ]; then
+    cd backend
     cp .env.example .env
+    cd ..
     echo -e "${YELLOW}Created .env file - please update with your API keys${NC}"
 fi
 
-uv sync
+if [ -n "$EXTRA" ]; then
+    uv sync --extra "$EXTRA"
+else
+    uv sync
+fi
 echo -e "${GREEN}Backend dependencies installed${NC}"
-cd ..
 
 # Setup frontend
 echo -e "\n${YELLOW}Setting up frontend...${NC}"
-cd frontend
+cd web
 npm install
 echo -e "${GREEN}Frontend dependencies installed${NC}"
 cd ..
 
 echo -e "\n${GREEN}Setup complete!${NC}"
 echo -e "1. Update ${YELLOW}backend/.env${NC} with your API keys"
-echo -e "2. Run ${YELLOW}./script/dev.sh${NC} to start development servers"
+echo -e "2. Run ${YELLOW}./scripts/dev.sh${NC} to start development servers"

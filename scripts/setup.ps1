@@ -2,9 +2,20 @@
 .SYNOPSIS
     Initialize MPP development environment
 
+.PARAMETER Extra
+    Optional backend dependency extra, e.g. asr-api-vad, local-asr, uvr,
+    hf-local-inference, local-models.
+
 .EXAMPLE
     .\scripts\setup.ps1
+
+.EXAMPLE
+    .\scripts\setup.ps1 -Extra local-models
 #>
+
+param(
+    [string]$Extra = ""
+)
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
@@ -26,13 +37,17 @@ foreach ($Dir in @("data/inbox", "data/processing", "data/outputs", "data/archiv
 # Setup backend
 $BackendPath = Join-Path $ProjectRoot "backend"
 Write-Status "Installing backend dependencies..."
-Push-Location $BackendPath
-uv sync
+Push-Location $ProjectRoot
+if ($Extra) {
+    uv sync --extra $Extra
+} else {
+    uv sync
+}
 Pop-Location
 Write-Success "Backend ready"
 
 # Setup frontend
-$FrontendPath = Join-Path $ProjectRoot "frontend"
+$FrontendPath = Join-Path $ProjectRoot "web"
 if (Test-Path (Join-Path $FrontendPath "package.json")) {
     Write-Status "Installing frontend dependencies..."
     Push-Location $FrontendPath

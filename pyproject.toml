@@ -1,6 +1,6 @@
 [project]
 name = "MediaProcessPipeline"
-version = "1.0.0"
+version = "1.0.1"
 description = "Omni-Media Processing Pipeline - Convert audio/video to structured knowledge"
 requires-python = ">=3.11,<3.13"
 dependencies = [
@@ -12,9 +12,9 @@ dependencies = [
     "httpx[socks]>=0.28.0",
     # AI - OpenAI-compatible API (直连各 provider)
     "openai>=1.50.0",
+    "transformers>=4.45.0",
     "python-multipart>=0.0.21",
     "numpy>=1.26.0",
-    "onnxruntime>=1.16.1",
     # CLI
     "typer>=0.15.0",
     "rich>=13.0.0",
@@ -35,6 +35,10 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "ruff>=0.8.0",
 ]
+asr-api-vad = [
+    # Silero ONNX VAD chunking for API ASR; ffmpeg chunking works without this.
+    "onnxruntime>=1.16.1",
+]
 uvr = [
     # PyTorch GPU - CUDA 12.8 (cu128 索引)
     "torch~=2.8.0",
@@ -52,16 +56,19 @@ local-asr = [
 ]
 local-llm = [
     "torch~=2.8.0",
-    "transformers>=4.45.0",
+    "accelerate>=0.34.0",
+]
+hf-local-inference = [
+    "torch~=2.8.0",
     "accelerate>=0.34.0",
 ]
 local-models = [
+    "onnxruntime>=1.16.1",
     "torch~=2.8.0",
     "torchaudio~=2.8.0",
     "audio-separator[gpu]>=0.41.0",
     "qwen-asr>=0.0.6",
     "pyannote-audio>=3.4.0",
-    "transformers>=4.45.0",
     "accelerate>=0.34.0",
 ]
 

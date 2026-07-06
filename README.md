@@ -8,7 +8,7 @@
 - **本地文件处理**: 支持直接处理本地音视频文件
 - **平台字幕优先**: 自动下载平台字幕，LLM 补充说话人标注和标点
 - **人声分离**: UVR5 (audio-separator) 分离人声和背景音乐
-- **语音转录**: Qwen3-ASR，支持说话人分离
+- **语音转录**: 支持 API ASR、Qwen3-ASR GGUF/llama.cpp、本地 Qwen3-ASR
 - **智能润色**: LLM 滑动窗口润色，修正错字、添加标点
 - **内容分析**: 自动提取关键信息、生成摘要和思维导图（支持 map-reduce 长文本）
 - **桌面应用**: Tauri 打包，双击即用
@@ -50,7 +50,7 @@ MediaProcessPipeline/
 - [uv](https://docs.astral.sh/uv/) (Python 包管理)
 - Node.js 18+
 - FFmpeg (必须在 PATH 中)
-- CUDA (可选，GPU 加速 ASR/UVR)
+- CUDA (可选，用于本地 Qwen3-ASR / UVR / HF 本地推理)
 
 ### 安装
 
@@ -58,14 +58,45 @@ MediaProcessPipeline/
 git clone <repo-url>
 cd MediaProcessPipeline
 
-# Python 依赖（默认是轻量 API/CLI 环境，不安装 torch/UVR/Qwen/Pyannote）
+# Python 依赖（默认是轻量 API/CLI 环境，保留 transformers，不安装 torch/UVR/Qwen/Pyannote/ONNX）
 uv sync
 
-# 可选：安装本地模型链路（UVR、本地 Qwen-ASR、Pyannote、local LLM）
+# 可选：API ASR 使用 Silero ONNX VAD 切片
+uv sync --extra asr-api-vad
+
+# 可选：本地 Qwen3-ASR + Pyannote
+uv sync --extra local-asr
+
+# 可选：UVR 人声分离
+uv sync --extra uvr
+
+# 可选：HF Transformers 本地推理（torch + accelerate；transformers 在 base 中）
+uv sync --extra hf-local-inference
+
+# 可选：完整本地模型链路（ONNX VAD、UVR、本地 Qwen-ASR、Pyannote、HF local LLM）
 uv sync --extra local-models
 
 # 前端依赖 + 构建
 cd web && npm install && npm run build && cd ..
+```
+
+### VPS / API-only 配置
+
+2c4g VPS 建议使用 API ASR 和固定 ffmpeg 切片，跳过本地语音模型、UVR 和浏览器运行时：
+
+```bash
+uv sync
+uv run python -m app.cli config asr_provider siliconflow
+uv run python -m app.cli config siliconflow_asr_chunk_strategy ffmpeg
+uv run python -m app.cli config qwen3_gguf_chunk_strategy ffmpeg
+uv run python -m app.cli config enable_diarization false
+uv run python -m app.cli config enable_voiceprint false
+```
+
+Playwright Python 包随 base 安装。小红书、知乎等浏览器抓取需要额外安装浏览器运行时：
+
+```bash
+uv run playwright install chromium
 ```
 
 ### 启动
