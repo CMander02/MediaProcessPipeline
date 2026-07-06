@@ -5,6 +5,7 @@ import logging
 import re
 import subprocess
 import threading
+import urllib.parse
 import urllib.request
 from collections import deque
 from datetime import datetime
@@ -187,6 +188,52 @@ def _clean_twitter_text(text: str) -> str:
             break
         cleaned.append(line)
     return "\n".join(cleaned).strip()
+
+
+def _extract_twitter_article_title(value: Any) -> str:
+    lines = [line.strip() for line in str(value or "").splitlines()]
+    for idx, line in enumerate(lines):
+        if line != "Article":
+            continue
+        for candidate in lines[idx + 1:]:
+            if candidate and not candidate.startswith(("http://", "https://")):
+                return candidate
+    return ""
+
+
+def _is_twitter_content_image(value: Any) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    parsed = urlparse(raw)
+    host = (parsed.hostname or "").lower()
+    return (host == "pbs.twimg.com" or host.endswith(".pbs.twimg.com")) and "/media/" in parsed.path
+
+
+def _dedupe_twitter_image_urls(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        values = [values] if values else []
+    image_urls: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        raw = str(value or "").strip()
+        if not _is_twitter_content_image(raw):
+            continue
+        dedupe_key = _twitter_image_dedupe_key(raw)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        image_urls.append(raw)
+    return image_urls
+
+
+def _twitter_image_dedupe_key(value: str) -> str:
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower()
+    path = urllib.parse.unquote(parsed.path)
+    filename = path.rsplit("/", 1)[-1].split(":", 1)[0]
+    media_id = filename.rsplit(".", 1)[0] if "." in filename else filename
+    return f"{host}/media/{media_id}" if media_id else value
 
 
 def _is_generic_webpage_url(url: str) -> bool:
@@ -719,6 +766,12 @@ class YtdlpService:
                 audio_file = self._download_audio_only(url, output_dir, title)
         else:
             log_event(logger, logging.WARNING, "download.video.missing", fallback="audio_only")
+            if _is_twitter_url(url):
+                return self._download_twitter_webpage_note(
+                    url,
+                    output_dir,
+                    RuntimeError("yt-dlp did not download a video file for this X/Twitter status"),
+                )
             audio_file = self._download_audio_only(url, output_dir, title)
             video_file = None
 
@@ -996,17 +1049,28 @@ class YtdlpService:
     ) -> dict[str, Any]:
         page = self._scrape_twitter_page(url)
         resolved_url = page.get("url") or url
-        title = _clean_twitter_title(str(page.get("title") or "")) or "X post"
         body_text = _clean_twitter_text(str(page.get("text") or ""))
-        markdown = f"# {title}\n\nSource: {resolved_url}\n\n{body_text}".strip() + "\n"
+        article_title = _extract_twitter_article_title(page.get("article_text") or body_text)
+        title = article_title or _clean_twitter_title(str(page.get("title") or "")) or "X post"
+        image_urls = _dedupe_twitter_image_urls(page.get("image_urls"))
+        markdown_parts = [f"# {title}", f"Source: {resolved_url}"]
+        if body_text:
+            markdown_parts.append(body_text)
+        for idx, image_url in enumerate(image_urls, start=1):
+            markdown_parts.append(f"![X image {idx}]({image_url})")
+        markdown = "\n\n".join(markdown_parts).strip() + "\n"
         uploader = page.get("uploader")
-        thumbnail = page.get("thumbnail")
+        thumbnail = image_urls[0] if image_urls else page.get("thumbnail")
         extra = {
             "platform": "twitter",
             "scrape_engine": "playwright",
             "twitter_type": page.get("type") or "status",
             "article_url": page.get("article_url"),
+            "article_title": article_title,
             "status_url": resolved_url,
+            "image_urls": image_urls,
+            "image_url_candidates": [[url] for url in image_urls],
+            "image_count": len(image_urls),
         }
         if fallback_error:
             extra["ytdlp_error"] = str(fallback_error)
@@ -1017,7 +1081,7 @@ class YtdlpService:
             "webpage_url": resolved_url,
             "original_url": url,
             "platform": "twitter",
-            "content_subtype": "text_note",
+            "content_subtype": "image_note" if image_urls else "text_note",
             "media_type": "image",
             "uploader": uploader,
             "thumbnail": thumbnail,
@@ -1052,7 +1116,26 @@ class YtdlpService:
                         href: a.href,
                         text: (a.innerText || "").trim(),
                     }));
+                    const imageUrls = [];
+                    const addImage = (value) => {
+                        const url = (value || "").trim();
+                        if (!/pbs\\.twimg\\.com\\/media\\//i.test(url)) return;
+                        if (!imageUrls.includes(url)) imageUrls.push(url);
+                    };
+                    const addSrcset = (value) => {
+                        (value || "").split(",").forEach((entry) => {
+                            addImage(entry.trim().split(/\\s+/)[0]);
+                        });
+                    };
+                    addImage(meta("twitter:image"));
+                    addImage(meta("og:image"));
+                    addImage(meta("image", "og:image"));
+                    Array.from(document.querySelectorAll("article img, img")).forEach((img) => {
+                        addImage(img.currentSrc || img.src);
+                        addSrcset(img.getAttribute("srcset") || "");
+                    });
                     const article = links.find((item) => /\\/i\\/article\\/\\d+/.test(item.href));
+                    const articleText = article?.text || "";
                     const author = Array.from(document.querySelectorAll('a[href^="/"], a[href^="https://x.com/"]'))
                         .map((a) => (a.innerText || "").trim())
                         .find((text) => text && !text.includes("\\n") && !text.startsWith("@"));
@@ -1062,8 +1145,10 @@ class YtdlpService:
                         text: document.body.innerText || "",
                         uploader: author || "",
                         thumbnail: meta("twitter:image", "og:image"),
+                        image_urls: imageUrls,
                         article_url: article?.href || "",
-                        type: article ? "article_card" : "status",
+                        article_text: articleText,
+                        type: imageUrls.length ? "image_status" : (article ? "article_card" : "status"),
                     };
                 }"""
             )

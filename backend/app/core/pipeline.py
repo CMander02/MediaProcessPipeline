@@ -77,16 +77,22 @@ def _canonical_image_url(value: Any) -> str:
     path = urllib.parse.unquote(parsed.path)
     if "@" in path:
         path = path.split("@", 1)[0]
-    return urllib.parse.urlunparse(("https", parsed.netloc.lower(), path, "", "", ""))
+    host = parsed.netloc.lower()
+    if (host == "pbs.twimg.com" or host.endswith(".pbs.twimg.com")) and "/media/" in path:
+        prefix, filename = path.rsplit("/", 1)
+        filename = filename.split(":", 1)[0]
+        stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+        path = f"{prefix}/{stem}"
+    return urllib.parse.urlunparse(("https", host, path, "", "", ""))
 
 
 def _localize_note_markdown_image_refs(text: str, metadata: MediaMetadata, image_paths: list[Path]) -> str:
     extra = metadata.extra if isinstance(metadata.extra, dict) else {}
-    if metadata.platform != "bilibili_opus" or extra.get("bilibili_type") != "article":
-        return text
     image_urls = extra.get("image_urls")
     image_candidates = extra.get("image_url_candidates")
-    if not isinstance(image_urls, list) or not image_paths:
+    if not isinstance(image_urls, list) and not isinstance(image_candidates, list):
+        return text
+    if not image_paths:
         return text
 
     mapping: dict[str, str] = {}
@@ -94,7 +100,7 @@ def _localize_note_markdown_image_refs(text: str, metadata: MediaMetadata, image
         idx = int(path.stem) if path.stem.isdigit() else fallback_idx
         local_path = f"images/{path.name}"
         urls: list[Any] = []
-        if 0 <= idx < len(image_urls):
+        if isinstance(image_urls, list) and 0 <= idx < len(image_urls):
             urls.append(image_urls[idx])
         if isinstance(image_candidates, list) and 0 <= idx < len(image_candidates):
             group = image_candidates[idx]
@@ -146,6 +152,21 @@ def _platform_prefer_subtitles(source_type: str) -> bool:
     if isinstance(platform_cfg, dict) and "prefer_subtitle" in platform_cfg:
         return bool(platform_cfg["prefer_subtitle"])
     return bool(rt.prefer_platform_subtitles)
+
+
+_DOWNLOAD_RESOLVES_TITLE_ROUTES = {
+    "xiaohongshu",
+    "zhihu",
+    "bilibili_opus",
+    "xiaoyuzhou",
+    "apple_podcast",
+    "webpage",
+    "twitter",
+}
+
+
+def _download_resolves_url_title(route_type: str) -> bool:
+    return route_type in _DOWNLOAD_RESOLVES_TITLE_ROUTES
 
 
 _WIN_RESERVED_FILENAME_RE = re.compile(
@@ -247,11 +268,11 @@ def write_metadata_json(
 
 def _sync_task_from_metadata(task: "Task", metadata: "MediaMetadata") -> None:
     """Copy denormalized metadata fields onto the task object for DB + SSE exposure."""
-    if metadata.platform and task.platform is None:
+    if metadata.platform:
         task.platform = metadata.platform
-    if metadata.uploader_id and task.uploader_id is None:
+    if metadata.uploader_id:
         task.uploader_id = metadata.uploader_id
-    if metadata.content_subtype and task.content_subtype is None:
+    if metadata.content_subtype:
         task.content_subtype = metadata.content_subtype
 
 
@@ -761,7 +782,13 @@ async def _set_task_flow(
     task.flow = snapshot
     task.platform = source_flow.platform
     task.content_subtype = source_flow.content_subtype
-    get_task_store().update_status(task.id, task.status, flow=task.flow)
+    get_task_store().update_status(
+        task.id,
+        task.status,
+        flow=task.flow,
+        platform=task.platform,
+        content_subtype=task.content_subtype,
+    )
 
     if previous.get("id") != source_flow.flow_id:
         await get_event_bus().publish(TaskEvent(task.id, "flow_selected", {
@@ -1407,6 +1434,8 @@ def _note_image_downloader(metadata: MediaMetadata):
         from app.services.ingestion.platform.zhihu.api import download_images
     elif metadata.platform in {"bilibili", "bilibili_opus"}:
         from app.services.ingestion.platform.bilibili.note import download_images
+    elif metadata.platform == "twitter":
+        from app.services.ingestion.platform.twitter.api import download_images
     else:
         from app.services.ingestion.platform.xiaohongshu.api import download_images
     return download_images
@@ -2441,7 +2470,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(source, download=False)
                         title = info.get("title", "unknown") if info else "unknown"
-            elif route_type in ("xiaohongshu", "zhihu", "bilibili_opus", "xiaoyuzhou", "apple_podcast", "webpage"):
+            elif _download_resolves_url_title(route_type):
                 # Title will be resolved during the actual download step; use task id as placeholder.
                 title = None
             else:
@@ -2453,7 +2482,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             if not task_dir:
                 task_dir = create_task_dir(task.id, title or str(task.id))
 
-            if use_platform_subtitles and not force_asr and route_type not in ("xiaohongshu", "zhihu", "bilibili_opus", "xiaoyuzhou", "apple_podcast", "webpage"):
+            if use_platform_subtitles and not force_asr and not _download_resolves_url_title(route_type):
                 await _update_flow_step(task, "subtitle_probe", message="探测平台字幕")
                 # Probe: fetch metadata + subtitle (lightweight, no video download)
                 try:
@@ -2729,6 +2758,14 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
     # Note GPU-worker re-entry: DOWNLOAD is done, route directly to note branch.
     if metadata.content_subtype in {"image_note", "text_note"} and not _download_worker_call:
+        source_flow = await _update_flow_from_metadata(
+            task,
+            source_flow,
+            metadata,
+            force_asr=force_asr,
+            current_step="download",
+        )
+        _sync_task_from_metadata(task, metadata)
         ingest_info = (task.result or {}).get("_image_ingest_info") or {"extra": metadata.extra or {}}
         await _process_image_note(task, metadata, task_dir, ingest_info)
         return
@@ -3321,6 +3358,9 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
             completed_at=task.completed_at,
             error=None,
             flow=task.flow,
+            platform=task.platform,
+            uploader_id=task.uploader_id,
+            content_subtype=task.content_subtype,
         )
         await bus.publish(TaskEvent(task_id, "completed", {
             "output_dir": task.result.get("output_dir") if task.result else None,

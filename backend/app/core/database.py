@@ -257,7 +257,7 @@ class TaskStore:
         vals: list[Any] = [status, datetime.now().isoformat()]
 
         for key, value in kwargs.items():
-            if key in ("progress", "message", "error", "current_step"):
+            if key in ("progress", "message", "error", "current_step", "uploader_id", "platform", "content_subtype"):
                 sets.append(f"{key} = ?")
                 vals.append(value)
             elif key == "result":
