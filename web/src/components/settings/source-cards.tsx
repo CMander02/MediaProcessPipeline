@@ -130,7 +130,7 @@ export function YoutubeCard({ settings, updateSetting, saving, saved }: YoutubeC
           onSave={updateSetting}
           saving={saving}
           saved={saved}
-          placeholder="http://127.0.0.1:7897"
+          placeholder="留空则使用默认网络"
         />
 
         <SettingRow

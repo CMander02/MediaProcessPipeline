@@ -286,7 +286,7 @@ export function SettingsPanel() {
                     onSave={updateSetting}
                     saving={saving}
                     saved={saved}
-                    placeholder="http://127.0.0.1:7897"
+                    placeholder="留空则直连"
                   />
                 </CardContent>
               </Card>

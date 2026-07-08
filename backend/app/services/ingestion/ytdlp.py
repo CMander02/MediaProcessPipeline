@@ -488,8 +488,8 @@ def is_youtube_network_error(error: BaseException | str, url: str | None = None)
 def _youtube_network_error(url: str, error: BaseException) -> YoutubeNetworkError:
     return YoutubeNetworkError(
         "YouTube is unreachable or rate-limited after limited yt-dlp retries. "
-        "Check Settings > YouTube > Proxy and cookies/browser auth, or set youtube_proxy "
-        "to your local proxy (for example http://127.0.0.1:7897). "
+        "Check Settings > YouTube > Proxy and cookies/browser auth, or configure youtube_proxy "
+        "for the server network environment. "
         f"Last error: {error}"
     )
 
