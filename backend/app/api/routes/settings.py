@@ -41,7 +41,7 @@ _SECRET_FIELDS = {
     "jina_reader_api_key",
 }
 
-_MASK_PATTERN = re.compile(r"^\*{3,}\.{3}.{0,4}$")  # matches "***...xxxx"
+_MASK_PATTERN = re.compile(r"^\*{3,}(?:\.{3}.{0,4})?$")  # matches "***" and legacy "***...xxxx"
 
 
 def _normalize_siliconflow_api_base(api_base: str) -> str:
@@ -187,7 +187,7 @@ def _mask_value(value: str) -> str:
         return ""
     if len(value) <= 4:
         return "***"
-    return f"***...{value[-4:]}"
+    return "********"
 
 
 def _is_masked(value: str) -> bool:
