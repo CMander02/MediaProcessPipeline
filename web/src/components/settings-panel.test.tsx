@@ -118,6 +118,8 @@ const { mockSettings } = vi.hoisted(() => ({
 }))
 
 vi.mock("@/lib/api", () => ({
+  getApiToken: vi.fn(() => ""),
+  persistApiToken: vi.fn(),
   api: {
     settings: {
       get: vi.fn().mockResolvedValue(mockSettings),

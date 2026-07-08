@@ -133,14 +133,14 @@ export interface PipelineStep {
 
 // ---- Fetch helpers ----
 
-const API_TOKEN_STORAGE_KEY = "mpp_api_token"
+export const API_TOKEN_STORAGE_KEY = "mpp_api_token"
 
-function getApiToken(): string {
+export function getApiToken(): string {
   if (typeof localStorage === "undefined") return ""
   return localStorage.getItem(API_TOKEN_STORAGE_KEY) ?? ""
 }
 
-function persistApiToken(token: string) {
+export function persistApiToken(token: string) {
   if (typeof localStorage === "undefined" || typeof document === "undefined") return
   const trimmed = token.trim()
   if (trimmed) {

@@ -1,11 +1,13 @@
 import { useEffect, useState, useCallback } from "react"
 import React from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
-import { api, type Settings } from "@/lib/api"
+import { api, getApiToken, persistApiToken, type Settings } from "@/lib/api"
 import { usePreferences } from "@/hooks/use-preferences"
 import { SettingRow } from "@/components/settings/setting-controls"
 import { LocalModelSettings, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
@@ -36,6 +38,9 @@ export function SettingsPanel() {
   const [saving, setSaving] = useState<Record<string, boolean>>({})
   const [saved, setSaved] = useState<Record<string, boolean>>({})
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [apiTokenInput, setApiTokenInput] = useState(() => getApiToken())
+  const [authenticating, setAuthenticating] = useState(false)
   const [darkMode, setDarkMode] = useState(
     () => document.documentElement.classList.contains("dark"),
   )
@@ -47,12 +52,32 @@ export function SettingsPanel() {
   // Bilibili auth status (needed for sidebar dot indicator)
   const [biliLoggedIn, setBiliLoggedIn] = useState<boolean | null>(null)
 
+  const loadSettings = useCallback(async () => {
+    try {
+      const loaded = await api.settings.get()
+      setSettings(loaded)
+      setLoadError(null)
+      return true
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : String(error))
+      return false
+    }
+  }, [])
+
   useEffect(() => {
-    api.settings.get().then(setSettings).catch(() => {})
+    void loadSettings()
     api.bilibili.status()
       .then((s) => setBiliLoggedIn(s.logged_in))
       .catch(() => setBiliLoggedIn(false))
-  }, [])
+  }, [loadSettings])
+
+  const unlockSettings = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setAuthenticating(true)
+    persistApiToken(apiTokenInput)
+    await loadSettings()
+    setAuthenticating(false)
+  }
 
   const updateSettings = useCallback(
     async (updates: Record<string, unknown>) => {
@@ -88,7 +113,38 @@ export function SettingsPanel() {
   }
 
   if (!settings) {
-    return <p className="text-sm text-muted-foreground">加载中...</p>
+    return (
+      <div className="flex min-h-[320px] items-center justify-center px-4">
+        <Card className="w-full max-w-md">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">API Token</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form className="space-y-3" onSubmit={unlockSettings}>
+              {loadError && (
+                <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {loadError}
+                </p>
+              )}
+              <div className="space-y-2">
+                <Label htmlFor="settings-api-token">访问令牌</Label>
+                <Input
+                  id="settings-api-token"
+                  type="password"
+                  value={apiTokenInput}
+                  onChange={(event) => setApiTokenInput(event.target.value)}
+                  autoComplete="current-password"
+                  placeholder="输入服务器 API Token"
+                />
+              </div>
+              <Button type="submit" className="w-full" disabled={authenticating}>
+                {authenticating ? "验证中..." : "进入设置"}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
+    )
   }
 
   const detectLocalUvr = async () => {
