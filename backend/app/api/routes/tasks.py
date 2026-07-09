@@ -60,8 +60,9 @@ def _validate_public_http_url(url: str) -> None:
 async def create_task(task_create: TaskCreate):
     """Create a new processing task and submit it to the queue."""
     from pathlib import Path
+    from app.services.ingestion.ytdlp import normalize_bilibili_source_url
 
-    source = _clean_source_path(task_create.source)
+    source = normalize_bilibili_source_url(_clean_source_path(task_create.source))
     task = Task(
         task_type=task_create.task_type,
         source=source,

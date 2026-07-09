@@ -187,6 +187,7 @@ def resolve_source_flow(
 
     from app.services.ingestion import ytdlp
 
+    source = ytdlp.normalize_bilibili_source_url(source)
     platform = "generic"
     content_subtype = "video"
     ingestor = "ytdlp"

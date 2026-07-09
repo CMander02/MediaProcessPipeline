@@ -8,23 +8,29 @@ interface MediaPlayerProps {
   bindMedia: RefCallback<HTMLMediaElement>
   /** SRT content for subtitle track */
   subtitleSrt?: string
+  loop?: boolean
+  onLoopChange?: (loop: boolean) => void
 }
 
-export function MediaPlayer({ src, type, bindMedia, subtitleSrt }: MediaPlayerProps) {
+export function MediaPlayer({ src, type, bindMedia, subtitleSrt, loop = false, onLoopChange }: MediaPlayerProps) {
   if (type === "audio") {
-    return <AudioPlayer src={src} bindMedia={bindMedia} />
+    return <AudioPlayer src={src} bindMedia={bindMedia} loop={loop} />
   }
-  return <VideoPlayer src={src} bindMedia={bindMedia} subtitleSrt={subtitleSrt} />
+  return <VideoPlayer src={src} bindMedia={bindMedia} subtitleSrt={subtitleSrt} loop={loop} onLoopChange={onLoopChange} />
 }
 
 function VideoPlayer({
   src,
   bindMedia,
   subtitleSrt,
+  loop,
+  onLoopChange,
 }: {
   src: string
   bindMedia: RefCallback<HTMLMediaElement>
   subtitleSrt?: string
+  loop: boolean
+  onLoopChange?: (loop: boolean) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const artRef = useRef<Artplayer | null>(null)
@@ -53,7 +59,7 @@ function VideoPlayer({
       volume: 1,
       autoSize: false,
       autoMini: false,
-      loop: false,
+      loop,
       mutex: true,
       backdrop: true,
       fullscreen: true,
@@ -68,13 +74,25 @@ function VideoPlayer({
       moreVideoAttr: {
         crossOrigin: "anonymous",
         preload: "metadata",
+        loop,
       },
-      settings: [],
+      settings: [{
+        html: "循环",
+        tooltip: loop ? "开" : "关",
+        switch: loop,
+        onSwitch(item: any) {
+          const nextState = !item.switch
+          if (art.video) art.video.loop = nextState
+          onLoopChange?.(nextState)
+          item.tooltip = nextState ? "开" : "关"
+          return nextState
+        },
+      }],
     }
 
     if (vttUrl) {
       options.subtitle = { url: vttUrl, type: "vtt", style: { "font-size": "18px" }, encoding: "utf-8" }
-      options.settings = [{
+      options.settings = [...options.settings, {
         html: "字幕",
         tooltip: "开",
         switch: true,
@@ -95,6 +113,7 @@ function VideoPlayer({
     art.on("ready", () => {
       const video = art.video
       if (video) {
+        video.loop = loop
         const ret = bindMedia(video)
         if (typeof ret === "function") {
           cleanupRef.current = ret
@@ -113,7 +132,7 @@ function VideoPlayer({
         artRef.current = null
       }
     }
-  }, [src, vttUrl, bindMedia])
+  }, [src, vttUrl, bindMedia, loop, onLoopChange])
 
   return (
     <div className="w-full rounded-lg overflow-hidden bg-black">
@@ -122,7 +141,7 @@ function VideoPlayer({
   )
 }
 
-function AudioPlayer({ src, bindMedia }: { src: string; bindMedia: RefCallback<HTMLMediaElement> }) {
+function AudioPlayer({ src, bindMedia, loop }: { src: string; bindMedia: RefCallback<HTMLMediaElement>; loop: boolean }) {
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
   useEffect(() => {
@@ -153,6 +172,7 @@ function AudioPlayer({ src, bindMedia }: { src: string; bindMedia: RefCallback<H
         src={src}
         className="w-full"
         preload="metadata"
+        loop={loop}
         controls
       />
     </div>

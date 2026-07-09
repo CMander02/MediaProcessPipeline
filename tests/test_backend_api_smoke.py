@@ -20,6 +20,7 @@ from app.core import database, pipeline as pipeline_core, queue as queue_module,
 from app.core.events import EventBus  # noqa: E402
 from app.core.settings import RuntimeSettings  # noqa: E402
 from app.models import Task, TaskStatus, TaskType  # noqa: E402
+from app.services.ingestion import ytdlp  # noqa: E402
 
 
 class FakeQueue:
@@ -144,6 +145,30 @@ def test_create_task_normalizes_schemeless_bilibili_opus(tmp_path, monkeypatch):
     metadata_path = Path(data["result"]["output_dir"]) / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["source_url"] == data["source"]
+    assert metadata["platform"] == "bilibili_opus"
+
+
+def test_create_task_resolves_bilibili_short_opus(tmp_path, monkeypatch):
+    resolved_url = "https://m.bilibili.com/opus/1222911198638374913?share_source=COPY"
+    monkeypatch.setattr(ytdlp, "_resolve_bilibili_short_url", lambda url: resolved_url)
+    client, queue = _client(tmp_path, monkeypatch)
+
+    task = client.post(
+        "/api/tasks",
+        json={"task_type": "pipeline", "source": "https://b23.tv/fUzR8hQ"},
+    )
+
+    assert task.status_code == 200
+    data = task.json()
+    assert data["source"] == resolved_url
+    assert data["platform"] == "bilibili_opus"
+    assert data["content_subtype"] == "image_note"
+    assert data["flow"]["id"] == "url_image_note"
+    assert queue.submitted == [UUID(data["id"])]
+
+    metadata_path = Path(data["result"]["output_dir"]) / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["source_url"] == resolved_url
     assert metadata["platform"] == "bilibili_opus"
 
 
@@ -285,6 +310,82 @@ def test_archive_thumbnail_caches_low_res_first_image(tmp_path, monkeypatch):
     assert response.headers["content-type"].startswith("image/jpeg")
     assert (archive_dir / "thumbnail.jpg").exists()
     assert response.content == (archive_dir / "thumbnail.jpg").read_bytes()
+
+
+def test_archives_lite_omits_heavy_metadata_and_detail_returns_full(tmp_path, monkeypatch):
+    client, _queue = _client(tmp_path, monkeypatch)
+    archive_dir = tmp_path / "bili-opus"
+    archive_dir.mkdir()
+    (archive_dir / "summary.md").write_text("# summary\n", encoding="utf-8")
+    (archive_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "title": "Bili opus",
+                "source_url": "https://www.bilibili.com/opus/123",
+                "description": "正文" * 200,
+                "platform": "bilibili_opus",
+                "content_subtype": "image_note",
+                "extra": {
+                    "platform": "bilibili_opus",
+                    "opus_id": "123",
+                    "image_urls": ["https://i0.hdslb.com/a.jpg"],
+                    "bilibili_metadata": {"raw": "large"},
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (archive_dir / "analysis.json").write_text(
+        json.dumps({"keywords": ["heavy"], "proper_nouns": ["large"]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    lite_response = client.get("/api/pipeline/archives", params={"lite": "true"})
+
+    assert lite_response.status_code == 200
+    lite = lite_response.json()["archives"][0]
+    assert lite["metadata"]["title"] == "Bili opus"
+    assert "description" not in lite["metadata"]
+    assert lite["analysis"] == {}
+    assert lite["metadata"]["extra"]["opus_id"] == "123"
+    assert "image_urls" not in lite["metadata"]["extra"]
+    assert "bilibili_metadata" not in lite["metadata"]["extra"]
+
+    detail_response = client.get("/api/pipeline/archives/detail", params={"path": str(archive_dir)})
+
+    assert detail_response.status_code == 200
+    full = detail_response.json()["archive"]
+    assert full["metadata"]["description"].startswith("正文")
+    assert full["metadata"]["extra"]["image_urls"] == ["https://i0.hdslb.com/a.jpg"]
+    assert full["analysis"]["keywords"] == ["heavy"]
+
+
+def test_bilibili_opus_note_cover_thumbnail_is_cached_in_metadata(tmp_path):
+    Image = pytest.importorskip("PIL.Image")
+    from app.core.pipeline import _cache_note_cover_thumbnail
+    from app.models import MediaMetadata
+
+    archive_dir = tmp_path / "bili-opus-thumb"
+    image_dir = archive_dir / "images"
+    image_dir.mkdir(parents=True)
+    first_image = image_dir / "00.png"
+    Image.new("RGB", (1800, 1200), color=(12, 80, 180)).save(first_image)
+    metadata = MediaMetadata(
+        title="Bili opus",
+        platform="bilibili_opus",
+        content_subtype="image_note",
+    )
+
+    thumb = _cache_note_cover_thumbnail(metadata, [first_image], archive_dir)
+
+    assert thumb == archive_dir / "thumbnail.jpg"
+    assert thumb.exists()
+    assert metadata.extra["thumbnail"] == str(thumb)
+    assert metadata.extra["thumbnail_source"] == str(first_image)
+    with Image.open(thumb) as thumbnail:
+        assert thumbnail.size[0] <= 480
+        assert thumbnail.size[1] <= 480
 
 
 def test_main_app_lifespan_auth_and_task_submission_smoke(tmp_path, monkeypatch):

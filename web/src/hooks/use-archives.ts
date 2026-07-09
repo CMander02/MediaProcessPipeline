@@ -27,7 +27,7 @@ export interface ArchiveItem {
   }
 }
 
-export function useArchives() {
+export function useArchives(lite = true) {
   const [archives, setArchives] = useState<ArchiveItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -37,7 +37,7 @@ export function useArchives() {
     const showInitialLoader = !silent && !loadedRef.current
     try {
       if (showInitialLoader) setLoading(true)
-      const data = await api.archives.list()
+      const data = await api.archives.list({ lite })
       setArchives((data.archives ?? []) as ArchiveItem[])
       setError(null)
     } catch (e) {
@@ -46,7 +46,7 @@ export function useArchives() {
       loadedRef.current = true
       if (showInitialLoader) setLoading(false)
     }
-  }, [])
+  }, [lite])
 
   const removeArchive = useCallback((path: string) => {
     setArchives((current) => current.filter((archive) => archive.path !== path))

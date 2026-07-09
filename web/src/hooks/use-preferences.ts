@@ -8,6 +8,8 @@ interface Preferences {
   startupPage: "files" | "last"
   /** Last opened archive path */
   lastArchivePath: string | null
+  /** Loop video/audio playback in the result detail page */
+  videoLoop: boolean
 }
 
 const STORAGE_KEY = "mpp-preferences"
@@ -21,7 +23,7 @@ function load(): Preferences {
 }
 
 function defaults(): Preferences {
-  return { startupPage: "files", lastArchivePath: null }
+  return { startupPage: "files", lastArchivePath: null, videoLoop: false }
 }
 
 let current = load()

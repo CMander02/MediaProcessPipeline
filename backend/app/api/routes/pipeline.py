@@ -6,7 +6,6 @@ import logging
 import re
 import shutil
 import subprocess
-import io
 import urllib.request
 from pathlib import Path
 
@@ -27,6 +26,12 @@ from app.core.settings import get_runtime_settings
 from app.core.pipeline import pipeline_steps_schema
 from app.core.source_normalization import normalize_source_input
 from app.core.network import urllib_urlopen
+from app.services.archiving.thumbnails import (
+    create_image_thumbnail,
+    create_image_thumbnail_from_bytes,
+    first_image_note_image,
+    image_media_type,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,20 +87,8 @@ _ALLOWED_MEDIA_EXTS = {
     ".mp3", ".wav", ".aac", ".flac", ".ogg", ".m4a", ".wma",
 }
 
-_THUMBNAIL_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
-_THUMBNAIL_MEDIA_TYPES = {
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".png": "image/png",
-    ".webp": "image/webp",
-    ".gif": "image/gif",
-    ".bmp": "image/bmp",
-}
 _THUMBNAIL_MAX_BYTES = 12 * 1024 * 1024
-
-
-def _image_media_type(path: Path) -> str:
-    return _THUMBNAIL_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
+_RAW_IMAGE_FALLBACK_MAX_BYTES = 1024 * 1024
 
 
 def _read_archive_metadata(archive_dir: Path) -> dict[str, Any]:
@@ -128,34 +121,6 @@ def _first_thumbnail_url(meta: dict[str, Any]) -> str | None:
     return None
 
 
-def _cache_image_thumbnail_from_bytes(data: bytes, archive_dir: Path) -> Path | None:
-    try:
-        from PIL import Image, ImageOps
-    except ImportError:
-        return None
-
-    thumb_path = archive_dir / "thumbnail.jpg"
-    try:
-        with Image.open(io.BytesIO(data)) as image:
-            image = ImageOps.exif_transpose(image)
-            if image.mode not in {"RGB", "L"}:
-                image = image.convert("RGB")
-            image.thumbnail((480, 480), Image.Resampling.LANCZOS)
-            image.save(thumb_path, "JPEG", quality=82, optimize=True)
-        return thumb_path if thumb_path.exists() else None
-    except Exception as e:
-        logger.debug("image thumbnail conversion failed: %s", e)
-        return None
-
-
-def _cache_image_thumbnail(source: Path, archive_dir: Path) -> Path | None:
-    try:
-        return _cache_image_thumbnail_from_bytes(source.read_bytes(), archive_dir)
-    except Exception as e:
-        logger.debug("image thumbnail read failed: %s", e)
-        return None
-
-
 def _cache_remote_thumbnail(url: str, archive_dir: Path) -> Path | None:
     try:
         _validate_url(url)
@@ -171,20 +136,17 @@ def _cache_remote_thumbnail(url: str, archive_dir: Path) -> Path | None:
             data = response.read(_THUMBNAIL_MAX_BYTES + 1)
         if len(data) > _THUMBNAIL_MAX_BYTES:
             raise RuntimeError("thumbnail response too large")
-        return _cache_image_thumbnail_from_bytes(data, archive_dir)
+        return create_image_thumbnail_from_bytes(data, archive_dir)
     except Exception as e:
         logger.debug("remote thumbnail fetch failed: %s", e)
         return None
 
 
-def _first_image_note_image(archive_dir: Path) -> Path | None:
-    image_dir = archive_dir / "images"
-    if not image_dir.is_dir():
-        return None
-    for image in sorted(image_dir.iterdir(), key=lambda item: item.name.lower()):
-        if image.is_file() and image.suffix.lower() in _THUMBNAIL_IMAGE_EXTS:
-            return image
-    return None
+def _can_return_raw_image(path: Path) -> bool:
+    try:
+        return path.stat().st_size <= _RAW_IMAGE_FALLBACK_MAX_BYTES
+    except OSError:
+        return False
 
 
 @router.get("/steps")
@@ -387,10 +349,32 @@ async def mindmap(req: AnalyzeRequest):
 
 
 @router.get("/archives")
-async def archives():
+async def archives(lite: bool = False):
     """List archived content (all, sorted by mtime desc)."""
     from app.services.archiving import list_archives
-    return {"archives": await list_archives()}
+    return {"archives": await list_archives(lite=lite)}
+
+
+@router.get("/archives/detail")
+async def archive_detail(path: str):
+    """Return one archive with full metadata and analysis."""
+    archive_dir = Path(path)
+    if not archive_dir.is_dir():
+        raise HTTPException(404, "Archive directory not found")
+
+    rt = get_runtime_settings()
+    data_root = Path(rt.data_root).resolve()
+    try:
+        archive_dir.resolve().relative_to(data_root)
+    except ValueError:
+        raise HTTPException(403, "Cannot access paths outside data directory")
+
+    from app.services.archiving import get_archive
+
+    archive = await get_archive(str(archive_dir), lite=False)
+    if not archive:
+        raise HTTPException(404, "Archive not found")
+    return {"archive": archive}
 
 
 class ArchiveDeleteRequest(BaseModel):
@@ -542,17 +526,20 @@ async def archive_thumbnail(path: str):
     for candidate in ["cover.jpg", "cover.png", "cover.webp"]:
         cover = archive_dir / candidate
         if cover.exists():
-            thumb = _cache_image_thumbnail(cover, archive_dir)
+            thumb = create_image_thumbnail(cover, archive_dir)
             if thumb:
                 return FileResponse(thumb, media_type="image/jpeg")
-            return FileResponse(cover, media_type=_image_media_type(cover))
+            if _can_return_raw_image(cover):
+                return FileResponse(cover, media_type=image_media_type(cover))
+            break
 
-    first_image = _first_image_note_image(archive_dir)
+    first_image = first_image_note_image(archive_dir)
     if first_image:
-        thumb = _cache_image_thumbnail(first_image, archive_dir)
+        thumb = create_image_thumbnail(first_image, archive_dir)
         if thumb:
             return FileResponse(thumb, media_type="image/jpeg")
-        return FileResponse(first_image, media_type=_image_media_type(first_image))
+        if _can_return_raw_image(first_image):
+            return FileResponse(first_image, media_type=image_media_type(first_image))
 
     meta = _read_archive_metadata(archive_dir)
     remote_thumb = _first_thumbnail_url(meta)

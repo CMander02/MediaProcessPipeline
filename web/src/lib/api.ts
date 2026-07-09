@@ -316,7 +316,14 @@ export const api = {
   },
 
   archives: {
-    list: () => get<{ archives: unknown[] }>("/api/pipeline/archives"),
+    list: (options: { lite?: boolean } = {}) => {
+      const params = new URLSearchParams()
+      if (options.lite) params.set("lite", "true")
+      const suffix = params.toString() ? `?${params}` : ""
+      return get<{ archives: unknown[] }>(`/api/pipeline/archives${suffix}`)
+    },
+    get: (path: string) =>
+      get<{ archive: unknown }>(`/api/pipeline/archives/detail?path=${encodeURIComponent(path)}`),
     delete: (path: string) =>
       httpDelete<{ message: string; path: string }>("/api/pipeline/archives", { path }),
     rename: (path: string, title: string) =>

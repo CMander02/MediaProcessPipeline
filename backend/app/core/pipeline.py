@@ -1465,6 +1465,27 @@ def _run_note_image_downloader(
     return downloader(ingest_info, task_dir)
 
 
+def _cache_note_cover_thumbnail(metadata: MediaMetadata, image_paths: list[Path], task_dir: Path) -> Path | None:
+    if metadata.content_subtype != "image_note" or not image_paths:
+        return None
+    if metadata.platform not in {"bilibili", "bilibili_opus"}:
+        return None
+    try:
+        from app.services.archiving.thumbnails import create_image_thumbnail
+
+        thumb_path = create_image_thumbnail(image_paths[0], task_dir)
+    except Exception as exc:
+        log_event(logger, logging.DEBUG, "note.thumbnail.failed", platform=metadata.platform, error=exc)
+        return None
+    if not thumb_path:
+        return None
+
+    metadata.extra["thumbnail"] = str(thumb_path)
+    metadata.extra["thumbnail_source"] = str(image_paths[0])
+    metadata.extra["thumbnail_kind"] = "compressed_first_image"
+    return thumb_path
+
+
 async def _download_note_images_for_download_step(
     task: Task,
     metadata: MediaMetadata,
@@ -1534,6 +1555,7 @@ async def _download_note_images_for_download_step(
     extra["image_download_result"] = result
     metadata.extra["downloaded_image_paths"] = extra["downloaded_image_paths"]
     metadata.extra["image_download_result"] = result
+    _cache_note_cover_thumbnail(metadata, image_paths, task_dir)
     if diagnostics:
         metadata.extra["image_download_diagnostics"] = diagnostics
 
@@ -1668,6 +1690,8 @@ async def _process_image_note(
                 )
         elif not image_paths and not image_warning_recorded:
             raise RuntimeError("图文笔记没有可下载的图片候选 URL")
+
+    _cache_note_cover_thumbnail(metadata, image_paths, task_dir)
 
     task.result = dict(task.result or {})
     task.result["output_dir"] = str(task_dir)
@@ -2087,6 +2111,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         YoutubeNetworkError,
         download_subtitles,
         fetch_metadata as fetch_ytdlp_metadata,
+        normalize_bilibili_source_url,
         ytdlp_auth_opts,
         ytdlp_base_opts,
     )
@@ -2099,7 +2124,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     from app.core.queue import get_task_queue
 
     rt = get_runtime_settings()
-    source = _clean_source_path(task.source)
+    source = normalize_bilibili_source_url(_clean_source_path(task.source))
     if source != task.source:
         task.source = source
         get_task_store().save(task)

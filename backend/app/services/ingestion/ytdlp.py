@@ -54,7 +54,30 @@ def _host_matches(value: str, suffixes: tuple[str, ...]) -> bool:
     return False
 
 
+def _ensure_http_url(value: str) -> str:
+    return value if "://" in value else f"https://{value}"
+
+
+def _is_bilibili_short_url(value: str) -> bool:
+    parsed = urlparse(_ensure_http_url(value))
+    host = (parsed.hostname or "").lower()
+    return host == "b23.tv" or host.endswith(".b23.tv")
+
+
+def normalize_bilibili_source_url(url: str) -> str:
+    """Resolve b23.tv short links before selecting a Bilibili ingestor."""
+    for candidate in _candidate_urls(url):
+        if not _is_bilibili_short_url(candidate):
+            continue
+        ensured = _ensure_http_url(candidate)
+        resolved = _resolve_bilibili_short_url(ensured)
+        if resolved and resolved != ensured:
+            return resolved
+    return url
+
+
 def _is_bilibili_article_url(url: str) -> bool:
+    url = normalize_bilibili_source_url(url)
     for candidate in _candidate_urls(url):
         if "://" not in candidate:
             candidate = f"https://{candidate}"
@@ -71,6 +94,7 @@ def _is_bilibili_article_url(url: str) -> bool:
 
 
 def _is_bilibili_image_note_url(url: str) -> bool:
+    url = normalize_bilibili_source_url(url)
     for candidate in _candidate_urls(url):
         if "://" not in candidate:
             candidate = f"https://{candidate}"
@@ -89,6 +113,7 @@ def _is_bilibili_image_note_url(url: str) -> bool:
 
 
 def _is_bilibili_video_url(url: str) -> bool:
+    url = normalize_bilibili_source_url(url)
     if not _extract_http_urls(url):
         return bool(re.fullmatch(rf'(?:{_BILIBILI_BVID_RE}|av\d+)', url.strip(), re.IGNORECASE))
 
@@ -101,8 +126,6 @@ def _is_bilibili_video_url(url: str) -> bool:
         path = parsed.path
         query = parse_qs(parsed.query)
         if re.fullmatch(_BILIBILI_BVID_RE, host_token):
-            return True
-        if host == "b23.tv" or host.endswith(".b23.tv"):
             return True
         if not (host == "bilibili.com" or host.endswith(".bilibili.com")):
             continue
@@ -242,9 +265,12 @@ def _twitter_image_dedupe_key(value: str) -> str:
 
 
 def _is_generic_webpage_url(url: str) -> bool:
+    url = normalize_bilibili_source_url(url)
     if not _extract_http_urls(url) and not url.strip().startswith(("http://", "https://")):
         return False
     if _is_direct_media_url(url):
+        return False
+    if _is_bilibili_article_url(url) or _is_bilibili_image_note_url(url):
         return False
     if _is_bilibili_video_url(url):
         return False
@@ -252,6 +278,7 @@ def _is_generic_webpage_url(url: str) -> bool:
         "youtube.com", "youtu.be", "vimeo.com",
         "x.com", "twitter.com", "tiktok.com", "douyin.com",
         "kuaishou.com", "weibo.com",
+        "bilibili.com", "b23.tv",
     )):
         return False
     return True
@@ -259,6 +286,7 @@ def _is_generic_webpage_url(url: str) -> bool:
 
 def _extract_bilibili_bvid(url: str) -> str | None:
     """Extract or resolve a Bilibili BV id from BV or av/aid URLs."""
+    url = normalize_bilibili_source_url(url)
     value = url.strip()
     if not value:
         return None
@@ -378,6 +406,7 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 def _extract_bilibili_page_number(url: str) -> int:
     """Return the selected Bilibili page number from ?p=, defaulting to 1."""
+    url = normalize_bilibili_source_url(url)
     for candidate in _candidate_urls(url):
         if "://" not in candidate:
             candidate = f"https://{candidate}"
@@ -418,6 +447,7 @@ def _bilibili_canonical_video_url(bvid: str, page_number: int = 1) -> str:
 
 
 def _normalize_bilibili_video_url(url: str) -> str:
+    url = normalize_bilibili_source_url(url)
     bvid = _extract_bilibili_bvid(url)
     if bvid:
         return _bilibili_canonical_video_url(bvid, _extract_bilibili_page_number(url))
@@ -746,6 +776,7 @@ class YtdlpService:
         Uses BBDown for Bilibili URLs (requires login via BBDown.exe login),
         yt-dlp for everything else.
         """
+        url = normalize_bilibili_source_url(url)
         if output_dir is None:
             rt = get_runtime_settings()
             output_dir = Path(rt.data_root).resolve()
@@ -1613,6 +1644,7 @@ class YtdlpService:
         Returns the same info dict format as download() so extract_metadata() works.
         Bilibili: uses public API. YouTube/other: uses yt-dlp --skip-download.
         """
+        url = normalize_bilibili_source_url(url)
         if _is_bilibili_article_url(url):
             from app.services.ingestion.platform.webpage.api import (
                 fetch_metadata as fetch_webpage_metadata,
@@ -1910,6 +1942,7 @@ class YtdlpService:
                 "subtitle_format": "json3"|"srt"|None,
             }
         """
+        url = normalize_bilibili_source_url(url)
         import yt_dlp
 
         preferred_langs = _parse_lang_priority(langs)

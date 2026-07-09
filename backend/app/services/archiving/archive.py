@@ -126,7 +126,7 @@ class ArchiveService:
         logger.info(f"Archived to: {output_dir}")
         return {"output_dir": str(output_dir), "files": files}
 
-    def list_archives(self, limit: int = 0) -> list[dict[str, Any]]:
+    def list_archives(self, limit: int = 0, *, lite: bool = False) -> list[dict[str, Any]]:
         """List archives from flat data directory structure."""
         rt = get_runtime_settings()
         data_root = Path(rt.data_root).resolve()
@@ -134,11 +134,36 @@ class ArchiveService:
         if not data_root.exists():
             return []
 
-        # Build output_dir → task_id map from DB in one query
+        dir_to_task = self._archive_task_map()
+
+        archives = []
+        for task_dir in sorted(data_root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            item = self._archive_item(task_dir, dir_to_task, lite=lite)
+            if not item:
+                continue
+            archives.append(item)
+            if limit and len(archives) >= limit:
+                break
+
+        return archives
+
+    def get_archive(self, path: str | Path, *, lite: bool = False) -> dict[str, Any] | None:
+        rt = get_runtime_settings()
+        data_root = Path(rt.data_root).resolve()
+        task_dir = Path(path)
+        if not task_dir.is_dir():
+            return None
+        try:
+            task_dir.resolve().relative_to(data_root)
+        except ValueError:
+            return None
+        return self._archive_item(task_dir, self._archive_task_map(), lite=lite)
+
+    def _archive_task_map(self) -> dict[str, str]:
         dir_to_task: dict[str, str] = {}
         try:
             from app.core.database import get_task_store
-            import json as _json
+
             store = get_task_store()
             for task in store.list(limit=10000):
                 result = task.result or {}
@@ -147,115 +172,148 @@ class ArchiveService:
                     dir_to_task[str(Path(out_dir).resolve())] = str(task.id)
         except Exception:
             pass
+        return dir_to_task
 
-        archives = []
-        # Iterate through data/{task_id}/ directories
-        for task_dir in sorted(data_root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
-            if not task_dir.is_dir():
+    def _archive_item(
+        self,
+        task_dir: Path,
+        dir_to_task: dict[str, str],
+        *,
+        lite: bool = False,
+    ) -> dict[str, Any] | None:
+        if not task_dir.is_dir():
+            return None
+        if task_dir.name.startswith('.') or task_dir.name in (
+            'settings.json', 'history.json', 'uploads', 'manual_task',
+        ):
+            return None
+
+        has_any_output = (
+            (task_dir / "metadata.json").exists()
+            or (task_dir / "transcript.srt").exists()
+            or (task_dir / "summary.md").exists()
+            or (task_dir / "source.md").exists()
+        )
+        if not has_any_output:
+            return None
+
+        metadata = self._read_json(task_dir / "metadata.json")
+        analysis = {} if lite else self._read_json(task_dir / "analysis.json")
+
+        video_exts = {'.mp4', '.mkv', '.avi', '.webm', '.mov'}
+        audio_exts = {'.mp3', '.wav', '.flac', '.m4a', '.ogg'}
+        image_exts = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.avif'}
+        has_video = False
+        has_audio = False
+        has_image = False
+        media_file = None
+        media_is_external = False
+
+        for f in task_dir.iterdir():
+            if not f.is_file():
                 continue
-            # Skip system/utility directories and non-archive dirs
-            if task_dir.name.startswith('.') or task_dir.name in (
-                'settings.json', 'history.json', 'uploads', 'manual_task',
+            ext = f.suffix.lower()
+            if ext in video_exts:
+                has_video = True
+                media_file = str(f)
+                break
+            if ext in audio_exts:
+                has_audio = True
+                media_file = str(f)
+            elif ext in image_exts and f.stem.lower() not in ("cover", "thumbnail"):
+                has_image = True
+        if not has_image:
+            images_dir = task_dir / "images"
+            if images_dir.exists() and any(
+                item.is_file() and item.suffix.lower() in image_exts
+                for item in images_dir.iterdir()
             ):
-                continue
+                has_image = True
 
-            # Skip directories that don't look like archives (no metadata, no transcript, no summary)
-            has_any_output = (
-                (task_dir / "metadata.json").exists()
-                or (task_dir / "transcript.srt").exists()
-                or (task_dir / "summary.md").exists()
-                or (task_dir / "source.md").exists()
-            )
-            if not has_any_output:
-                continue
+        meta_status = metadata.get("status", "completed")
+        processing = meta_status in ("queued", "processing", "paused")
+        task_id = (
+            dir_to_task.get(str(task_dir.resolve()))
+            or metadata.get("task_id")
+            or (task_dir.name.split("_")[0] if "_" in task_dir.name else None)
+        )
+        duration_seconds = metadata.get("duration_seconds") or metadata.get("duration")
+        if not duration_seconds:
+            duration_seconds = self._duration_from_srt(task_dir)
 
-            # Try to load metadata
-            metadata = {}
-            meta_path = task_dir / "metadata.json"
-            if meta_path.exists():
-                try:
-                    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
+        return {
+            "path": str(task_dir),
+            "date": datetime.fromtimestamp(task_dir.stat().st_mtime).strftime("%Y-%m-%d"),
+            "title": metadata.get("title", task_dir.name),
+            "has_transcript": (task_dir / "transcript_polished.srt").exists() or (task_dir / "transcript.srt").exists(),
+            "has_summary": (task_dir / "summary.md").exists(),
+            "has_mindmap": (task_dir / "mindmap.md").exists(),
+            "has_video": has_video,
+            "has_audio": has_audio,
+            "has_image": has_image,
+            "media_file": media_file,
+            "media_is_external": media_is_external,
+            "processing": processing,
+            "task_id": task_id,
+            "metadata": self._lite_metadata(metadata) if lite else metadata,
+            "analysis": analysis,
+            "duration_seconds": duration_seconds,
+        }
 
-            # Try to load analysis
-            analysis = {}
-            analysis_path = task_dir / "analysis.json"
-            if analysis_path.exists():
-                try:
-                    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
+    @staticmethod
+    def _read_json(path: Path) -> dict[str, Any]:
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
 
-            # Check for media files in archive directory
-            video_exts = {'.mp4', '.mkv', '.avi', '.webm', '.mov'}
-            audio_exts = {'.mp3', '.wav', '.flac', '.m4a', '.ogg'}
-            image_exts = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'}
-            has_video = False
-            has_audio = False
-            has_image = False
-            media_file = None
-            media_is_external = False
-
-            for f in task_dir.iterdir():
-                if not f.is_file():
-                    continue
-                ext = f.suffix.lower()
-                if ext in video_exts:
-                    has_video = True
-                    media_file = str(f)
-                    break
-                elif ext in audio_exts:
-                    has_audio = True
-                    media_file = str(f)
-                elif ext in image_exts and f.stem.lower() not in ("cover", "thumbnail"):
-                    # Real image-note content; covers/thumbnails are just artwork
-                    # for audio/video archives and shouldn't change the type.
-                    has_image = True
-            if not has_image:
-                images_dir = task_dir / "images"
-                if images_dir.exists() and any(
-                    item.is_file() and item.suffix.lower() in image_exts
-                    for item in images_dir.iterdir()
-                ):
-                    has_image = True
-
-            # Determine processing status
-            meta_status = metadata.get("status", "completed")  # backward compat
-            processing = meta_status in ("queued", "processing", "paused")
-
-            # Resolve task_id: prefer DB lookup, fallback to metadata.json, then dir name heuristic
-            task_id = (
-                dir_to_task.get(str(task_dir.resolve()))
-                or metadata.get("task_id")
-                or (task_dir.name.split("_")[0] if "_" in task_dir.name else None)
-            )
-
-            # Extract duration from metadata, fallback to SRT last timestamp
-            duration_seconds = metadata.get("duration_seconds") or metadata.get("duration")
-            if not duration_seconds:
-                duration_seconds = self._duration_from_srt(task_dir)
-
-            archives.append({
-                "path": str(task_dir),
-                "date": datetime.fromtimestamp(task_dir.stat().st_mtime).strftime("%Y-%m-%d"),
-                "title": metadata.get("title", task_dir.name),
-                "has_transcript": (task_dir / "transcript_polished.srt").exists() or (task_dir / "transcript.srt").exists(),
-                "has_summary": (task_dir / "summary.md").exists(),
-                "has_mindmap": (task_dir / "mindmap.md").exists(),
-                "has_video": has_video,
-                "has_audio": has_audio,
-                "has_image": has_image,
-                "media_file": media_file,
-                "media_is_external": media_is_external,
-                "processing": processing,
-                "task_id": task_id,
-                "metadata": metadata,
-                "analysis": analysis,
-                "duration_seconds": duration_seconds,
-            })
-
-        return archives
+    @staticmethod
+    def _lite_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+        keys = {
+            "title",
+            "source_url",
+            "original_url",
+            "webpage_url",
+            "url",
+            "file_path",
+            "thumbnail",
+            "uploader",
+            "uploader_id",
+            "platform",
+            "upload_date",
+            "duration",
+            "duration_seconds",
+            "media_type",
+            "content_subtype",
+            "status",
+            "task_id",
+        }
+        lite = {key: metadata[key] for key in keys if key in metadata}
+        extra = metadata.get("extra")
+        if isinstance(extra, dict):
+            extra_keys = {
+                "platform",
+                "source_url",
+                "original_url",
+                "webpage_url",
+                "url",
+                "file_path",
+                "thumbnail",
+                "cover",
+                "cover_url",
+                "bilibili_type",
+                "bvid",
+                "opus_id",
+                "article_url",
+                "article_id",
+            }
+            lite_extra = {key: extra[key] for key in extra_keys if key in extra}
+            if lite_extra:
+                lite["extra"] = lite_extra
+        return lite
 
     @staticmethod
     def _duration_from_srt(task_dir: Path) -> float | None:
@@ -320,5 +378,9 @@ async def archive_result(
     )
 
 
-async def list_archives() -> list[dict[str, Any]]:
-    return get_archive_service().list_archives()
+async def list_archives(lite: bool = False) -> list[dict[str, Any]]:
+    return get_archive_service().list_archives(lite=lite)
+
+
+async def get_archive(path: str | Path, lite: bool = False) -> dict[str, Any] | None:
+    return get_archive_service().get_archive(path, lite=lite)

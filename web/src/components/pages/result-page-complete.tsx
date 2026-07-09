@@ -24,6 +24,7 @@ import { PlatformIcon } from "@/components/platform-icon"
 import { SpeakerMergeDialog, type SpeakerMergeInfo } from "@/components/speaker-merge-dialog"
 import { useArchives, type ArchiveItem } from "@/hooks/use-archives"
 import { useMediaSync } from "@/hooks/use-media-sync"
+import { usePreferences } from "@/hooks/use-preferences"
 import { useViewPosition } from "@/hooks/use-view-position"
 import { useTaskSSE, type FileReadyEvent, type StepEvent } from "@/hooks/use-task-sse"
 import { parseSRT, subtitlesToSRT, type Subtitle } from "@/lib/srt"
@@ -463,6 +464,7 @@ function ArticleNoteReader({
 
 export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const { archives, refresh: refreshArchives } = useArchives()
+  const { prefs, update: updatePrefs } = usePreferences()
   const [archive, setArchive] = useState<ArchiveItem | null>(null)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [resuming, setResuming] = useState(false)
@@ -669,25 +671,64 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     if (descs && descs.length > 0) setImageDescriptions(descs)
   }, [applyMetadataState])
 
+  const applyArchiveSnapshot = useCallback((item: ArchiveItem) => {
+    setArchive(item)
+    const meta = (item.metadata || {}) as Record<string, unknown>
+    applyMetadataState(meta)
+    setResolvedTaskId((current) => current === undefined ? item.task_id ?? null : current)
+    if (item.processing) {
+      setTaskStatus("processing")
+    } else if (!taskIdProp) {
+      setTaskStatus("completed")
+    }
+  }, [applyMetadataState, taskIdProp])
+
+  const refreshArchiveDetail = useCallback(async (silent = false) => {
+    try {
+      const data = await api.archives.get(archivePath)
+      const item = data.archive as ArchiveItem
+      applyArchiveSnapshot(item)
+      return item
+    } catch (error) {
+      if (!silent) console.warn("Failed to load archive detail:", error)
+      return null
+    }
+  }, [archivePath, applyArchiveSnapshot])
+
+  useEffect(() => {
+    let cancelled = false
+    api.archives.get(archivePath)
+      .then((data) => {
+        if (cancelled) return
+        applyArchiveSnapshot(data.archive as ArchiveItem)
+      })
+      .catch((error) => {
+        if (!cancelled) console.warn("Failed to load archive detail:", error)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [archivePath, applyArchiveSnapshot])
+
   // Find archive from list
   useEffect(() => {
     const found = archives.find((a) => a.path === archivePath)
     if (found) {
-      setArchive(found)
-      const meta = (found.metadata || {}) as Record<string, unknown>
-      applyMetadataState(meta)
-      // Resolve taskId from archive list if not already known from URL
+      if (!archive || archive.path !== archivePath) {
+        setArchive(found)
+        const meta = (found.metadata || {}) as Record<string, unknown>
+        applyMetadataState(meta)
+      }
       if (resolvedTaskId === undefined) {
         setResolvedTaskId(found.task_id ?? null)
       }
-      // Determine initial task status from archive
       if (found.processing) {
         setTaskStatus("processing")
       } else if (!taskIdProp) {
         setTaskStatus("completed")
       }
     }
-  }, [archives, archivePath, taskIdProp, resolvedTaskId, applyMetadataState])
+  }, [archives, archive, archivePath, taskIdProp, resolvedTaskId, applyMetadataState])
 
   // Resolve media URL
   const resolveMediaUrl = useCallback((arch: ArchiveItem | null) => {
@@ -925,6 +966,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         loadReadyFile().then((c) => { if (c) setNoteText(c) })
       } else if (file === "metadata.json") {
         refreshArchives(true)
+        refreshArchiveDetail(true)
       }
     },
     async onCompleted(data) {
@@ -937,6 +979,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
 
       await Promise.all([
         refreshArchives(true),
+        refreshArchiveDetail(true),
         loadGeneratedContent(outputDir || archivePath),
       ])
 
@@ -1059,7 +1102,10 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     try {
       await api.archives.rename(archivePath, trimmed)
       setDisplayTitle(trimmed)
-      refreshArchives(true)
+      await Promise.all([
+        refreshArchives(true),
+        refreshArchiveDetail(true),
+      ])
     } catch {
       // ignore, revert
     }
@@ -1170,6 +1216,39 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   }, [archivePath, openingFolder])
 
   const isPortraitLayout = usePortraitResultLayout()
+  const videoLoop = Boolean(prefs.videoLoop)
+  const toggleVideoLoop = useCallback(() => {
+    updatePrefs({ videoLoop: !videoLoop })
+  }, [updatePrefs, videoLoop])
+  const setVideoLoop = useCallback((next: boolean) => {
+    updatePrefs({ videoLoop: next })
+  }, [updatePrefs])
+
+  const mediaPlayerBlock = mediaUrl ? (
+    <div className="sticky top-0 z-10 space-y-2 bg-background pb-2">
+      <div className="flex justify-end">
+        <Button
+          type="button"
+          variant={videoLoop ? "default" : "outline"}
+          size="icon-sm"
+          onClick={toggleVideoLoop}
+          aria-pressed={videoLoop}
+          aria-label={videoLoop ? "关闭循环播放" : "开启循环播放"}
+          title={videoLoop ? "关闭循环播放" : "开启循环播放"}
+        >
+          <HugeiconsIcon icon={RefreshIcon} className="h-4 w-4" />
+        </Button>
+      </div>
+      <MediaPlayer
+        src={mediaUrl}
+        type={mediaType}
+        bindMedia={bindMedia}
+        subtitleSrt={transcript ?? undefined}
+        loop={videoLoop}
+        onLoopChange={setVideoLoop}
+      />
+    </div>
+  ) : null
 
   const mediaPane = (
     <div className={cn(
@@ -1204,15 +1283,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
             </div>
           )}
         </div>
-      ) : mediaUrl ? (
-        <div className="sticky top-0 z-10 bg-background pb-2">
-          <MediaPlayer
-            src={mediaUrl}
-            type={mediaType}
-            bindMedia={bindMedia}
-            subtitleSrt={transcript ?? undefined}
-          />
-        </div>
+      ) : mediaPlayerBlock ? (
+        mediaPlayerBlock
       ) : isProcessing ? (
         <div className="flex items-center justify-center h-40 rounded-lg bg-muted/50">
           <div className="text-center text-muted-foreground">
@@ -1239,8 +1311,9 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
       isPortraitLayout ? "p-0" : "p-4",
     )}>
       <Tabs value={activeTab} onValueChange={(v: any) => { setActiveTab(String(v)); updateActiveTab(String(v)) }} className="flex flex-col flex-1 min-h-0">
-        <div className="shrink-0 flex items-center gap-2">
-          <TabsList>
+        <div className="shrink-0 flex min-w-0 items-center gap-1.5">
+          <div className="min-w-0 flex-1 overflow-x-auto pb-1">
+          <TabsList className="w-max">
             <TabsTrigger value="summary">摘要</TabsTrigger>
             {isImageNote && !isArticleNote && <TabsTrigger value="source">原帖</TabsTrigger>}
             {!isPureWebpage && (
@@ -1254,6 +1327,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
             {(mindmap || isProcessing) && <TabsTrigger value="mindmap">导图</TabsTrigger>}
             {detail && <TabsTrigger value="detail">详情</TabsTrigger>}
           </TabsList>
+          </div>
           {activeTab === "mindmap" && mindmapFit && (
             <button
               onClick={mindmapFit}
@@ -1428,7 +1502,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         )}
 
         {(mindmap || isProcessing) && (
-          <TabsContent value="mindmap" className="mt-3 relative flex-1">
+          <TabsContent value="mindmap" className="mt-3 relative flex-1 min-h-0">
             {mindmap ? (
               <MindmapViewer markdown={mindmap} fillContainer title={displayTitle} onFitReady={(fn) => setMindmapFit(() => fn)} />
             ) : isProcessing ? (
@@ -1698,15 +1772,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                     </div>
                   )}
                 </div>
-              ) : mediaUrl ? (
-                <div className="sticky top-0 z-10 bg-background pb-2">
-                  <MediaPlayer
-                    src={mediaUrl}
-                    type={mediaType}
-                    bindMedia={bindMedia}
-                    subtitleSrt={transcript ?? undefined}
-                  />
-                </div>
+              ) : mediaPlayerBlock ? (
+                mediaPlayerBlock
               ) : isProcessing ? (
                 <div className="flex items-center justify-center h-40 rounded-lg bg-muted/50">
                   <div className="text-center text-muted-foreground">
@@ -1733,8 +1800,9 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
           <ResizablePanel defaultSize="50%" minSize="25%">
             <div className="h-full flex flex-col p-4">
               <Tabs value={activeTab} onValueChange={(v: any) => { setActiveTab(String(v)); updateActiveTab(String(v)) }} className="flex flex-col flex-1 min-h-0">
-                <div className="shrink-0 flex items-center gap-2">
-                  <TabsList>
+                <div className="shrink-0 flex min-w-0 items-center gap-1.5">
+                  <div className="min-w-0 flex-1 overflow-x-auto pb-1">
+                  <TabsList className="w-max">
                     <TabsTrigger value="summary">摘要</TabsTrigger>
                     {isImageNote && !isArticleNote && <TabsTrigger value="source">原帖</TabsTrigger>}
                     {!isPureWebpage && (
@@ -1748,6 +1816,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                     {(mindmap || isProcessing) && <TabsTrigger value="mindmap">导图</TabsTrigger>}
                     {detail && <TabsTrigger value="detail">详情</TabsTrigger>}
                   </TabsList>
+                  </div>
                   {activeTab === "mindmap" && mindmapFit && (
                     <button
                       onClick={mindmapFit}
@@ -1922,7 +1991,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                 )}
 
                 {(mindmap || isProcessing) && (
-                  <TabsContent value="mindmap" className="mt-3 relative flex-1">
+                  <TabsContent value="mindmap" className="mt-3 relative flex-1 min-h-0">
                     {mindmap ? (
                       <MindmapViewer markdown={mindmap} fillContainer title={displayTitle} onFitReady={(fn) => setMindmapFit(() => fn)} />
                     ) : isProcessing ? (

@@ -222,7 +222,7 @@ export function FilesPage({ search, mediaFilter, sourceFilter }: FilesPageProps)
         <div
           ref={gridRef}
           data-testid="archive-grid"
-          className="grid h-full min-h-0 grid-cols-[repeat(auto-fill,minmax(min(240px,100%),1fr))] content-between gap-x-4 gap-y-3 overflow-hidden"
+          className="grid h-full min-h-0 grid-cols-2 content-between gap-x-3 gap-y-2 overflow-hidden sm:grid-cols-[repeat(auto-fill,minmax(min(220px,100%),1fr))] sm:gap-x-4 sm:gap-y-3"
         >
           {paged.map((a) => (
             <ArchiveCard
@@ -270,6 +270,8 @@ export function FilesPage({ search, mediaFilter, sourceFilter }: FilesPageProps)
             size="icon-sm"
             disabled={safePage <= 1}
             onClick={() => setPage(safePage - 1)}
+            aria-label="上一页"
+            title="上一页"
           >
             <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4" />
           </Button>
@@ -295,6 +297,8 @@ export function FilesPage({ search, mediaFilter, sourceFilter }: FilesPageProps)
             size="icon-sm"
             disabled={safePage >= totalPages}
             onClick={() => setPage(safePage + 1)}
+            aria-label="下一页"
+            title="下一页"
           >
             <HugeiconsIcon icon={ArrowRight01Icon} className="h-4 w-4" />
           </Button>

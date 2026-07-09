@@ -75,6 +75,18 @@ def test_bilibili_short_url_resolves_bvid_and_page(monkeypatch):
     assert ytdlp._extract_bilibili_page_number(short_url) == 2
 
 
+def test_bilibili_short_url_to_opus_routes_as_image_note(monkeypatch):
+    short_url = "https://b23.tv/fUzR8hQ"
+    resolved_url = "https://m.bilibili.com/opus/1222911198638374913?share_source=COPY"
+
+    monkeypatch.setattr(ytdlp, "_resolve_bilibili_short_url", lambda url: resolved_url)
+
+    assert ytdlp.normalize_bilibili_source_url(short_url) == resolved_url
+    assert ytdlp._is_bilibili_image_note_url(short_url)
+    assert not ytdlp._is_bilibili_url(short_url)
+    assert ytdlp._extract_bilibili_bvid(short_url) is None
+
+
 def test_bilibili_short_url_uses_first_redirect_location(monkeypatch):
     short_url = "https://b23.tv/9obruXU"
     resolved_url = "https://www.bilibili.com/video/BV1eERyBnEBZ?p=1"

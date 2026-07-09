@@ -312,6 +312,24 @@ export function SettingsPanel() {
                 </CardContent>
               </Card>
 
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">播放</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label>循环播放</Label>
+                      <p className="mt-0.5 text-xs text-muted-foreground">详情页视频和音频播放器默认循环。</p>
+                    </div>
+                    <Switch
+                      checked={Boolean(prefs.videoLoop)}
+                      onCheckedChange={(v) => updatePrefs({ videoLoop: v })}
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+
               {/* Data Paths */}
               <Card>
                 <CardHeader className="pb-3">

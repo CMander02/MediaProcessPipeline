@@ -6,6 +6,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.core.source_resolver import flow_from_metadata, resolve_source_flow  # noqa: E402
 from app.models import MediaMetadata, MediaType  # noqa: E402
+from app.services.ingestion import ytdlp  # noqa: E402
 
 
 def test_resolver_maps_generic_webpage_to_webpage_note_flow():
@@ -93,6 +94,21 @@ def test_resolver_maps_bilibili_read_to_note_flow():
     assert flow.flow_id == "url_webpage_note"
     assert flow.ingestor == "bilibili_opus"
     assert flow.requires_uvr is False
+
+
+def test_resolver_maps_bilibili_short_opus_to_note_flow(monkeypatch):
+    monkeypatch.setattr(
+        ytdlp,
+        "_resolve_bilibili_short_url",
+        lambda url: "https://m.bilibili.com/opus/1222911198638374913?share_source=COPY",
+    )
+
+    flow = resolve_source_flow("https://b23.tv/fUzR8hQ")
+
+    assert flow.platform == "bilibili_opus"
+    assert flow.route_type == "bilibili_opus"
+    assert flow.content_subtype == "image_note"
+    assert flow.flow_id == "url_image_note"
 
 
 def test_flow_from_metadata_promotes_url_media_to_api_fallback():
