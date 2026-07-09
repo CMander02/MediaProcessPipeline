@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -426,6 +427,42 @@ def test_ytdlp_settings_endpoints_report_status_and_schedule_restart(tmp_path, m
     assert upgrade.status_code == 200
     assert upgrade.json()["restart_scheduled"] is True
     assert scheduled == [1.0]
+
+
+def test_ytdlp_upgrade_uses_uv_sync_to_persist_lock(monkeypatch):
+    from app.services.ingestion import ytdlp_version
+
+    versions = iter(["2026.6.9", "2026.7.4"])
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(ytdlp_version, "_installed_version", lambda: next(versions))
+    monkeypatch.setattr(ytdlp_version.shutil, "which", lambda name: "uv" if name == "uv" else None)
+
+    def fake_run_upgrade_command(cmd: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="synced", stderr="")
+
+    monkeypatch.setattr(ytdlp_version, "_run_upgrade_command", fake_run_upgrade_command)
+
+    result = ytdlp_version.upgrade()
+
+    project_root = str(Path(ytdlp_version.__file__).resolve().parents[4])
+    assert result["ok"] is True
+    assert result["old"] == "2026.6.9"
+    assert result["new"] == "2026.7.4"
+    assert commands == [
+        [
+            "uv",
+            "sync",
+            "--project",
+            project_root,
+            "--python",
+            sys.executable,
+            "--inexact",
+            "--upgrade-package",
+            "yt-dlp",
+        ]
+    ]
 
 
 @pytest.mark.asyncio

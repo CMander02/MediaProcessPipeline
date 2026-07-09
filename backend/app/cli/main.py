@@ -111,7 +111,7 @@ def _maybe_prompt_ytdlp_upgrade() -> None:
         console.print("  [dim]已跳过。可设置 MPP_SKIP_VERSION_CHECK=1 永久跳过此提示。[/dim]")
         return
 
-    console.print("  [dim]运行 pip install -U yt-dlp …[/dim]")
+    console.print("  [dim]运行 yt-dlp 更新 …[/dim]")
     result = upgrade()
     if result.get("ok"):
         console.print(

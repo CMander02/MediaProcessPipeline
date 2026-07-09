@@ -19,6 +19,7 @@ import time
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from app.core.network import urllib_urlopen
@@ -114,7 +115,20 @@ def _upgrade_commands() -> list[list[str]]:
     commands: list[list[str]] = []
     uv = shutil.which("uv")
     if uv:
-        commands.append([uv, "pip", "install", "--python", sys.executable, "--upgrade", "yt-dlp"])
+        project_root = str(Path(__file__).resolve().parents[4])
+        commands.append(
+            [
+                uv,
+                "sync",
+                "--project",
+                project_root,
+                "--python",
+                sys.executable,
+                "--inexact",
+                "--upgrade-package",
+                "yt-dlp",
+            ]
+        )
     commands.append([sys.executable, "-m", "pip", "install", "-U", "--quiet", "yt-dlp"])
     return commands
 
