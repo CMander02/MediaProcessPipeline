@@ -22,6 +22,21 @@ def test_bilibili_bvid_extraction_accepts_bilibili_inputs():
     assert ytdlp._extract_bilibili_bvid(f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}") == bvid
 
 
+def test_bilibili_bare_bvid_normalizes_to_video_url():
+    bvid = "BV1XM411M7eD"
+
+    assert ytdlp._normalize_bilibili_video_url(bvid) == f"https://www.bilibili.com/video/{bvid}"
+
+
+def test_bilibili_malformed_https_bvid_is_recovered():
+    bvid = "BV1XM411M7eD"
+    malformed = f"https://{bvid}"
+
+    assert ytdlp._is_bilibili_url(malformed)
+    assert ytdlp._extract_bilibili_bvid(malformed) == bvid
+    assert ytdlp._normalize_bilibili_video_url(malformed) == f"https://www.bilibili.com/video/{bvid}"
+
+
 def test_bilibili_opus_urls_route_as_image_notes_not_video():
     image_opus = "https://www.bilibili.com/opus/1220490883646881792"
     column_opus = "https://www.bilibili.com/opus/1200840557820117011"

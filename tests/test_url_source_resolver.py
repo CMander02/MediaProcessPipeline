@@ -54,6 +54,15 @@ def test_resolver_maps_bare_bvid_to_bilibili_video_flow():
     assert flow.flow_id == "url_platform_video_subtitle"
 
 
+def test_resolver_recovers_malformed_https_bvid_as_bilibili_video_flow():
+    flow = resolve_source_flow("https://BV1XM411M7eD")
+
+    assert flow.source_type == "url"
+    assert flow.platform == "bilibili_video"
+    assert flow.route_type == "bilibili_video"
+    assert flow.ingestor == "bilibili_video"
+
+
 def test_resolver_maps_bilibili_opus_to_image_note_flow():
     flow = resolve_source_flow("https://www.bilibili.com/opus/1220490883646881792")
 

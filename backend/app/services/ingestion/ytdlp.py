@@ -97,8 +97,11 @@ def _is_bilibili_video_url(url: str) -> bool:
             candidate = f"https://{candidate}"
         parsed = urlparse(candidate)
         host = (parsed.hostname or "").lower()
+        host_token = parsed.netloc.rsplit("@", 1)[-1].split(":", 1)[0]
         path = parsed.path
         query = parse_qs(parsed.query)
+        if re.fullmatch(_BILIBILI_BVID_RE, host_token):
+            return True
         if host == "b23.tv" or host.endswith(".b23.tv"):
             return True
         if not (host == "bilibili.com" or host.endswith(".bilibili.com")):
@@ -274,6 +277,9 @@ def _extract_bilibili_bvid(url: str) -> str | None:
                 candidate = f"https://{candidate}"
             parsed = urlparse(candidate)
             host = (parsed.hostname or "").lower()
+            host_token = parsed.netloc.rsplit("@", 1)[-1].split(":", 1)[0]
+            if re.fullmatch(_BILIBILI_BVID_RE, host_token):
+                return host_token
             if host == "b23.tv" or host.endswith(".b23.tv"):
                 resolved = _resolve_bilibili_short_url(candidate)
                 if resolved and resolved != candidate:
@@ -409,6 +415,15 @@ def _select_bilibili_page(view_data: dict[str, Any], page_number: int) -> dict[s
 def _bilibili_canonical_video_url(bvid: str, page_number: int = 1) -> str:
     suffix = f"?p={page_number}" if page_number > 1 else ""
     return f"https://www.bilibili.com/video/{bvid}{suffix}"
+
+
+def _normalize_bilibili_video_url(url: str) -> str:
+    bvid = _extract_bilibili_bvid(url)
+    if bvid:
+        return _bilibili_canonical_video_url(bvid, _extract_bilibili_page_number(url))
+    if not url.startswith(("http://", "https://")):
+        return "https://" + url
+    return url
 
 
 def _bilibili_display_title(view_data: dict[str, Any], page: dict[str, Any], page_number: int) -> str:
@@ -955,8 +970,7 @@ class YtdlpService:
         from app.services.ingestion.platform.bilibili.dash import download_video, extract_audio
         from app.services.ingestion.platform.bilibili.auth import is_logged_in
 
-        if not url.startswith(("http://", "https://")):
-            url = "https://" + url
+        url = _normalize_bilibili_video_url(url)
 
         rt = get_runtime_settings()
         qn = rt.bilibili_preferred_quality if is_logged_in() else 16
@@ -1251,8 +1265,7 @@ class YtdlpService:
 
         empty = _empty_subtitle_result(engine=engine, diagnostics=diagnostics)
 
-        if not url.startswith(("http://", "https://")):
-            url = "https://" + url
+        url = _normalize_bilibili_video_url(url)
 
         bvid = _extract_bilibili_bvid(url)
         if not bvid:

@@ -146,6 +146,38 @@ def test_create_task_normalizes_schemeless_bilibili_opus(tmp_path, monkeypatch):
     assert metadata["platform"] == "bilibili_opus"
 
 
+def test_create_task_accepts_bare_bilibili_bvid(tmp_path, monkeypatch):
+    client, queue = _client(tmp_path, monkeypatch)
+
+    task = client.post(
+        "/api/tasks",
+        json={"task_type": "pipeline", "source": "BV1XM411M7eD"},
+    )
+
+    assert task.status_code == 200
+    data = task.json()
+    assert data["source"] == "BV1XM411M7eD"
+    assert data["platform"] == "bilibili_video"
+    assert data["flow"]["id"] == "url_platform_video_subtitle"
+    assert queue.submitted == [UUID(data["id"])]
+
+
+def test_create_task_recovers_malformed_https_bilibili_bvid(tmp_path, monkeypatch):
+    client, queue = _client(tmp_path, monkeypatch)
+
+    task = client.post(
+        "/api/tasks",
+        json={"task_type": "pipeline", "source": "https://BV1XM411M7eD"},
+    )
+
+    assert task.status_code == 200
+    data = task.json()
+    assert data["source"] == "https://BV1XM411M7eD"
+    assert data["platform"] == "bilibili_video"
+    assert data["flow"]["id"] == "url_platform_video_subtitle"
+    assert queue.submitted == [UUID(data["id"])]
+
+
 def test_backend_settings_and_platform_api_smoke(tmp_path, monkeypatch):
     client, _queue = _client(tmp_path, monkeypatch)
 
