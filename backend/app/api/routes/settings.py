@@ -41,7 +41,7 @@ _SECRET_FIELDS = {
     "jina_reader_api_key",
 }
 
-_MASK_PATTERN = re.compile(r"^\*{3,}(?:\.{3}.{0,4})?$")  # matches "***" and legacy "***...xxxx"
+_MASK_PATTERN = re.compile(r"^\*+(?:\.{3}.{0,4})?$")  # matches length-preserving masks and legacy "***...xxxx"
 
 
 def _normalize_siliconflow_api_base(api_base: str) -> str:
@@ -182,12 +182,10 @@ async def _fetch_json_with_urllib(
 
 
 def _mask_value(value: str) -> str:
-    """Mask a secret value, keeping the last 4 chars visible."""
+    """Mask a secret value with the same character length."""
     if not value:
         return ""
-    if len(value) <= 4:
-        return "***"
-    return "********"
+    return "*" * len(value)
 
 
 def _is_masked(value: str) -> bool:

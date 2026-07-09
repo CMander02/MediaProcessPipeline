@@ -63,7 +63,7 @@ def test_jina_reader_key_is_masked():
         core_settings.RuntimeSettings(jina_reader_api_key="jina-secret-1234")
     )
 
-    assert data["jina_reader_api_key"] == "********"
+    assert data["jina_reader_api_key"] == "*" * len("jina-secret-1234")
 
 
 def test_siliconflow_model_type_inference_uses_model_id_keywords():
@@ -592,7 +592,7 @@ def test_settings_api_masks_and_restores_nested_service_connection_secrets():
     )
 
     masked = settings_route._mask_settings(current)
-    assert masked["service_connections"][0]["api_key"] == "********"
+    assert masked["service_connections"][0]["api_key"] == "*" * len("sk-current")
 
     restored = settings_route._restore_secrets(
         {"service_connections": masked["service_connections"]},
@@ -618,7 +618,7 @@ def test_settings_api_masks_and_restores_nested_provider_secrets():
     )
 
     masked = settings_route._mask_settings(current)
-    assert masked["providers"][0]["api_key"] == "********"
+    assert masked["providers"][0]["api_key"] == "*" * len("sk-provider-current")
 
     restored = settings_route._restore_secrets(
         {"providers": masked["providers"]},

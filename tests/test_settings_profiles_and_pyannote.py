@@ -88,9 +88,9 @@ def test_settings_api_masks_and_restores_nested_profile_secrets():
 
     masked = settings_route._mask_settings(current)
 
-    assert masked["deepseek_api_key"] == "********"
-    assert masked["hf_proxy"] == "********"
-    assert masked["custom_llm_profiles"][0]["api_key"] == "********"
+    assert masked["deepseek_api_key"] == "*" * len("sk-current")
+    assert masked["hf_proxy"] == "*" * len("http://user:pass@127.0.0.1:7897")
+    assert masked["custom_llm_profiles"][0]["api_key"] == "*" * len("profile-secret")
 
     restored = settings_route._restore_secrets(
         {
