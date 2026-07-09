@@ -80,7 +80,7 @@ def _global_options(
     if (
         not skip_version_check
         and not _json_mode
-        and ctx.invoked_subcommand in ("run", "submit", "retry", "serve")
+        and ctx.invoked_subcommand in ("run", "submit", "retry")
     ):
         _maybe_prompt_ytdlp_upgrade()
 
@@ -122,6 +122,23 @@ def _maybe_prompt_ytdlp_upgrade() -> None:
             console.print("  [yellow]提示：daemon 已加载旧版本 yt-dlp，重启后生效。[/yellow]")
     else:
         console.print(f"  [red]✗[/red] 升级失败:\n{result.get('output', '')}")
+
+
+@app.command("upgrade-ytdlp")
+def upgrade_ytdlp():
+    """升级 yt-dlp 到当前环境可用的最新版。"""
+    from app.cli.display import console
+    from app.services.ingestion.ytdlp_version import upgrade
+
+    console.print("运行 yt-dlp 更新...")
+    result = upgrade()
+    if result.get("ok"):
+        console.print(f"已更新 yt-dlp: {result.get('old')} -> {result.get('new')}")
+        if result.get("restart_recommended"):
+            console.print("daemon 重启后使用新版本。")
+        return
+    console.print(f"yt-dlp 更新失败:\n{result.get('output', '')}")
+    raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------------------

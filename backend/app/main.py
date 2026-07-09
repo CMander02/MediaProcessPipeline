@@ -1,5 +1,6 @@
 import logging
 import sys
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -55,6 +56,12 @@ async def lifespan(app: FastAPI):
         logger.info(f"  Custom Model: {rt.custom_model}")
         logger.info(f"  Custom API Base: {rt.custom_api_base}")
 
+    from app.services.ingestion.ytdlp_version import auto_update_on_startup, warn_if_stale
+    if rt.ytdlp_auto_update:
+        await asyncio.to_thread(auto_update_on_startup, True)
+    else:
+        asyncio.create_task(asyncio.to_thread(warn_if_stale))
+
     # Initialize SQLite task store
     init_db()
 
@@ -71,11 +78,6 @@ async def lifespan(app: FastAPI):
             logger.info(f"Swept {removed} stale staging dir(s)")
     except Exception as e:
         logger.warning(f"Staging sweep failed: {e}")
-
-    # Check yt-dlp version against PyPI (non-blocking; warns on staleness)
-    import asyncio
-    from app.services.ingestion.ytdlp_version import warn_if_stale
-    asyncio.create_task(asyncio.to_thread(warn_if_stale))
 
     yield
 

@@ -31,6 +31,7 @@ const { mockSettings } = vi.hoisted(() => ({
     polish_provider: "local",
     data_root: "D:/Video/MediaProcessPipeline",
     api_token: "",
+    ytdlp_auto_update: false,
     max_download_concurrency: 2,
     pipeline_overlap: true,
     generate_video_detail: true,
@@ -229,6 +230,20 @@ vi.mock("@/lib/api", () => ({
         default_params: {},
       })),
       queryProviderBalance: vi.fn().mockResolvedValue({ provider_id: "siliconflow", balance: {} }),
+      ytdlpStatus: vi.fn().mockResolvedValue({
+        installed: "2026.03.17",
+        latest: "2026.07.09",
+        age_days: 0,
+        is_stale: true,
+        auto_update: false,
+      }),
+      upgradeYtdlp: vi.fn().mockResolvedValue({
+        ok: true,
+        old: "2026.03.17",
+        new: "2026.07.09",
+        output: "",
+        restart_scheduled: true,
+      }),
     },
     bilibili: {
       status: vi.fn().mockResolvedValue({ logged_in: false, message: "未登录" }),
@@ -309,6 +324,8 @@ describe("SettingsPanel", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Services" }))
 
+    expect(await screen.findByText("yt-dlp")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "更新到最新并重启后端" })).toBeInTheDocument()
     expect(await screen.findByText("Jina")).toBeInTheDocument()
     expect(screen.getByText("启用 Jina Reader")).toBeInTheDocument()
     expect(screen.getByDisplayValue("https://r.jina.ai")).toBeInTheDocument()

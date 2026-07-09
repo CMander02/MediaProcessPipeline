@@ -10,11 +10,16 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
 import subprocess
 import sys
+import threading
+import time
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from app.core.network import urllib_urlopen
 
@@ -22,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 _PYPI_URL = "https://pypi.org/pypi/yt-dlp/json"
 _STALE_DAYS = 30
+_upgrade_lock = threading.Lock()
 
 
 @dataclass
@@ -97,43 +103,145 @@ def warn_if_stale() -> YtdlpVersionInfo | None:
         logger.warning(
             f"yt-dlp is out of date: installed={info.installed} latest={info.latest}. "
             f"YouTube extraction may fail. Run `mpp upgrade-ytdlp` or "
-            f"`POST /api/system/upgrade-ytdlp` to update."
+            f"`POST /api/settings/ytdlp/upgrade` to update."
         )
     else:
         logger.info(f"yt-dlp version: {info.installed} (latest: {info.latest or 'unknown'})")
     return info
 
 
-def upgrade() -> dict:
-    """Run `pip install -U yt-dlp` against the current interpreter.
+def _upgrade_commands() -> list[list[str]]:
+    commands: list[list[str]] = []
+    uv = shutil.which("uv")
+    if uv:
+        commands.append([uv, "pip", "install", "--python", sys.executable, "--upgrade", "yt-dlp"])
+    commands.append([sys.executable, "-m", "pip", "install", "-U", "--quiet", "yt-dlp"])
+    return commands
+
+
+def _run_upgrade_command(cmd: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def _result(
+    *,
+    ok: bool,
+    old: str | None,
+    new: str | None,
+    output: str,
+    command: list[str] | None = None,
+    restart_recommended: bool = False,
+) -> dict[str, Any]:
+    return {
+        "ok": ok,
+        "old": old,
+        "new": new,
+        "output": output.strip()[-2000:],
+        "command": command or [],
+        "restart_recommended": restart_recommended,
+    }
+
+
+def upgrade(timeout: float = 180) -> dict[str, Any]:
+    """Upgrade yt-dlp in the Python environment used by this process.
 
     Returns {ok, old, new, output}. Caller should reload yt_dlp module or restart
     the daemon to actually use the new version.
     """
-    old = _installed_version()
-    cmd = [sys.executable, "-m", "pip", "install", "-U", "--quiet", "yt-dlp"]
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=180,
+    if not _upgrade_lock.acquire(blocking=False):
+        return _result(
+            ok=False,
+            old=_installed_version(),
+            new=None,
+            output="yt-dlp upgrade is already running",
         )
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "old": old, "new": None, "output": "pip install timed out after 180s"}
 
-    output = (proc.stdout or "") + (proc.stderr or "")
-    if proc.returncode != 0:
-        return {"ok": False, "old": old, "new": old, "output": output.strip()[-2000:]}
+    try:
+        old = _installed_version()
+        failures: list[str] = []
+        for cmd in _upgrade_commands():
+            try:
+                proc = _run_upgrade_command(cmd, timeout)
+            except subprocess.TimeoutExpired:
+                failures.append(f"{' '.join(cmd)} timed out after {timeout:.0f}s")
+                continue
 
-    # Read fresh dist metadata. The already-imported yt_dlp module in this
-    # process won't be replaced; restart the daemon to actually use the new code.
-    new = _installed_version() or old
+            output = (proc.stdout or "") + (proc.stderr or "")
+            if proc.returncode != 0:
+                failures.append(output.strip() or f"{' '.join(cmd)} exited with {proc.returncode}")
+                continue
 
-    return {
-        "ok": True,
-        "old": old,
-        "new": new,
-        "output": output.strip()[-2000:],
-        "restart_recommended": True,
-    }
+            new = _installed_version() or old
+            return _result(
+                ok=True,
+                old=old,
+                new=new,
+                output=output,
+                command=cmd,
+                restart_recommended=True,
+            )
+
+        return _result(
+            ok=False,
+            old=old,
+            new=old,
+            output="\n\n".join(failures),
+            command=_upgrade_commands()[-1],
+        )
+    finally:
+        _upgrade_lock.release()
+
+
+def auto_update_on_startup(enabled: bool) -> dict[str, Any] | None:
+    """Upgrade yt-dlp during daemon startup when the runtime setting enables it."""
+    if not enabled:
+        return None
+
+    try:
+        info = check_version()
+    except Exception as e:
+        logger.warning("yt-dlp startup version check failed: %s", e)
+        return None
+
+    if not info.installed:
+        logger.info("yt-dlp is not installed; installing latest build")
+    elif not info.is_stale:
+        logger.info("yt-dlp startup auto-update skipped: installed=%s latest=%s", info.installed, info.latest or "unknown")
+        return {
+            "ok": True,
+            "old": info.installed,
+            "new": info.installed,
+            "output": "",
+            "restart_recommended": False,
+            "skipped": True,
+        }
+
+    logger.info("yt-dlp startup auto-update started: installed=%s latest=%s", info.installed, info.latest or "unknown")
+    result = upgrade()
+    if result.get("ok"):
+        logger.info("yt-dlp startup auto-update complete: %s -> %s", result.get("old"), result.get("new"))
+    else:
+        logger.warning("yt-dlp startup auto-update failed: %s", result.get("output", ""))
+    return result
+
+
+def schedule_process_restart(delay_sec: float = 1.0) -> None:
+    """Restart this Python daemon process after the current HTTP response is sent."""
+
+    def _restart() -> None:
+        time.sleep(max(delay_sec, 0.0))
+        args = [sys.executable, *sys.argv]
+        logger.warning("Restarting backend process: %s", " ".join(args))
+        try:
+            os.execv(sys.executable, args)
+        except Exception as e:
+            logger.error("Backend process restart failed: %s", e)
+            os._exit(3)
+
+    thread = threading.Thread(target=_restart, name="mpp-backend-restart", daemon=True)
+    thread.start()

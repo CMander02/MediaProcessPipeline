@@ -7,13 +7,13 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
-import { api, getApiToken, persistApiToken, type Settings } from "@/lib/api"
+import { api, getApiToken, persistApiToken, type Settings, type YtdlpStatus } from "@/lib/api"
 import { usePreferences } from "@/hooks/use-preferences"
 import { SettingRow } from "@/components/settings/setting-controls"
 import { LocalModelSettings, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
 import { BilibiliCard, PlaceholderSection, XiaohongshuCard, YoutubeCard, ZhihuCard } from "@/components/settings/source-cards"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { Tick02Icon, Moon02Icon, Sun01Icon } from "@hugeicons/core-free-icons"
+import { Loading03Icon, Tick02Icon, Moon02Icon, Sun01Icon } from "@hugeicons/core-free-icons"
 
 // --- Tab definitions ---
 
@@ -48,6 +48,9 @@ export function SettingsPanel() {
   const [activeTab, setActiveTab] = useState<TabId>("overall")
   const [uvrDetecting, setUvrDetecting] = useState(false)
   const [uvrDetection, setUvrDetection] = useState<string | null>(null)
+  const [ytdlpStatus, setYtdlpStatus] = useState<YtdlpStatus | null>(null)
+  const [ytdlpUpdating, setYtdlpUpdating] = useState(false)
+  const [ytdlpMessage, setYtdlpMessage] = useState<string | null>(null)
 
   // Bilibili auth status (needed for sidebar dot indicator)
   const [biliLoggedIn, setBiliLoggedIn] = useState<boolean | null>(null)
@@ -64,12 +67,22 @@ export function SettingsPanel() {
     }
   }, [])
 
+  const loadYtdlpStatus = useCallback(async () => {
+    try {
+      const status = await api.settings.ytdlpStatus()
+      setYtdlpStatus(status)
+    } catch (error) {
+      setYtdlpMessage(error instanceof Error ? error.message : String(error))
+    }
+  }, [])
+
   useEffect(() => {
     void loadSettings()
+    void loadYtdlpStatus()
     api.bilibili.status()
       .then((s) => setBiliLoggedIn(s.logged_in))
       .catch(() => setBiliLoggedIn(false))
-  }, [loadSettings])
+  }, [loadSettings, loadYtdlpStatus])
 
   const unlockSettings = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -86,6 +99,11 @@ export function SettingsPanel() {
       try {
         const updated = await api.settings.patch(updates)
         setSettings(updated)
+        if ("ytdlp_auto_update" in updates) {
+          setYtdlpStatus((status) => (
+            status ? { ...status, auto_update: Boolean(updates.ytdlp_auto_update) } : status
+          ))
+        }
         setSaveError(null)
         setSaved((s) => keys.reduce((acc, key) => ({ ...acc, [key]: true }), s))
         setTimeout(() => {
@@ -164,6 +182,44 @@ export function SettingsPanel() {
       setUvrDetection(e instanceof Error ? e.message : String(e))
     } finally {
       setUvrDetecting(false)
+    }
+  }
+
+  const reloadAfterBackendRestart = () => {
+    window.setTimeout(() => {
+      let attempts = 0
+      const timer = window.setInterval(() => {
+        attempts += 1
+        fetch("/health", { cache: "no-store" })
+          .then((response) => {
+            if (!response.ok) return
+            window.clearInterval(timer)
+            window.location.reload()
+          })
+          .catch(() => {})
+        if (attempts >= 30) window.clearInterval(timer)
+      }, 1000)
+    }, 2500)
+  }
+
+  const upgradeYtdlp = async () => {
+    setYtdlpUpdating(true)
+    setYtdlpMessage(null)
+    try {
+      const result = await api.settings.upgradeYtdlp()
+      if (!result.ok) {
+        setYtdlpMessage(result.output || "yt-dlp 更新失败")
+        return
+      }
+      setYtdlpMessage(`yt-dlp ${result.old ?? "unknown"} -> ${result.new ?? "unknown"}，后端正在重启`)
+      setYtdlpStatus((status) => (
+        status ? { ...status, installed: result.new, is_stale: false } : status
+      ))
+      if (result.restart_scheduled) reloadAfterBackendRestart()
+    } catch (error) {
+      setYtdlpMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setYtdlpUpdating(false)
     }
   }
 
@@ -424,6 +480,36 @@ export function SettingsPanel() {
           {/* ── Services ── */}
           {activeTab === "services" && (
             <div className="h-full min-h-0 space-y-4 overflow-y-auto pr-1">
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">yt-dlp</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label>启动时自动更新</Label>
+                      <p className="mt-0.5 text-xs text-muted-foreground">服务启动阶段检查 PyPI，新版本会先安装再开放后端。</p>
+                    </div>
+                    <Switch
+                      checked={Boolean(settings.ytdlp_auto_update ?? false)}
+                      onCheckedChange={(v) => updateSetting("ytdlp_auto_update", v)}
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                    <span>当前 {ytdlpStatus?.installed ?? "unknown"}</span>
+                    <span>最新 {ytdlpStatus?.latest ?? "unknown"}</span>
+                    {ytdlpStatus?.is_stale && <span className="text-amber-600">可更新</span>}
+                    {saved.ytdlp_auto_update && (
+                      <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
+                    )}
+                  </div>
+                  <Button type="button" variant="outline" onClick={upgradeYtdlp} disabled={ytdlpUpdating}>
+                    {ytdlpUpdating && <HugeiconsIcon icon={Loading03Icon} className="mr-2 h-4 w-4 animate-spin" />}
+                    更新到最新并重启后端
+                  </Button>
+                  {ytdlpMessage && <p className="text-xs text-muted-foreground">{ytdlpMessage}</p>}
+                </CardContent>
+              </Card>
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base">Jina</CardTitle>

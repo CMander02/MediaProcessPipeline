@@ -339,6 +339,95 @@ def test_main_app_lifespan_auth_and_task_submission_smoke(tmp_path, monkeypatch)
     assert queue.stopped is True
 
 
+def test_main_app_lifespan_auto_updates_ytdlp_when_enabled(tmp_path, monkeypatch):
+    from app import main as app_main
+    from app.services.ingestion import ytdlp_version
+
+    settings = RuntimeSettings(
+        data_root=str(tmp_path),
+        api_token="",
+        max_download_concurrency=1,
+        ytdlp_auto_update=True,
+    )
+    monkeypatch.setattr(settings_module, "_runtime_settings", settings)
+    monkeypatch.setattr(settings_module, "_save_settings_to_file", lambda _settings: None)
+    monkeypatch.setattr(app_main, "get_runtime_settings", lambda: settings)
+    monkeypatch.setattr(pipeline_core, "get_runtime_settings", lambda: settings)
+    database.reset_db_path(tmp_path)
+
+    auto_update_calls: list[bool] = []
+    monkeypatch.setattr(ytdlp_version, "auto_update_on_startup", lambda enabled: auto_update_calls.append(enabled))
+    monkeypatch.setattr(ytdlp_version, "warn_if_stale", lambda: (_ for _ in ()).throw(AssertionError("warn_if_stale should not run")))
+
+    class LifecycleQueue(FakeQueue):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = False
+            self.stopped = False
+
+        def set_pipeline(self, fn) -> None:
+            self.pipeline_fn = fn
+
+        async def start(self) -> None:
+            self.started = True
+
+        async def stop(self) -> None:
+            self.stopped = True
+
+    queue = LifecycleQueue()
+    monkeypatch.setattr(app_main, "get_task_queue", lambda: queue)
+
+    with TestClient(app_main.app):
+        assert queue.started is True
+        assert auto_update_calls == [True]
+
+    assert queue.stopped is True
+
+
+def test_ytdlp_settings_endpoints_report_status_and_schedule_restart(tmp_path, monkeypatch):
+    from app.services.ingestion import ytdlp_version
+
+    client, _queue = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        ytdlp_version,
+        "check_version",
+        lambda: ytdlp_version.YtdlpVersionInfo(
+            installed="2026.03.17",
+            latest="2026.07.09",
+            age_days=0,
+            is_stale=True,
+        ),
+    )
+    monkeypatch.setattr(
+        ytdlp_version,
+        "upgrade",
+        lambda: {
+            "ok": True,
+            "old": "2026.03.17",
+            "new": "2026.07.09",
+            "output": "",
+            "restart_recommended": True,
+        },
+    )
+    scheduled: list[float] = []
+    monkeypatch.setattr(ytdlp_version, "schedule_process_restart", lambda delay: scheduled.append(delay))
+
+    status = client.get("/api/settings/ytdlp")
+    assert status.status_code == 200
+    assert status.json() == {
+        "installed": "2026.03.17",
+        "latest": "2026.07.09",
+        "age_days": 0,
+        "is_stale": True,
+        "auto_update": False,
+    }
+
+    upgrade = client.post("/api/settings/ytdlp/upgrade", headers={"X-Requested-With": "fetch"})
+    assert upgrade.status_code == 200
+    assert upgrade.json()["restart_scheduled"] is True
+    assert scheduled == [1.0]
+
+
 @pytest.mark.asyncio
 async def test_real_task_queue_hands_downloaded_task_to_gpu_worker(tmp_path, monkeypatch):
     settings = RuntimeSettings(

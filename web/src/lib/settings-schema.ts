@@ -147,6 +147,7 @@ export interface RuntimeSettings {
   api_token?: string
   data_root?: string
   network_proxy?: string
+  ytdlp_auto_update?: boolean
 
   [key: string]: unknown
 }

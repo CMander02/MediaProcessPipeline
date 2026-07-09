@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from app.core.network import httpx_client_kwargs, urllib_urlopen
 from app.core.settings import (
@@ -444,6 +444,44 @@ def _reopen_task_db(data_root: str) -> None:
 async def get_settings():
     """Get current runtime settings (secrets masked)."""
     return _mask_settings(get_runtime_settings())
+
+
+def _ytdlp_info_payload(info: Any) -> dict[str, Any]:
+    if info is None:
+        return {"installed": None, "latest": None, "age_days": None, "is_stale": False}
+    return {
+        "installed": info.installed,
+        "latest": info.latest,
+        "age_days": info.age_days,
+        "is_stale": info.is_stale,
+    }
+
+
+@router.get("/ytdlp")
+async def get_ytdlp_status():
+    """Return yt-dlp version status and startup auto-update setting."""
+    from app.services.ingestion.ytdlp_version import check_version
+
+    info = await asyncio.to_thread(check_version)
+    return {
+        **_ytdlp_info_payload(info),
+        "auto_update": bool(get_runtime_settings().ytdlp_auto_update),
+    }
+
+
+@router.post("/ytdlp/upgrade")
+async def upgrade_ytdlp(background_tasks: BackgroundTasks):
+    """Upgrade yt-dlp and restart the backend process when the upgrade succeeds."""
+    from app.services.ingestion.ytdlp_version import schedule_process_restart, upgrade
+
+    result = await asyncio.to_thread(upgrade)
+    restart_scheduled = bool(result.get("ok"))
+    if restart_scheduled:
+        background_tasks.add_task(schedule_process_restart, 1.0)
+    return {
+        **result,
+        "restart_scheduled": restart_scheduled,
+    }
 
 
 @router.put("")

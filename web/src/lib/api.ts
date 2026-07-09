@@ -125,6 +125,24 @@ export interface ProviderModelCatalogResult {
   error?: string | null
 }
 
+export interface YtdlpStatus {
+  installed: string | null
+  latest: string | null
+  age_days: number | null
+  is_stale: boolean
+  auto_update: boolean
+}
+
+export interface YtdlpUpgradeResult {
+  ok: boolean
+  old: string | null
+  new: string | null
+  output: string
+  command?: string[]
+  restart_recommended?: boolean
+  restart_scheduled?: boolean
+}
+
 export interface PipelineStep {
   id: string
   name: string
@@ -293,6 +311,8 @@ export const api = {
       post<ProviderModelRecord>("/api/settings/providers/models/metadata", body),
     queryProviderBalance: (providerId: string) =>
       post<{ provider_id: string; balance: unknown }>(`/api/settings/providers/${providerId}/balance`),
+    ytdlpStatus: () => get<YtdlpStatus>("/api/settings/ytdlp"),
+    upgradeYtdlp: () => post<YtdlpUpgradeResult>("/api/settings/ytdlp/upgrade"),
   },
 
   archives: {
