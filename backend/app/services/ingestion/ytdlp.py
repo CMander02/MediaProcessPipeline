@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 _BBDOWN_DIR = Path(__file__).resolve().parent.parent.parent.parent / "tools" / "bbdown"
 _BBDOWN_EXE = _BBDOWN_DIR / "BBDown.exe"
 _HTTP_URL_RE = re.compile(r'https?://[^\s<>"\'，。！？；、]+', re.IGNORECASE)
+_BILIBILI_BVID_RE = r'BV[0-9A-Za-z]{10}'
 
 
 def _extract_http_urls(value: str) -> list[str]:
@@ -88,7 +89,7 @@ def _is_bilibili_image_note_url(url: str) -> bool:
 
 def _is_bilibili_video_url(url: str) -> bool:
     if not _extract_http_urls(url):
-        return bool(re.fullmatch(r'(?:BV[0-9A-Za-z]+|av\d+)', url.strip(), re.IGNORECASE))
+        return bool(re.fullmatch(rf'(?:{_BILIBILI_BVID_RE}|av\d+)', url.strip(), re.IGNORECASE))
 
     for candidate in _candidate_urls(url):
         if "://" not in candidate:
@@ -101,7 +102,7 @@ def _is_bilibili_video_url(url: str) -> bool:
             return True
         if not (host == "bilibili.com" or host.endswith(".bilibili.com")):
             continue
-        if re.search(r"/(?:video/)?(?:BV[0-9A-Za-z]{10}|av\d+)(?:/|$)", path, re.IGNORECASE):
+        if re.search(rf"/(?:video/)?(?:{_BILIBILI_BVID_RE}|av\d+)(?:/|$)", path, re.IGNORECASE):
             return True
         if query.get("bvid") or query.get("aid"):
             return True
@@ -258,7 +259,7 @@ def _extract_bilibili_bvid(url: str) -> str | None:
     if not value:
         return None
 
-    bare_bv = re.fullmatch(r'(BV[0-9A-Za-z]{10})', value)
+    bare_bv = re.fullmatch(rf'({_BILIBILI_BVID_RE})', value)
     if bare_bv:
         return bare_bv.group(1)
 
@@ -272,15 +273,22 @@ def _extract_bilibili_bvid(url: str) -> str | None:
                 candidate = f"https://{candidate}"
             parsed = urlparse(candidate)
             host = (parsed.hostname or "").lower()
+            if host == "b23.tv" or host.endswith(".b23.tv"):
+                resolved = _resolve_bilibili_short_url(candidate)
+                if resolved and resolved != candidate:
+                    bvid = _extract_bilibili_bvid(resolved)
+                    if bvid:
+                        return bvid
+                continue
             if not (host == "bilibili.com" or host.endswith(".bilibili.com")):
                 continue
 
             bvid_values = parse_qs(parsed.query).get("bvid") or []
             for bvid in bvid_values:
-                if re.fullmatch(r'BV[0-9A-Za-z]{10}', bvid):
+                if re.fullmatch(_BILIBILI_BVID_RE, bvid):
                     return bvid
 
-            path_match = re.search(r'/(?:video/)?(BV[0-9A-Za-z]{10})(?:/|$)', parsed.path)
+            path_match = re.search(rf'/(?:video/)?({_BILIBILI_BVID_RE})(?:/|$)', parsed.path)
             if path_match:
                 return path_match.group(1)
 
@@ -311,12 +319,46 @@ def _extract_bilibili_bvid(url: str) -> str | None:
         return None
 
 
+def _resolve_bilibili_short_url(url: str) -> str | None:
+    """Resolve b23.tv short links to their final Bilibili URL."""
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://www.bilibili.com/",
+            },
+            method="HEAD",
+        )
+        with urllib_urlopen(req, timeout=10) as resp:
+            return resp.geturl()
+    except Exception:
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Referer": "https://www.bilibili.com/",
+                },
+            )
+            with urllib_urlopen(req, timeout=10) as resp:
+                return resp.geturl()
+        except Exception as e:
+            log_event(logger, logging.WARNING, "bilibili.short_url.resolve_failed", url=url, error=e)
+            return None
+
+
 def _extract_bilibili_page_number(url: str) -> int:
     """Return the selected Bilibili page number from ?p=, defaulting to 1."""
     for candidate in _candidate_urls(url):
         if "://" not in candidate:
             candidate = f"https://{candidate}"
         parsed = urlparse(candidate)
+        host = (parsed.hostname or "").lower()
+        if host == "b23.tv" or host.endswith(".b23.tv"):
+            resolved = _resolve_bilibili_short_url(candidate)
+            if resolved and resolved != candidate:
+                return _extract_bilibili_page_number(resolved)
         query = parse_qs(parsed.query)
         for key in ("p", "page"):
             values = query.get(key) or []

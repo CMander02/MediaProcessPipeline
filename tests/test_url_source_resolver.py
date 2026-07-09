@@ -44,6 +44,16 @@ def test_resolver_keeps_platform_identity_for_known_urls():
     assert apple.flow_id == "podcast_asr"
 
 
+def test_resolver_maps_bare_bvid_to_bilibili_video_flow():
+    flow = resolve_source_flow("BV1eERyBnEBZ")
+
+    assert flow.source_type == "url"
+    assert flow.platform == "bilibili_video"
+    assert flow.route_type == "bilibili_video"
+    assert flow.ingestor == "bilibili_video"
+    assert flow.flow_id == "url_platform_video_subtitle"
+
+
 def test_resolver_maps_bilibili_opus_to_image_note_flow():
     flow = resolve_source_flow("https://www.bilibili.com/opus/1220490883646881792")
 

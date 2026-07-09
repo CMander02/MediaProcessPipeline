@@ -9,12 +9,15 @@ from app.services.ingestion import ytdlp  # noqa: E402
 
 def test_bilibili_bvid_extraction_accepts_bilibili_inputs():
     bvid = "BV1xx411c7mD"
+    recent_bvid = "BV1eERyBnEBZ"
 
     assert ytdlp._is_bilibili_url(f"https://www.bilibili.com/video/{bvid}/?spm_id_from=333")
     assert ytdlp._extract_bilibili_bvid(f"https://www.bilibili.com/video/{bvid}/?spm_id_from=333") == bvid
     assert ytdlp._extract_bilibili_page_number(f"https://www.bilibili.com/video/{bvid}/?p=2") == 2
     assert ytdlp._is_bilibili_url(bvid)
     assert ytdlp._extract_bilibili_bvid(bvid) == bvid
+    assert ytdlp._is_bilibili_url(recent_bvid)
+    assert ytdlp._extract_bilibili_bvid(recent_bvid) == recent_bvid
     assert ytdlp._extract_bilibili_bvid(f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}") == bvid
 
 
@@ -43,3 +46,14 @@ def test_bilibili_bvid_extraction_ignores_other_hosts():
 
     assert not ytdlp._is_bilibili_url(url)
     assert ytdlp._extract_bilibili_bvid(url) is None
+
+
+def test_bilibili_short_url_resolves_bvid_and_page(monkeypatch):
+    short_url = "https://b23.tv/9obruXU"
+    resolved_url = "https://www.bilibili.com/video/BV1eERyBnEBZ/?p=2&vd_source=sample"
+
+    monkeypatch.setattr(ytdlp, "_resolve_bilibili_short_url", lambda url: resolved_url)
+
+    assert ytdlp._is_bilibili_url(short_url)
+    assert ytdlp._extract_bilibili_bvid(short_url) == "BV1eERyBnEBZ"
+    assert ytdlp._extract_bilibili_page_number(short_url) == 2

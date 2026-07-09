@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -163,7 +164,12 @@ def resolve_source_flow(
     task_options: dict[str, Any] | None = None,
 ) -> SourceFlow:
     source = normalize_source_input(source)
-    source_type = "url" if source.lower().startswith(("http://", "https://")) else _local_source_type(source)
+    source_type = (
+        "url"
+        if source.lower().startswith(("http://", "https://"))
+        or re.fullmatch(r"(?:BV[0-9A-Za-z]{10}|av\d+)", source.strip(), re.IGNORECASE)
+        else _local_source_type(source)
+    )
     if source_type != "url":
         media_subtype = "audio" if source_type == "local_audio" else "video"
         return _flow(
