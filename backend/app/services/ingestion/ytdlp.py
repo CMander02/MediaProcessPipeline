@@ -5,6 +5,7 @@ import logging
 import re
 import subprocess
 import threading
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections import deque
@@ -321,31 +322,52 @@ def _extract_bilibili_bvid(url: str) -> str | None:
 
 def _resolve_bilibili_short_url(url: str) -> str | None:
     """Resolve b23.tv short links to their final Bilibili URL."""
-    try:
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Referer": "https://www.bilibili.com/",
-            },
-            method="HEAD",
-        )
-        with urllib_urlopen(req, timeout=10) as resp:
-            return resp.geturl()
-    except Exception:
+    for method in ("HEAD", "GET"):
         try:
-            req = urllib.request.Request(
-                url,
-                headers={
-                    "User-Agent": "Mozilla/5.0",
-                    "Referer": "https://www.bilibili.com/",
-                },
-            )
-            with urllib_urlopen(req, timeout=10) as resp:
-                return resp.geturl()
+            return _resolve_bilibili_short_url_once(url, method=method)
         except Exception as e:
-            log_event(logger, logging.WARNING, "bilibili.short_url.resolve_failed", url=url, error=e)
-            return None
+            if method == "GET":
+                log_event(logger, logging.WARNING, "bilibili.short_url.resolve_failed", url=url, error=e)
+    return None
+
+
+def _resolve_bilibili_short_url_once(url: str, *, method: str) -> str | None:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://www.bilibili.com/",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        },
+        method=method,
+    )
+    try:
+        with _urllib_urlopen_no_redirect(req, timeout=10) as resp:
+            location = resp.headers.get("Location")
+            return urllib.parse.urljoin(url, location) if location else resp.geturl()
+    except urllib.error.HTTPError as e:
+        if 300 <= e.code < 400:
+            location = e.headers.get("Location")
+            if location:
+                return urllib.parse.urljoin(url, location)
+        raise
+
+
+def _urllib_urlopen_no_redirect(req: urllib.request.Request, *, timeout: float):
+    handlers: list[urllib.request.BaseHandler] = [_NoRedirectHandler()]
+    proxy = shared_runtime_proxy_url()
+    if proxy == "":
+        handlers.append(urllib.request.ProxyHandler({}))
+    elif proxy:
+        handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    opener = urllib.request.build_opener(*handlers)
+    return opener.open(req, timeout=timeout)
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def _extract_bilibili_page_number(url: str) -> int:

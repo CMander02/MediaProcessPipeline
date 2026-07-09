@@ -1,4 +1,5 @@
 import sys
+import urllib.error
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -57,3 +58,15 @@ def test_bilibili_short_url_resolves_bvid_and_page(monkeypatch):
     assert ytdlp._is_bilibili_url(short_url)
     assert ytdlp._extract_bilibili_bvid(short_url) == "BV1eERyBnEBZ"
     assert ytdlp._extract_bilibili_page_number(short_url) == 2
+
+
+def test_bilibili_short_url_uses_first_redirect_location(monkeypatch):
+    short_url = "https://b23.tv/9obruXU"
+    resolved_url = "https://www.bilibili.com/video/BV1eERyBnEBZ?p=1"
+
+    def fake_urlopen_no_redirect(req, *, timeout):
+        raise urllib.error.HTTPError(req.full_url, 302, "Found", {"Location": resolved_url}, None)
+
+    monkeypatch.setattr(ytdlp, "_urllib_urlopen_no_redirect", fake_urlopen_no_redirect)
+
+    assert ytdlp._resolve_bilibili_short_url(short_url) == resolved_url
