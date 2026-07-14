@@ -93,6 +93,24 @@ def test_polish_provider_local_uses_configured_local_model_path():
     assert binding.configured is True
 
 
+def test_local_llama_cpp_text_binding_uses_openai_compatible_runtime():
+    settings = RuntimeSettings(
+        llm_provider="local",
+        local_llm_engine="llama_cpp",
+        local_llm_name="Qwen3.5-9B-Q8",
+        local_llm_model_path="D:/models/Qwen3.5-9B-Q8_0.gguf",
+        local_llm_mmproj_path="D:/models/mmproj-BF16.gguf",
+        local_llm_concurrency=2,
+    )
+
+    binding = resolve_llm_binding(settings, stage="summary")
+
+    assert binding.provider == "local"
+    assert binding.transport == "llama_cpp"
+    assert binding.model == "Qwen3.5-9B-Q8"
+    assert binding.request_kwargs["parallel"] == 2
+
+
 def test_polish_provider_local_falls_back_to_main_provider_when_path_is_empty():
     settings = RuntimeSettings(
         llm_provider="openai",

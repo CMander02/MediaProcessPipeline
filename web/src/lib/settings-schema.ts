@@ -125,6 +125,8 @@ export interface RuntimeSettings {
   siliconflow_api_base?: string
   siliconflow_api_key?: string
   siliconflow_asr_model?: string
+  defuddle_enabled?: boolean
+  playwright_enabled?: boolean
   jina_reader_enabled?: boolean
   jina_reader_api_base?: string
   jina_reader_api_key?: string
@@ -132,10 +134,18 @@ export interface RuntimeSettings {
   web_scrape_timeout_sec?: number
 
   local_llm_model_path?: string
+  local_llm_engine?: "transformers" | "llama_cpp" | string
+  local_llm_name?: string
+  local_llm_mmproj_path?: string
   local_llm_device?: DeviceValue | string
+  local_llm_dtype?: string
+  local_llm_max_new_tokens?: number
   local_llm_n_gpu_layers?: number
   local_llm_n_ctx?: number
   local_llm_n_batch?: number
+  local_llm_timeout_sec?: number
+  local_llm_keepalive_sec?: number
+  local_llm_concurrency?: number
   polish_provider?: LlmProvider | "" | string
   vlm_api_base?: string
   vlm_api_key?: string

@@ -113,6 +113,8 @@ cd web && npm install && npm run dev
 cd web && npm run tauri:build
 ```
 
+构建成功后会将最新桌面程序复制到项目根目录的 `MPP.exe`，后续构建直接替换该文件。
+
 **方式 2: 后端 + 浏览器**
 
 ```bash

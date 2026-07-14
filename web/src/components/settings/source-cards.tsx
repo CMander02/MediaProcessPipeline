@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { ArrowDown01Icon, ArrowUp01Icon, Loading03Icon, Tick02Icon } from "@hugeicons/core-free-icons"
 
@@ -424,7 +424,92 @@ const BILIBILI_QUALITY_OPTIONS = [
 ]
 
 interface BilibiliCardProps {
+  settings: Settings
+  updateSetting: (key: string, value: unknown) => Promise<void>
+  saving: Record<string, boolean>
+  saved: Record<string, boolean>
   onAuthChange?: (loggedIn: boolean) => void
+}
+
+export function TwitterCard({ settings, updateSetting, saving, saved }: XiaohongshuCardProps) {
+  const [status, setStatus] = useState<{
+    storage_state_path: string
+    storage_state_exists: boolean
+    cookie_count: number
+    logged_in: boolean
+    updated_at?: string
+    error?: string
+  } | null>(null)
+  const [loggingIn, setLoggingIn] = useState(false)
+
+  const refreshStatus = useCallback(() => {
+    api.twitter.status().then(setStatus).catch((error) => setStatus({
+      storage_state_path: "",
+      storage_state_exists: false,
+      cookie_count: 0,
+      logged_in: false,
+      error: error instanceof Error ? error.message : String(error),
+    }))
+  }, [])
+
+  useEffect(() => refreshStatus(), [refreshStatus])
+
+  const handleLogin = async () => {
+    if (loggingIn) return
+    setLoggingIn(true)
+    try {
+      setStatus(await api.twitter.login(180))
+    } catch (error) {
+      setStatus((previous) => ({
+        storage_state_path: previous?.storage_state_path ?? "",
+        storage_state_exists: previous?.storage_state_exists ?? false,
+        cookie_count: previous?.cookie_count ?? 0,
+        logged_in: false,
+        error: error instanceof Error ? error.message : String(error),
+      }))
+    } finally {
+      setLoggingIn(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-base">
+          X / Twitter
+          <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+            {status?.logged_in ? "已登录" : "未登录"}
+          </Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-sm text-muted-foreground">
+          X Article 的完整正文需要登录会话。登录一次后，处理流程会打开文章页并保存全文。
+        </p>
+        <SettingRow
+          label="登录态文件"
+          settingKey="twitter_storage_state_path"
+          value={String(settings.twitter_storage_state_path ?? "")}
+          onSave={updateSetting}
+          saving={saving}
+          saved={saved}
+          placeholder="留空使用 data/auth/twitter_storage_state.json"
+        />
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span>Cookies: {status?.cookie_count ?? 0}</span>
+          {status?.updated_at && <span>{new Date(status.updated_at).toLocaleString()}</span>}
+          {status?.error && <span className="text-destructive">{status.error}</span>}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button type="button" size="sm" onClick={handleLogin} disabled={loggingIn}>
+            {loggingIn && <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin" />}
+            打开登录
+          </Button>
+          <Button type="button" size="sm" variant="outline" onClick={refreshStatus}>刷新状态</Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
 }
 
 interface BilibiliPlatformConfig {
@@ -437,7 +522,7 @@ interface BilibiliPlatformConfig {
   subtitle_allow_legacy_fallback: boolean
 }
 
-export function BilibiliCard({ onAuthChange }: BilibiliCardProps) {
+export function BilibiliCard({ settings, updateSetting, saving, saved, onAuthChange }: BilibiliCardProps) {
   const [status, setStatus] = useState<{
     logged_in: boolean
     uid?: string
@@ -450,17 +535,24 @@ export function BilibiliCard({ onAuthChange }: BilibiliCardProps) {
   const [savedSubtitle, setSavedSubtitle] = useState(false)
   const [savingPlatform, setSavingPlatform] = useState<Record<string, boolean>>({})
   const [savedPlatform, setSavedPlatform] = useState<Record<string, boolean>>({})
+  const [checkingAuth, setCheckingAuth] = useState(false)
+
+  const refreshStatus = useCallback(async () => {
+    setCheckingAuth(true)
+    try {
+      const nextStatus = await api.bilibili.status()
+      setStatus(nextStatus)
+      onAuthChange?.(nextStatus.logged_in)
+    } catch {
+      setStatus({ logged_in: false, message: "无法连接后端" })
+      onAuthChange?.(false)
+    } finally {
+      setCheckingAuth(false)
+    }
+  }, [onAuthChange])
 
   useEffect(() => {
-    api.bilibili.status()
-      .then((nextStatus) => {
-        setStatus(nextStatus)
-        onAuthChange?.(nextStatus.logged_in)
-      })
-      .catch(() => {
-        setStatus({ logged_in: false, message: "无法连接后端" })
-        onAuthChange?.(false)
-      })
+    void refreshStatus()
 
     api.platforms.list().then((result) => {
       const bili = result.platforms.find((platform) => platform.id === "bilibili")
@@ -478,7 +570,12 @@ export function BilibiliCard({ onAuthChange }: BilibiliCardProps) {
     }).catch(() => {
       setPlatformConfig(null)
     })
-  }, [onAuthChange])
+  }, [refreshStatus])
+
+  const saveCredential = async (key: string, value: unknown) => {
+    await updateSetting(key, value)
+    await refreshStatus()
+  }
 
   const handleQualityChange = async (value: number) => {
     if (!platformConfig) return
@@ -536,7 +633,9 @@ export function BilibiliCard({ onAuthChange }: BilibiliCardProps) {
               <span>已登录 (UID: {status.uid})</span>
             </div>
             <p className="text-muted-foreground">
-              Cookie 有效期至 {status.expires?.split("T")[0]}（剩余 {status.days_left} 天）
+              {status.expires
+                ? `Cookie 有效期至 ${status.expires.split("T")[0]}（剩余 ${status.days_left} 天）`
+                : "Cookie 已通过登录校验"}
             </p>
           </div>
         ) : (
@@ -545,14 +644,58 @@ export function BilibiliCard({ onAuthChange }: BilibiliCardProps) {
               <span className="h-2 w-2 rounded-full bg-red-500" />
               <span>未登录</span>
             </div>
-            <p className="text-muted-foreground">
-              {status.message ?? "请在终端运行 BBDown.exe login 扫码登录"}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              路径: backend/tools/bbdown/BBDown.exe login
-            </p>
+            <p className="text-muted-foreground">字幕接口通常需要登录，请配置下方 B 站 Cookie。</p>
+            {status.message && <p className="text-xs text-muted-foreground">检测结果：{status.message}</p>}
           </div>
         )}
+
+        <Separator />
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-muted-foreground">登录凭据</p>
+            <p className="text-xs text-muted-foreground">
+              从已登录 bilibili.com 的浏览器 Cookie 中复制。读取字幕通常只需 SESSDATA；其余两项建议一并保存。
+            </p>
+          </div>
+
+          <SettingRow
+            label="SESSDATA"
+            settingKey="bilibili_sessdata"
+            value={String(settings.bilibili_sessdata ?? "")}
+            onSave={saveCredential}
+            saving={saving}
+            saved={saved}
+            masked
+            placeholder="必填：仅填写 SESSDATA 的值"
+          />
+          <SettingRow
+            label="bili_jct"
+            settingKey="bilibili_bili_jct"
+            value={String(settings.bilibili_bili_jct ?? "")}
+            onSave={saveCredential}
+            saving={saving}
+            saved={saved}
+            masked
+            placeholder="可选"
+          />
+          <SettingRow
+            label="DedeUserID"
+            settingKey="bilibili_dede_user_id"
+            value={String(settings.bilibili_dede_user_id ?? "")}
+            onSave={saveCredential}
+            saving={saving}
+            saved={saved}
+            masked
+            placeholder="可选"
+          />
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs text-muted-foreground">服务器部署可直接在此配置；桌面版仍可使用 BBDown 扫码登录。</p>
+            <Button type="button" size="sm" variant="outline" disabled={checkingAuth} onClick={() => void refreshStatus()}>
+              {checkingAuth && <HugeiconsIcon icon={Loading03Icon} className="h-3.5 w-3.5 animate-spin" />}
+              检测登录
+            </Button>
+          </div>
+        </div>
 
         {platformConfig !== null && (
           <>

@@ -34,6 +34,19 @@ def _extract_http_urls(value: str) -> list[str]:
     return [match.group(0).strip() for match in _HTTP_URL_RE.finditer(value)]
 
 
+def _extract_twitter_external_article_url(value: str) -> str:
+    """Return the first article URL that leaves X/Twitter infrastructure."""
+    for candidate in _extract_http_urls(value):
+        parsed = urlparse(candidate.rstrip(".,;:!?)]}"))
+        host = (parsed.hostname or "").lower()
+        if host and not any(
+            host == suffix or host.endswith(f".{suffix}")
+            for suffix in ("x.com", "twitter.com", "t.co", "twimg.com")
+        ):
+            return parsed.geturl()
+    return ""
+
+
 def _candidate_urls(value: str) -> list[str]:
     urls = _extract_http_urls(value)
     return urls or [value.strip()]
@@ -711,7 +724,7 @@ def _empty_subtitle_result(
         "subtitle_lang": None,
         "subtitle_format": None,
         "subtitle_engine": engine,
-        "diagnostics": diagnostics or [],
+        "diagnostics": diagnostics if diagnostics is not None else [],
     }
 
 
@@ -1139,10 +1152,109 @@ class YtdlpService:
         output_dir.mkdir(parents=True, exist_ok=True)
         info = self._fetch_twitter_webpage_note(url, fallback_error=fallback_error)
         extra = info.setdefault("extra", {})
+        external_article_url = extra.get("external_article_url") if isinstance(extra, dict) else None
+        if external_article_url and extra.get("content_kind") == "long_article":
+            try:
+                from app.services.ingestion.platform.webpage.api import download_webpage
+
+                article_info = download_webpage(str(external_article_url), output_dir)
+                article_extra = article_info.setdefault("extra", {})
+                if not isinstance(article_extra, dict):
+                    article_extra = {}
+                    article_info["extra"] = article_extra
+                external_scrape_engine = article_extra.get("scrape_engine")
+                article_extra.update(extra)
+                article_extra.update({
+                    "platform": "twitter",
+                    "external_article_url": str(external_article_url),
+                    "external_scrape_engine": external_scrape_engine,
+                    "article_body_status": "complete",
+                    "article_body_engine": external_scrape_engine or "webpage",
+                    "source_markdown_path": str(output_dir / "source.md"),
+                })
+                article_info.update({
+                    "title": extra.get("article_title") or article_info.get("title") or info.get("title"),
+                    "original_url": url,
+                    "platform": "twitter",
+                    "content_subtype": "text_note",
+                    "uploader": info.get("uploader") or article_info.get("uploader"),
+                })
+                info = article_info
+                extra = article_extra
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "twitter.article.external_fetched",
+                    status_url=url,
+                    article_url=external_article_url,
+                )
+            except Exception as exc:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "twitter.article.external_fetch_failed",
+                    status_url=url,
+                    article_url=external_article_url,
+                    error=exc,
+                )
+        if (
+            isinstance(extra, dict)
+            and extra.get("content_kind") == "long_article"
+            and extra.get("article_body_status") != "complete"
+        ):
+            try:
+                from app.services.ingestion.platform.webpage.api import download_webpage
+
+                article_info = download_webpage(url, output_dir)
+                article_markdown = str(article_info.get("description") or "").strip()
+                preview_markdown = str(info.get("description") or "").strip()
+                if len(article_markdown) <= max(800, len(preview_markdown) * 2):
+                    raise RuntimeError("Defuddle returned only the X article preview")
+                article_extra = article_info.setdefault("extra", {})
+                if not isinstance(article_extra, dict):
+                    article_extra = {}
+                    article_info["extra"] = article_extra
+                article_scrape_engine = article_extra.get("scrape_engine")
+                article_extra.update(extra)
+                article_extra.update({
+                    "platform": "twitter",
+                    "status_url": url,
+                    "article_body_status": "complete",
+                    "article_body_engine": article_scrape_engine or "defuddle",
+                    "source_markdown_path": str(output_dir / "source.md"),
+                })
+                article_info.update({
+                    "title": extra.get("article_title") or article_info.get("title") or info.get("title"),
+                    "original_url": url,
+                    "webpage_url": url,
+                    "platform": "twitter",
+                    "content_subtype": "text_note",
+                    "uploader": info.get("uploader") or article_info.get("uploader"),
+                })
+                info = article_info
+                extra = article_extra
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "twitter.article.status_fetched",
+                    status_url=url,
+                    engine=article_scrape_engine,
+                    markdown_chars=len(article_markdown),
+                )
+            except Exception as exc:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "twitter.article.status_fetch_failed",
+                    status_url=url,
+                    error=exc,
+                )
         if isinstance(extra, dict):
             extra["source_markdown_path"] = str(output_dir / "source.md")
             extra.setdefault("image_count", 0)
-        (output_dir / "source.md").write_text(str(info.get("description") or ""), encoding="utf-8")
+        source_path = output_dir / "source.md"
+        if not source_path.exists():
+            source_path.write_text(str(info.get("description") or ""), encoding="utf-8")
         return {
             "url": url,
             "title": info.get("title", "x_status"),
@@ -1159,11 +1271,17 @@ class YtdlpService:
         page = self._scrape_twitter_page(url)
         resolved_url = page.get("url") or url
         body_text = _clean_twitter_text(str(page.get("text") or ""))
+        article_body = _clean_twitter_text(str(page.get("article_body") or ""))
         article_title = _extract_twitter_article_title(page.get("article_text") or body_text)
+        external_article_url = _extract_twitter_external_article_url(body_text)
+        article_url = str(page.get("article_url") or "")
+        is_x_article = bool(re.search(r"(?:x|twitter)\.com/i/article/\d+", article_url, re.IGNORECASE))
         title = article_title or _clean_twitter_title(str(page.get("title") or "")) or "X post"
         image_urls = _dedupe_twitter_image_urls(page.get("image_urls"))
         markdown_parts = [f"# {title}", f"Source: {resolved_url}"]
-        if body_text:
+        if article_body:
+            markdown_parts.append(article_body)
+        elif body_text:
             markdown_parts.append(body_text)
         for idx, image_url in enumerate(image_urls, start=1):
             markdown_parts.append(f"![X image {idx}]({image_url})")
@@ -1173,9 +1291,12 @@ class YtdlpService:
         extra = {
             "platform": "twitter",
             "scrape_engine": "playwright",
-            "twitter_type": page.get("type") or "status",
-            "article_url": page.get("article_url"),
+            "twitter_type": "article" if is_x_article else (page.get("type") or "status"),
+            "content_kind": "long_article" if is_x_article else "status",
+            "article_url": article_url,
             "article_title": article_title,
+            "article_body_status": "complete" if article_body else ("auth_required" if is_x_article else "not_applicable"),
+            "external_article_url": external_article_url,
             "status_url": resolved_url,
             "image_urls": image_urls,
             "image_url_candidates": [[url] for url in image_urls],
@@ -1190,7 +1311,7 @@ class YtdlpService:
             "webpage_url": resolved_url,
             "original_url": url,
             "platform": "twitter",
-            "content_subtype": "image_note" if image_urls else "text_note",
+            "content_subtype": "text_note" if is_x_article else ("image_note" if image_urls else "text_note"),
             "media_type": "image",
             "uploader": uploader,
             "thumbnail": thumbnail,
@@ -1198,20 +1319,29 @@ class YtdlpService:
         }
 
     def _scrape_twitter_page(self, url: str) -> dict[str, Any]:
+        if not bool(getattr(get_runtime_settings(), "playwright_enabled", True)):
+            raise RuntimeError("Playwright browser extraction is disabled")
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as e:
             raise RuntimeError("Playwright is required for X article/status fallback.") from e
 
+        from app.services.ingestion.platform.twitter.api import storage_state_path
+
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            page = browser.new_page(
-                user_agent=(
+            context_kwargs = {
+                "user_agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
                 ),
-                locale="en-US",
-            )
+                "locale": "en-US",
+            }
+            auth_path = storage_state_path()
+            if auth_path.exists():
+                context_kwargs["storage_state"] = str(auth_path)
+            context = browser.new_context(**context_kwargs)
+            page = context.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=45000)
             page.wait_for_timeout(3000)
             data = page.evaluate(
@@ -1257,10 +1387,37 @@ class YtdlpService:
                         image_urls: imageUrls,
                         article_url: article?.href || "",
                         article_text: articleText,
-                        type: imageUrls.length ? "image_status" : (article ? "article_card" : "status"),
+                        type: article ? "article" : (imageUrls.length ? "image_status" : "status"),
                     };
                 }"""
             )
+            article_url = str(data.get("article_url") or "") if isinstance(data, dict) else ""
+            if article_url and auth_path.exists():
+                article_page = context.new_page()
+                article_page.goto(article_url, wait_until="domcontentloaded", timeout=45000)
+                article_page.wait_for_timeout(4000)
+                if "/i/flow/login" not in article_page.url:
+                    article_data = article_page.evaluate(
+                        """() => {
+                            const clean = (value) => (value || "").replace(/\\n{3,}/g, "\\n\\n").trim();
+                            const candidates = Array.from(document.querySelectorAll(
+                                'main article, main [data-testid="article"], main [role="article"], main'
+                            )).map((node) => clean(node.innerText));
+                            const body = candidates.sort((a, b) => b.length - a.length)[0] || "";
+                            const imageUrls = Array.from(document.querySelectorAll('main img'))
+                                .map((img) => img.currentSrc || img.src || "")
+                                .filter((src) => /pbs\\.twimg\\.com\\/media\\//i.test(src));
+                            return { body, image_urls: [...new Set(imageUrls)] };
+                        }"""
+                    )
+                    if isinstance(article_data, dict):
+                        article_body = str(article_data.get("body") or "").strip()
+                        preview = str(data.get("article_text") or "")
+                        if len(article_body) > max(600, len(preview) * 2):
+                            data["article_body"] = article_body
+                            data["image_urls"] = _dedupe_twitter_image_urls(
+                                [*(data.get("image_urls") or []), *(article_data.get("image_urls") or [])]
+                            )
             browser.close()
         return data if isinstance(data, dict) else {}
 
@@ -1373,8 +1530,9 @@ class YtdlpService:
 
         tracks = ((pv2_data.get("subtitle") or {}).get("subtitles")) or []
         if not tracks:
-            log_event(logger, logging.INFO, "bilibili.subtitle.empty", bvid=bvid, reason="no_tracks")
-            diagnostics.append({"stage": "track_list", "status": "empty", "reason": "no_tracks"})
+            reason = "login_required" if pv2_data.get("need_login_subtitle") else "no_tracks"
+            log_event(logger, logging.INFO, "bilibili.subtitle.empty", bvid=bvid, reason=reason)
+            diagnostics.append({"stage": "track_list", "status": "empty", "reason": reason})
             return empty
 
         usable = [t for t in tracks if t.get("subtitle_url")]
@@ -1848,7 +2006,12 @@ class YtdlpService:
                     ))
 
         description = info.get("description")
-        if description and len(description) > 5000:
+        content_subtype = str(info.get("content_subtype") or "").strip().lower()
+        if (
+            description
+            and len(description) > 5000
+            and content_subtype not in {"image_note", "text_note"}
+        ):
             description = description[:5000] + "..."
 
         media_type = MediaType.VIDEO

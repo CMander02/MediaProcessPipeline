@@ -14,13 +14,13 @@ export function StepProgress({ task }: { task: Task }) {
         return (
           <div key={step.id} className="flex items-center gap-1">
             {i > 0 && (
-              <div className={cn("h-px w-3", isCompleted ? "bg-emerald-400" : "bg-border")} />
+              <div className={cn("h-px w-3", isCompleted ? "bg-foreground/40" : "bg-border")} />
             )}
             <div
               className={cn(
                 "flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-colors",
-                isCompleted && "bg-emerald-50 text-emerald-700",
-                isCurrent && "bg-blue-50 text-blue-700",
+                isCompleted && "bg-muted text-foreground",
+                isCurrent && "bg-foreground text-background",
                 !isCompleted && !isCurrent && "text-muted-foreground",
               )}
             >

@@ -137,13 +137,15 @@ class ArchiveService:
         dir_to_task = self._archive_task_map()
 
         archives = []
-        for task_dir in sorted(data_root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+        for task_dir in data_root.iterdir():
             item = self._archive_item(task_dir, dir_to_task, lite=lite)
             if not item:
                 continue
             archives.append(item)
-            if limit and len(archives) >= limit:
-                break
+
+        archives.sort(key=lambda item: item["created_at"], reverse=True)
+        if limit:
+            archives = archives[:limit]
 
         return archives
 
@@ -159,8 +161,8 @@ class ArchiveService:
             return None
         return self._archive_item(task_dir, self._archive_task_map(), lite=lite)
 
-    def _archive_task_map(self) -> dict[str, str]:
-        dir_to_task: dict[str, str] = {}
+    def _archive_task_map(self) -> dict[str, dict[str, str]]:
+        dir_to_task: dict[str, dict[str, str]] = {}
         try:
             from app.core.database import get_task_store
 
@@ -169,7 +171,10 @@ class ArchiveService:
                 result = task.result or {}
                 out_dir = result.get("output_dir") or (result.get("archive") or {}).get("output_dir")
                 if out_dir:
-                    dir_to_task[str(Path(out_dir).resolve())] = str(task.id)
+                    dir_to_task[str(Path(out_dir).resolve())] = {
+                        "id": str(task.id),
+                        "created_at": task.created_at.isoformat(),
+                    }
         except Exception:
             pass
         return dir_to_task
@@ -177,7 +182,7 @@ class ArchiveService:
     def _archive_item(
         self,
         task_dir: Path,
-        dir_to_task: dict[str, str],
+        dir_to_task: dict[str, dict[str, str]],
         *,
         lite: bool = False,
     ) -> dict[str, Any] | None:
@@ -232,18 +237,25 @@ class ArchiveService:
 
         meta_status = metadata.get("status", "completed")
         processing = meta_status in ("queued", "processing", "paused")
+        task_info = dir_to_task.get(str(task_dir.resolve()), {})
         task_id = (
-            dir_to_task.get(str(task_dir.resolve()))
+            task_info.get("id")
             or metadata.get("task_id")
             or (task_dir.name.split("_")[0] if "_" in task_dir.name else None)
         )
+        metadata_path = task_dir / "metadata.json"
+        created_at = task_info.get("created_at")
+        if not created_at:
+            timestamp = metadata_path.stat().st_mtime if metadata_path.exists() else task_dir.stat().st_mtime
+            created_at = datetime.fromtimestamp(timestamp).isoformat()
         duration_seconds = metadata.get("duration_seconds") or metadata.get("duration")
         if not duration_seconds:
             duration_seconds = self._duration_from_srt(task_dir)
 
         return {
             "path": str(task_dir),
-            "date": datetime.fromtimestamp(task_dir.stat().st_mtime).strftime("%Y-%m-%d"),
+            "date": datetime.fromisoformat(created_at).strftime("%Y-%m-%d"),
+            "created_at": created_at,
             "title": metadata.get("title", task_dir.name),
             "has_transcript": (task_dir / "transcript_polished.srt").exists() or (task_dir / "transcript.srt").exists(),
             "has_summary": (task_dir / "summary.md").exists(),

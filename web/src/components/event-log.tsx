@@ -44,7 +44,7 @@ export function EventLog() {
 
   return (
     <div className="space-y-2">
-      <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+      <h2 className="text-base font-semibold text-foreground">
         事件日志
       </h2>
       <ScrollArea className="h-[500px] rounded-md border bg-muted/30">
@@ -57,8 +57,8 @@ export function EventLog() {
           {entries.map((e, i) => (
             <div key={i} className="flex gap-2 leading-5">
               <span className="text-muted-foreground shrink-0">{e.ts}</span>
-              <span className="text-blue-600 shrink-0">{e.tid}</span>
-              <span className="text-amber-600 shrink-0 w-16">{e.type}</span>
+              <span className="text-muted-foreground shrink-0">{e.tid}</span>
+              <span className="text-foreground shrink-0 w-16">{e.type}</span>
               <span className="text-foreground truncate">{e.detail}</span>
             </div>
           ))}

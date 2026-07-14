@@ -189,17 +189,17 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
             返回
           </Button>
           <div className="flex-1 min-w-0">
-            <h2 className="text-sm font-medium truncate">
+            <h2 className="text-lg font-semibold truncate">
               {task?.source ? task.source.split(/[/\\]/).pop() : `任务 ${taskId.slice(0, 8)}`}
             </h2>
             {task?.status && (
               <p className={cn(
                 "text-xs",
-                task.status === "processing" && "text-blue-600",
-                task.status === "completed" && "text-emerald-600",
+                task.status === "processing" && "text-foreground",
+                task.status === "completed" && "text-foreground",
                 task.status === "failed" && "text-destructive",
-                task.status === "queued" && "text-amber-600",
-                task.status === "paused" && "text-slate-600",
+                task.status === "queued" && "text-muted-foreground",
+                task.status === "paused" && "text-muted-foreground",
                 task.status === "cancelled" && "text-muted-foreground",
               )}>
                 {task.status === "processing" ? "处理中..." : task.status === "completed" ? "已完成" : task.status === "failed" ? "失败" : task.status === "queued" ? "排队中" : task.status === "paused" ? "已暂停" : "已取消"}
@@ -248,9 +248,9 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
                   <div
                     className={cn(
                       "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors",
-                      isCompleted && "border-emerald-500 bg-emerald-500 text-white",
-                      isCurrent && !isFailed && !isPaused && "border-blue-500 bg-blue-50 dark:bg-blue-950",
-                      isPaused && "border-slate-400 bg-slate-50 dark:bg-slate-950",
+                      isCompleted && "border-foreground bg-foreground text-background",
+                      isCurrent && !isFailed && !isPaused && "border-foreground bg-muted",
+                      isPaused && "border-muted-foreground bg-muted",
                       isFailed && "border-destructive bg-destructive/10",
                       !isCompleted && !isCurrent && "border-muted-foreground/30",
                     )}
@@ -258,11 +258,11 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
                     {isCompleted ? (
                       <HugeiconsIcon icon={Tick02Icon} className="h-3 w-3" />
                     ) : isCurrent && !isFailed && !isPaused ? (
-                      <HugeiconsIcon icon={Loading03Icon} className="h-3 w-3 animate-spin text-blue-600" />
+                      <HugeiconsIcon icon={Loading03Icon} className="h-3 w-3 animate-spin text-foreground" />
                     ) : isFailed ? (
                       <HugeiconsIcon icon={Cancel01Icon} className="h-3 w-3 text-destructive" />
                     ) : isPaused ? (
-                      <HugeiconsIcon icon={PauseIcon} className="h-3 w-3 text-slate-600" />
+                      <HugeiconsIcon icon={PauseIcon} className="h-3 w-3 text-muted-foreground" />
                     ) : (
                       <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/20" />
                     )}
@@ -270,9 +270,9 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
                   <span
                     className={cn(
                       "text-xs whitespace-nowrap",
-                      isCompleted && "text-emerald-700 dark:text-emerald-400 font-medium",
-                      isCurrent && !isFailed && !isPaused && "text-blue-700 dark:text-blue-400 font-medium",
-                      isPaused && "text-slate-600 font-medium",
+                      isCompleted && "text-foreground font-medium",
+                      isCurrent && !isFailed && !isPaused && "text-foreground font-medium",
+                      isPaused && "text-muted-foreground font-medium",
                       isFailed && "text-destructive font-medium",
                       !isCompleted && !isCurrent && "text-muted-foreground",
                     )}
@@ -284,7 +284,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
                   <div
                     className={cn(
                       "h-px w-6 mx-1",
-                      isCompleted ? "bg-emerald-400" : "bg-border",
+                      isCompleted ? "bg-foreground/40" : "bg-border",
                     )}
                   />
                 )}
@@ -298,7 +298,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
               <span className="font-medium">{flow.label}</span>
               <span className="text-muted-foreground">{flow.platform}</span>
-              <span className="text-blue-600">{flow.current_step_label ?? flow.current_step}</span>
+              <span className="text-foreground">{flow.current_step_label ?? flow.current_step}</span>
               <span className="text-muted-foreground">{Math.round((flow.progress ?? 0) * 100)}%</span>
             </div>
             <div className="flex flex-wrap gap-1.5">
@@ -310,8 +310,8 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
                     key={step.id}
                     className={cn(
                       "inline-flex h-5 items-center rounded px-1.5 text-[10px]",
-                      isDone && "bg-emerald-50 text-emerald-700",
-                      isCurrent && !isDone && "bg-blue-50 text-blue-700",
+                      isDone && "bg-muted text-foreground",
+                      isCurrent && !isDone && "bg-foreground text-background",
                       !isDone && !isCurrent && "bg-background text-muted-foreground",
                     )}
                   >
@@ -325,7 +325,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
 
         {/* Event log */}
         <div>
-          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+          <h3 className="mb-2 text-base font-semibold text-foreground">
             事件日志
           </h3>
           <div className="rounded-md border bg-muted/30 p-3 font-mono text-xs space-y-0.5 max-h-[60vh] overflow-y-auto">
@@ -340,8 +340,8 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
                 <span className={cn(
                   "shrink-0 w-20 truncate",
                   e.level === "error" && "text-destructive",
-                  e.level === "warning" && "text-amber-600 dark:text-amber-400",
-                  !e.level && "text-amber-600 dark:text-amber-400",
+                  e.level === "warning" && "text-muted-foreground",
+                  !e.level && "text-muted-foreground",
                 )}>{e.type}</span>
                 <span className="text-foreground truncate">{e.detail}</span>
               </div>

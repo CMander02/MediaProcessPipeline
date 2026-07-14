@@ -119,7 +119,7 @@ function timelineStatusText(event: TaskTimelineEvent, stepLabels: Record<string,
 
 function timelineStatusClass(level: string): string {
   if (level === "error") return "border-destructive/40 bg-destructive/5 text-destructive"
-  if (level === "warning") return "border-amber-300/60 bg-amber-50 text-amber-700 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-300"
+  if (level === "warning") return "border-border bg-muted/50 text-foreground"
   return "border-border bg-muted/40 text-muted-foreground"
 }
 
@@ -1024,15 +1024,20 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const bilibiliType = typeof archiveExtra?.bilibili_type === "string" ? archiveExtra.bilibili_type : null
   const isArticleNote = platform === "bilibili_opus" && bilibiliType === "article"
   const isPureWebpage = platform === "webpage" && isTextNote
+  const isLongArticle = archiveExtra?.content_kind === "long_article"
   const isNoteContent = isImageNote || isTextNote
-  const headerMediaIcon = isImageNote || archive?.has_image
+  const headerMediaIcon = isLongArticle
+    ? Note01Icon
+    : isImageNote || archive?.has_image
     ? Image01Icon
     : isTextNote
       ? Note01Icon
     : mediaType === "video"
       ? Video01Icon
       : MusicNote01Icon
-  const headerMediaLabel = isImageNote || archive?.has_image
+  const headerMediaLabel = isLongArticle
+    ? "长文"
+    : isImageNote || archive?.has_image
     ? isArticleNote ? "专栏" : "图文"
     : isTextNote
       ? "正文"
@@ -1073,14 +1078,17 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   }, flowStepLabels)
 
   useEffect(() => {
-    if (isPureWebpage && activeTab === "transcript") {
+    if (isLongArticle && activeTab !== "summary" && activeTab !== "mindmap") {
+      setActiveTab("summary")
+      updateActiveTab("summary")
+    } else if (isPureWebpage && activeTab === "transcript") {
       setActiveTab("summary")
       updateActiveTab("summary")
     } else if ((!isImageNote || isArticleNote) && activeTab === "source") {
       setActiveTab("summary")
       updateActiveTab("summary")
     }
-  }, [activeTab, isArticleNote, isImageNote, isPureWebpage, updateActiveTab])
+  }, [activeTab, isArticleNote, isImageNote, isLongArticle, isPureWebpage, updateActiveTab])
 
   // Sync title from archive
   useEffect(() => {
@@ -1316,7 +1324,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
           <TabsList className="w-max">
             <TabsTrigger value="summary">摘要</TabsTrigger>
             {isImageNote && !isArticleNote && <TabsTrigger value="source">原帖</TabsTrigger>}
-            {!isPureWebpage && (
+            {!isPureWebpage && !isLongArticle && (
               <TabsTrigger value="transcript">
                 {isImageNote ? "图片" : isTextNote ? "正文" : "字幕"}
                 {!isNoteContent && transcript && !isPolished && isProcessing && (
@@ -1325,7 +1333,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
               </TabsTrigger>
             )}
             {(mindmap || isProcessing) && <TabsTrigger value="mindmap">导图</TabsTrigger>}
-            {detail && <TabsTrigger value="detail">详情</TabsTrigger>}
+            {detail && !isLongArticle && <TabsTrigger value="detail">详情</TabsTrigger>}
           </TabsList>
           </div>
           {activeTab === "mindmap" && mindmapFit && (
@@ -1393,7 +1401,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
           </TabsContent>
         )}
 
-        {!isPureWebpage && (
+        {!isPureWebpage && !isLongArticle && (
           <TabsContent value="transcript" className="mt-3 relative flex-1">
             <div className="absolute inset-0 rounded-md border flex flex-col">
               {isImageNote ? (
@@ -1513,7 +1521,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
             ) : null}
           </TabsContent>
         )}
-        {detail && (
+        {detail && !isLongArticle && (
           <TabsContent value="detail" className="mt-3 relative flex-1">
             <div className="absolute inset-0 rounded-md border">
               <SummaryTab content={detail} />
@@ -1598,8 +1606,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                   className={cn(
                     "rounded px-1.5 py-0.5 text-[10px] font-medium",
                     subtitleSourceType === "platform"
-                      ? "text-sky-700 dark:text-sky-300"
-                      : "text-violet-700 dark:text-violet-300",
+                      ? "text-foreground"
+                      : "text-muted-foreground",
                   )}
                   title={subtitleSourceType === "platform" ? "字幕来自平台" : "字幕由 ASR 生成"}
                 >
@@ -1615,7 +1623,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
           </div>
         )}
         {isProcessing && (
-          <span className="text-xs text-blue-600 flex items-center gap-1">
+          <span className="text-xs text-foreground flex items-center gap-1">
             <HugeiconsIcon icon={Loading03Icon} className="h-3 w-3 animate-spin" />
             处理中
           </span>
@@ -1661,7 +1669,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                   <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
                     {taskFlow.platform}
                   </span>
-                  <span className="text-blue-600 dark:text-blue-400">{flowStatusLabel}</span>
+                  <span className="text-foreground">{flowStatusLabel}</span>
                 </div>
                 <span className="shrink-0 text-sm tabular-nums text-muted-foreground">{flowProgress}%</span>
               </div>
@@ -1678,8 +1686,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                     key={step.id}
                     className={cn(
                       "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs transition-colors",
-                      isDone && "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
-                      isCurrent && !isDone && "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-300",
+                      isDone && "border-foreground/20 bg-muted text-foreground",
+                      isCurrent && !isDone && "border-foreground bg-foreground text-background",
                       !isDone && !isCurrent && "border-border bg-muted/30 text-muted-foreground",
                     )}
                   >
@@ -1805,7 +1813,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                   <TabsList className="w-max">
                     <TabsTrigger value="summary">摘要</TabsTrigger>
                     {isImageNote && !isArticleNote && <TabsTrigger value="source">原帖</TabsTrigger>}
-                    {!isPureWebpage && (
+                    {!isPureWebpage && !isLongArticle && (
                       <TabsTrigger value="transcript">
                         {isImageNote ? "图片" : isTextNote ? "正文" : "字幕"}
                         {!isNoteContent && transcript && !isPolished && isProcessing && (
@@ -1814,7 +1822,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                       </TabsTrigger>
                     )}
                     {(mindmap || isProcessing) && <TabsTrigger value="mindmap">导图</TabsTrigger>}
-                    {detail && <TabsTrigger value="detail">详情</TabsTrigger>}
+                    {detail && !isLongArticle && <TabsTrigger value="detail">详情</TabsTrigger>}
                   </TabsList>
                   </div>
                   {activeTab === "mindmap" && mindmapFit && (
@@ -1882,7 +1890,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                   </TabsContent>
                 )}
 
-                {!isPureWebpage && (
+                {!isPureWebpage && !isLongArticle && (
                   <TabsContent value="transcript" className="mt-3 relative flex-1">
                     <div className="absolute inset-0 rounded-md border flex flex-col">
                       {isImageNote ? (
@@ -2002,7 +2010,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                     ) : null}
                   </TabsContent>
                 )}
-                {detail && (
+                {detail && !isLongArticle && (
                   <TabsContent value="detail" className="mt-3 relative flex-1">
                     <div className="absolute inset-0 rounded-md border">
                       <SummaryTab content={detail} />

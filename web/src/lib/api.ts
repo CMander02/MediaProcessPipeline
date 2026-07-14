@@ -98,9 +98,18 @@ export interface Settings extends RuntimeSettings {
   qwen3_gguf_chunk_strategy: string
   silero_onnx_model_path: string
   local_llm_model_path: string
+  local_llm_engine: string
+  local_llm_name: string
+  local_llm_mmproj_path: string
+  local_llm_device: string
+  local_llm_dtype: string
+  local_llm_max_new_tokens: number
   local_llm_n_gpu_layers: number
   local_llm_n_ctx: number
   local_llm_n_batch: number
+  local_llm_timeout_sec: number
+  local_llm_keepalive_sec: number
+  local_llm_concurrency: number
   polish_provider: string
   [key: string]: unknown
 }
@@ -123,6 +132,15 @@ export interface ProviderModelCatalogResult {
   configured_models: ProviderModelRecord[]
   allowed_models: ProviderModelRecord[]
   error?: string | null
+}
+
+export interface TwitterAuthStatus {
+  storage_state_path: string
+  storage_state_exists: boolean
+  cookie_count: number
+  logged_in: boolean
+  updated_at?: string
+  error?: string
 }
 
 export interface YtdlpStatus {
@@ -433,6 +451,12 @@ export const api = {
       get<XiaohongshuAuthStatus>("/api/pipeline/xiaohongshu/auth/status"),
     login: (timeoutSec = 180) =>
       post<XiaohongshuAuthStatus>("/api/pipeline/xiaohongshu/auth/login", { timeout_sec: timeoutSec }),
+  },
+
+  twitter: {
+    status: () => get<TwitterAuthStatus>("/api/pipeline/twitter/auth/status"),
+    login: (timeoutSec = 180) =>
+      post<TwitterAuthStatus>("/api/pipeline/twitter/auth/login", { timeout_sec: timeoutSec }),
   },
 
   platforms: {

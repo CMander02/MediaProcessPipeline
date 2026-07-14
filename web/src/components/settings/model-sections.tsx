@@ -978,7 +978,17 @@ function getProviderModelOptions(settings: Settings, capability: string): ModelB
     })
   }
   if (capability === "llm") {
-    options.push({ value: modelValue("local", "local-hf"), label: "本地 HF 模型" })
+    const name = String(settings.local_llm_name || "Local LLM")
+    options.push({ value: modelValue("local", name), label: `${name} · 本地` })
+  }
+  if (
+    capability === "vision"
+    && settings.local_llm_engine === "llama_cpp"
+    && settings.local_llm_model_path
+    && settings.local_llm_mmproj_path
+  ) {
+    const name = String(settings.local_llm_name || "Local LLM")
+    options.push({ value: modelValue("local", name), label: `${name} · 本地多模态` })
   }
   return uniqueOptions(options)
 }
@@ -1285,6 +1295,13 @@ export function LocalModelSettings({
   const [selectedId, setSelectedId] = useState("qwen3-gguf")
   const entries: ModelListItem[] = [
     {
+      id: "local-llm",
+      title: "Local LLM",
+      description: "本地文本与图像理解",
+      badge: "LL",
+      status: Object.values(getRuntimeModelBindings(settings)).some((binding) => binding.provider_id === "local") ? "ON" : undefined,
+    },
+    {
       id: "qwen3-gguf",
       title: "Qwen3-ASR GGUF",
       description: "llama.cpp 本地语音识别",
@@ -1328,6 +1345,141 @@ export function LocalModelSettings({
         title={activeItem.title}
         description={activeItem.description}
       />
+
+      {activeItem.id === "local-llm" && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <Label className="w-24 shrink-0 text-sm text-muted-foreground">推理引擎</Label>
+            <select
+              value={String(settings.local_llm_engine ?? "transformers")}
+              onChange={(event) => updateSetting("local_llm_engine", event.target.value)}
+              className="h-8 min-w-52 rounded-md border border-input bg-background px-3 text-sm"
+            >
+              <option value="llama_cpp">llama.cpp · GGUF</option>
+              <option value="transformers">Transformers · HuggingFace</option>
+            </select>
+            {settings.local_llm_engine === "llama_cpp" && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => updateSetting("runtime_model_bindings", {
+                  ...getRuntimeModelBindings(settings),
+                  vision: {
+                    provider_id: "local",
+                    model_id: String(settings.local_llm_name || "Local LLM"),
+                    capability: "vision",
+                  },
+                })}
+                className="h-8"
+              >
+                设为图文理解
+              </Button>
+            )}
+          </div>
+          <SettingRow
+            label="名称"
+            settingKey="local_llm_name"
+            value={String(settings.local_llm_name ?? "Local LLM")}
+            onSave={updateSetting}
+            saving={saving}
+            saved={saved}
+          />
+          {settings.local_llm_engine === "llama_cpp" && (
+            <SettingRow
+              label="llama.cpp"
+              settingKey="llama_cpp_binary_path"
+              value={String(settings.llama_cpp_binary_path ?? "")}
+              onSave={updateSetting}
+              saving={saving}
+              saved={saved}
+              placeholder="llama-server.exe"
+            />
+          )}
+          <SettingRow
+            label="模型路径"
+            settingKey="local_llm_model_path"
+            value={String(settings.local_llm_model_path ?? "")}
+            onSave={updateSetting}
+            saving={saving}
+            saved={saved}
+            placeholder={settings.local_llm_engine === "llama_cpp" ? "选择 GGUF 模型" : "选择 HuggingFace 模型目录"}
+          />
+          {settings.local_llm_engine === "llama_cpp" && (
+            <SettingRow
+              label="mmproj"
+              settingKey="local_llm_mmproj_path"
+              value={String(settings.local_llm_mmproj_path ?? "")}
+              onSave={updateSetting}
+              saving={saving}
+              saved={saved}
+              placeholder="选择多模态 projector GGUF"
+            />
+          )}
+          <DeviceChoice
+            value={String(settings.local_llm_device ?? "auto")}
+            options={["auto", "cuda", "cpu"]}
+            onChange={(value) => updateSetting("local_llm_device", value)}
+          />
+          {settings.local_llm_engine === "transformers" && (
+            <SettingRow
+              label="数据类型"
+              settingKey="local_llm_dtype"
+              value={String(settings.local_llm_dtype ?? "bfloat16")}
+              onSave={updateSetting}
+              saving={saving}
+              saved={saved}
+            />
+          )}
+          <SettingRow
+            label="Context"
+            settingKey="local_llm_n_ctx"
+            value={String(settings.local_llm_n_ctx ?? 8192)}
+            onSave={(key, value) => updateSetting(key, Number(value))}
+            saving={saving}
+            saved={saved}
+          />
+          <SettingRow
+            label="GPU 层"
+            settingKey="local_llm_n_gpu_layers"
+            value={String(settings.local_llm_n_gpu_layers ?? 99)}
+            onSave={(key, value) => updateSetting(key, Number(value))}
+            saving={saving}
+            saved={saved}
+          />
+          <SettingRow
+            label="并发"
+            settingKey="local_llm_concurrency"
+            value={String(settings.local_llm_concurrency ?? 2)}
+            onSave={(key, value) => updateSetting(key, Number(value))}
+            saving={saving}
+            saved={saved}
+          />
+          <SettingRow
+            label="最大输出"
+            settingKey="local_llm_max_new_tokens"
+            value={String(settings.local_llm_max_new_tokens ?? 4096)}
+            onSave={(key, value) => updateSetting(key, Number(value))}
+            saving={saving}
+            saved={saved}
+          />
+          <SettingRow
+            label="超时"
+            settingKey="local_llm_timeout_sec"
+            value={String(settings.local_llm_timeout_sec ?? 300)}
+            onSave={(key, value) => updateSetting(key, Number(value))}
+            saving={saving}
+            saved={saved}
+          />
+          <SettingRow
+            label="保活"
+            settingKey="local_llm_keepalive_sec"
+            value={String(settings.local_llm_keepalive_sec ?? 600)}
+            onSave={(key, value) => updateSetting(key, Number(value))}
+            saving={saving}
+            saved={saved}
+          />
+        </div>
+      )}
 
       {activeItem.id === "qwen3-gguf" && (
         <div className="space-y-3">

@@ -407,7 +407,10 @@ def _download_image_with_strategy_order(
                 flattened_attempts.extend(attempts)
                 return {
                     "strategy": strategy,
-                    "attempts": flattened_attempts,
+                    "attempts": [
+                        attempt for attempt in flattened_attempts
+                        if attempt.get("status") != "error"
+                    ],
                     "strategy_attempts": [
                         *strategy_records,
                         {"strategy": strategy, "status": "completed", "attempts": attempts},

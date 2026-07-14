@@ -11,7 +11,7 @@ import { api, getApiToken, persistApiToken, type Settings, type YtdlpStatus } fr
 import { usePreferences } from "@/hooks/use-preferences"
 import { SettingRow } from "@/components/settings/setting-controls"
 import { LocalModelSettings, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
-import { BilibiliCard, PlaceholderSection, XiaohongshuCard, YoutubeCard, ZhihuCard } from "@/components/settings/source-cards"
+import { BilibiliCard, PlaceholderSection, TwitterCard, XiaohongshuCard, YoutubeCard, ZhihuCard } from "@/components/settings/source-cards"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Loading03Icon, Tick02Icon, Moon02Icon, Sun01Icon } from "@hugeicons/core-free-icons"
 
@@ -530,12 +530,32 @@ export function SettingsPanel() {
               </Card>
               <Card>
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-base">Jina</CardTitle>
+                  <CardTitle className="text-base">网页抓取</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <p className="text-xs leading-5 text-muted-foreground">
                     网页 Scrape fallback 服务。通用网页先使用本地 Defuddle，失败后调用 Jina Reader 返回 Markdown。
                   </p>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label>启用 Defuddle</Label>
+                      <p className="mt-0.5 text-xs text-muted-foreground">本地抽取通用网页正文与元数据。</p>
+                    </div>
+                    <Switch
+                      checked={Boolean(settings.defuddle_enabled ?? true)}
+                      onCheckedChange={(v) => updateSetting("defuddle_enabled", v)}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label>启用 Playwright</Label>
+                      <p className="mt-0.5 text-xs text-muted-foreground">处理需要浏览器渲染的 X 等动态页面。</p>
+                    </div>
+                    <Switch
+                      checked={Boolean(settings.playwright_enabled ?? true)}
+                      onCheckedChange={(v) => updateSetting("playwright_enabled", v)}
+                    />
+                  </div>
                   <div className="flex items-center justify-between">
                     <div>
                       <Label>启用 Jina Reader</Label>
@@ -650,8 +670,15 @@ export function SettingsPanel() {
           {/* ── Pipelines/Sources ── */}
           {activeTab === "pipelines" && (
             <div className="h-full min-h-0 space-y-4 overflow-y-auto pr-1">
-              <BilibiliCard onAuthChange={setBiliLoggedIn} />
+              <BilibiliCard
+                settings={settings}
+                updateSetting={updateSetting}
+                saving={saving}
+                saved={saved}
+                onAuthChange={setBiliLoggedIn}
+              />
               <YoutubeCard settings={settings} updateSetting={updateSetting} saving={saving} saved={saved} />
+              <TwitterCard settings={settings} updateSetting={updateSetting} saving={saving} saved={saved} />
               <PlaceholderSection
                 title="小宇宙"
                 description="已支持公开单集页面：提取页面元数据、下载 m4a，并转为本地 ASR 使用的 wav。"

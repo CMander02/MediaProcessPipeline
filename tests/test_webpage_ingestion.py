@@ -140,6 +140,7 @@ def test_x_status_article_fallback_writes_text_note(tmp_path, monkeypatch):
             "uploader": "Thariq",
             "thumbnail": "https://pbs.twimg.com/profile_images/demo.jpg",
             "article_url": "https://x.com/i/article/2073090223194755072",
+            "article_body": "A Field Guide to Fable: Finding Your Unknowns\n\nFull article body.",
             "type": "article_card",
         }
 
@@ -159,6 +160,8 @@ def test_x_status_article_fallback_writes_text_note(tmp_path, monkeypatch):
     assert result["info"]["title"] == "A Field Guide to Fable: Finding Your Unknowns"
     assert result["info"]["platform"] == "twitter"
     assert result["info"]["content_subtype"] == "text_note"
+    assert result["info"]["extra"]["twitter_type"] == "article"
+    assert result["info"]["extra"]["content_kind"] == "long_article"
     assert result["info"]["extra"]["source_markdown_path"] == str(tmp_path / "source.md")
     metadata = service.extract_metadata(result["info"])
     assert metadata.platform == "twitter"
@@ -185,6 +188,7 @@ def test_x_status_image_article_uses_card_title(tmp_path, monkeypatch):
                 "Article\nScaling Laws, Honestly\n"
                 "TL;DR: The original scaling laws were wrong due to a bug"
             ),
+            "article_body": "Scaling Laws, Honestly\n\nFull article body.",
             "type": "image_status",
         }
 
@@ -201,8 +205,134 @@ def test_x_status_image_article_uses_card_title(tmp_path, monkeypatch):
     assert source.startswith("# Scaling Laws, Honestly")
     assert result["title"] == "Scaling Laws, Honestly"
     assert result["info"]["title"] == "Scaling Laws, Honestly"
-    assert result["info"]["content_subtype"] == "image_note"
+    assert result["info"]["content_subtype"] == "text_note"
     assert result["info"]["extra"]["article_title"] == "Scaling Laws, Honestly"
+    assert result["info"]["extra"]["twitter_type"] == "article"
+    assert result["info"]["extra"]["content_kind"] == "long_article"
+
+
+def test_x_article_uses_authenticated_full_body(tmp_path, monkeypatch):
+    preview = "How long can be the path of a gradient flow? This is the question..."
+    full_body = (
+        "A single question to track progress from o3 to gpt-5.6 and beyond\n\n"
+        + "Complete article paragraph with the mathematical construction. " * 30
+    )
+
+    def fake_scrape(self, url: str):
+        return {
+            "url": url,
+            "title": "Sebastien Bubeck on X / X",
+            "text": f"Sebastien Bubeck\nArticle\nA single question to track progress\n{preview}",
+            "uploader": "Sebastien Bubeck",
+            "article_url": "https://x.com/i/article/2075414550644703232",
+            "article_text": f"Article\nA single question to track progress\n{preview}",
+            "article_body": full_body,
+            "image_urls": ["https://pbs.twimg.com/media/example.jpg"],
+            "type": "article",
+        }
+
+    monkeypatch.setattr(ytdlp.YtdlpService, "_scrape_twitter_page", fake_scrape)
+    result = ytdlp.YtdlpService()._download_twitter_webpage_note(
+        "https://x.com/SebastienBubeck/status/2075596982622835006",
+        tmp_path,
+        RuntimeError("unsupported"),
+    )
+
+    source = (tmp_path / "source.md").read_text(encoding="utf-8")
+    assert "Complete article paragraph with the mathematical construction." in source
+    assert source.count("Complete article paragraph") == 30
+    assert preview not in source
+    assert result["info"]["extra"]["article_body_status"] == "complete"
+
+
+def test_x_article_uses_defuddle_on_status_url_without_login(tmp_path, monkeypatch):
+    status_url = "https://x.com/SebastienBubeck/status/2075596982622835006"
+
+    def fake_scrape(self, url: str):
+        return {
+            "url": url,
+            "title": "Sebastien Bubeck on X / X",
+            "text": "Article\nA single question\nShort preview",
+            "article_url": "https://x.com/i/article/2075414550644703232",
+            "article_text": "Article\nA single question\nShort preview",
+            "type": "article",
+        }
+
+    def fake_download_webpage(url: str, output_dir):
+        assert url == status_url
+        markdown = "# A single question\n\n" + ("Full article paragraph. " * 100)
+        (output_dir / "source.md").write_text(markdown, encoding="utf-8")
+        return {
+            "title": "A single question",
+            "description": markdown,
+            "extra": {"scrape_engine": "defuddle"},
+        }
+
+    monkeypatch.setattr(ytdlp.YtdlpService, "_scrape_twitter_page", fake_scrape)
+    monkeypatch.setattr(
+        "app.services.ingestion.platform.webpage.api.download_webpage",
+        fake_download_webpage,
+    )
+    result = ytdlp.YtdlpService()._download_twitter_webpage_note(
+        status_url,
+        tmp_path,
+        RuntimeError("unsupported"),
+    )
+
+    assert "Full article paragraph" in (tmp_path / "source.md").read_text(encoding="utf-8")
+    assert result["info"]["extra"]["article_body_status"] == "complete"
+    assert result["info"]["extra"]["article_body_engine"] == "defuddle"
+
+
+def test_x_status_article_prefers_external_original(tmp_path, monkeypatch):
+    external_url = "https://www.completeskeptic.com/p/scaling-laws-honestly"
+
+    def fake_scrape(self, url: str):
+        return {
+            "url": url,
+            "title": "Diogo Almeida on X / X",
+            "text": f"Article\nScaling Laws, Honestly\nOriginally posted at: {external_url}",
+            "uploader": "Diogo Almeida",
+            "article_url": "https://x.com/i/article/2073276453131780096",
+            "article_text": "Article\nScaling Laws, Honestly",
+            "image_urls": ["https://pbs.twimg.com/media/HMXOZ8-aYAAp9VJ.jpg"],
+            "type": "image_status",
+        }
+
+    def fake_download_webpage(url: str, output_dir):
+        assert url == external_url
+        markdown = "# Scaling Laws, Honestly\n\nFull original article body."
+        (output_dir / "source.md").write_text(markdown, encoding="utf-8")
+        return {
+            "title": "Scaling Laws, Honestly",
+            "description": markdown,
+            "webpage_url": external_url,
+            "original_url": external_url,
+            "platform": "webpage",
+            "content_subtype": "text_note",
+            "media_type": "image",
+            "extra": {"scrape_engine": "defuddle", "image_count": 0},
+        }
+
+    monkeypatch.setattr(ytdlp.YtdlpService, "_scrape_twitter_page", fake_scrape)
+    monkeypatch.setattr(
+        "app.services.ingestion.platform.webpage.api.download_webpage",
+        fake_download_webpage,
+    )
+
+    result = ytdlp.YtdlpService()._download_twitter_webpage_note(
+        "https://x.com/CompleteSkeptic/status/2073442518117884197",
+        tmp_path,
+        RuntimeError("unsupported"),
+    )
+
+    assert (tmp_path / "source.md").read_text(encoding="utf-8").endswith("Full original article body.")
+    assert result["info"]["content_subtype"] == "text_note"
+    assert result["info"]["platform"] == "twitter"
+    assert result["info"]["extra"]["external_article_url"] == external_url
+    assert result["info"]["extra"]["external_scrape_engine"] == "defuddle"
+    assert result["info"]["extra"]["twitter_type"] == "article"
+    assert result["info"]["extra"]["content_kind"] == "long_article"
 
 
 def test_x_status_image_fallback_writes_image_note(tmp_path, monkeypatch):
@@ -236,6 +366,8 @@ def test_x_status_image_fallback_writes_image_note(tmp_path, monkeypatch):
     assert result["info"]["platform"] == "twitter"
     assert result["info"]["content_subtype"] == "image_note"
     assert result["info"]["extra"]["image_count"] == 1
+    assert result["info"]["extra"]["twitter_type"] == "image_status"
+    assert result["info"]["extra"]["content_kind"] == "status"
     metadata = service.extract_metadata(result["info"])
     assert metadata.platform == "twitter"
     assert metadata.content_subtype == "image_note"

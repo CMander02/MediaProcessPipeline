@@ -204,8 +204,11 @@ class RuntimeSettings(BaseModel):
     # audio-separator chunking guard for long files; 0 disables chunking.
     uvr_chunk_duration_sec: float = 300.0
 
-    # Local LLM (transformers + safetensors)
-    local_llm_model_path: str = ""          # Path to HuggingFace model directory
+    # Local LLM / VLM (Transformers directory or llama.cpp GGUF)
+    local_llm_engine: str = "transformers"  # "transformers" | "llama_cpp"
+    local_llm_name: str = "Local LLM"
+    local_llm_model_path: str = ""          # HF model directory or GGUF file
+    local_llm_mmproj_path: str = ""          # llama.cpp multimodal projector
     local_llm_device: str = "cuda"          # "cuda" | "cpu" | "auto"
     local_llm_dtype: str = "bfloat16"       # "bfloat16" | "float16" | "float32" | "auto"
     local_llm_max_new_tokens: int = 4096    # Cap per generate() call
@@ -213,6 +216,9 @@ class RuntimeSettings(BaseModel):
     local_llm_n_gpu_layers: int = -1
     local_llm_n_ctx: int = 16384
     local_llm_n_batch: int = 512
+    local_llm_timeout_sec: float = 300.0
+    local_llm_keepalive_sec: float = 600.0
+    local_llm_concurrency: int = 2
     # "" = follow llm_provider, or local/anthropic/openai/custom
     polish_provider: str = "local"
     llm_polish_concurrency: int = 4
@@ -263,6 +269,10 @@ class RuntimeSettings(BaseModel):
     # Empty = data/auth/xiaohongshu_storage_state.json under data_root.
     xiaohongshu_storage_state_path: str = ""
 
+    # X Articles expose their complete body only to a logged-in browser session.
+    # Empty = data/auth/twitter_storage_state.json under data_root.
+    twitter_storage_state_path: str = ""
+
     # Zhihu
     # Headless Chromium can be blocked on answer pages; the fallback uses a real
     # browser window. "background" starts it minimized, "foreground" leaves it visible.
@@ -270,6 +280,8 @@ class RuntimeSettings(BaseModel):
 
     # Generic web page scraping. The pipeline tries Defuddle CLI first and uses
     # Jina Reader when local extraction fails.
+    defuddle_enabled: bool = True
+    playwright_enabled: bool = True
     jina_reader_enabled: bool = True
     jina_reader_api_base: str = "https://r.jina.ai"
     jina_reader_api_key: str = ""

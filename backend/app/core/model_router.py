@@ -280,19 +280,32 @@ def resolve_llm_binding(
 
     if provider == "local":
         model_path = _clean_text(rt.local_llm_model_path)
+        engine = _clean_text(rt.local_llm_engine).lower() or "transformers"
+        alias = bound_model or _clean_text(rt.local_llm_name) or "Local LLM"
+        local_kwargs = {
+            "local_engine": engine,
+            "binary_path": _clean_text(rt.llama_cpp_binary_path),
+            "model_path": model_path,
+            "mmproj_path": _clean_text(rt.local_llm_mmproj_path),
+            "alias": alias,
+            "device": rt.local_llm_device,
+            "dtype": rt.local_llm_dtype,
+            "ctx": rt.local_llm_n_ctx,
+            "n_gpu_layers": rt.local_llm_n_gpu_layers,
+            "parallel": rt.local_llm_concurrency,
+            "timeout_sec": rt.local_llm_timeout_sec,
+            "startup_timeout_sec": rt.local_llm_timeout_sec,
+            "keepalive_sec": rt.local_llm_keepalive_sec,
+            "max_new_tokens": rt.local_llm_max_new_tokens,
+        }
         return LLMBinding(
             provider="local",
             stage=normalized_stage,
-            transport="local",
-            model=model_path,
+            transport="llama_cpp" if engine == "llama_cpp" else "local",
+            model=alias if engine == "llama_cpp" else model_path,
             configured=bool(model_path),
             reason="" if model_path else "local_llm_model_path is empty",
-            request_kwargs={
-                "model_path": model_path,
-                "device": rt.local_llm_device,
-                "dtype": rt.local_llm_dtype,
-                "max_new_tokens": rt.local_llm_max_new_tokens,
-            },
+            request_kwargs=local_kwargs,
         )
 
     if provider == "deepseek":
@@ -868,6 +881,40 @@ def resolve_vlm_binding(rt: RuntimeSettings) -> EndpointBinding:
     """Resolve the image-understanding model endpoint."""
 
     vision_binding = _runtime_binding(rt, "vision")
+    if _canonical_provider_id(vision_binding.get("provider_id")) == "local":
+        engine = _clean_text(rt.local_llm_engine).lower() or "transformers"
+        model_path = _clean_text(rt.local_llm_model_path)
+        mmproj_path = _clean_text(rt.local_llm_mmproj_path)
+        model = _clean_text(vision_binding.get("model_id")) or _clean_text(rt.local_llm_name) or "Local LLM"
+        configured = bool(engine == "llama_cpp" and model_path and mmproj_path)
+        reason = "" if configured else (
+            "local vision requires llama_cpp, local_llm_model_path, and local_llm_mmproj_path"
+        )
+        return EndpointBinding(
+            capability="vlm",
+            model=model,
+            api_base="local://llama_cpp" if configured else "",
+            api_key="local",
+            configured=configured,
+            enabled=configured,
+            reason=reason,
+            request_kwargs={
+                "local_engine": engine,
+                "binary_path": _clean_text(rt.llama_cpp_binary_path),
+                "model_path": model_path,
+                "mmproj_path": mmproj_path,
+                "alias": model,
+                "device": rt.local_llm_device,
+                "ctx": rt.local_llm_n_ctx,
+                "n_gpu_layers": rt.local_llm_n_gpu_layers,
+                "parallel": rt.local_llm_concurrency,
+                "max_tokens": rt.vlm_max_tokens,
+                "concurrency": rt.local_llm_concurrency,
+                "timeout_sec": rt.local_llm_timeout_sec,
+                "startup_timeout_sec": rt.local_llm_timeout_sec,
+                "keepalive_sec": rt.local_llm_keepalive_sec,
+            },
+        )
     if vision_binding.get("provider_id"):
         provider_binding = resolve_provider_model_binding(
             rt,

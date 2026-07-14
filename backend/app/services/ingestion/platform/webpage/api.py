@@ -172,10 +172,12 @@ def _normalize_url(url: str) -> str:
 
 
 def _run_defuddle_markdown(url: str) -> str:
+    rt = get_runtime_settings()
+    if not bool(getattr(rt, "defuddle_enabled", True)):
+        raise RuntimeError("Defuddle extraction is disabled")
     command = _defuddle_command()
     if not command:
         raise RuntimeError("Defuddle CLI is not installed")
-    rt = get_runtime_settings()
     timeout = float(getattr(rt, "web_scrape_timeout_sec", 30) or 30)
     last_error = ""
     for attempt in range(_SCRAPE_RETRIES):
@@ -204,10 +206,12 @@ def _run_defuddle_markdown(url: str) -> str:
 
 
 def _run_defuddle_prop(url: str, prop: str) -> str:
+    rt = get_runtime_settings()
+    if not bool(getattr(rt, "defuddle_enabled", True)):
+        return ""
     command = _defuddle_command()
     if not command:
         return ""
-    rt = get_runtime_settings()
     timeout = float(getattr(rt, "web_scrape_timeout_sec", 30) or 30)
     completed = subprocess.run(
         [*command, "parse", url, "-p", prop],

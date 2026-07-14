@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { useRoute, navigate } from "@/lib/router"
 import { getPreferences } from "@/hooks/use-preferences"
-import { FilesPage } from "@/components/pages/files-page"
+import { FilesPage, type ArchiveSort } from "@/components/pages/files-page"
 import { SubmitPage } from "@/components/pages/submit-page"
 import { BackendPage } from "@/components/pages/backend-page"
 import { ResultPageWrapper } from "@/components/pages/result-page-wrapper"
@@ -43,6 +43,7 @@ export default function App() {
   const [search, setSearch] = useState("")
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>("all")
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all")
+  const [archiveSort, setArchiveSort] = useState<ArchiveSort>("created_desc")
   const showLibraryTools = route.page === "files"
   const selectedMediaFilter = MEDIA_FILTER_OPTIONS.find((option) => option.value === mediaFilter) ?? MEDIA_FILTER_OPTIONS[0]
   const selectedSourceFilter = SOURCE_FILTER_OPTIONS.find((option) => option.value === sourceFilter) ?? SOURCE_FILTER_OPTIONS[0]
@@ -76,7 +77,7 @@ export default function App() {
   ]
 
   return (
-    <div className="flex h-screen flex-col bg-background">
+    <div className="flex h-screen supports-[height:100dvh]:h-dvh flex-col bg-background">
       {/* Header */}
       <header className="shrink-0 border-b bg-card">
         <div className="flex min-h-12 flex-wrap items-center gap-2 px-3 py-2 sm:px-4">
@@ -91,6 +92,8 @@ export default function App() {
               <button
                 key={item.page}
                 onClick={() => navigate(`#/${item.page}`)}
+                aria-label={item.label}
+                title={item.label}
                 className={cn(
                   "flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors sm:px-3",
                   route.page === item.page
@@ -99,14 +102,14 @@ export default function App() {
                 )}
               >
                 <HugeiconsIcon icon={item.icon} className="h-4 w-4" />
-                <span>{item.label}</span>
+                <span className="hidden sm:inline">{item.label}</span>
               </button>
             ))}
           </nav>
 
           {showLibraryTools ? (
-            <div className="order-last flex w-full min-w-0 items-center gap-2 md:order-none md:ml-4 md:w-auto md:flex-1">
-              <div className="relative min-w-[140px] flex-1 md:max-w-xs">
+            <div className="order-last flex w-full min-w-0 flex-wrap items-center gap-2 lg:order-none lg:ml-4 lg:w-auto lg:flex-1 lg:flex-nowrap">
+              <div className="relative min-w-0 basis-full sm:basis-auto sm:flex-1 lg:min-w-[140px] lg:max-w-xs">
                 <HugeiconsIcon icon={Search01Icon} className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={search}
@@ -117,7 +120,7 @@ export default function App() {
                 />
               </div>
               <Select value={mediaFilter} onValueChange={(value) => setMediaFilter(value as MediaFilter)}>
-                <SelectTrigger size="sm" className="h-8 w-[92px] shrink-0">
+                <SelectTrigger size="sm" className="h-8 w-[76px] shrink-0 sm:w-[92px]">
                   <span className="truncate">{selectedMediaFilter.label}</span>
                 </SelectTrigger>
                 <SelectContent position="popper" align="end">
@@ -131,7 +134,7 @@ export default function App() {
                 </SelectContent>
               </Select>
               <Select value={sourceFilter} onValueChange={(value) => setSourceFilter(value as SourceFilter)}>
-                <SelectTrigger size="sm" className="h-8 w-[142px] shrink-0">
+                <SelectTrigger size="sm" className="h-8 w-[120px] shrink-0 sm:w-[142px]">
                   <span className="flex min-w-0 items-center gap-1.5">
                     <SourceFilterIcon option={selectedSourceFilter} />
                     <span className="truncate">{selectedSourceFilter.label}</span>
@@ -147,6 +150,21 @@ export default function App() {
                         </span>
                       </SelectItem>
                     ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <Select value={archiveSort} onValueChange={(value) => setArchiveSort(value as ArchiveSort)}>
+                <SelectTrigger size="sm" className="h-8 w-[116px] shrink-0 sm:w-[132px]">
+                  <span className="truncate">
+                    {archiveSort === "created_desc" ? "最新创建" : archiveSort === "created_asc" ? "最早创建" : archiveSort === "published_desc" ? "最新发布" : "标题排序"}
+                  </span>
+                </SelectTrigger>
+                <SelectContent position="popper" align="end">
+                  <SelectGroup>
+                    <SelectItem value="created_desc">最新创建</SelectItem>
+                    <SelectItem value="created_asc">最早创建</SelectItem>
+                    <SelectItem value="published_desc">最新发布</SelectItem>
+                    <SelectItem value="title_asc">标题排序</SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>
@@ -176,7 +194,7 @@ export default function App() {
 
       {/* Page content */}
       <main className="flex-1 min-h-0">
-        {route.page === "files" && <FilesPage search={search} mediaFilter={mediaFilter} sourceFilter={sourceFilter} />}
+        {route.page === "files" && <FilesPage search={search} mediaFilter={mediaFilter} sourceFilter={sourceFilter} sort={archiveSort} />}
         {route.page === "submit" && <SubmitPage />}
         {route.page === "backend" && <BackendPage />}
         {route.page === "result" && <ResultPageWrapper />}

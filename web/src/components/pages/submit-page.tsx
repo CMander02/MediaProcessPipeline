@@ -199,7 +199,7 @@ export function SubmitPage() {
 
       {/* ── Left panel: controls ── */}
       <div className={cn(
-        "flex flex-col gap-4 p-6 overflow-y-auto shrink-0 transition-all duration-200",
+        "flex flex-col gap-4 p-6 overflow-y-auto shrink-0 transition-[width,border-color] duration-200",
         hasFiles ? "w-72 border-r" : "w-full items-center justify-center",
       )}>
         <div className={cn("flex flex-col gap-4", !hasFiles && "w-full max-w-md")}>
@@ -208,7 +208,7 @@ export function SubmitPage() {
           <div
             {...dropZoneProps}
             className={cn(
-              "flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed transition-colors cursor-pointer",
+              "flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed transition-colors duration-150 cursor-pointer",
               hasFiles ? "py-5 px-4" : "py-12 px-4",
               isDragging ? "border-primary bg-primary/5" : "border-muted-foreground/25 hover:border-muted-foreground/40 hover:bg-muted/20",
               submitting && "pointer-events-none opacity-60",
@@ -378,7 +378,7 @@ export function SubmitPage() {
                 </div>
 
                 {totalCount > 1 && (
-                  <p className="text-xs text-amber-600 dark:text-amber-400">以上选项将应用于全部 {totalCount} 个文件</p>
+                  <p className="text-xs text-muted-foreground">以上选项将应用于全部 {totalCount} 个文件</p>
                 )}
               </div>
             )}
@@ -400,7 +400,7 @@ export function SubmitPage() {
                 </span>
               )}
               {uploadingCount === 0 && readyCount > 0 && (
-                <span className="text-emerald-600 flex items-center gap-1">
+                <span className="text-foreground flex items-center gap-1">
                   <HugeiconsIcon icon={CheckmarkCircle02Icon} className="h-3.5 w-3.5" />
                   全部就绪
                 </span>
@@ -448,7 +448,7 @@ export function SubmitPage() {
 
                   <button
                     onClick={() => removeQueued(f.id)}
-                    className="p-0.5 rounded text-muted-foreground/40 hover:text-muted-foreground opacity-0 group-hover:opacity-100 transition-all shrink-0"
+                    className="p-0.5 rounded text-muted-foreground/40 hover:text-muted-foreground opacity-0 group-hover:opacity-100 transition-[color,opacity] duration-150 shrink-0"
                   >
                     <HugeiconsIcon icon={Cancel01Icon} className="h-3.5 w-3.5" />
                   </button>

@@ -7,10 +7,17 @@ import { sourceFilterFromMetadata, type MediaFilter, type SourceFilter } from "@
 import type { ArchiveItem } from "@/hooks/use-archives"
 import { ArchiveCard } from "@/components/archive-card"
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import {
+  Pagination,
+  PaginationContent,
+  PaginationEllipsis,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { Loading03Icon, FolderOpenIcon, ArrowLeft01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons"
+import { Loading03Icon, FolderOpenIcon } from "@hugeicons/core-free-icons"
 
 const PAGE_SIZE = 24
 const MIN_PAGE_SIZE = 1
@@ -19,20 +26,22 @@ interface FilesPageProps {
   search: string
   mediaFilter: MediaFilter
   sourceFilter: SourceFilter
+  sort: ArchiveSort
 }
 
-export function FilesPage({ search, mediaFilter, sourceFilter }: FilesPageProps) {
+export type ArchiveSort = "created_desc" | "created_asc" | "published_desc" | "title_asc"
+
+export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPageProps) {
   const { archives, loading, refresh, removeArchive } = useArchives()
   const { update: updatePrefs } = usePreferences()
   const [page, setPage] = useState(1)
-  const [pageInput, setPageInput] = useState("1")
   const [pageSize, setPageSize] = useState(PAGE_SIZE)
+  const [paginationRangeSize, setPaginationRangeSize] = useState(7)
   const [deleteTarget, setDeleteTarget] = useState<{ title: string; path: string; taskId?: string; taskDelete?: boolean } | null>(null)
   const [rerunningPath, setRerunningPath] = useState<string | null>(null)
   const [checkpointRerunningPath, setCheckpointRerunningPath] = useState<string | null>(null)
   const [taskActionPath, setTaskActionPath] = useState<string | null>(null)
   const gridRef = useRef<HTMLDivElement>(null)
-  const paginationRef = useRef<HTMLDivElement>(null)
 
   const filtered = useMemo(() => {
     let list = archives
@@ -51,15 +60,24 @@ export function FilesPage({ search, mediaFilter, sourceFilter }: FilesPageProps)
       const q = search.toLowerCase()
       list = list.filter((a) => a.title.toLowerCase().includes(q))
     }
-    // Surface in-progress tasks at the top so the user sees their just-submitted work first
+    const timestamp = (value: unknown) => {
+      if (typeof value !== "string" || !value) return 0
+      const parsed = new Date(value).getTime()
+      return Number.isFinite(parsed) ? parsed : 0
+    }
+
+    // Surface active work first, then apply the selected archive ordering.
     return [...list].sort((a, b) => {
       if (!!a.processing !== !!b.processing) return a.processing ? -1 : 1
-      return 0
+      if (sort === "created_asc") return timestamp(a.created_at) - timestamp(b.created_at)
+      if (sort === "published_desc") return timestamp(b.metadata?.upload_date) - timestamp(a.metadata?.upload_date)
+      if (sort === "title_asc") return a.title.localeCompare(b.title, "zh-CN")
+      return timestamp(b.created_at) - timestamp(a.created_at)
     })
-  }, [archives, search, mediaFilter, sourceFilter])
+  }, [archives, search, mediaFilter, sourceFilter, sort])
 
   // Reset page when filters change
-  useEffect(() => { setPage(1) }, [search, mediaFilter, sourceFilter])
+  useEffect(() => { setPage(1) }, [search, mediaFilter, sourceFilter, sort])
 
   // While any task is processing, poll for updates so the queue card progress stays fresh
   const anyProcessing = archives.some((a) => a.processing)
@@ -83,14 +101,14 @@ export function FilesPage({ search, mediaFilter, sourceFilter }: FilesPageProps)
 
       const styles = window.getComputedStyle(grid)
       const columns = styles.gridTemplateColumns.split(" ").filter(Boolean).length || 1
+      setPaginationRangeSize(grid.clientWidth >= 768 ? 7 : 3)
       const rowGap = Number.parseFloat(styles.rowGap) || 0
       const cardHeight = firstCard.getBoundingClientRect().height
       if (cardHeight <= 0) return
 
-      const gridTop = grid.getBoundingClientRect().top
-      const paginationHeight = paginationRef.current?.getBoundingClientRect().height ?? 32
-      const availableHeight = window.innerHeight - gridTop - paginationHeight - 12
-      const rows = Math.max(1, Math.floor((availableHeight + rowGap) / (cardHeight + rowGap)))
+      const availableHeight = grid.getBoundingClientRect().height
+      const rowHeight = cardHeight + rowGap
+      const rows = Math.max(1, Math.floor((availableHeight + rowGap + cardHeight * 0.2) / rowHeight))
       const nextPageSize = Math.max(MIN_PAGE_SIZE, columns * rows)
       setPageSize((current) => (current === nextPageSize ? current : nextPageSize))
     }
@@ -98,16 +116,16 @@ export function FilesPage({ search, mediaFilter, sourceFilter }: FilesPageProps)
     updatePageSize()
     const observer = new ResizeObserver(updatePageSize)
     observer.observe(grid)
+    const firstCard = grid.firstElementChild
+    if (firstCard instanceof HTMLElement) observer.observe(firstCard)
+    const frame = window.requestAnimationFrame(updatePageSize)
     window.addEventListener("resize", updatePageSize)
     return () => {
+      window.cancelAnimationFrame(frame)
       observer.disconnect()
       window.removeEventListener("resize", updatePageSize)
     }
   }, [paged.length, filtered.length])
-
-  useEffect(() => {
-    setPageInput(String(safePage))
-  }, [safePage])
 
   const handleOpen = (path: string, taskId?: string) => {
     updatePrefs({ lastArchivePath: path })
@@ -196,16 +214,7 @@ export function FilesPage({ search, mediaFilter, sourceFilter }: FilesPageProps)
     }
   }
 
-  const commitPageInput = () => {
-    const parsed = Number.parseInt(pageInput, 10)
-    if (!Number.isFinite(parsed)) {
-      setPageInput(String(safePage))
-      return
-    }
-    const nextPage = Math.min(Math.max(parsed, 1), totalPages)
-    setPage(nextPage)
-    setPageInput(String(nextPage))
-  }
+  const pageItems = getPaginationItems(safePage, totalPages, paginationRangeSize)
 
   if (loading) {
     return (
@@ -222,7 +231,7 @@ export function FilesPage({ search, mediaFilter, sourceFilter }: FilesPageProps)
         <div
           ref={gridRef}
           data-testid="archive-grid"
-          className="grid h-full min-h-0 grid-cols-2 content-between gap-x-3 gap-y-2 overflow-hidden sm:grid-cols-[repeat(auto-fill,minmax(min(220px,100%),1fr))] sm:gap-x-4 sm:gap-y-3"
+          className="grid h-full min-h-0 grid-cols-2 content-start gap-3 overflow-hidden sm:grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] sm:gap-x-5 sm:gap-y-4"
         >
           {paged.map((a) => (
             <ArchiveCard
@@ -260,49 +269,44 @@ export function FilesPage({ search, mediaFilter, sourceFilter }: FilesPageProps)
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div
-          ref={paginationRef}
-          data-testid="files-pagination"
-          className="h-8 shrink-0 flex items-center justify-center gap-2"
-        >
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            disabled={safePage <= 1}
-            onClick={() => setPage(safePage - 1)}
-            aria-label="上一页"
-            title="上一页"
-          >
-            <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4" />
-          </Button>
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Input
-              value={pageInput}
-              onChange={(e) => setPageInput(e.target.value.replace(/[^\d]/g, ""))}
-              onBlur={commitPageInput}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.currentTarget.blur()
-                }
-              }}
-              inputMode="numeric"
-              className="h-8 w-14 px-2 text-center text-sm text-foreground"
-              aria-label="页码"
-            />
-            <span>/</span>
-            <span className="min-w-6 text-foreground">{totalPages}</span>
-          </div>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            disabled={safePage >= totalPages}
-            onClick={() => setPage(safePage + 1)}
-            aria-label="下一页"
-            title="下一页"
-          >
-            <HugeiconsIcon icon={ArrowRight01Icon} className="h-4 w-4" />
-          </Button>
-        </div>
+        <Pagination data-testid="files-pagination" className="h-8 shrink-0">
+          <PaginationContent>
+            <PaginationItem>
+              <PaginationPrevious
+                href="#"
+                aria-disabled={safePage <= 1}
+                tabIndex={safePage <= 1 ? -1 : undefined}
+                className={safePage <= 1 ? "pointer-events-none opacity-50" : undefined}
+                onClick={(event) => { event.preventDefault(); if (safePage > 1) setPage(safePage - 1) }}
+              />
+            </PaginationItem>
+            {pageItems.map((item, index) => item === "ellipsis" ? (
+              <PaginationItem key={`ellipsis-${index}`}>
+                <PaginationEllipsis />
+              </PaginationItem>
+            ) : (
+              <PaginationItem key={item}>
+                <PaginationLink
+                  href="#"
+                  isActive={item === safePage}
+                  aria-label={`第 ${item} 页`}
+                  onClick={(event) => { event.preventDefault(); setPage(item) }}
+                >
+                  {item}
+                </PaginationLink>
+              </PaginationItem>
+            ))}
+            <PaginationItem>
+              <PaginationNext
+                href="#"
+                aria-disabled={safePage >= totalPages}
+                tabIndex={safePage >= totalPages ? -1 : undefined}
+                className={safePage >= totalPages ? "pointer-events-none opacity-50" : undefined}
+                onClick={(event) => { event.preventDefault(); if (safePage < totalPages) setPage(safePage + 1) }}
+              />
+            </PaginationItem>
+          </PaginationContent>
+        </Pagination>
       )}
 
       {/* Delete confirmation dialog */}
@@ -319,4 +323,24 @@ export function FilesPage({ search, mediaFilter, sourceFilter }: FilesPageProps)
       )}
     </div>
   )
+}
+
+function getPaginationItems(currentPage: number, totalPages: number, rangeSize: number): Array<number | "ellipsis"> {
+  if (totalPages <= rangeSize + 2) return Array.from({ length: totalPages }, (_, index) => index + 1)
+
+  const half = Math.floor(rangeSize / 2)
+  let start = Math.max(1, currentPage - half)
+  let end = Math.min(totalPages, start + rangeSize - 1)
+  start = Math.max(1, end - rangeSize + 1)
+
+  const pages = new Set<number>([1, totalPages])
+  for (let page = start; page <= end; page += 1) pages.add(page)
+  const sorted = [...pages].sort((a, b) => a - b)
+  const items: Array<number | "ellipsis"> = []
+  for (const page of sorted) {
+    const previous = items.at(-1)
+    if (typeof previous === "number" && page - previous > 1) items.push("ellipsis")
+    items.push(page)
+  }
+  return items
 }

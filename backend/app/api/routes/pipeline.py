@@ -629,6 +629,8 @@ async def bilibili_login_status():
         expires_m = re.search(r'Expires=(\d+)', cookie)
         uid_m = re.search(r'DedeUserID=(\d+)', cookie)
 
+        expires_dt = None
+        days_left = None
         if expires_m:
             expires = int(expires_m.group(1))
             expires_dt = datetime.fromtimestamp(expires, tz=timezone.utc)
@@ -636,20 +638,22 @@ async def bilibili_login_status():
             if now >= expires_dt:
                 return {"logged_in": False, "expires": expires_dt.isoformat(), "message": "Cookie 已过期"}
             days_left = (expires_dt - now).days
-            uid = uid_m.group(1) if uid_m else "unknown"
-            return {
-                "logged_in": True,
-                "uid": uid,
-                "expires": expires_dt.isoformat(),
-                "days_left": days_left,
-            }
 
-        # No Expires field — validate via nav API
+        # Expiry metadata is advisory; the nav API is the source of truth for session validity.
         logged = is_logged_in()
         uid = uid_m.group(1) if uid_m else "unknown"
         if logged:
-            return {"logged_in": True, "uid": uid, "expires": None, "days_left": None}
-        return {"logged_in": False, "message": "Cookie 无效或未登录"}
+            return {
+                "logged_in": True,
+                "uid": uid,
+                "expires": expires_dt.isoformat() if expires_dt else None,
+                "days_left": days_left,
+            }
+        return {
+            "logged_in": False,
+            "expires": expires_dt.isoformat() if expires_dt else None,
+            "message": "Cookie 无效或未登录",
+        }
 
     except Exception as e:
         return {"logged_in": False, "message": str(e)}
@@ -675,6 +679,25 @@ async def xiaohongshu_auth_status():
 async def xiaohongshu_auth_login(request: XiaohongshuLoginRequest):
     """Open a browser for Xiaohongshu login and save Playwright storage_state."""
     from app.services.ingestion.platform.xiaohongshu.api import interactive_login
+
+    try:
+        return await asyncio.to_thread(interactive_login, request.timeout_sec)
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
+@router.get("/twitter/auth/status")
+async def twitter_auth_status():
+    """Return the saved X browser-session status used for X Articles."""
+    from app.services.ingestion.platform.twitter.api import auth_state_status
+
+    return auth_state_status()
+
+
+@router.post("/twitter/auth/login")
+async def twitter_auth_login(request: XiaohongshuLoginRequest):
+    """Open X in a browser and save the authenticated Playwright session."""
+    from app.services.ingestion.platform.twitter.api import interactive_login
 
     try:
         return await asyncio.to_thread(interactive_login, request.timeout_sec)

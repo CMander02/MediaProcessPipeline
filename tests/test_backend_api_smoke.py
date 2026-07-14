@@ -21,6 +21,7 @@ from app.core.events import EventBus  # noqa: E402
 from app.core.settings import RuntimeSettings  # noqa: E402
 from app.models import Task, TaskStatus, TaskType  # noqa: E402
 from app.services.ingestion import ytdlp  # noqa: E402
+from app.services.ingestion.platform.bilibili import auth as bilibili_auth  # noqa: E402
 
 
 class FakeQueue:
@@ -241,6 +242,23 @@ def test_backend_settings_and_platform_api_smoke(tmp_path, monkeypatch):
     update = client.put("/api/pipeline/platforms/youtube", json={"preferred_quality": "1080p"})
     assert update.status_code == 200
     assert update.json() == {"ok": True}
+
+
+def test_bilibili_status_validates_cookie_even_with_future_expiry(tmp_path, monkeypatch):
+    client, _queue = _client(tmp_path, monkeypatch)
+    future_expiry = int(datetime.now().timestamp()) + 86400
+    monkeypatch.setattr(
+        bilibili_auth,
+        "get_cookie",
+        lambda: f"SESSDATA=stale; DedeUserID=42; Expires={future_expiry}",
+    )
+    monkeypatch.setattr(bilibili_auth, "is_logged_in", lambda: False)
+
+    response = client.get("/api/pipeline/bilibili/status")
+
+    assert response.status_code == 200
+    assert response.json()["logged_in"] is False
+    assert response.json()["message"] == "Cookie 无效或未登录"
 
 
 def test_task_timeline_returns_persisted_events(tmp_path, monkeypatch):

@@ -170,7 +170,7 @@ def _extract_pin(url: str, state: dict[str, Any]) -> dict[str, Any]:
         or pin.get("content")
         or ""
     )
-    text = _html_to_text(str(content_html))
+    text = _html_to_markdown(str(content_html))
     title = _first_non_empty(
         _html_to_text(str(pin.get("excerptTitle") or "")),
         text.splitlines()[0] if text else "",
@@ -204,6 +204,7 @@ def _extract_pin(url: str, state: dict[str, Any]) -> dict[str, Any]:
             "like_count": pin.get("likeCount"),
             "comment_count": pin.get("commentCount"),
             "image_urls": _image_urls(pin),
+            "content_format": "markdown",
         },
     }
 
@@ -222,9 +223,9 @@ def _extract_answer(url: str, state: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(question, dict):
         question = {}
 
-    answer_text = _html_to_text(str(answer.get("content") or ""))
+    answer_text = _html_to_markdown(str(answer.get("content") or ""))
     question_title = str(question.get("title") or answer.get("question", {}).get("title") or "知乎回答")
-    question_detail = _html_to_text(str(question.get("detail") or question.get("excerpt") or ""))
+    question_detail = _html_to_markdown(str(question.get("detail") or question.get("excerpt") or ""))
     author = _author_name(answer.get("author"))
     created = _int_or_none(answer.get("createdTime") or answer.get("created"))
 
@@ -260,6 +261,7 @@ def _extract_answer(url: str, state: dict[str, Any]) -> dict[str, Any]:
             "voteup_count": answer.get("voteupCount"),
             "comment_count": answer.get("commentCount"),
             "image_urls": _image_urls(answer),
+            "content_format": "markdown",
         },
     }
 
@@ -314,6 +316,122 @@ def _html_to_text(value: str) -> str:
     parser = _TextExtractor()
     parser.feed(value)
     return parser.text()
+
+
+class _MarkdownExtractor(HTMLParser):
+    """Small structure-preserving converter for Zhihu's answer HTML."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.links: list[str] = []
+        self.lists: list[dict[str, Any]] = []
+        self.blockquote_depth = 0
+        self.in_pre = False
+        self.image_urls: list[str] = []
+
+    def _newline(self, count: int = 1) -> None:
+        self.parts.append("\n" * count)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = {key: value or "" for key, value in attrs}
+        if re.fullmatch(r"h[1-6]", tag):
+            self._newline(2)
+            self.parts.append("#" * int(tag[1]) + " ")
+        elif tag == "p":
+            self._newline(2)
+            if self.blockquote_depth:
+                self.parts.append("> " * self.blockquote_depth)
+        elif tag == "br":
+            self._newline()
+        elif tag in {"strong", "b"}:
+            self.parts.append("**")
+        elif tag in {"em", "i"}:
+            self.parts.append("*")
+        elif tag == "a":
+            self.links.append(attributes.get("href", ""))
+            self.parts.append("[")
+        elif tag == "blockquote":
+            self.blockquote_depth += 1
+            self._newline(2)
+        elif tag in {"ol", "ul"}:
+            self.lists.append({"tag": tag, "index": 0})
+            self._newline()
+        elif tag == "li":
+            self._newline()
+            if self.lists:
+                current = self.lists[-1]
+                current["index"] += 1
+                prefix = f"{current['index']}. " if current["tag"] == "ol" else "- "
+                self.parts.append("  " * (len(self.lists) - 1) + prefix)
+        elif tag == "img":
+            src = attributes.get("data-original") or attributes.get("data-actualsrc") or attributes.get("src")
+            if src:
+                alt = attributes.get("alt", "")
+                self._newline(2)
+                self.parts.append(f"![{alt}]({src})")
+                if src not in self.image_urls:
+                    self.image_urls.append(src)
+        elif tag == "figcaption":
+            self._newline()
+            self.parts.append("_")
+        elif tag == "pre":
+            self.in_pre = True
+            self._newline(2)
+            self.parts.append("```\n")
+        elif tag == "code" and not self.in_pre:
+            self.parts.append("`")
+
+    def handle_endtag(self, tag: str) -> None:
+        if re.fullmatch(r"h[1-6]", tag) or tag == "p":
+            self._newline(2)
+        elif tag in {"strong", "b"}:
+            self.parts.append("**")
+        elif tag in {"em", "i"}:
+            self.parts.append("*")
+        elif tag == "a":
+            href = self.links.pop() if self.links else ""
+            self.parts.append(f"]({href})" if href else "]")
+        elif tag == "blockquote":
+            self.blockquote_depth = max(0, self.blockquote_depth - 1)
+            self._newline(2)
+        elif tag in {"ol", "ul"}:
+            if self.lists:
+                self.lists.pop()
+            self._newline(2)
+        elif tag == "figcaption":
+            self.parts.append("_")
+            self._newline(2)
+        elif tag == "pre":
+            self.parts.append("\n```")
+            self._newline(2)
+            self.in_pre = False
+        elif tag == "code" and not self.in_pre:
+            self.parts.append("`")
+
+    def handle_data(self, data: str) -> None:
+        if self.in_pre:
+            self.parts.append(data)
+            return
+        normalized = re.sub(r"\s+", " ", data)
+        if normalized.strip():
+            self.parts.append(normalized)
+
+    def markdown(self) -> str:
+        raw = html.unescape("".join(self.parts)).replace("\xa0", " ")
+        lines = [line.rstrip() for line in raw.splitlines()]
+        compact: list[str] = []
+        for line in lines:
+            if not line and compact and not compact[-1]:
+                continue
+            compact.append(line)
+        return "\n".join(compact).strip()
+
+
+def _html_to_markdown(value: str) -> str:
+    parser = _MarkdownExtractor()
+    parser.feed(value)
+    return parser.markdown()
 
 
 def _author_name(value: Any) -> str | None:
@@ -382,6 +500,13 @@ def _image_urls(value: Any) -> list[str]:
         elif isinstance(node, list):
             for child in node:
                 walk(child)
+        elif isinstance(node, str):
+            if "<img" in node.lower():
+                parser = _MarkdownExtractor()
+                parser.feed(node)
+                urls.extend(parser.image_urls)
+            elif node.startswith(("http://", "https://")) and _looks_like_image(node):
+                urls.append(node)
 
     walk(value)
     seen = set()

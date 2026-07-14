@@ -19,7 +19,7 @@ const defaultStatus: BackendStatus = {
   command: "uv run python -m app.cli serve",
   cwd: "backend",
   pid: null,
-  url: "http://127.0.0.1:18000",
+  url: "http://localhost:18000",
   message: "仅桌面端应用内可管理后端进程。",
 }
 
@@ -34,17 +34,17 @@ const statusLabel: Record<BackendState, string> = {
 
 const statusClassName: Record<BackendState, string> = {
   stopped: "bg-muted text-muted-foreground",
-  starting: "bg-blue-500/10 text-blue-600",
-  running: "bg-emerald-500/10 text-emerald-600",
-  stopping: "bg-amber-500/10 text-amber-600",
-  external: "bg-cyan-500/10 text-cyan-600",
-  error: "bg-destructive/10 text-destructive",
+  starting: "bg-muted text-foreground",
+  running: "bg-muted text-foreground",
+  stopping: "bg-muted text-muted-foreground",
+  external: "bg-muted text-foreground",
+  error: "border border-destructive/30 text-destructive",
 }
 
 const sourceClassName: Record<BackendLogEntry["source"], string> = {
-  stdout: "text-emerald-600",
-  stderr: "text-amber-600",
-  system: "text-blue-600",
+  stdout: "text-zinc-200",
+  stderr: "text-zinc-400",
+  system: "text-zinc-300",
   error: "text-destructive",
 }
 
@@ -182,17 +182,17 @@ export function BackendPage() {
 
         <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_1fr]">
           <div className="min-w-0 rounded-md border bg-muted/30 px-3 py-2">
-            <div className="text-[11px] font-medium uppercase text-muted-foreground">命令</div>
+            <div className="text-xs font-medium text-muted-foreground">命令</div>
             <div className="mt-1 truncate font-mono text-xs" title={commandLine}>{commandLine}</div>
           </div>
           <div className="min-w-0 rounded-md border bg-muted/30 px-3 py-2">
-            <div className="text-[11px] font-medium uppercase text-muted-foreground">状态</div>
+            <div className="text-xs font-medium text-muted-foreground">状态</div>
             <div className="mt-1 truncate text-xs" title={status.message}>{status.message}</div>
           </div>
         </div>
 
         {!hasDesktopBridge && (
-          <div className="mt-3 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
+          <div className="mt-3 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
             当前是浏览器模式，只能查看 Web 前端；启动、停止和日志观察需要通过桌面端入口打开。
           </div>
         )}

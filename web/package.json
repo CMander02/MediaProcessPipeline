@@ -12,10 +12,10 @@
     "test": "vitest run",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
-    "tauri:build:debug": "tauri build --debug",
-    "tauri:build:portable": "tauri build --no-bundle",
-    "tauri:build:portable:debug": "tauri build --debug --no-bundle"
+    "tauri:build": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build-desktop.ps1",
+    "tauri:build:debug": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build-desktop.ps1 -Debug",
+    "tauri:build:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build-desktop.ps1 -NoBundle",
+    "tauri:build:portable:debug": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build-desktop.ps1 -Debug -NoBundle"
   },
   "dependencies": {
     "@fontsource-variable/noto-sans": "^5.2.10",

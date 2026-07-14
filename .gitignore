@@ -85,6 +85,13 @@ tmp-electron-run/
 release/
 MPP.exe
 
+# Local browser automation and extraction artifacts
+.playwright-cli/
+web/.playwright-cli/
+.codex-remote-attachments/
+output/
+skills-lock.json
+
 # Experiment binaries and cookies
 experiment/bilibili_login/
 

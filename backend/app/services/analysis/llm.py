@@ -35,6 +35,32 @@ _SENTENCE_SPLIT_RE = re.compile(r"[^。！？!?；;\n]+[。！？!?；;]*[”’
 _SENTENCE_END_RE = re.compile(r"(?:[。！？!?；;]|(?<!\d)\.)[\"'”’）】》」』]*$")
 
 
+def _is_retryable_llm_error(error: BaseException) -> bool:
+    """Return whether an LLM failure is safe to retry without changing the request."""
+    retryable_names = {
+        "APIConnectionError",
+        "APITimeoutError",
+        "InternalServerError",
+        "RateLimitError",
+        "ServiceUnavailableError",
+    }
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (TimeoutError, ConnectionError)):
+            return True
+        if type(current).__name__ in retryable_names:
+            return True
+        status_code = getattr(current, "status_code", None)
+        if isinstance(status_code, int) and (
+            status_code in {408, 409, 425, 429} or status_code >= 500
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _timestamp_to_seconds(value: str | None) -> float | None:
     if not value:
         return None
@@ -336,6 +362,39 @@ class LLMService:
         async with infer_lock:
             return await loop.run_in_executor(None, _infer)
 
+    async def _call_local_llama_cpp(self, prompt: str, binding: Any) -> str:
+        """Call a managed local llama.cpp OpenAI-compatible endpoint."""
+        import httpx
+
+        from app.services.analysis._openai_client import make_async_openai_client
+        from app.services.analysis.local_llm_runtime import get_local_llm_runtime
+
+        loop = asyncio.get_running_loop()
+        base_url = await loop.run_in_executor(
+            None,
+            get_local_llm_runtime().ensure,
+            binding.request_kwargs,
+        )
+        timeout_sec = float(binding.request_kwargs.get("timeout_sec") or 300)
+        timeout = httpx.Timeout(timeout_sec, connect=30.0, read=timeout_sec, write=30.0, pool=30.0)
+        client = make_async_openai_client(
+            f"{base_url}/v1",
+            "local",
+            max_retries=1,
+            timeout=timeout,
+        )
+        request: dict[str, Any] = {
+            "model": binding.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": int(binding.request_kwargs.get("max_new_tokens") or 4096),
+        }
+        temperature = self._static_settings.temperature
+        if temperature > 0:
+            request["temperature"] = temperature
+        async with client:
+            response = await client.chat.completions.create(**request)
+        return (response.choices[0].message.content or "").strip()
+
     async def _call(
         self,
         prompt: str,
@@ -347,16 +406,19 @@ class LLMService:
         from app.core.model_router import resolve_llm_binding
 
         rt = get_runtime_settings()
-        provider = resolve_llm_binding(
+        binding = resolve_llm_binding(
             rt,
             provider_override=provider_override,
             stage=stage,
-        ).provider
+        )
+        provider = binding.provider
 
         # Local HF path — unchanged, no LiteLLM involved
         if provider == "local":
             if rt.local_llm_model_path:
                 log_event(logger, logging.INFO, "llm.local.call_started")
+                if binding.transport == "llama_cpp":
+                    return await self._call_local_llama_cpp(prompt, binding)
                 return await self._call_local(prompt)
             log_event(logger, logging.WARNING, "llm.local.fallback", reason="model_path_empty")
             provider_override = ""
@@ -417,13 +479,15 @@ class LLMService:
             return "[LLM not configured]"
 
         import httpx
-        from openai import AsyncOpenAI
 
-        client = AsyncOpenAI(
-            base_url=params["api_base"],
-            api_key=params["api_key"],
+        from app.services.analysis._openai_client import make_async_openai_client
+
+        timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
+        client = make_async_openai_client(
+            params["api_base"],
+            params["api_key"],
             max_retries=max_retries,
-            timeout=httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0),
+            timeout=timeout,
         )
         request: dict[str, Any] = {
             "model": params["model"],
@@ -442,32 +506,33 @@ class LLMService:
             model=params["model"],
             stage=stage,
         )
-        try:
-            response = await client.chat.completions.create(**request)
-            content = response.choices[0].message.content or ""
-            log_event(
-                logger,
-                logging.INFO,
-                "llm.call.completed",
-                provider="deepseek",
-                model=params["model"],
-                stage=stage,
-                duration_ms=round((time.perf_counter() - t0) * 1000),
-                chars=len(content),
-            )
-            return content
-        except Exception as e:
-            log_event(
-                logger,
-                logging.ERROR,
-                "llm.call.failed",
-                provider="deepseek",
-                model=params["model"],
-                stage=stage,
-                duration_ms=round((time.perf_counter() - t0) * 1000),
-                error=e,
-            )
-            raise
+        async with client:
+            try:
+                response = await client.chat.completions.create(**request)
+                content = response.choices[0].message.content or ""
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "llm.call.completed",
+                    provider="deepseek",
+                    model=params["model"],
+                    stage=stage,
+                    duration_ms=round((time.perf_counter() - t0) * 1000),
+                    chars=len(content),
+                )
+                return content
+            except Exception as e:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "llm.call.failed",
+                    provider="deepseek",
+                    model=params["model"],
+                    stage=stage,
+                    duration_ms=round((time.perf_counter() - t0) * 1000),
+                    error=e,
+                )
+                raise
 
     async def analyze_content(
         self,
@@ -1061,13 +1126,58 @@ class LLMService:
             for idx, start, end, segs in chunks
         ]
         try:
-            results = await asyncio.gather(*tasks)
-        except Exception:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            raise
+            raw_results = await asyncio.gather(*tasks)
+        except Exception as first_error:
+            if not _is_retryable_llm_error(first_error):
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+            # A transient connection failure in one chunk should not discard
+            # successful work or cancel unrelated in-flight chunks.
+            raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        results: list[tuple[int, list[dict]]] = []
+        failed_chunks: list[tuple[tuple[int, int, int, list[dict]], BaseException]] = []
+        for chunk, result in zip(chunks, raw_results, strict=True):
+            if isinstance(result, BaseException):
+                if not _is_retryable_llm_error(result):
+                    raise result
+                failed_chunks.append((chunk, result))
+            else:
+                results.append(result)
+
+        if failed_chunks:
+            log_event(
+                logger,
+                logging.WARNING,
+                "llm.polish.chunk_retry_batch_started",
+                failed_chunks=",".join(str(chunk[0]) for chunk, _error in failed_chunks),
+                retry_mode="sequential",
+            )
+            for (idx, start, end, segs), previous_error in failed_chunks:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "llm.polish.chunk_retry_started",
+                    chunk=idx,
+                    previous_error=previous_error,
+                )
+                try:
+                    results.append(await process_chunk(idx, start, end, segs))
+                except Exception as retry_error:
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "llm.polish.chunk_retry_failed",
+                        chunk=idx,
+                        error=retry_error,
+                    )
+                    raise RuntimeError(
+                        f"Polish chunk {idx + 1}/{len(chunks)} failed after sequential retry: "
+                        f"{retry_error}"
+                    ) from retry_error
 
         # Sort by chunk index to maintain order
         results.sort(key=lambda x: x[0])

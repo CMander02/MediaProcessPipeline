@@ -40,7 +40,7 @@ export function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () =>
     <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose} role="dialog" aria-label="Task detail">
       <div className="absolute inset-0 bg-black/20" />
       <Card
-        className="relative w-full max-w-lg h-full rounded-none border-l shadow-xl overflow-y-auto"
+        className="relative w-full max-w-lg h-full rounded-none border-l shadow-sm overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <CardHeader className="flex-row items-center justify-between gap-2 space-y-0 pb-3">

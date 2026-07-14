@@ -1,6 +1,6 @@
 [package]
 name = "mpp-desktop"
-version = "0.3.7"
+version = "0.3.8"
 description = "MediaProcessPipeline desktop shell"
 authors = ["MediaProcessPipeline"]
 edition = "2021"

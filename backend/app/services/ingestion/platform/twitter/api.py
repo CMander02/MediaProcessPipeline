@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import logging
+import json
 import mimetypes
+import time
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
 from app.core.network import urllib_urlopen
+from app.core.settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +22,77 @@ _UA = (
     "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 )
 _MAX_IMAGE_BYTES = 16 * 1024 * 1024
+
+
+def storage_state_path() -> Path:
+    rt = get_runtime_settings()
+    configured = str(getattr(rt, "twitter_storage_state_path", "") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path(rt.data_root).resolve() / "auth" / "twitter_storage_state.json"
+
+
+def auth_state_status() -> dict[str, Any]:
+    path = storage_state_path()
+    status: dict[str, Any] = {
+        "storage_state_path": str(path),
+        "storage_state_exists": path.exists(),
+        "cookie_count": 0,
+        "logged_in": False,
+    }
+    if not path.exists():
+        return status
+    try:
+        status["updated_at"] = datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        cookies = raw.get("cookies") if isinstance(raw, dict) else []
+        x_cookies = [
+            cookie for cookie in cookies if isinstance(cookie, dict)
+            and str(cookie.get("domain") or "").lstrip(".").lower() in {"x.com", "twitter.com"}
+        ]
+        names = {str(cookie.get("name") or "") for cookie in x_cookies}
+        status["cookie_count"] = len(x_cookies)
+        status["logged_in"] = "auth_token" in names and "ct0" in names
+    except Exception as exc:
+        status["error"] = str(exc)
+    return status
+
+
+def interactive_login(timeout_sec: int = 180) -> dict[str, Any]:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise RuntimeError("Playwright is required for X login.") from exc
+
+    timeout_sec = max(30, min(int(timeout_sec), 600))
+    path = storage_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            headless=False,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        context_kwargs: dict[str, Any] = {
+            "locale": "en-US",
+            "viewport": {"width": 1280, "height": 860},
+            "user_agent": _UA,
+        }
+        if path.exists():
+            context_kwargs["storage_state"] = str(path)
+        context = browser.new_context(**context_kwargs)
+        page = context.new_page()
+        page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=45000)
+        start = time.time()
+        while time.time() - start < timeout_sec:
+            names = {str(cookie.get("name") or "") for cookie in context.cookies("https://x.com")}
+            if "auth_token" in names and "ct0" in names:
+                break
+            if page.is_closed():
+                break
+            page.wait_for_timeout(1000)
+        context.storage_state(path=str(path))
+        browser.close()
+    return auth_state_status()
 
 
 def download_images(

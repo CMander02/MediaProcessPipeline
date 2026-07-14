@@ -86,7 +86,7 @@ export function SpeakerPanel({ subtitles, duration, currentTime, onSeek, onRenam
 
   return (
     <div className="space-y-2">
-      <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+      <h3 className="text-base font-semibold text-foreground">
         说话人
       </h3>
       <div

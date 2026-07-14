@@ -46,6 +46,31 @@ def test_vlm_binding_uses_siliconflow_defaults_when_vlm_endpoint_is_empty():
     assert binding.api_key == "sf-key"
 
 
+def test_vlm_binding_resolves_local_llama_cpp_multimodal_model():
+    settings = RuntimeSettings(
+        runtime_model_bindings={
+            "vision": {
+                "provider_id": "local",
+                "model_id": "Qwen3.5-9B-Q8",
+                "capability": "vision",
+            }
+        },
+        llama_cpp_binary_path="D:/models/llama-server.exe",
+        local_llm_engine="llama_cpp",
+        local_llm_model_path="D:/models/Qwen3.5-9B-Q8_0.gguf",
+        local_llm_mmproj_path="D:/models/mmproj-BF16.gguf",
+        local_llm_concurrency=2,
+    )
+
+    binding = resolve_vlm_binding(settings)
+
+    assert binding.configured is True
+    assert binding.model == "Qwen3.5-9B-Q8"
+    assert binding.api_base == "local://llama_cpp"
+    assert binding.request_kwargs["local_engine"] == "llama_cpp"
+    assert binding.request_kwargs["parallel"] == 2
+
+
 def test_embedding_binding_tracks_kb_enablement_and_vector_settings():
     disabled = RuntimeSettings(
         kb_enabled=False,

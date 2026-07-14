@@ -4,6 +4,7 @@ import { api } from "@/lib/api"
 export interface ArchiveItem {
   title: string
   date: string
+  created_at: string
   path: string
   has_transcript: boolean
   has_summary: boolean

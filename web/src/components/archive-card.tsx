@@ -56,10 +56,10 @@ export function ArchiveCard({
   const canPause = archive.processing && metadataStatus !== "paused" && Boolean(onPause)
   const canResume = archive.processing && metadataStatus === "paused" && Boolean(onResume)
 
-  const showThumbnail = !imgError && !isTextNote
+  const showThumbnail = !imgError && (!isTextNote || archive.has_image)
   const thumbnailUrl = api.archives.thumbnailUrl(archive.path)
   const thumbnailClassName =
-    "h-full w-full object-cover object-center transition-transform group-hover:scale-[1.03]"
+    "h-full w-full object-cover object-center transition-opacity duration-150 group-hover:opacity-90"
 
   return (
     <>
@@ -70,7 +70,7 @@ export function ArchiveCard({
           className="group flex flex-col text-left w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-lg"
         >
           {/* Thumbnail */}
-          <div className={compact ? "relative aspect-[16/8] w-full rounded-lg overflow-hidden bg-muted" : "relative aspect-video w-full rounded-lg overflow-hidden bg-muted"}>
+          <div className={compact ? "relative aspect-[535/304] w-full overflow-hidden rounded-lg bg-muted" : "relative aspect-video w-full overflow-hidden rounded-lg bg-muted"}>
             {showThumbnail && thumbnailUrl ? (
               <img
                 src={thumbnailUrl}
@@ -84,11 +84,11 @@ export function ArchiveCard({
                 <HugeiconsIcon icon={Video01Icon} className="h-8 w-8 text-muted-foreground/30" />
               </div>
             ) : (
-              <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-primary/5 to-primary/15">
-                <div className="rounded-full bg-primary/10 p-3">
+              <div className="flex h-full w-full items-center justify-center bg-muted">
+                <div className="p-3">
                   <HugeiconsIcon
                     icon={isImageNote ? Image01Icon : isTextNote ? Note01Icon : MusicNote01Icon}
-                    className="h-6 w-6 text-primary/40"
+                    className="h-6 w-6 text-muted-foreground/50"
                   />
                 </div>
               </div>
@@ -97,12 +97,12 @@ export function ArchiveCard({
             {/* Processing indicator */}
             {archive.processing && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/20">
-                <div className="rounded-full bg-background/90 p-1.5">
+                <div className="rounded-md bg-background/90 p-1.5">
                   <HugeiconsIcon
                     icon={metadataStatus === "paused" ? PauseIcon : Loading03Icon}
                     className={cn(
                       "h-5 w-5",
-                      metadataStatus === "paused" ? "text-slate-500" : "animate-spin text-blue-500",
+                      metadataStatus === "paused" ? "text-muted-foreground" : "animate-spin text-foreground",
                     )}
                   />
                 </div>
@@ -123,7 +123,7 @@ export function ArchiveCard({
               {archive.title}
             </h3>
             <div className={compact ? "flex items-center gap-1.5 text-[11px] text-muted-foreground" : "flex items-center gap-2 text-xs text-muted-foreground"}>
-              <span>{archive.date}</span>
+              <span>{formatArchiveTime(archive.created_at, archive.date)}</span>
               <span className="flex items-center" title={mediaLabel}>
                 {archive.has_video ? (
                   <HugeiconsIcon icon={Video01Icon} className="h-3.5 w-3.5" strokeWidth={1.75} />
@@ -204,4 +204,16 @@ export function ArchiveCard({
     />
     </>
   )
+}
+
+function formatArchiveTime(createdAt: string | undefined, fallbackDate: string): string {
+  if (!createdAt) return fallbackDate
+  const date = new Date(createdAt)
+  if (Number.isNaN(date.getTime())) return fallbackDate
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  const hour = String(date.getHours()).padStart(2, "0")
+  const minute = String(date.getMinutes()).padStart(2, "0")
+  return `${year}-${month}-${day} ${hour}:${minute}`
 }

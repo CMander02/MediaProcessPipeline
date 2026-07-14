@@ -7,6 +7,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.core.pipeline import _localize_note_markdown_image_refs  # noqa: E402
 from app.models import MediaMetadata  # noqa: E402
 from app.services.ingestion.platform.bilibili import note as bili_note  # noqa: E402
+from app.services.ingestion.ytdlp import YtdlpService  # noqa: E402
 
 
 def test_bilibili_opus_metadata_extracts_text_and_original_image_candidates(monkeypatch):
@@ -217,6 +218,21 @@ def test_bilibili_article_uses_full_article_api_body_and_images(monkeypatch):
     candidates = info["extra"]["image_url_candidates"][0]
     assert candidates[0] == "https://i0.hdslb.com/bfs/new_dyn/banner/full.png"
     assert candidates[1] == api_image_url
+
+
+def test_image_note_metadata_preserves_full_article_description():
+    description = "完整专栏正文。" * 1000
+
+    metadata = YtdlpService().extract_metadata({
+        "id": "cv49760530",
+        "title": "长专栏",
+        "description": description,
+        "content_subtype": "image_note",
+        "media_type": "image",
+        "extractor": "bilibili",
+    })
+
+    assert metadata.description == description
 
 
 def test_bilibili_article_markdown_keeps_inline_image_paragraphs():

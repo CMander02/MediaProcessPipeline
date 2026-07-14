@@ -32,9 +32,9 @@ export function TaskCard({ task, onClick }: { task: Task; onClick?: () => void }
   return (
     <Card
       className={cn(
-        "transition-all cursor-pointer hover:shadow-md",
-        isActive && "border-blue-200 bg-blue-50/30",
-        task.status === "failed" && "border-red-200 bg-red-50/30",
+        "cursor-pointer transition-colors duration-150 hover:border-foreground/25",
+        isActive && "border-foreground/25 bg-muted/30",
+        task.status === "failed" && "border-destructive/40",
       )}
       onClick={onClick}
       role="button"

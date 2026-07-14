@@ -264,6 +264,20 @@ vi.mock("@/lib/api", () => ({
         login_cookie: false,
       }),
     },
+    twitter: {
+      status: vi.fn().mockResolvedValue({
+        storage_state_path: "",
+        storage_state_exists: false,
+        cookie_count: 0,
+        logged_in: false,
+      }),
+      login: vi.fn().mockResolvedValue({
+        storage_state_path: "",
+        storage_state_exists: true,
+        cookie_count: 2,
+        logged_in: true,
+      }),
+    },
     platforms: {
       list: vi.fn().mockResolvedValue({
         platforms: [
@@ -326,7 +340,9 @@ describe("SettingsPanel", () => {
 
     expect(await screen.findByText("yt-dlp")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "更新到最新并重启后端" })).toBeInTheDocument()
-    expect(await screen.findByText("Jina")).toBeInTheDocument()
+    expect(await screen.findByText("网页抓取")).toBeInTheDocument()
+    expect(screen.getByText("启用 Defuddle")).toBeInTheDocument()
+    expect(screen.getByText("启用 Playwright")).toBeInTheDocument()
     expect(screen.getByText("启用 Jina Reader")).toBeInTheDocument()
     expect(screen.getByDisplayValue("https://r.jina.ai")).toBeInTheDocument()
     expect(screen.getByDisplayValue("30")).toBeInTheDocument()
@@ -338,6 +354,9 @@ describe("SettingsPanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Pipelines/Sources" }))
 
     expect(await screen.findByText("哔哩哔哩")).toBeInTheDocument()
+    expect(screen.getByText("登录凭据")).toBeInTheDocument()
+    expect(screen.getByPlaceholderText("必填：仅填写 SESSDATA 的值")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "检测登录" })).toBeInTheDocument()
     expect(screen.getByText("YouTube")).toBeInTheDocument()
     expect(screen.getByText("小宇宙")).toBeInTheDocument()
     expect(screen.getByText("小红书")).toBeInTheDocument()

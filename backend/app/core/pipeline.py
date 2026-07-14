@@ -1211,15 +1211,23 @@ async def _run_subtitle_fast_path(
 # ---------------------------------------------------------------------------
 
 def _note_text_excerpt(text: str, limit: int = 600) -> str:
-    compact = re.sub(r"\s+", " ", text).strip()
+    body_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not re.match(r"^#{1,6}\s+", line.strip())
+    ]
+    compact = re.sub(r"\s+", " ", " ".join(body_lines)).strip()
     if len(compact) <= limit:
         return compact
     return compact[:limit].rstrip() + "..."
 
 
 def _fallback_note_analysis(text: str) -> dict[str, Any]:
+    chinese_count = len(re.findall(r"[\u4e00-\u9fff]", text))
+    latin_count = len(re.findall(r"[A-Za-z]", text))
+    language = "zh-CN" if chinese_count > latin_count else "en" if latin_count else "unknown"
     return {
-        "language": "zh-CN" if re.search(r"[\u4e00-\u9fff]", text) else "unknown",
+        "language": language,
         "content_type": "note",
         "main_topics": [],
         "keywords": [],
@@ -1230,22 +1238,37 @@ def _fallback_note_analysis(text: str) -> dict[str, Any]:
 
 
 def _fallback_note_summary(text: str) -> dict[str, Any]:
+    topics = [
+        match.group(1).strip()
+        for match in re.finditer(r"^#{2,6}\s+(.+?)\s*$", text, re.MULTILINE)
+        if match.group(1).strip() not in {"网页正文", "正文"}
+    ]
     return {
         "tldr": _note_text_excerpt(text),
-        "key_facts": [],
+        "key_facts": [f"章节：{topic}" for topic in topics],
         "action_items": [],
-        "topics": [],
+        "topics": topics,
     }
 
 
 def _fallback_note_mindmap(metadata: "MediaMetadata", image_count: int, text: str) -> str:
     title = metadata.title or "图片笔记"
-    return "\n".join([
-        f"# {title}",
-        "- 原始笔记正文已归档",
-        f"- 图片数量: {image_count}",
-        f"- 正文长度: {len(text)} 字符",
-    ])
+    headings = [
+        match.group(1).strip()
+        for match in re.finditer(r"^#{2,6}\s+(.+?)\s*$", text, re.MULTILINE)
+        if match.group(1).strip() not in {"网页正文", "正文"}
+    ]
+    metadata_images = (metadata.extra or {}).get("image_count") if isinstance(metadata.extra, dict) else None
+    resolved_image_count = int(metadata_images or image_count or 0)
+    lines = [f"- {title}", *[f"  - {heading}" for heading in headings]]
+    if resolved_image_count:
+        image_label = (
+            f"图片素材：{resolved_image_count} 张"
+            if metadata.platform == "webpage"
+            else f"图片数量: {resolved_image_count}"
+        )
+        lines.append(f"  - {image_label}")
+    return "\n".join(lines)
 
 
 def _safe_pipeline_error(error: Exception) -> str:

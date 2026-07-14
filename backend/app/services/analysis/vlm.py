@@ -7,6 +7,7 @@ import io
 import logging
 import re
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -150,6 +151,11 @@ class VLMService:
         from app.core.settings import get_runtime_settings
         rt = get_runtime_settings()
         binding = binding or resolve_vlm_binding(rt)
+        if binding.request_kwargs.get("local_engine") == "llama_cpp":
+            from app.services.analysis.local_llm_runtime import get_local_llm_runtime
+
+            base_url = get_local_llm_runtime().ensure(binding.request_kwargs)
+            binding = replace(binding, api_base=f"{base_url}/v1", api_key="local")
         client, model = self._get_client(binding)
 
         b64, media_type, payload_meta = _encode_image(image_path)

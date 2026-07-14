@@ -109,7 +109,7 @@ export const TranscriptSegment = memo(function TranscriptSegment({
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
-                  className="text-xs font-medium px-1.5 py-0.5 rounded ml-1 cursor-pointer hover:ring-1 hover:ring-current transition-all"
+                  className="text-xs font-medium px-1.5 py-0.5 rounded ml-1 cursor-pointer hover:ring-1 hover:ring-current transition-colors duration-150"
                   style={{
                     color: speakerColor,
                     backgroundColor: speakerColor ? `${speakerColor}15` : undefined,
@@ -139,7 +139,7 @@ export const TranscriptSegment = memo(function TranscriptSegment({
             </DropdownMenu>
           )}
           <div className="flex-1" />
-          <button onClick={handleSave} className="p-1 rounded hover:bg-emerald-100 text-emerald-600" title="保存">
+          <button onClick={handleSave} className="p-1 rounded text-foreground hover:bg-muted" title="保存">
             <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5" />
           </button>
           <button onClick={onEditCancel} className="p-1 rounded hover:bg-muted text-muted-foreground" title="取消">
@@ -188,7 +188,7 @@ export const TranscriptSegment = memo(function TranscriptSegment({
               <DropdownMenu open={speakerDropdownOpen} onOpenChange={setSpeakerDropdownOpen}>
                 <DropdownMenuTrigger asChild>
                   <button
-                    className="text-xs font-medium shrink-0 px-1.5 py-0.5 rounded cursor-pointer hover:ring-1 hover:ring-current transition-all"
+                    className="text-xs font-medium shrink-0 px-1.5 py-0.5 rounded cursor-pointer hover:ring-1 hover:ring-current transition-colors duration-150"
                     style={{
                       color: speakerColor,
                       backgroundColor: speakerColor ? `${speakerColor}15` : undefined,
