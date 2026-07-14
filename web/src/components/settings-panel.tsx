@@ -9,7 +9,7 @@ import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { api, getApiToken, persistApiToken, type Settings, type YtdlpStatus } from "@/lib/api"
 import { usePreferences } from "@/hooks/use-preferences"
-import { SettingRow } from "@/components/settings/setting-controls"
+import { ProxySetting, SettingRow } from "@/components/settings/setting-controls"
 import { LocalModelSettings, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
 import { BilibiliCard, PlaceholderSection, TwitterCard, XiaohongshuCard, YoutubeCard, ZhihuCard } from "@/components/settings/source-cards"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -353,14 +353,13 @@ export function SettingsPanel() {
                   <CardTitle className="text-base">网络</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <SettingRow
+                  <ProxySetting
                     label="代理"
                     settingKey="network_proxy"
                     value={String(settings.network_proxy ?? "")}
                     onSave={updateSetting}
                     saving={saving}
                     saved={saved}
-                    placeholder="留空则直连"
                   />
                 </CardContent>
               </Card>

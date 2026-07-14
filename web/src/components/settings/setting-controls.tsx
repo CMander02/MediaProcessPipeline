@@ -40,6 +40,98 @@ export interface SettingRowProps {
   placeholder?: string
 }
 
+type ProxyMode = "system" | "none" | "custom"
+
+const DISABLED_PROXY_VALUES = new Set(["direct", "none", "off", "false", "0"])
+
+function proxyMode(value: string): ProxyMode {
+  const normalized = value.trim().toLowerCase()
+  if (!normalized) return "system"
+  if (DISABLED_PROXY_VALUES.has(normalized)) return "none"
+  return "custom"
+}
+
+export function ProxySetting({
+  label,
+  settingKey,
+  value,
+  onSave,
+  saving,
+  saved,
+}: SettingRowProps) {
+  const persistedMode = proxyMode(value)
+  const [mode, setMode] = useState<ProxyMode>(persistedMode)
+  const [customValue, setCustomValue] = useState(persistedMode === "custom" ? value : "")
+
+  useEffect(() => {
+    const nextMode = proxyMode(value)
+    setMode(nextMode)
+    if (nextMode === "custom") setCustomValue(value)
+  }, [value])
+
+  const saveMode = (nextMode: ProxyMode) => {
+    setMode(nextMode)
+    if (nextMode === "system") void onSave(settingKey, "")
+    if (nextMode === "none") void onSave(settingKey, "direct")
+  }
+
+  const customDirty = mode === "custom" && customValue.trim() !== value.trim()
+  const saveCustom = () => {
+    const normalized = customValue.trim()
+    if (normalized) void onSave(settingKey, normalized)
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-3">
+        <Label className="w-24 shrink-0 text-sm text-muted-foreground">{label}</Label>
+        <select
+          aria-label={`${String(label)}模式`}
+          value={mode}
+          onChange={(event) => saveMode(event.target.value as ProxyMode)}
+          className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+        >
+          <option value="system">系统代理</option>
+          <option value="none">无代理</option>
+          <option value="custom">自定义</option>
+        </select>
+        {saving[settingKey] && <span className="text-xs text-muted-foreground">保存中</span>}
+        {!saving[settingKey] && saved[settingKey] && (
+          <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
+        )}
+      </div>
+      {mode === "custom" && (
+        <div className="flex items-center gap-3 pl-[6.75rem]">
+          <Input
+            aria-label={`${String(label)}地址`}
+            value={customValue}
+            onChange={(event) => setCustomValue(event.target.value)}
+            onKeyDown={(event) => event.key === "Enter" && saveCustom()}
+            className="h-8 flex-1 text-sm"
+            autoComplete="off"
+            placeholder="http://localhost:7897"
+          />
+          {customDirty && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={saveCustom}
+              disabled={saving[settingKey] || !customValue.trim()}
+              className="h-8 px-2"
+              aria-label={`保存${String(label)}地址`}
+            >
+              <HugeiconsIcon icon={FloppyDiskIcon} className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
+      )}
+      <p className="pl-[6.75rem] text-xs text-muted-foreground">
+        系统代理读取环境变量和操作系统设置；自定义地址支持 HTTP、HTTPS 和 SOCKS。
+      </p>
+    </div>
+  )
+}
+
 export function DeviceChoice({
   value,
   onChange,

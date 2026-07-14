@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { api, type Settings } from "@/lib/api"
-import { SettingRow } from "./setting-controls"
+import { ProxySetting, SettingRow } from "./setting-controls"
 
 function ComingSoonBadge() {
   return (
@@ -120,17 +120,16 @@ export function YoutubeCard({ settings, updateSetting, saving, saved }: YoutubeC
         <p className="text-xs text-muted-foreground">
           YouTube 频繁要求登录验证才能下载。任选一种方式提供 cookies：
           指定导出的 cookies.txt，或让 yt-dlp 直接读取浏览器 cookies（Chrome 运行时会锁数据库，建议用 Firefox/Edge 或关闭 Chrome）。
-          两者都填则优先使用文件。代理留空时后端会尝试读取系统代理。
+          两者都填则优先使用文件。YouTube 代理默认跟随系统，也可以单独直连或覆盖为自定义地址。
         </p>
 
-        <SettingRow
+        <ProxySetting
           label="代理"
           settingKey="youtube_proxy"
           value={String(settings.youtube_proxy ?? "")}
           onSave={updateSetting}
           saving={saving}
           saved={saved}
-          placeholder="留空则使用默认网络"
         />
 
         <SettingRow

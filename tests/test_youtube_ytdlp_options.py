@@ -68,3 +68,47 @@ def test_ytdlp_logger_captures_rate_limit_warning():
 
     assert logger.has_youtube_network_error("https://www.youtube.com/watch?v=gQgKkUsx5q0")
     assert "429" in logger.network_error_summary()
+
+
+def test_subtitle_rate_limit_falls_back_to_media_download_and_asr(monkeypatch, tmp_path):
+    import yt_dlp
+
+    class FakeYoutubeDL:
+        def __init__(self, opts):
+            self.opts = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def extract_info(self, _url, download=False):
+            assert download is False
+            return {
+                "subtitles": {},
+                "automatic_captions": {"zh-Hans": [{}]},
+            }
+
+        def download(self, _urls):
+            raise RuntimeError("Unable to download video subtitles for 'zh-Hans': HTTP Error 429: Too Many Requests")
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", FakeYoutubeDL)
+    service = ytdlp.YtdlpService()
+
+    result = service.download_subtitles(
+        "https://www.youtube.com/watch?v=vif8NQcjVf0",
+        tmp_path,
+        ["zh-Hans"],
+    )
+
+    assert result["subtitle_path"] is None
+    assert result["subtitle_engine"] == "yt-dlp"
+    assert result["diagnostics"] == [{
+        "stage": "subtitle",
+        "status": "failed",
+        "reason": "rate_limited_or_unreachable",
+        "detail": result["diagnostics"][0]["detail"],
+        "fallback": "media_download_asr",
+    }]
+    assert "429" in result["diagnostics"][0]["detail"]

@@ -2217,7 +2217,7 @@ class YtdlpService:
 
         def _try_download(use_auto: bool, target_langs: list[str], type_label: str) -> None:
             nonlocal subtitle_network_error
-            if not target_langs:
+            if not target_langs or subtitle_network_error is not None:
                 return
             subtitle_logger = _YtdlpLogger()
             ydl_opts = {
@@ -2236,7 +2236,17 @@ class YtdlpService:
                     ydl.download([url])
             except Exception as e:
                 if is_youtube_network_error(e, url):
-                    raise _youtube_network_error(url, e) from e
+                    subtitle_network_error = _youtube_network_error(url, e)
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "ytdlp.subtitle.network_limited",
+                        auto=use_auto,
+                        langs=",".join(target_langs),
+                        error=e,
+                        fallback="media_download_asr",
+                    )
+                    return
                 log_event(
                     logger,
                     logging.WARNING,
@@ -2273,7 +2283,16 @@ class YtdlpService:
 
         if not tracks:
             if subtitle_network_error:
-                raise subtitle_network_error
+                return _empty_subtitle_result(
+                    engine="yt-dlp",
+                    diagnostics=[{
+                        "stage": "subtitle",
+                        "status": "failed",
+                        "reason": "rate_limited_or_unreachable",
+                        "detail": str(subtitle_network_error),
+                        "fallback": "media_download_asr",
+                    }],
+                )
             log_event(logger, logging.INFO, "subtitle.empty", url=url, engine="yt-dlp")
             return empty
 

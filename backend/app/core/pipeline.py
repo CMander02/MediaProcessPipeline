@@ -154,6 +154,21 @@ def _platform_prefer_subtitles(source_type: str) -> bool:
     return bool(rt.prefer_platform_subtitles)
 
 
+def _subtitle_unavailable_message(metadata: MediaMetadata | None) -> str:
+    diagnostics = []
+    if metadata is not None and isinstance(metadata.extra, dict):
+        value = metadata.extra.get("subtitle_diagnostics")
+        if isinstance(value, list):
+            diagnostics = value
+    if any(
+        isinstance(item, dict)
+        and item.get("reason") == "rate_limited_or_unreachable"
+        for item in diagnostics
+    ):
+        return "平台字幕请求受限，转入媒体下载与 ASR"
+    return "未发现可用平台字幕"
+
+
 _DOWNLOAD_RESOLVES_TITLE_ROUTES = {
     "xiaohongshu",
     "zhihu",
@@ -2562,16 +2577,23 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         probe_subtitle = None
 
                 if probe_metadata and not probe_subtitle:
+                    subtitle_unavailable_message = _subtitle_unavailable_message(probe_metadata)
                     await _emit_timeline_event(
                         task,
                         "subtitle.missing",
                         stage="subtitle",
                         step_id="subtitle_probe",
                         level="warning",
-                        message="未发现可用平台字幕",
+                        message=subtitle_unavailable_message,
                         data={"diagnostics": getattr(probe_metadata, "extra", {}).get("subtitle_diagnostics", [])},
                     )
-                    await _update_flow_step(task, "subtitle_probe", completed=True, level="warning", message="平台字幕不可用")
+                    await _update_flow_step(
+                        task,
+                        "subtitle_probe",
+                        completed=True,
+                        level="warning",
+                        message=subtitle_unavailable_message,
+                    )
 
                 if probe_metadata and probe_subtitle:
                     await _update_flow_step(task, "subtitle_probe", completed=True, message="平台字幕可用")
@@ -2765,12 +2787,13 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
             has_subtitle = platform_subtitle is not None
             if use_platform_subtitles:
+                subtitle_unavailable_message = _subtitle_unavailable_message(metadata)
                 await _update_flow_step(
                     task,
                     "subtitle_probe",
                     completed=True,
                     level="info" if has_subtitle else "warning",
-                    message="平台字幕可用" if has_subtitle else "平台字幕不可用",
+                    message="平台字幕可用" if has_subtitle else subtitle_unavailable_message,
                 )
             source_flow = await _update_flow_from_metadata(
                 task,
@@ -2787,7 +2810,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     stage="subtitle",
                     step_id="subtitle_probe",
                     level="warning",
-                    message="未发现可用平台字幕",
+                    message=subtitle_unavailable_message,
                     data={"diagnostics": metadata.extra.get("subtitle_diagnostics", [])},
                 )
 
