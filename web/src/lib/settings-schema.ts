@@ -2,7 +2,8 @@ export const DEEPSEEK_STAGES = ["analyze", "polish", "summary", "mindmap"] as co
 
 export type DeepSeekStage = (typeof DEEPSEEK_STAGES)[number]
 export type LlmProvider = "local" | "deepseek" | "custom" | "anthropic" | "openai"
-export type AsrProvider = "qwen3" | "qwen3_gguf" | "siliconflow"
+export type AsrProvider = "moss_cpp" | "qwen3" | "qwen3_gguf" | "siliconflow"
+export type AudioProcessingFlow = "asr" | "moss"
 export type DeviceValue = "cuda" | "cpu" | "auto"
 export type ModelCapability = "llm" | "vlm" | "chat" | "fast" | "thinking" | "reasoning" | "vision" | "asr" | "embedding" | "rerank" | "local" | "json"
 export type ServiceModelType = "llm" | "vlm" | "embedding" | "rerank" | "asr"
@@ -74,6 +75,7 @@ export interface RuntimeModelBinding {
 export interface RuntimeSettings {
   llm_provider?: LlmProvider | string
   asr_provider?: AsrProvider | string
+  audio_processing_flow?: AudioProcessingFlow | string
 
   anthropic_api_key?: string
   anthropic_api_base?: string
@@ -122,6 +124,12 @@ export interface RuntimeSettings {
   qwen3_gguf_keepalive_sec?: number
   qwen3_gguf_chunk_strategy?: string
   silero_onnx_model_path?: string
+  moss_cpp_binary_path?: string
+  moss_cpp_model_path?: string
+  moss_cpp_device?: DeviceValue | string
+  moss_cpp_threads?: number
+  moss_cpp_max_new_tokens?: number
+  moss_cpp_timeout_sec?: number
   siliconflow_api_base?: string
   siliconflow_api_key?: string
   siliconflow_asr_model?: string

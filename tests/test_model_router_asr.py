@@ -87,6 +87,44 @@ def test_asr_default_binding_uses_qwen3_gguf_hf_repo():
     assert binding.request_kwargs["alias"] == "Qwen3-ASR-1.7B"
 
 
+def test_moss_audio_flow_selects_cpp_engine_and_model(tmp_path):
+    binary = tmp_path / "moss-transcribe.exe"
+    model = tmp_path / "moss-transcribe-q5_k.gguf"
+    binary.write_bytes(b"binary")
+    model.write_bytes(b"model")
+    settings = RuntimeSettings(
+        audio_processing_flow="moss",
+        moss_cpp_binary_path=str(binary),
+        moss_cpp_model_path=str(model),
+        moss_cpp_device="cpu",
+        moss_cpp_threads=6,
+    )
+
+    binding = resolve_asr_binding(
+        settings,
+        task_options={"num_speakers": 3},
+        language="zh",
+    )
+
+    assert binding.provider == "moss_cpp"
+    assert binding.source == "audio_flow"
+    assert binding.model == str(model.resolve())
+    assert binding.diarize is True
+    assert binding.num_speakers == 3
+    assert binding.request_kwargs["binary_path"] == str(binary.resolve())
+    assert binding.request_kwargs["device"] == "cpu"
+    assert binding.request_kwargs["threads"] == 6
+
+
+def test_explicit_asr_provider_overrides_moss_audio_flow():
+    settings = RuntimeSettings(audio_processing_flow="moss", asr_provider="qwen3")
+
+    binding = resolve_asr_binding(settings, task_options={"asr_provider": "qwen3"})
+
+    assert binding.provider == "qwen3"
+    assert binding.source == "task_option"
+
+
 def test_asr_qwen3_gguf_binding_uses_local_model_pair_and_cpu():
     settings = RuntimeSettings(
         asr_provider="qwen3_gguf",
@@ -223,4 +261,19 @@ def test_url_asr_fallback_uses_default_when_api_provider_missing(monkeypatch):
 
     assert provider == "qwen3"
     assert reason == "default_asr_provider"
+    assert is_api is False
+
+
+def test_url_asr_fallback_preserves_moss_audio_flow(monkeypatch):
+    settings = RuntimeSettings(
+        audio_processing_flow="moss",
+        siliconflow_api_key="sf-key",
+    )
+    monkeypatch.setattr(pipeline_core, "get_runtime_settings", lambda: settings)
+    task = Task(task_type=TaskType.PIPELINE, source="https://example.com/video.mp4")
+
+    provider, reason, is_api = pipeline_core._select_asr_provider_for_fallback(task)
+
+    assert provider == "moss_cpp"
+    assert reason == "audio_processing_flow"
     assert is_api is False

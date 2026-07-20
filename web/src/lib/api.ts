@@ -70,6 +70,26 @@ export interface TaskStats {
   paused?: number
 }
 
+export interface BilibiliCollectionItem {
+  id: string
+  bvid: string
+  page: number
+  title: string
+  duration: number | null
+  cover: string | null
+  section?: string | null
+  url: string
+}
+
+export interface BilibiliCollectionResult {
+  is_bilibili: boolean
+  is_collection: boolean
+  collection_type?: "multipart" | "ugc_season"
+  title?: string
+  current_item_id?: string
+  items: BilibiliCollectionItem[]
+}
+
 export interface XiaohongshuAuthStatus {
   configured_cookie: boolean
   storage_state_path: string
@@ -84,6 +104,7 @@ export interface XiaohongshuAuthStatus {
 export interface Settings extends RuntimeSettings {
   llm_provider: string
   asr_provider: string
+  audio_processing_flow: string
   qwen3_asr_model_path: string
   qwen3_device: string
   llama_cpp_binary_path: string
@@ -97,6 +118,12 @@ export interface Settings extends RuntimeSettings {
   qwen3_gguf_keepalive_sec: number
   qwen3_gguf_chunk_strategy: string
   silero_onnx_model_path: string
+  moss_cpp_binary_path: string
+  moss_cpp_model_path: string
+  moss_cpp_device: string
+  moss_cpp_threads: number
+  moss_cpp_max_new_tokens: number
+  moss_cpp_timeout_sec: number
   local_llm_model_path: string
   local_llm_engine: string
   local_llm_name: string
@@ -288,6 +315,8 @@ export const api = {
   tasks: {
     create: (source: string, options: Record<string, unknown> = {}) =>
       post<Task>("/api/tasks", { task_type: "pipeline", source, options }),
+    createBatch: (sources: string[], options: Record<string, unknown> = {}) =>
+      post<Task[]>("/api/tasks/batch", { task_type: "pipeline", sources, options }),
     list: (status?: string, limit = 50) => {
       const params = new URLSearchParams({ limit: String(limit) })
       if (status) params.set("status", status)
@@ -402,6 +431,10 @@ export const api = {
     probe: (url: string) =>
       get<{ title?: string; description?: string; tags?: string[]; uploader?: string; duration?: number }>(
         `/api/pipeline/probe?url=${encodeURIComponent(url)}`,
+      ),
+    bilibiliCollection: (url: string) =>
+      get<BilibiliCollectionResult>(
+        `/api/pipeline/bilibili/collection?url=${encodeURIComponent(url)}`,
       ),
   },
 

@@ -14,15 +14,15 @@ use std::{
 
 use chrono::Utc;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 const BACKEND_HOST: &str = "127.0.0.1";
 const BACKEND_PORT: u16 = 18000;
-const APP_URL: &str = "http://127.0.0.1:18000";
+const APP_URL: &str = "http://localhost:18000";
 const BACKEND_COMMAND: &str = "uv run python -u -m app.cli serve";
 const MAX_LOG_LINES: usize = 1200;
 const HEALTH_REQUEST: &[u8] =
-    b"GET /health HTTP/1.1\r\nHost: 127.0.0.1:18000\r\nConnection: close\r\n\r\n";
+    b"GET /health HTTP/1.1\r\nHost: localhost:18000\r\nConnection: close\r\n\r\n";
 
 #[derive(Clone, Serialize)]
 struct BackendStatus {
@@ -43,6 +43,7 @@ struct BackendLogEntry {
 
 struct BackendProcess {
     child: Mutex<Option<Child>>,
+    job_handle: Mutex<Option<usize>>,
     owns_backend: Mutex<bool>,
     status: Mutex<BackendStatus>,
     logs: Mutex<Vec<BackendLogEntry>>,
@@ -52,6 +53,7 @@ impl Default for BackendProcess {
     fn default() -> Self {
         Self {
             child: Mutex::new(None),
+            job_handle: Mutex::new(None),
             owns_backend: Mutex::new(false),
             status: Mutex::new(BackendStatus {
                 state: "stopped".to_string(),
@@ -217,7 +219,80 @@ where
     });
 }
 
-fn spawn_backend(app: &AppHandle, project_root: &Path) -> Result<Child, String> {
+#[cfg(windows)]
+fn attach_kill_on_close_job(child: &Child) -> Result<usize, String> {
+    use std::{ffi::c_void, mem::size_of, os::windows::io::AsRawHandle, ptr};
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        },
+    };
+
+    unsafe {
+        let job = CreateJobObjectW(ptr::null(), ptr::null());
+        if job.is_null() {
+            return Err(format!("CreateJobObjectW failed: {}", std::io::Error::last_os_error()));
+        }
+
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const c_void,
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        if configured == 0 {
+            let error = std::io::Error::last_os_error();
+            CloseHandle(job);
+            return Err(format!("SetInformationJobObject failed: {error}"));
+        }
+
+        let process_handle = child.as_raw_handle() as *mut c_void;
+        if AssignProcessToJobObject(job, process_handle) == 0 {
+            let error = std::io::Error::last_os_error();
+            CloseHandle(job);
+            return Err(format!("AssignProcessToJobObject failed: {error}"));
+        }
+
+        Ok(job as usize)
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_kill_on_close_job(_child: &Child) -> Result<usize, String> {
+    Err("process jobs are only available on Windows".to_string())
+}
+
+#[cfg(windows)]
+fn close_job_handle(handle: usize) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    unsafe {
+        CloseHandle(handle as *mut std::ffi::c_void);
+    }
+}
+
+#[cfg(not(windows))]
+fn close_job_handle(_handle: usize) {}
+
+fn take_and_close_job(backend: &BackendProcess) -> bool {
+    let handle = backend
+        .job_handle
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take());
+    if let Some(handle) = handle {
+        close_job_handle(handle);
+        true
+    } else {
+        false
+    }
+}
+
+fn spawn_backend(app: &AppHandle, project_root: &Path) -> Result<(Child, Option<usize>), String> {
     let backend_dir = project_root.join("backend");
     append_log(app, "system", format!("Starting backend: {BACKEND_COMMAND}"));
     append_log(
@@ -268,7 +343,20 @@ fn spawn_backend(app: &AppHandle, project_root: &Path) -> Result<Child, String> 
         spawn_output_reader(app.clone(), "stderr", stderr);
     }
 
-    Ok(child)
+    let job_handle = match attach_kill_on_close_job(&child) {
+        Ok(handle) => {
+            append_log(app, "system", "Attached backend to a kill-on-close Windows process job.");
+            Some(handle)
+        }
+        Err(error) => {
+            append_log(app, "warning", format!(
+                "Process job setup failed; task-tree shutdown remains active: {error}"
+            ));
+            None
+        }
+    };
+
+    Ok((child, job_handle))
 }
 
 fn refresh_child_exit(app: &AppHandle) -> Result<Option<String>, String> {
@@ -295,6 +383,7 @@ fn refresh_child_exit(app: &AppHandle) -> Result<Option<String>, String> {
     };
 
     if let Some(status) = exit_status {
+        take_and_close_job(&backend);
         if let Ok(mut owns_backend) = backend.owns_backend.lock() {
             *owns_backend = false;
         }
@@ -393,7 +482,7 @@ fn start_backend(app: &AppHandle) -> Result<BackendStatus, String> {
     }
 
     let _ = set_status(app, "starting", None, "Starting backend...", Some(cwd))?;
-    let child = spawn_backend(app, &project_root)?;
+    let (child, job_handle) = spawn_backend(app, &project_root)?;
     let pid = child.id();
 
     {
@@ -406,6 +495,10 @@ fn start_backend(app: &AppHandle) -> Result<BackendStatus, String> {
             .child
             .lock()
             .map_err(|_| "backend child lock poisoned".to_string())? = Some(child);
+        *backend
+            .job_handle
+            .lock()
+            .map_err(|_| "backend process job lock poisoned".to_string())? = job_handle;
     }
 
     set_status(
@@ -470,9 +563,12 @@ fn stop_backend(app: &AppHandle) -> Result<BackendStatus, String> {
         let pid = child.id();
         append_log(app, "system", format!("Stopping backend process {pid}."));
         let _ = set_status(app, "stopping", Some(pid), "Stopping backend...", None)?;
-        terminate_child_tree(child);
+        if !take_and_close_job(&backend) {
+            terminate_child_tree(child);
+        }
         let _ = child.wait();
     } else {
+        take_and_close_job(&backend);
         append_log(app, "system", "Stop requested while backend was not managed.");
     }
 
@@ -496,13 +592,22 @@ fn stop_backend_on_close(state: &BackendProcess) {
         .map(|guard| *guard)
         .unwrap_or(false);
 
-    if !owns_backend {
+    let has_job = state
+        .job_handle
+        .lock()
+        .map(|guard| guard.is_some())
+        .unwrap_or(false);
+
+    if !owns_backend && !has_job {
         return;
     }
 
+    let job_closed = take_and_close_job(state);
     if let Ok(mut guard) = state.child.lock() {
         if let Some(mut child) = guard.take() {
-            terminate_child_tree(&mut child);
+            if !job_closed {
+                terminate_child_tree(&mut child);
+            }
             let _ = child.wait();
         }
     }
@@ -631,7 +736,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn Error>> {
 }
 
 fn main() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             backend_get_status,
@@ -648,6 +753,13 @@ fn main() {
                 stop_backend_on_close(&state);
             }
         })
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("error while running MediaProcessPipeline desktop shell");
+
+    app.run(|app_handle, event| {
+        if matches!(event, RunEvent::Exit) {
+            let state = app_handle.state::<BackendProcess>();
+            stop_backend_on_close(&state);
+        }
+    });
 }

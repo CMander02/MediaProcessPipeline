@@ -1723,13 +1723,14 @@ dependencies = [
 
 [[package]]
 name = "mpp-desktop"
-version = "0.3.8"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "serde",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

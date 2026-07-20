@@ -11,6 +11,7 @@ const { mockSettings } = vi.hoisted(() => ({
   mockSettings: {
     llm_provider: "deepseek",
     asr_provider: "qwen3_gguf",
+    audio_processing_flow: "asr",
     qwen3_asr_model_path: "",
     qwen3_device: "cuda",
     llama_cpp_binary_path: "",
@@ -112,9 +113,12 @@ const { mockSettings } = vi.hoisted(() => ({
     uvr_model: "UVR-MDX-NET-Inst_HQ_3",
     uvr_mdx_inst_hq3_path: "",
     uvr_device: "cuda",
-    enable_voiceprint: true,
-    voiceprint_match_threshold: 0.75,
-    voiceprint_suggest_threshold: 0.6,
+    moss_cpp_binary_path: "",
+    moss_cpp_model_path: "",
+    moss_cpp_device: "auto",
+    moss_cpp_threads: 8,
+    moss_cpp_max_new_tokens: 32768,
+    moss_cpp_timeout_sec: 3600,
   },
 }))
 
@@ -419,13 +423,15 @@ describe("SettingsPanel", () => {
     expect(await screen.findByRole("heading", { name: "Qwen3-ASR GGUF" })).toBeInTheDocument()
     expect(screen.queryByText("默认 ASR")).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /SiliconFlow ASR/ })).not.toBeInTheDocument()
-    expect(screen.getByText("Diarization")).toBeInTheDocument()
+    expect(screen.getByText("音频流程")).toBeInTheDocument()
     expect(screen.queryByText("Local LLM Server")).not.toBeInTheDocument()
     expect(screen.queryByText("Voiceprint Purpose")).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByText("Diarization"))
-    expect(screen.getByRole("heading", { name: "Diarization" })).toBeInTheDocument()
-    expect(screen.getByText("启用声纹识别")).toBeInTheDocument()
+    fireEvent.click(screen.getByText("音频流程"))
+    expect(screen.getByRole("heading", { name: "音频流程" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "ASR + pyannote" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "MOSS 一步转录" })).toBeInTheDocument()
+    expect(screen.queryByText("启用声纹识别")).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByText("UVR Server"))
     expect(screen.getByRole("heading", { name: "UVR Server" })).toBeInTheDocument()

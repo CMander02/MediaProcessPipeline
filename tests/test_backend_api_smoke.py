@@ -22,6 +22,7 @@ from app.core.settings import RuntimeSettings  # noqa: E402
 from app.models import Task, TaskStatus, TaskType  # noqa: E402
 from app.services.ingestion import ytdlp  # noqa: E402
 from app.services.ingestion.platform.bilibili import auth as bilibili_auth  # noqa: E402
+from app.services.ingestion.platform.bilibili import collection as bilibili_collection  # noqa: E402
 
 
 class FakeQueue:
@@ -87,6 +88,7 @@ def test_backend_api_smoke_triggers_core_boundaries(tmp_path, monkeypatch):
     steps = client.get("/api/tasks/steps")
     assert steps.status_code == 200
     assert [step["id"] for step in steps.json()["steps"]][:2] == ["download", "separate"]
+    assert "voiceprint" not in [step["id"] for step in steps.json()["steps"]]
 
     task = client.post(
         "/api/tasks",
@@ -122,6 +124,58 @@ def test_backend_api_smoke_triggers_core_boundaries(tmp_path, monkeypatch):
     delete_staged = client.delete(f"/api/pipeline/stage/{staged_data['staging_id']}")
     assert delete_staged.status_code == 200
     assert delete_staged.json() == {"deleted": True}
+
+
+def test_batch_task_creation_uses_shared_options(tmp_path, monkeypatch):
+    client, queue = _client(tmp_path, monkeypatch)
+
+    response = client.post("/api/tasks/batch", json={
+        "task_type": "pipeline",
+        "sources": [
+            "https://www.bilibili.com/video/BV1DK4y1b7bY",
+            "https://www.bilibili.com/video/BV1DK4y1b7bY?p=2",
+        ],
+        "options": {"force_asr": True, "num_speakers": 2},
+    })
+
+    assert response.status_code == 200
+    created = response.json()
+    assert len(created) == 2
+    assert len(queue.submitted) == 2
+    assert [task["source"] for task in created] == [
+        "https://www.bilibili.com/video/BV1DK4y1b7bY",
+        "https://www.bilibili.com/video/BV1DK4y1b7bY?p=2",
+    ]
+    assert all(task["options"]["num_speakers"] == 2 for task in created)
+
+
+def test_bilibili_collection_api_returns_selection(tmp_path, monkeypatch):
+    client, _queue = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(bilibili_collection, "inspect_bilibili_collection", lambda url: {
+        "is_bilibili": True,
+        "is_collection": True,
+        "collection_type": "multipart",
+        "title": "设计课",
+        "current_item_id": "BV1DK4y1b7bY:p1",
+        "items": [{
+            "id": "BV1DK4y1b7bY:p1",
+            "bvid": "BV1DK4y1b7bY",
+            "page": 1,
+            "title": "第一集",
+            "duration": 120,
+            "cover": None,
+            "url": url,
+        }],
+    })
+
+    response = client.get(
+        "/api/pipeline/bilibili/collection",
+        params={"url": "https://www.bilibili.com/video/BV1DK4y1b7bY/"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "设计课"
+    assert response.json()["items"][0]["title"] == "第一集"
 
 
 def test_create_task_normalizes_schemeless_bilibili_opus(tmp_path, monkeypatch):

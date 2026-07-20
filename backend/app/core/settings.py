@@ -132,6 +132,11 @@ class RuntimeSettings(BaseModel):
     # mindmap.md is a concise display map; detail.md keeps the former deep outline.
     generate_video_detail: bool = True
 
+    # Audio processing flow
+    #   asr  — selected ASR provider, optionally followed by pyannote
+    #   moss — MOSS-Transcribe-Diarize produces text, timestamps and speakers
+    audio_processing_flow: str = "asr"
+
     # ASR
     asr_provider: str = "qwen3_gguf"
 
@@ -155,6 +160,14 @@ class RuntimeSettings(BaseModel):
     qwen3_gguf_keepalive_sec: float = 300.0
     qwen3_gguf_chunk_strategy: str = "ffmpeg"  # ffmpeg | silero_onnx | silero_torch
     silero_onnx_model_path: str = ""
+
+    # MOSS-Transcribe-Diarize through moss-transcribe.cpp
+    moss_cpp_binary_path: str = ""
+    moss_cpp_model_path: str = ""
+    moss_cpp_device: str = "auto"  # auto | cuda | cpu
+    moss_cpp_threads: int = 8
+    moss_cpp_max_new_tokens: int = 32768
+    moss_cpp_timeout_sec: float = 3600.0
 
     # SiliconFlow ASR (OpenAI-compatible /audio/transcriptions)
     # ffmpeg chunking keeps API-only installs free of torch/torchaudio.
@@ -181,7 +194,7 @@ class RuntimeSettings(BaseModel):
     diarization_batch_size: int = 16
 
     # Voiceprint (speaker embedding) library
-    enable_voiceprint: bool = True
+    enable_voiceprint: bool = False
     voiceprint_match_threshold: float = 0.75      # >= → auto-merge into existing person
     # [suggest, match) -> suggest but create new; < suggest -> new person
     voiceprint_suggest_threshold: float = 0.60
@@ -331,6 +344,22 @@ class RuntimeSettings(BaseModel):
         if provider not in {"qwen3", "qwen3_gguf", "siliconflow"}:
             raise ValueError("asr_provider must be one of: qwen3, qwen3_gguf, siliconflow")
         return provider
+
+    @field_validator("audio_processing_flow")
+    @classmethod
+    def _validate_audio_processing_flow(cls, value: str) -> str:
+        flow = value.strip().lower()
+        if flow not in {"asr", "moss"}:
+            raise ValueError("audio_processing_flow must be one of: asr, moss")
+        return flow
+
+    @field_validator("moss_cpp_device")
+    @classmethod
+    def _validate_moss_cpp_device(cls, value: str) -> str:
+        device = value.strip().lower()
+        if device not in {"auto", "cuda", "cpu"}:
+            raise ValueError("moss_cpp_device must be one of: auto, cuda, cpu")
+        return device
 
     @field_validator("qwen3_gguf_device")
     @classmethod

@@ -13,7 +13,7 @@ from typing import Any
 from app.core.settings import RuntimeSettings
 
 LLM_STAGES = {"analyze", "polish", "summary", "mindmap"}
-ASR_PROVIDERS = {"qwen3", "qwen3_gguf", "siliconflow"}
+ASR_PROVIDERS = {"moss_cpp", "qwen3", "qwen3_gguf", "siliconflow"}
 
 _DEFAULT_QWEN3_ASR_MODEL = "Qwen/Qwen3-ASR-1.7B"
 _DEFAULT_QWEN3_GGUF_REPO = "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0"
@@ -725,10 +725,16 @@ def resolve_asr_binding(
 
     options = task_options or {}
     option_provider = _normalize_provider(options.get("asr_provider"))
+    audio_flow = _normalize_provider(
+        options.get("audio_processing_flow") or rt.audio_processing_flow
+    )
     asr_runtime_binding = _runtime_binding(rt, "asr")
     if option_provider:
         provider = option_provider
         source = "task_option"
+    elif audio_flow == "moss":
+        provider = "moss_cpp"
+        source = "task_flow" if options.get("audio_processing_flow") else "audio_flow"
     elif bool(options.get("api_flow", False)):
         provider = "siliconflow"
         source = "api_flow"
@@ -744,6 +750,38 @@ def resolve_asr_binding(
         raise ValueError(f"Unsupported ASR provider '{provider}'. Supported providers: {supported}")
 
     num_speakers = options.get("num_speakers")
+    if provider == "moss_cpp":
+        from app.services.recognition.moss_cpp_asr import (
+            resolve_moss_cpp_binary,
+            resolve_moss_cpp_model,
+        )
+
+        binary_path = resolve_moss_cpp_binary(rt.moss_cpp_binary_path, required=False)
+        model_path = resolve_moss_cpp_model(rt.moss_cpp_model_path, required=False)
+        missing = []
+        if not binary_path:
+            missing.append("moss-transcribe.cpp binary")
+        if not model_path:
+            missing.append("MOSS GGUF model")
+        return ASRBinding(
+            provider="moss_cpp",
+            source=source,
+            model=model_path or rt.moss_cpp_model_path,
+            language=language,
+            diarize=True,
+            num_speakers=num_speakers,
+            configured=not missing,
+            reason=f"Missing {', '.join(missing)}" if missing else "",
+            request_kwargs={
+                "binary_path": binary_path,
+                "model_path": model_path,
+                "device": rt.moss_cpp_device,
+                "threads": rt.moss_cpp_threads,
+                "max_new_tokens": rt.moss_cpp_max_new_tokens,
+                "timeout_sec": rt.moss_cpp_timeout_sec,
+            },
+        )
+
     if provider == "qwen3":
         model = rt.qwen3_asr_model_path or _DEFAULT_QWEN3_ASR_MODEL
         diarize = bool(rt.enable_diarization and not options.get("disable_diarization", False))

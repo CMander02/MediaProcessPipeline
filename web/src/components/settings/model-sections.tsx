@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react"
+import { useRef, useState, type ReactNode } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
   ChevronDownIcon,
@@ -16,8 +16,6 @@ import SiliconCloudColor from "@lobehub/icons/es/SiliconCloud/components/Color"
 
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
-import { Separator } from "@/components/ui/separator"
-import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { api, type ProviderModelCatalogResult, type Settings } from "@/lib/api"
 import {
@@ -1316,11 +1314,11 @@ export function LocalModelSettings({
       status: String(settings.asr_provider ?? "") === "qwen3" ? "ON" : undefined,
     },
     {
-      id: "diarization",
-      title: "Diarization",
-      description: "说话人分离与归并",
+      id: "audio-flow",
+      title: "音频流程",
+      description: "ASR + pyannote / MOSS 一步转录",
       badge: "SP",
-      status: (settings.enable_diarization ?? true) ? "ON" : undefined,
+      status: String(settings.audio_processing_flow ?? "asr") === "moss" ? "MOSS" : "ASR",
     },
     {
       id: "uvr",
@@ -1631,8 +1629,8 @@ export function LocalModelSettings({
         </div>
       )}
 
-      {activeItem.id === "diarization" && (
-        <DiarizationControls
+      {activeItem.id === "audio-flow" && (
+        <AudioFlowControls
           settings={settings}
           updateSetting={updateSetting}
           saving={saving}
@@ -1913,199 +1911,171 @@ function CustomProfilesEditor({
   )
 }
 
-function DiarizationControls({
+function AudioFlowControls({
   settings,
   updateSetting,
   saving,
   saved,
 }: SharedSettingsProps) {
-  const enabled = Boolean(settings.enable_diarization ?? true)
+  const flow = String(settings.audio_processing_flow ?? "asr")
+  const diarizationEnabled = Boolean(settings.enable_diarization ?? true)
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <Label>说话人分离</Label>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            使用 pyannote 给字幕段落标注 SPEAKER_XX，并为声纹识别提供切片。
-          </p>
+      <div className="space-y-2">
+        <Label>处理流程</Label>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            variant={flow === "asr" ? "default" : "outline"}
+            onClick={() => updateSetting("audio_processing_flow", "asr")}
+          >
+            ASR + pyannote
+          </Button>
+          <Button
+            size="sm"
+            variant={flow === "moss" ? "default" : "outline"}
+            onClick={() => updateSetting("audio_processing_flow", "moss")}
+          >
+            MOSS 一步转录
+          </Button>
         </div>
-        <Switch
-          checked={enabled}
-          onCheckedChange={(value) => updateSetting("enable_diarization", Boolean(value))}
-        />
+        <p className="text-xs text-muted-foreground">
+          两条流程统一输出字幕片段、时间戳、说话人列表和说话人数。MOSS 使用任务级短进程，任务结束后释放模型内存。
+        </p>
       </div>
 
-      {enabled && (
+      {flow === "asr" && (
         <div className="space-y-3">
-          <PathPickerRow
-            label="Diarization"
-            settingKey="pyannote_model_path"
-            value={String(settings.pyannote_model_path ?? "")}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>pyannote 说话人分离</Label>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                在选定 ASR 完成转录后，为字幕片段标注 SPEAKER_XX。
+              </p>
+            </div>
+            <Switch
+              checked={diarizationEnabled}
+              onCheckedChange={(value) => updateSetting("enable_diarization", Boolean(value))}
+            />
+          </div>
+          {diarizationEnabled && (
+            <>
+              <PathPickerRow
+                label="Diarization"
+                settingKey="pyannote_model_path"
+                value={String(settings.pyannote_model_path ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+                placeholder="pyannote-speaker-diarization-3.1 本地目录"
+                title="选择 pyannote diarization 模型目录"
+              />
+              <PathPickerRow
+                label="Segmentation"
+                settingKey="pyannote_segmentation_path"
+                value={String(settings.pyannote_segmentation_path ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+                placeholder="pyannote-segmentation-3.0 本地目录"
+                title="选择 pyannote segmentation 模型目录"
+              />
+              <PathPickerRow
+                label="Embedding"
+                settingKey="pyannote_embedding_path"
+                value={String(settings.pyannote_embedding_path ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+                placeholder="pyannote_wespeaker-voxceleb-resnet34-LM 本地目录"
+                title="选择 pyannote embedding 模型目录"
+              />
+              <SettingRow
+                label="HF Proxy"
+                settingKey="hf_proxy"
+                value={String(settings.hf_proxy ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+                masked
+                placeholder="留空自动读取系统代理，direct 禁用"
+              />
+              <SettingRow
+                label="HF Token"
+                settingKey="hf_token"
+                value={String(settings.hf_token ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+                masked
+              />
+              <SettingRow
+                label="分离批量"
+                settingKey="diarization_batch_size"
+                value={String(settings.diarization_batch_size ?? 16)}
+                onSave={(key, value) => updateSetting(key, Number(value))}
+                saving={saving}
+                saved={saved}
+              />
+            </>
+          )}
+        </div>
+      )}
+
+      {flow === "moss" && (
+        <div className="space-y-3">
+          <SettingRow
+            label="C++ 引擎"
+            settingKey="moss_cpp_binary_path"
+            value={String(settings.moss_cpp_binary_path ?? "")}
             onSave={updateSetting}
             saving={saving}
             saved={saved}
-            placeholder="pyannote-speaker-diarization-3.1 本地目录"
-            title="选择 pyannote diarization 模型目录"
-          />
-          <PathPickerRow
-            label="Segmentation"
-            settingKey="pyannote_segmentation_path"
-            value={String(settings.pyannote_segmentation_path ?? "")}
-            onSave={updateSetting}
-            saving={saving}
-            saved={saved}
-            placeholder="pyannote-segmentation-3.0 本地目录"
-            title="选择 pyannote segmentation 模型目录"
-          />
-          <PathPickerRow
-            label="Embedding"
-            settingKey="pyannote_embedding_path"
-            value={String(settings.pyannote_embedding_path ?? "")}
-            onSave={updateSetting}
-            saving={saving}
-            saved={saved}
-            placeholder="pyannote_wespeaker-voxceleb-resnet34-LM 本地目录"
-            title="选择 pyannote embedding 模型目录"
+            placeholder="backend/tools/moss-transcribe/moss-transcribe.exe"
           />
           <SettingRow
-            label="HF Proxy"
-            settingKey="hf_proxy"
-            value={String(settings.hf_proxy ?? "")}
+            label="GGUF 模型"
+            settingKey="moss_cpp_model_path"
+            value={String(settings.moss_cpp_model_path ?? "")}
             onSave={updateSetting}
             saving={saving}
             saved={saved}
-            masked
-            placeholder="留空自动读取系统代理，direct 禁用"
+            placeholder="C:/zychen/AIGC/Models/MOSS-Transcribe-Diarize-GGUF/moss-transcribe-q5_k.gguf"
+          />
+          <DeviceChoice
+            value={String(settings.moss_cpp_device ?? "auto")}
+            options={["auto", "cuda", "cpu"]}
+            onChange={(value) => updateSetting("moss_cpp_device", value)}
           />
           <SettingRow
-            label="HF Token"
-            settingKey="hf_token"
-            value={String(settings.hf_token ?? "")}
-            onSave={updateSetting}
-            saving={saving}
-            saved={saved}
-            masked
-          />
-          <SettingRow
-            label="分离批量"
-            settingKey="diarization_batch_size"
-            value={String(settings.diarization_batch_size ?? 16)}
+            label="CPU 线程"
+            settingKey="moss_cpp_threads"
+            value={String(settings.moss_cpp_threads ?? 8)}
             onSave={(key, value) => updateSetting(key, Number(value))}
             saving={saving}
             saved={saved}
           />
+          <SettingRow
+            label="最大输出"
+            settingKey="moss_cpp_max_new_tokens"
+            value={String(settings.moss_cpp_max_new_tokens ?? 32768)}
+            onSave={(key, value) => updateSetting(key, Number(value))}
+            saving={saving}
+            saved={saved}
+          />
+          <SettingRow
+            label="超时（秒）"
+            settingKey="moss_cpp_timeout_sec"
+            value={String(settings.moss_cpp_timeout_sec ?? 3600)}
+            onSave={(key, value) => updateSetting(key, Number(value))}
+            saving={saving}
+            saved={saved}
+          />
+          <p className="text-xs text-muted-foreground">
+            MOSS 自动估计说话人数；任务中的 num_speakers 会记录为结果校验参数。
+          </p>
         </div>
-      )}
-
-      <Separator />
-      <VoiceprintControls settings={settings} updateSetting={updateSetting} />
-    </div>
-  )
-}
-
-function VoiceprintControls({
-  settings,
-  updateSetting,
-}: {
-  settings: Settings
-  updateSetting: UpdateSetting
-}) {
-  const enabled = Boolean(settings.enable_voiceprint ?? true)
-  const serverMatch = Number(settings.voiceprint_match_threshold ?? 0.75)
-  const serverSuggest = Number(settings.voiceprint_suggest_threshold ?? 0.60)
-
-  const [match, setMatch] = useState(serverMatch)
-  const [suggest, setSuggest] = useState(serverSuggest)
-
-  useEffect(() => {
-    setMatch(serverMatch)
-  }, [serverMatch])
-  useEffect(() => {
-    setSuggest(serverSuggest)
-  }, [serverSuggest])
-
-  const MATCH_MIN = 0.50, MATCH_MAX = 0.90
-  const SUGGEST_MIN = 0.40, SUGGEST_MAX = 0.80
-  const GAP = 0.10
-
-  const clampSuggest = (nextMatch: number, nextSuggest: number) => {
-    const ceiling = Math.min(SUGGEST_MAX, Math.round((nextMatch - GAP) * 100) / 100)
-    return Math.max(SUGGEST_MIN, Math.min(ceiling, Math.round(nextSuggest * 100) / 100))
-  }
-
-  const handleMatchChange = (value: number) => {
-    const rounded = Math.round(value * 100) / 100
-    setMatch(rounded)
-    const adjusted = clampSuggest(rounded, suggest)
-    if (adjusted !== suggest) setSuggest(adjusted)
-  }
-
-  const handleSuggestChange = (value: number) => {
-    const rounded = Math.round(value * 100) / 100
-    const ceiling = Math.min(SUGGEST_MAX, Math.round((match - GAP) * 100) / 100)
-    setSuggest(Math.min(rounded, ceiling))
-  }
-
-  const commitMatch = () => {
-    if (match !== serverMatch) void updateSetting("voiceprint_match_threshold", match)
-    const adjusted = clampSuggest(match, suggest)
-    if (adjusted !== serverSuggest) void updateSetting("voiceprint_suggest_threshold", adjusted)
-  }
-
-  const commitSuggest = () => {
-    if (suggest !== serverSuggest) void updateSetting("voiceprint_suggest_threshold", suggest)
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <Label>启用声纹识别</Label>
-        <Switch
-          checked={enabled}
-          onCheckedChange={(value) => updateSetting("enable_voiceprint", Boolean(value))}
-        />
-      </div>
-
-      {enabled && (
-        <>
-          <Separator />
-          <div className="max-w-xl space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="text-sm text-muted-foreground">匹配阈值（自动合并）</Label>
-              <span className="text-sm tabular-nums">{match.toFixed(2)}</span>
-            </div>
-            <Slider
-              min={MATCH_MIN}
-              max={MATCH_MAX}
-              step={0.01}
-              value={[match]}
-              onValueChange={(value) => handleMatchChange(value[0])}
-              onValueCommit={commitMatch}
-            />
-            <p className="text-xs text-muted-foreground">
-              相似度 ≥ 此值时，说话人会被自动归入已存在的声纹。
-            </p>
-          </div>
-
-          <div className="max-w-xl space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="text-sm text-muted-foreground">待确认下限</Label>
-              <span className="text-sm tabular-nums">{suggest.toFixed(2)}</span>
-            </div>
-            <Slider
-              min={SUGGEST_MIN}
-              max={Math.min(SUGGEST_MAX, Math.round((match - GAP) * 100) / 100)}
-              step={0.01}
-              value={[suggest]}
-              onValueChange={(value) => handleSuggestChange(value[0])}
-              onValueCommit={commitSuggest}
-            />
-            <p className="text-xs text-muted-foreground">
-              必须 ≤ 匹配阈值 - 0.10。介于此值与匹配阈值之间会建立新身份但记录为可疑匹配。
-            </p>
-          </div>
-        </>
       )}
     </div>
   )

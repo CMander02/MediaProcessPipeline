@@ -25,7 +25,7 @@ from app.core.pipeline import (
 )
 from app.core.queue import get_task_queue
 from app.core.source_resolver import resolve_source_flow
-from app.models import Task, TaskCreate, TaskStatus
+from app.models import Task, TaskBatchCreate, TaskCreate, TaskStatus
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 logger = logging.getLogger(__name__)
@@ -116,6 +116,30 @@ async def create_task(task_create: TaskCreate):
     await queue.submit(task.id)
 
     return task
+
+
+@router.post("/batch", response_model=list[Task])
+async def create_tasks_batch(batch_create: TaskBatchCreate):
+    """Create multiple tasks with one shared option set."""
+    from app.services.ingestion.ytdlp import normalize_bilibili_source_url
+
+    normalized_sources = [
+        normalize_bilibili_source_url(_clean_source_path(source))
+        for source in batch_create.sources
+    ]
+    for source in normalized_sources:
+        if source.startswith(("http://", "https://")):
+            _validate_public_http_url(source)
+
+    tasks_created: list[Task] = []
+    for source in normalized_sources:
+        tasks_created.append(await create_task(TaskCreate(
+            task_type=batch_create.task_type,
+            source=source,
+            options=batch_create.options,
+            webhook_url=batch_create.webhook_url,
+        )))
+    return tasks_created
 
 
 @router.get("", response_model=list[Task])

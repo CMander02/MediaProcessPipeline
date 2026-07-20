@@ -10,7 +10,7 @@ from app.services.recognition.base import ASRService
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_ASR_PROVIDERS = {"qwen3", "qwen3_gguf", "siliconflow"}
+SUPPORTED_ASR_PROVIDERS = {"moss_cpp", "qwen3", "qwen3_gguf", "siliconflow"}
 
 __all__ = [
     "SUPPORTED_ASR_PROVIDERS",
@@ -40,16 +40,22 @@ def get_asr_service(provider: str | None = None) -> ASRService:
         from app.services.recognition.siliconflow_asr import get_siliconflow_service
 
         return get_siliconflow_service()
+    if provider_id == "moss_cpp":
+        from app.services.recognition.moss_cpp_asr import get_moss_cpp_service
+
+        return get_moss_cpp_service()
     supported = ", ".join(sorted(SUPPORTED_ASR_PROVIDERS))
     raise ValueError(f"Unsupported ASR provider '{provider_id}'. Supported providers: {supported}")
 
 
 def release_asr_models() -> None:
     """Release ASR-owned GPU resources without binding queue.py to a provider."""
-    from app.services.recognition.qwen3_gguf_asr import release_qwen3_gguf_service
+    from app.services.recognition.moss_cpp_asr import release_moss_cpp_service
     from app.services.recognition.qwen3_asr import release_qwen3_service
+    from app.services.recognition.qwen3_gguf_asr import release_qwen3_gguf_service
     from app.services.recognition.siliconflow_asr import release_siliconflow_service
 
+    release_moss_cpp_service()
     release_qwen3_gguf_service()
     release_qwen3_service()
     release_siliconflow_service()
@@ -64,6 +70,7 @@ async def transcribe_audio(
     diarize: bool = True,
     chunk_strategy: str | None = None,
     hotwords: list[str] | None = None,
+    audio_processing_flow: str | None = None,
 ) -> dict[str, Any]:
     """Transcribe audio with the configured ASR provider and optionally write an SRT file."""
     from app.core.model_router import resolve_asr_binding
@@ -71,6 +78,8 @@ async def transcribe_audio(
     options: dict[str, Any] = {}
     if provider:
         options["asr_provider"] = provider
+    if audio_processing_flow:
+        options["audio_processing_flow"] = audio_processing_flow
     if chunk_strategy:
         options["asr_chunk_strategy"] = chunk_strategy
     if num_speakers is not None:
@@ -100,6 +109,14 @@ async def transcribe_audio(
                 num_speakers=binding.num_speakers,
                 chunk_strategy=binding.chunk_strategy,
             )
+        if provider_id == "moss_cpp":
+            return service.transcribe(
+                audio_path,
+                language=binding.language,
+                diarize=True,
+                num_speakers=binding.num_speakers,
+                **binding.request_kwargs,
+            )
         return service.transcribe(
             audio_path,
             language=binding.language,
@@ -111,6 +128,9 @@ async def transcribe_audio(
     segments = service.to_segments(result)
     srt_content = service.to_srt(segments)
     detected_language = result.get("language", language or "unknown")
+    speakers = result.get("speakers")
+    if not isinstance(speakers, list):
+        speakers = sorted({segment.speaker for segment in segments if segment.speaker})
 
     # Save SRT file to output_dir if provided
     srt_path = None
@@ -122,8 +142,13 @@ async def transcribe_audio(
         logger.info(f"Saved SRT to: {srt_path}")
 
     return {
+        "provider": provider_id,
+        "audio_processing_flow": "moss" if provider_id == "moss_cpp" else "asr",
         "language": detected_language or language or "unknown",
         "segments": [s.model_dump() if hasattr(s, 'model_dump') else s for s in segments],
+        "speakers": speakers,
+        "speaker_count": int(result.get("speaker_count", len(speakers))),
+        "diarization": result.get("diarization", "pyannote" if binding.diarize else "none"),
         "srt": srt_content,
         "srt_path": str(srt_path) if srt_path else None,
     }

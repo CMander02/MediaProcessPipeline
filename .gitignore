@@ -97,3 +97,6 @@ experiment/bilibili_login/
 
 # BBDown (binary + login cookie, not committed)
 backend/tools/bbdown/
+
+# MOSS C++ inference runtime (local binary + ggml DLLs)
+backend/tools/moss-transcribe/

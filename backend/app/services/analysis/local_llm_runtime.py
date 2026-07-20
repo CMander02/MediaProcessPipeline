@@ -167,3 +167,8 @@ def get_local_llm_runtime() -> LocalLlamaCppRuntime:
     if _runtime is None:
         _runtime = LocalLlamaCppRuntime()
     return _runtime
+
+
+def release_local_llm_runtime() -> None:
+    if _runtime is not None:
+        _runtime.stop()

@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     # API Settings
     api_title: str = "Media Process Pipeline"
-    api_version: str = "0.1.0"
+    api_version: str = "0.4.0"
     debug: bool = False
 
     # CORS

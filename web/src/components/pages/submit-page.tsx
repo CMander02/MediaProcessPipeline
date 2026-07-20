@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, type FormEvent, type KeyboardEvent } from "react"
 import { useDropZone } from "@/hooks/use-drop-zone"
 import { navigate } from "@/lib/router"
-import { api } from "@/lib/api"
+import { api, type BilibiliCollectionItem } from "@/lib/api"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
@@ -25,6 +25,13 @@ interface QueuedFile {
   error: string
 }
 
+interface CollectionSelection {
+  sourceUrl: string
+  title: string
+  items: BilibiliCollectionItem[]
+  selectedIds: string[]
+}
+
 function formatFileSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
@@ -46,6 +53,10 @@ function isVideoFile(name: string) {
   return /\.(mp4|mkv|avi|webm|mov|flv|wmv)$/i.test(name)
 }
 
+function looksLikeBilibiliVideo(value: string) {
+  return /(?:bilibili\.com\/video\/|b23\.tv\/|\bBV[0-9A-Za-z]{10}\b)/i.test(value)
+}
+
 type SubtitleStrategy = "auto" | "force_asr"
 
 export function SubmitPage() {
@@ -58,7 +69,9 @@ export function SubmitPage() {
   const [hotwordInput, setHotwordInput] = useState("")
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [checkingCollection, setCheckingCollection] = useState(false)
   const [error, setError] = useState("")
+  const [collection, setCollection] = useState<CollectionSelection | null>(null)
   const [showFolderDialog, setShowFolderDialog] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const hotwordInputRef = useRef<HTMLInputElement>(null)
@@ -132,6 +145,30 @@ export function SubmitPage() {
     })
   }
 
+  const toggleCollectionItem = (id: string) => {
+    setCollection((current) => {
+      if (!current) return current
+      const selected = current.selectedIds.includes(id)
+      return {
+        ...current,
+        selectedIds: selected
+          ? current.selectedIds.filter((itemId) => itemId !== id)
+          : [...current.selectedIds, id],
+      }
+    })
+  }
+
+  const selectAllCollectionItems = () => {
+    setCollection((current) => current ? {
+      ...current,
+      selectedIds: current.items.map((item) => item.id),
+    } : current)
+  }
+
+  const clearCollectionItems = () => {
+    setCollection((current) => current ? { ...current, selectedIds: [] } : current)
+  }
+
   const handleSubmitAll = async () => {
     const readyFiles = queuedFiles.filter((f) => f.stagingPath && !f.uploading && !f.error)
     const urlSource = source.trim()
@@ -143,16 +180,47 @@ export function SubmitPage() {
     try {
       const opts = buildOptions()
 
+      if (
+        urlSource
+        && collection?.sourceUrl !== urlSource
+        && looksLikeBilibiliVideo(urlSource)
+      ) {
+        setCheckingCollection(true)
+        const inspection = await api.pipeline.bilibiliCollection(urlSource)
+        setCheckingCollection(false)
+        if (inspection.is_collection && inspection.items.length > 1) {
+          setCollection({
+            sourceUrl: urlSource,
+            title: inspection.title || "哔哩哔哩合集",
+            items: inspection.items,
+            selectedIds: inspection.items.map((item) => item.id),
+          })
+          setSubmitting(false)
+          return
+        }
+      }
+
       // Options are captured here, at submit time — so users editing
       // advanced options after dropping files still gets their picks applied.
-      for (const f of readyFiles) {
-        await api.tasks.create(f.stagingPath, opts)
+      const sources = readyFiles.map((file) => file.stagingPath)
+      if (collection?.sourceUrl === urlSource) {
+        const selectedIds = new Set(collection.selectedIds)
+        sources.push(...collection.items
+          .filter((item) => selectedIds.has(item.id))
+          .map((item) => item.url))
+      } else if (urlSource) {
+        sources.push(urlSource)
       }
-      if (urlSource) await api.tasks.create(urlSource, opts)
+      if (sources.length === 0) {
+        setSubmitting(false)
+        return
+      }
+      await api.tasks.createBatch(sources, opts)
 
       navigate("#/files")
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交失败")
+      setCheckingCollection(false)
       setSubmitting(false)
     }
   }
@@ -183,9 +251,15 @@ export function SubmitPage() {
   const anyUploading = queuedFiles.some((f) => f.uploading)
   const readyCount = queuedFiles.filter((f) => f.stagingPath && !f.error).length
   const uploadingCount = queuedFiles.filter((f) => f.uploading).length
-  const totalCount = (source.trim() ? 1 : 0) + readyCount
+  const selectedCollectionCount = collection?.selectedIds.length ?? 0
+  const totalCount = readyCount + (
+    collection?.sourceUrl === source.trim()
+      ? selectedCollectionCount
+      : source.trim() ? 1 : 0
+  )
   const canSubmit = totalCount > 0 && !submitting && !anyUploading
   const hasFiles = queuedFiles.length > 0
+  const hasRightPanel = hasFiles || collection !== null
   const activeOptions = [forceAsr, !!numSpeakers, hotwordTags.length > 0].filter(Boolean).length
 
   return (
@@ -200,27 +274,27 @@ export function SubmitPage() {
       {/* ── Left panel: controls ── */}
       <div className={cn(
         "flex flex-col gap-4 p-6 overflow-y-auto shrink-0 transition-[width,border-color] duration-200",
-        hasFiles ? "w-72 border-r" : "w-full items-center justify-center",
+        hasRightPanel ? "w-72 border-r" : "w-full items-center justify-center",
       )}>
-        <div className={cn("flex flex-col gap-4", !hasFiles && "w-full max-w-md")}>
+        <div className={cn("flex flex-col gap-4", !hasRightPanel && "w-full max-w-md")}>
 
           {/* Drop zone */}
           <div
             {...dropZoneProps}
             className={cn(
               "flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed transition-colors duration-150 cursor-pointer",
-              hasFiles ? "py-5 px-4" : "py-12 px-4",
+              hasRightPanel ? "py-5 px-4" : "py-12 px-4",
               isDragging ? "border-primary bg-primary/5" : "border-muted-foreground/25 hover:border-muted-foreground/40 hover:bg-muted/20",
               submitting && "pointer-events-none opacity-60",
             )}
             onClick={() => fileInputRef.current?.click()}
           >
-            <HugeiconsIcon icon={Upload01Icon} className={cn("text-muted-foreground/40", hasFiles ? "h-6 w-6" : "h-9 w-9")} />
+            <HugeiconsIcon icon={Upload01Icon} className={cn("text-muted-foreground/40", hasRightPanel ? "h-6 w-6" : "h-9 w-9")} />
             <div className="text-center pointer-events-none">
               <p className="text-sm font-medium text-muted-foreground">
-                {isDragging ? "松开鼠标放下文件" : hasFiles ? "继续拖入或点击添加" : "拖放音视频文件到这里"}
+                {isDragging ? "松开鼠标放下文件" : hasRightPanel ? "继续拖入或点击添加" : "拖放音视频文件到这里"}
               </p>
-              {!hasFiles && (
+              {!hasRightPanel && (
                 <p className="mt-0.5 text-xs text-muted-foreground/60">支持 MP4、MKV、MP3、WAV、FLAC 等，可多选</p>
               )}
             </div>
@@ -259,7 +333,10 @@ export function SubmitPage() {
               <HugeiconsIcon icon={Link01Icon} className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
               <Input
                 value={source}
-                onChange={(e) => setSource(e.target.value)}
+                onChange={(e) => {
+                  setSource(e.target.value)
+                  setCollection(null)
+                }}
                 placeholder="粘贴视频链接或本地路径..."
                 className="pl-9"
                 disabled={submitting}
@@ -274,8 +351,10 @@ export function SubmitPage() {
               ? <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
               : <HugeiconsIcon icon={PlayIcon} className="h-4 w-4 mr-2" />
             }
-            {submitting
-              ? "提交中..."
+            {checkingCollection
+              ? "检测合集..."
+              : submitting
+                ? "提交中..."
               : totalCount > 1
                 ? `开始处理（${totalCount} 个）`
                 : "开始处理"
@@ -335,7 +414,7 @@ export function SubmitPage() {
                   <p className="text-[10px] text-muted-foreground mt-1">
                     {strategy === "auto"
                       ? "阶段：下载 → 字幕/ASR → 分析 → 归档"
-                      : "阶段：下载 → 人声分离 → ASR → 声纹 → 分析 → 润色 → 归档"}
+                      : "阶段：下载 → 人声分离 → ASR → 说话人分离 → 分析 → 润色 → 归档"}
                   </p>
                 </div>
 
@@ -378,7 +457,7 @@ export function SubmitPage() {
                 </div>
 
                 {totalCount > 1 && (
-                  <p className="text-xs text-muted-foreground">以上选项将应用于全部 {totalCount} 个文件</p>
+                  <p className="text-xs text-muted-foreground">以上选项将应用于全部 {totalCount} 个条目</p>
                 )}
               </div>
             )}
@@ -386,13 +465,20 @@ export function SubmitPage() {
         </div>
       </div>
 
-      {/* ── Right panel: file list ── */}
-      {hasFiles && (
+      {/* ── Right panel: file and collection list ── */}
+      {hasRightPanel && (
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           {/* Header */}
           <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b">
             <div className="flex items-center gap-2 text-sm">
-              <span className="font-medium">{queuedFiles.length} 个文件</span>
+              <span className="font-medium">
+                {collection ? collection.title : `${queuedFiles.length} 个文件`}
+              </span>
+              {collection && (
+                <span className="text-muted-foreground">
+                  已选 {selectedCollectionCount}/{collection.items.length}
+                </span>
+              )}
               {uploadingCount > 0 && (
                 <span className="text-muted-foreground flex items-center gap-1">
                   <HugeiconsIcon icon={Loading03Icon} className="h-3.5 w-3.5 animate-spin" />
@@ -406,17 +492,75 @@ export function SubmitPage() {
                 </span>
               )}
             </div>
-            <button
-              className="text-xs text-muted-foreground hover:text-destructive transition-colors"
-              onClick={clearAll}
-            >
-              清空列表
-            </button>
+            <div className="flex items-center gap-3">
+              {collection && (
+                <>
+                  <button
+                    className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    onClick={selectAllCollectionItems}
+                  >
+                    全选
+                  </button>
+                  <button
+                    className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    onClick={clearCollectionItems}
+                  >
+                    清空选择
+                  </button>
+                </>
+              )}
+              {hasFiles && (
+                <button
+                  className="text-xs text-muted-foreground hover:text-destructive transition-colors"
+                  onClick={clearAll}
+                >
+                  清空文件
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Scrollable list */}
           <div className="flex-1 overflow-y-auto px-4 py-2">
             <div className="space-y-1">
+              {collection?.items.map((item, index) => {
+                const selected = collection.selectedIds.includes(item.id)
+                return (
+                  <label
+                    key={item.id}
+                    className={cn(
+                      "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm cursor-pointer transition-colors",
+                      selected ? "bg-primary/5 hover:bg-primary/10" : "hover:bg-muted/60",
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={() => toggleCollectionItem(item.id)}
+                      aria-label={`选择 ${item.title}`}
+                      className="h-4 w-4 shrink-0 accent-primary"
+                    />
+                    <span className="w-7 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+                      {index + 1}
+                    </span>
+                    <HugeiconsIcon icon={FileVideoIcon} className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate">{item.title}</p>
+                      {item.section && (
+                        <p className="truncate text-xs text-muted-foreground">{item.section}</p>
+                      )}
+                    </div>
+                    {item.duration != null && (
+                      <span className="text-xs text-muted-foreground shrink-0 tabular-nums">
+                        {formatDuration(item.duration)}
+                      </span>
+                    )}
+                  </label>
+                )
+              })}
+
+              {collection && hasFiles && <div className="my-2 h-px bg-border" />}
+
               {queuedFiles.map((f) => (
                 <div
                   key={f.id}

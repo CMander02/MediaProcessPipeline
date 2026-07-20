@@ -49,7 +49,6 @@ PIPELINE_STEPS = [
     {"id": PipelineStep.DOWNLOAD, "name": "下载媒体", "name_en": "Downloading"},
     {"id": PipelineStep.SEPARATE, "name": "分离人声", "name_en": "Separating vocals"},
     {"id": PipelineStep.TRANSCRIBE, "name": "转录音频", "name_en": "Transcribing"},
-    {"id": PipelineStep.VOICEPRINT, "name": "声纹识别", "name_en": "Matching voiceprints"},
     {"id": PipelineStep.POLISH, "name": "润色字幕", "name_en": "Polishing transcript"},
     {"id": PipelineStep.ANALYZE, "name": "分析+摘要+脑图", "name_en": "Analyzing & summarizing"},
     {"id": PipelineStep.ARCHIVE, "name": "归档保存", "name_en": "Archiving"},
@@ -918,6 +917,9 @@ def _select_asr_provider_for_fallback(task: Task) -> tuple[str | None, str, bool
     if explicit:
         return explicit, "task_option", explicit == "siliconflow"
 
+    if rt.audio_processing_flow == "moss":
+        return "moss_cpp", "audio_processing_flow", False
+
     try:
         runtime_binding = resolve_asr_binding(rt)
         if runtime_binding.provider == "siliconflow" and runtime_binding.configured:
@@ -950,8 +952,9 @@ async def _update_step(
     if completed and step not in task.completed_steps:
         task.completed_steps.append(step)
 
-    total_steps = len(PIPELINE_STEPS)
-    completed_count = len(task.completed_steps)
+    public_step_ids = {step["id"] for step in PIPELINE_STEPS}
+    total_steps = len(public_step_ids)
+    completed_count = len(public_step_ids.intersection(task.completed_steps))
     task.progress = completed_count / total_steps
     task.updated_at = datetime.now()
 
@@ -1116,9 +1119,6 @@ async def _run_subtitle_fast_path(
             await _write_text_artifact(task, task_dir, "transcript_polished.md", polished_md)
 
     await _update_step(task, PipelineStep.TRANSCRIBE, completed=True)
-
-    # -- VOICEPRINT: platform subtitles have no diarization, mark skipped --
-    await _update_step(task, PipelineStep.VOICEPRINT, completed=True)
 
     # Guard: skip LLM if transcript is empty
     if not transcript or len(transcript.strip()) < 10:
@@ -1641,7 +1641,7 @@ async def _process_image_note(
     from app.services.archiving import archive_result
 
     # Mark all audio steps as skipped immediately
-    for step in (PipelineStep.SEPARATE, PipelineStep.TRANSCRIBE, PipelineStep.VOICEPRINT, PipelineStep.POLISH):
+    for step in (PipelineStep.SEPARATE, PipelineStep.TRANSCRIBE, PipelineStep.POLISH):
         await _update_step(task, step, completed=True)
     await _raise_if_cancelled(task.id)
 
@@ -2372,9 +2372,6 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             _restore_summary()
             _restore_mindmap()
 
-            if PipelineStep.VOICEPRINT not in done:
-                await _update_step(task, PipelineStep.VOICEPRINT, completed=True)
-
             # Archive
             from app.services.archiving import archive_result
             await _raise_if_cancelled(task.id)
@@ -3052,6 +3049,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                             diarize=not task.options.get("disable_diarization", False),
                             chunk_strategy=task.options.get("asr_chunk_strategy"),
                             hotwords=task.options.get("hotwords"),
+                            audio_processing_flow=task.options.get("audio_processing_flow"),
                         )
                     except Exception as e:
                         await _emit_timeline_event(
@@ -3099,6 +3097,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                             diarize=not task.options.get("disable_diarization", False),
                             chunk_strategy=task.options.get("asr_chunk_strategy"),
                             hotwords=task.options.get("hotwords"),
+                            audio_processing_flow=task.options.get("audio_processing_flow"),
                         )
                         await _raise_if_cancelled(task.id)
                         transcript = " ".join(s["text"] for s in recognition.get("segments", []))
@@ -3107,6 +3106,13 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     polished_md = None
                     subtitle_source = "asr"
                     recognition_segments = recognition.get("segments", [])
+                    metadata.extra["audio_processing"] = {
+                        "flow": recognition.get("audio_processing_flow", "asr"),
+                        "provider": recognition.get("provider", asr_provider or "settings"),
+                        "diarization": recognition.get("diarization", "none"),
+                    }
+                    metadata.extra["speakers"] = recognition.get("speakers", [])
+                    metadata.extra["speaker_count"] = recognition.get("speaker_count", 0)
                     await _emit_timeline_event(
                         task,
                         "asr.completed",
@@ -3115,7 +3121,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         level="info",
                         message="ASR 转录完成",
                         data={
-                            "provider": asr_provider or "settings",
+                            "provider": recognition.get("provider", asr_provider or "settings"),
                             "segments": len(recognition_segments),
                             "language": recognition.get("language"),
                         },
@@ -3152,16 +3158,6 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 await _raise_if_cancelled(task.id)
             # end if TRANSCRIBE not in done
 
-            # ── Voiceprint step: temporarily disabled ──
-            # The matcher/library work is currently being reconsidered.
-            # Mark the step complete so the UI progress bar still advances,
-            # but skip the embedding extraction + person registration.
-            # Re-enable by reverting this block (see git history for the
-            # original _run_voiceprint_step call + SRT speaker-name rewrite).
-            if PipelineStep.VOICEPRINT not in done:
-                await _update_step(task, PipelineStep.VOICEPRINT)
-                log_event(logger, logging.INFO, "voiceprint.skipped", reason="disabled")
-                await _update_step(task, PipelineStep.VOICEPRINT, completed=True)
         # end async with gpu_sem
 
     # Clean up UVR vocals and segment files immediately after ASR is done —
@@ -3169,10 +3165,6 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     _cleanup_vocals(task_dir, audio_path, vocals_path)
 
     # end if SEPARATE+TRANSCRIBE not both done
-
-    # Ensure VOICEPRINT is marked complete even in the "both already done" resume path
-    if PipelineStep.VOICEPRINT not in task.completed_steps:
-        await _update_step(task, PipelineStep.VOICEPRINT, completed=True)
 
     # Guard: skip LLM if transcript is empty or trivially short
     if not transcript or len(transcript.strip()) < 10:
@@ -3357,7 +3349,7 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
                          runs DOWNLOAD, then advance_to_gpu(), returns
     GPU worker       → process_task(id, _download_worker_call=False)
                          DOWNLOAD already in completed_steps, skips it,
-                         runs SEPARATE → TRANSCRIBE → VOICEPRINT → POLISH → ANALYZE → ARCHIVE
+                         runs SEPARATE → TRANSCRIBE → POLISH → ANALYZE → ARCHIVE
     """
     from app.services.ingestion import download_media
     from app.services.preprocessing import separate_vocals

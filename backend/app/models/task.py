@@ -75,6 +75,13 @@ class TaskCreate(BaseModel):
     webhook_url: str | None = None
 
 
+class TaskBatchCreate(BaseModel):
+    task_type: TaskType = TaskType.PIPELINE
+    sources: list[str] = Field(min_length=1, max_length=100)
+    options: dict[str, Any] = Field(default_factory=dict)
+    webhook_url: str | None = None
+
+
 class Task(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     task_type: TaskType

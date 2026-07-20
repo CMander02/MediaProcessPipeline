@@ -24,6 +24,23 @@ def _setup_win32_job_object() -> None:
         return
 
     kernel32 = ctypes.windll.kernel32
+    from ctypes import wintypes
+
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
 
     # Job Object constants
     JobObjectExtendedLimitInformation = 9
@@ -70,16 +87,22 @@ def _setup_win32_job_object() -> None:
         info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 
-        kernel32.SetInformationJobObject(
+        configured = kernel32.SetInformationJobObject(
             job,
             JobObjectExtendedLimitInformation,
             ctypes.byref(info),
             ctypes.sizeof(info),
         )
+        if not configured:
+            kernel32.CloseHandle(job)
+            return
 
         # Assign current process to the job
         current_process = kernel32.GetCurrentProcess()
-        kernel32.AssignProcessToJobObject(job, current_process)
+        assigned = kernel32.AssignProcessToJobObject(job, current_process)
+        if not assigned:
+            kernel32.CloseHandle(job)
+            return
 
         # Keep a reference so the handle isn't garbage-collected
         _setup_win32_job_object._handle = job

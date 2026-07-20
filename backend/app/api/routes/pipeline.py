@@ -297,6 +297,24 @@ async def probe_url(url: str):
     return result
 
 
+@router.get("/bilibili/collection")
+async def inspect_bilibili_collection_url(url: str):
+    """Return selectable entries when a Bilibili URL is multi-part or a season."""
+    url = normalize_source_input(url)
+    if not url.startswith(("http://", "https://")):
+        bvid_match = re.search(r"\bBV[0-9A-Za-z]{10}\b", url)
+        if bvid_match:
+            url = f"https://www.bilibili.com/video/{bvid_match.group(0)}"
+    _validate_url(url)
+    from app.services.ingestion.platform.bilibili.collection import inspect_bilibili_collection
+
+    try:
+        return await asyncio.to_thread(inspect_bilibili_collection, url)
+    except Exception as e:
+        logger.warning("Bilibili collection inspection failed for %s: %s", url, e)
+        raise HTTPException(status_code=502, detail="无法读取哔哩哔哩合集信息") from e
+
+
 @router.post("/download")
 async def download(req: DownloadRequest):
     """Download media from URL."""

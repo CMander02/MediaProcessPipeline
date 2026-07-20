@@ -79,11 +79,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Staging sweep failed: {e}")
 
-    yield
+    try:
+        yield
+    finally:
+        # Shutdown persistent workers and model-server child processes before
+        # closing the database. The desktop process job remains the hard-stop
+        # fallback for interrupted Windows exits.
+        try:
+            await queue.stop()
+        finally:
+            try:
+                from app.services.recognition import release_asr_models
+                from app.services.analysis.local_llm_runtime import release_local_llm_runtime
 
-    # Shutdown
-    await queue.stop()
-    close_db()
+                await asyncio.to_thread(release_asr_models)
+                await asyncio.to_thread(release_local_llm_runtime)
+            except Exception as e:
+                logger.warning("Runtime cleanup during shutdown failed: %s", e)
+            close_db()
 
 app = FastAPI(
     title=config.api_title,
