@@ -1,4 +1,5 @@
 import base64
+import json
 import sys
 from pathlib import Path
 
@@ -174,3 +175,40 @@ def test_qwen3_gguf_release_is_deferred_while_transcribing():
     assert stopped == []
     service._end_transcribe()
     assert stopped == [True]
+
+
+def test_qwen3_gguf_keepalive_is_idle_only():
+    service = Qwen3GGUFASRService()
+    calls = []
+    service._runtime.cancel_idle_stop = lambda: calls.append(("cancel", None))
+    service._runtime.schedule_idle_stop = lambda seconds: calls.append(("schedule", seconds))
+    service._keepalive_sec = 300
+
+    service._begin_transcribe()
+
+    assert calls == [("cancel", None)]
+    service._end_transcribe()
+    assert calls == [("cancel", None), ("schedule", 300)]
+
+
+def test_qwen3_gguf_checkpoint_round_trip(tmp_path):
+    service = Qwen3GGUFASRService()
+    checkpoint = tmp_path / "progress.json"
+    signature = {"version": 1, "audio_path": "interview.wav"}
+    segments = [{"start": 0.0, "end": 1.0, "text": "你好"}]
+
+    service._save_checkpoint(
+        checkpoint,
+        signature,
+        completed_chunks=7,
+        segments=segments,
+    )
+
+    restored_segments, completed = service._load_checkpoint(
+        checkpoint,
+        signature,
+        total_chunks=10,
+    )
+    assert completed == 7
+    assert restored_segments == segments
+    assert json.loads(checkpoint.read_text(encoding="utf-8"))["completed_chunks"] == 7

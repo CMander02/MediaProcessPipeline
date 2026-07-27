@@ -11,6 +11,7 @@ import asyncio
 import ipaddress
 import json
 import logging
+from datetime import datetime
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -331,6 +332,7 @@ async def stream_task_events(task_id: UUID):
             snapshot = json.dumps({
                 "task_id": str(task_id),
                 "type": "snapshot",
+                "timestamp": datetime.now().isoformat(),
                 "data": {
                     "status": task.status,
                     "progress": task.progress,

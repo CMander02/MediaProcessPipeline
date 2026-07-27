@@ -118,11 +118,23 @@ export interface Settings extends RuntimeSettings {
   qwen3_gguf_keepalive_sec: number
   qwen3_gguf_chunk_strategy: string
   silero_onnx_model_path: string
+  uvr_model: string
+  uvr_device: "cuda" | "cpu"
+  uvr_model_dir: string
+  uvr_mdx_inst_hq3_path: string
+  uvr_hp_uvr_path: string
+  uvr_denoise_lite_path: string
+  uvr_kim_vocal_2_path: string
+  uvr_deecho_dereverb_path: string
+  uvr_htdemucs_path: string
+  uvr_chunk_duration_sec: number
   moss_cpp_binary_path: string
   moss_cpp_model_path: string
   moss_cpp_device: string
   moss_cpp_threads: number
   moss_cpp_max_new_tokens: number
+  moss_cpp_chunk_duration_sec: number
+  moss_cpp_chunk_overlap_sec: number
   moss_cpp_timeout_sec: number
   local_llm_model_path: string
   local_llm_engine: string
@@ -159,6 +171,16 @@ export interface ProviderModelCatalogResult {
   configured_models: ProviderModelRecord[]
   allowed_models: ProviderModelRecord[]
   error?: string | null
+}
+
+export interface ProviderOAuthStatus {
+  provider_type: string
+  installed: boolean
+  authenticated: boolean
+  executable: string
+  current_model: string
+  models: string[]
+  message: string
 }
 
 export interface TwitterAuthStatus {
@@ -358,6 +380,8 @@ export const api = {
       post<ProviderModelRecord>("/api/settings/providers/models/metadata", body),
     queryProviderBalance: (providerId: string) =>
       post<{ provider_id: string; balance: unknown }>(`/api/settings/providers/${providerId}/balance`),
+    providerOAuthStatus: (providerId: string) =>
+      get<ProviderOAuthStatus>(`/api/settings/providers/${providerId}/oauth/status`),
     ytdlpStatus: () => get<YtdlpStatus>("/api/settings/ytdlp"),
     upgradeYtdlp: () => post<YtdlpUpgradeResult>("/api/settings/ytdlp/upgrade"),
   },

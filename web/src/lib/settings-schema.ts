@@ -40,6 +40,7 @@ export interface ProviderModelRecord {
   capabilities?: ModelCapability[] | string[]
   endpoint_path?: string
   default_params?: Record<string, unknown>
+  cli_model_name?: string
   [key: string]: unknown
 }
 
@@ -58,6 +59,8 @@ export interface ProviderConfig {
   api_base?: string
   api_key?: string
   api_mode?: string
+  cli_path?: string
+  timeout_sec?: number
   headers?: Record<string, unknown>
   extra_body?: Record<string, unknown>
   balance?: ProviderBalanceConfig
@@ -124,11 +127,23 @@ export interface RuntimeSettings {
   qwen3_gguf_keepalive_sec?: number
   qwen3_gguf_chunk_strategy?: string
   silero_onnx_model_path?: string
+  uvr_model?: string
+  uvr_device?: Exclude<DeviceValue, "auto"> | string
+  uvr_model_dir?: string
+  uvr_mdx_inst_hq3_path?: string
+  uvr_hp_uvr_path?: string
+  uvr_denoise_lite_path?: string
+  uvr_kim_vocal_2_path?: string
+  uvr_deecho_dereverb_path?: string
+  uvr_htdemucs_path?: string
+  uvr_chunk_duration_sec?: number
   moss_cpp_binary_path?: string
   moss_cpp_model_path?: string
   moss_cpp_device?: DeviceValue | string
   moss_cpp_threads?: number
   moss_cpp_max_new_tokens?: number
+  moss_cpp_chunk_duration_sec?: number
+  moss_cpp_chunk_overlap_sec?: number
   moss_cpp_timeout_sec?: number
   siliconflow_api_base?: string
   siliconflow_api_key?: string

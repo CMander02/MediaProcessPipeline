@@ -1,6 +1,6 @@
 [project]
 name = "MediaProcessPipeline"
-version = "0.4.0"
+version = "0.4.1"
 description = "Omni-Media Processing Pipeline - Convert audio/video to structured knowledge"
 requires-python = ">=3.11,<3.13"
 dependencies = [
@@ -63,9 +63,10 @@ hf-local-inference = [
     "accelerate>=0.34.0",
 ]
 local-models = [
-    "onnxruntime>=1.16.1",
     "torch~=2.8.0",
     "torchaudio~=2.8.0",
+    # audio-separator[gpu] provides onnxruntime-gpu, which also includes the CPU provider.
+    # Installing onnxruntime alongside it overwrites the shared Python module on Windows.
     "audio-separator[gpu]>=0.41.0",
     "qwen-asr>=0.0.6",
     "pyannote-audio>=3.4.0",

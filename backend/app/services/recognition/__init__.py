@@ -1,9 +1,10 @@
 """Recognition service entrypoint."""
 
 import asyncio
+import hashlib
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.core.settings import get_runtime_settings
 from app.services.recognition.base import ASRService
@@ -22,12 +23,15 @@ __all__ = [
 
 def get_asr_service(provider: str | None = None) -> ASRService:
     """Get the configured singleton ASR service."""
-    from app.core.model_router import resolve_asr_binding
+    if provider in SUPPORTED_ASR_PROVIDERS:
+        provider_id = provider
+    else:
+        from app.core.model_router import resolve_asr_binding
 
-    provider_id = resolve_asr_binding(
-        get_runtime_settings(),
-        task_options={"asr_provider": provider} if provider else None,
-    ).provider
+        provider_id = resolve_asr_binding(
+            get_runtime_settings(),
+            task_options={"asr_provider": provider} if provider else None,
+        ).provider
     if provider_id == "qwen3":
         from app.services.recognition.qwen3_asr import get_qwen3_service
 
@@ -71,6 +75,7 @@ async def transcribe_audio(
     chunk_strategy: str | None = None,
     hotwords: list[str] | None = None,
     audio_processing_flow: str | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Transcribe audio with the configured ASR provider and optionally write an SRT file."""
     from app.core.model_router import resolve_asr_binding
@@ -93,6 +98,12 @@ async def transcribe_audio(
 
     def _run_transcribe() -> dict[str, Any]:
         if provider_id == "qwen3_gguf":
+            checkpoint_path = None
+            if output_dir:
+                audio_key = hashlib.sha256(
+                    str(Path(audio_path).resolve()).encode("utf-8")
+                ).hexdigest()[:16]
+                checkpoint_path = Path(output_dir) / f".qwen3-gguf-{audio_key}.json"
             return service.transcribe(
                 audio_path,
                 language=binding.language,
@@ -100,6 +111,9 @@ async def transcribe_audio(
                 num_speakers=binding.num_speakers,
                 chunk_strategy=binding.chunk_strategy,
                 hotwords=hotwords,
+                runtime_config=binding.request_kwargs,
+                progress_callback=progress_callback,
+                checkpoint_path=checkpoint_path,
             )
         if provider_id == "siliconflow":
             return service.transcribe(
@@ -115,6 +129,7 @@ async def transcribe_audio(
                 language=binding.language,
                 diarize=True,
                 num_speakers=binding.num_speakers,
+                progress_callback=progress_callback,
                 **binding.request_kwargs,
             )
         return service.transcribe(

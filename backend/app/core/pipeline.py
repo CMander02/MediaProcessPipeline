@@ -11,6 +11,7 @@ import logging
 import re
 import shutil
 import subprocess
+import threading
 import time
 import urllib.parse
 from datetime import datetime
@@ -21,8 +22,8 @@ from uuid import UUID
 
 from app.core.database import get_task_store
 from app.core.events import TaskEvent, get_event_bus
-from app.core.settings import get_runtime_settings
 from app.core.logging_setup import log_event
+from app.core.settings import get_runtime_settings
 from app.core.source_normalization import normalize_source_input
 from app.core.source_resolver import SourceFlow, flow_from_metadata, resolve_source_flow
 from app.models import MediaMetadata, Task, TaskStatus, TaskType
@@ -782,6 +783,79 @@ def _flow_step_ids(task: Task) -> list[str]:
     return [str(step.get("id")) for step in flow.get("steps", []) if isinstance(step, dict) and step.get("id")]
 
 
+def _flow_step_for_pipeline_step(task: Task, step: PipelineStep) -> str:
+    step_id = str(step)
+    flow_step_ids = _flow_step_ids(task)
+    if (
+        step == PipelineStep.SEPARATE
+        and step_id not in flow_step_ids
+        and "transcribe" in flow_step_ids
+    ):
+        return "transcribe"
+    return step_id
+
+
+async def _update_step_progress(
+    task: Task,
+    step: PipelineStep,
+    step_progress: float,
+    message: str,
+    *,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Persist and publish fractional progress within a long-running pipeline step."""
+    normalized = max(0.0, min(float(step_progress), 0.999))
+    task.current_step = step
+    task.message = message
+
+    public_step_ids = {pipeline_step["id"] for pipeline_step in PIPELINE_STEPS}
+    total_steps = len(public_step_ids)
+    completed_count = len(public_step_ids.intersection(task.completed_steps))
+    task.progress = (completed_count + normalized) / total_steps if total_steps else 0.0
+    task.updated_at = datetime.now()
+
+    log_event(
+        logger,
+        logging.INFO,
+        "pipeline.step.progress",
+        step=str(step),
+        step_progress=round(normalized, 4),
+        progress=round(task.progress, 4),
+        message=task.message,
+        **(details or {}),
+    )
+
+    get_task_store().update_status(
+        task.id,
+        task.status,
+        progress=task.progress,
+        message=task.message,
+        current_step=task.current_step,
+        completed_steps=task.completed_steps,
+    )
+
+    payload = {
+        "step": step,
+        "stage": str(step),
+        "step_id": str(step),
+        "completed": False,
+        "progress": task.progress,
+        "step_progress": normalized,
+        "message": task.message,
+    }
+    if details:
+        payload.update(details)
+    await get_event_bus().publish(TaskEvent(task.id, "step", payload))
+
+    await _update_flow_step(
+        task,
+        _flow_step_for_pipeline_step(task, step),
+        completed=False,
+        message=task.message,
+        step_progress=normalized,
+    )
+
+
 async def _set_task_flow(
     task: Task,
     source_flow: SourceFlow,
@@ -824,6 +898,7 @@ async def _update_flow_step(
     status: str | None = None,
     message: str | None = None,
     level: str = "info",
+    step_progress: float | None = None,
 ) -> None:
     if not task.flow:
         return
@@ -849,7 +924,26 @@ async def _update_flow_step(
     )
     flow["completed_steps"] = completed_steps
     flow["total_steps"] = total
-    flow["progress"] = (len(completed_steps) / total) if total else 0.0
+    normalized_step_progress = None
+    if not completed and step_progress is not None:
+        normalized_step_progress = max(0.0, min(float(step_progress), 0.999))
+        flow["step_progress"] = normalized_step_progress
+        flow["step_progress_step"] = step_id
+    elif completed or flow.get("step_progress_step") != step_id:
+        flow.pop("step_progress", None)
+        flow.pop("step_progress_step", None)
+    else:
+        normalized_step_progress = max(
+            0.0,
+            min(float(flow.get("step_progress") or 0.0), 0.999),
+        )
+
+    completed_count = len({step for step in completed_steps if step in step_ids})
+    flow["progress"] = (
+        (completed_count + (normalized_step_progress or 0.0)) / total
+        if total
+        else 0.0
+    )
     flow["status"] = status or flow.get("status") or "processing"
     task.flow = flow
     get_task_store().update_status(task.id, task.status, flow=task.flow)
@@ -861,6 +955,7 @@ async def _update_flow_step(
         "level": level,
         "message": message or flow["current_step_label"],
         "flow": flow,
+        "step_progress": normalized_step_progress,
     }))
 
 
@@ -977,7 +1072,13 @@ async def _update_step(
         "progress": task.progress,
         "message": task.message,
     }))
-    await _update_flow_step(task, str(step), completed=completed, message=task.message)
+    flow_step = _flow_step_for_pipeline_step(task, step)
+    await _update_flow_step(
+        task,
+        flow_step,
+        completed=completed and flow_step == str(step),
+        message=task.message,
+    )
 
 
 async def _run_voiceprint_step(
@@ -2895,7 +2996,54 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     source_audio = _require_audio_file(audio_path, stage="UVR separation")
                     try:
                         try:
-                            preprocess = await separate_vocals(source_audio, output_dir=task_dir)
+                            loop = asyncio.get_running_loop()
+                            progress_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+                            progress_active = threading.Event()
+                            progress_active.set()
+
+                            def _on_uvr_progress(update: dict[str, Any]) -> None:
+                                if progress_active.is_set():
+                                    loop.call_soon_threadsafe(progress_queue.put_nowait, dict(update))
+
+                            async def _consume_uvr_progress() -> None:
+                                while True:
+                                    update = await progress_queue.get()
+                                    if update is None:
+                                        return
+                                    try:
+                                        await _update_step_progress(
+                                            task,
+                                            PipelineStep.SEPARATE,
+                                            float(update.get("progress") or 0.0),
+                                            str(update.get("message") or "分离人声"),
+                                            details={
+                                                key: value
+                                                for key, value in update.items()
+                                                if key not in {"progress", "message"}
+                                            },
+                                        )
+                                    except Exception as progress_error:
+                                        log_event(
+                                            logger,
+                                            logging.WARNING,
+                                            "uvr.progress.update_failed",
+                                            error=progress_error,
+                                        )
+
+                            progress_consumer = asyncio.create_task(_consume_uvr_progress())
+                            try:
+                                preprocess = await separate_vocals(
+                                    source_audio,
+                                    output_dir=task_dir,
+                                    progress_callback=_on_uvr_progress,
+                                )
+                                # Thread-safe queue callbacks are scheduled before the worker
+                                # completes; yield once so the consumer sees the final update.
+                                await asyncio.sleep(0)
+                            finally:
+                                progress_active.clear()
+                                await progress_queue.put(None)
+                                await progress_consumer
                         except Exception as e:
                             log_event(
                                 logger,
@@ -3040,17 +3188,67 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         message="开始 ASR 转录",
                         data={"provider": asr_provider or "settings", "selection_reason": asr_selection_reason},
                     )
+
+                    async def _transcribe_selected_audio(selected_audio_path: str) -> dict[str, Any]:
+                        loop = asyncio.get_running_loop()
+                        progress_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+                        progress_active = threading.Event()
+                        progress_active.set()
+
+                        def _on_asr_progress(update: dict[str, Any]) -> None:
+                            if progress_active.is_set():
+                                loop.call_soon_threadsafe(
+                                    progress_queue.put_nowait,
+                                    dict(update),
+                                )
+
+                        async def _consume_asr_progress() -> None:
+                            while True:
+                                update = await progress_queue.get()
+                                if update is None:
+                                    return
+                                try:
+                                    await _update_step_progress(
+                                        task,
+                                        PipelineStep.TRANSCRIBE,
+                                        float(update.get("progress") or 0.0),
+                                        str(update.get("message") or "转录音频"),
+                                        details={
+                                            key: value
+                                            for key, value in update.items()
+                                            if key not in {"progress", "message"}
+                                        },
+                                    )
+                                except Exception as progress_error:
+                                    log_event(
+                                        logger,
+                                        logging.WARNING,
+                                        "asr.progress.update_failed",
+                                        error=progress_error,
+                                    )
+
+                        progress_consumer = asyncio.create_task(_consume_asr_progress())
+                        try:
+                            result = await transcribe_audio(
+                                selected_audio_path,
+                                output_dir=task_dir,
+                                num_speakers=num_speakers,
+                                provider=asr_provider,
+                                diarize=not task.options.get("disable_diarization", False),
+                                chunk_strategy=task.options.get("asr_chunk_strategy"),
+                                hotwords=task.options.get("hotwords"),
+                                audio_processing_flow=task.options.get("audio_processing_flow"),
+                                progress_callback=_on_asr_progress,
+                            )
+                            await asyncio.sleep(0)
+                            return result
+                        finally:
+                            progress_active.clear()
+                            await progress_queue.put(None)
+                            await progress_consumer
+
                     try:
-                        recognition = await transcribe_audio(
-                            asr_audio_path,
-                            output_dir=task_dir,
-                            num_speakers=num_speakers,
-                            provider=asr_provider,
-                            diarize=not task.options.get("disable_diarization", False),
-                            chunk_strategy=task.options.get("asr_chunk_strategy"),
-                            hotwords=task.options.get("hotwords"),
-                            audio_processing_flow=task.options.get("audio_processing_flow"),
-                        )
+                        recognition = await _transcribe_selected_audio(asr_audio_path)
                     except Exception as e:
                         await _emit_timeline_event(
                             task,
@@ -3089,16 +3287,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                                 "fallback_audio": original_asr_audio,
                             },
                         )
-                        recognition = await transcribe_audio(
-                            original_asr_audio,
-                            output_dir=task_dir,
-                            num_speakers=num_speakers,
-                            provider=asr_provider,
-                            diarize=not task.options.get("disable_diarization", False),
-                            chunk_strategy=task.options.get("asr_chunk_strategy"),
-                            hotwords=task.options.get("hotwords"),
-                            audio_processing_flow=task.options.get("audio_processing_flow"),
-                        )
+                        recognition = await _transcribe_selected_audio(original_asr_audio)
                         await _raise_if_cancelled(task.id)
                         transcript = " ".join(s["text"] for s in recognition.get("segments", []))
                     srt = recognition.get("srt", "")

@@ -61,7 +61,11 @@ def _windows_user_proxy() -> str:
     return ""
 
 
-def runtime_proxy_url(setting_name: str = "network_proxy") -> str | None:
+def runtime_proxy_url(
+    setting_name: str = "network_proxy",
+    *,
+    prefer_windows_proxy: bool = False,
+) -> str | None:
     """Resolve the app-level outbound proxy.
 
     Returns:
@@ -80,6 +84,11 @@ def runtime_proxy_url(setting_name: str = "network_proxy") -> str | None:
         if raw.lower() in _DISABLED_PROXY_VALUES:
             return ""
         return normalize_proxy_url(raw)
+
+    if prefer_windows_proxy:
+        detected = _windows_user_proxy()
+        if detected:
+            return detected
 
     for key in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"):
         value = os.environ.get(key, "").strip()

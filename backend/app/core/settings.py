@@ -69,6 +69,8 @@ class ProviderConfig(BaseModel):
     api_base: str = ""
     api_key: str = ""
     api_mode: str = "chat_completions"
+    cli_path: str = ""
+    timeout_sec: int = 600
     headers: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)
     balance: ProviderBalanceConfig = Field(default_factory=ProviderBalanceConfig)
@@ -166,8 +168,11 @@ class RuntimeSettings(BaseModel):
     moss_cpp_model_path: str = ""
     moss_cpp_device: str = "auto"  # auto | cuda | cpu
     moss_cpp_threads: int = 8
-    moss_cpp_max_new_tokens: int = 32768
-    moss_cpp_timeout_sec: float = 3600.0
+    moss_cpp_max_new_tokens: int = 8192
+    # Long recordings are split before MOSS inference so decoder KV cache stays bounded.
+    moss_cpp_chunk_duration_sec: float = 1200.0
+    moss_cpp_chunk_overlap_sec: float = 60.0
+    moss_cpp_timeout_sec: float = 14400.0
 
     # SiliconFlow ASR (OpenAI-compatible /audio/transcriptions)
     # ffmpeg chunking keeps API-only installs free of torch/torchaudio.
@@ -361,12 +366,41 @@ class RuntimeSettings(BaseModel):
             raise ValueError("moss_cpp_device must be one of: auto, cuda, cpu")
         return device
 
+    @field_validator("moss_cpp_max_new_tokens")
+    @classmethod
+    def _validate_moss_cpp_max_new_tokens(cls, value: int) -> int:
+        if value < 256:
+            raise ValueError("moss_cpp_max_new_tokens must be at least 256")
+        return value
+
+    @field_validator("moss_cpp_chunk_duration_sec")
+    @classmethod
+    def _validate_moss_cpp_chunk_duration(cls, value: float) -> float:
+        if value < 60:
+            raise ValueError("moss_cpp_chunk_duration_sec must be at least 60 seconds")
+        return value
+
+    @field_validator("moss_cpp_chunk_overlap_sec")
+    @classmethod
+    def _validate_moss_cpp_chunk_overlap(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("moss_cpp_chunk_overlap_sec must be non-negative")
+        return value
+
     @field_validator("qwen3_gguf_device")
     @classmethod
     def _validate_qwen3_gguf_device(cls, value: str) -> str:
         device = value.strip().lower()
         if device not in {"auto", "cuda", "cpu"}:
             raise ValueError("qwen3_gguf_device must be one of: auto, cuda, cpu")
+        return device
+
+    @field_validator("uvr_device")
+    @classmethod
+    def _validate_uvr_device(cls, value: str) -> str:
+        device = value.strip().lower()
+        if device not in {"cuda", "cpu"}:
+            raise ValueError("uvr_device must be one of: cuda, cpu")
         return device
 
     @field_validator("qwen3_gguf_chunk_strategy")
@@ -459,6 +493,13 @@ def _validate_data_root(path_str: str) -> None:
 
 def _str_value(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def _coerce_custom_profiles(raw: Any) -> list[dict[str, str]]:
@@ -855,12 +896,13 @@ def _provider_model_record(
     enabled: Any = True,
     endpoint_path: Any = "",
     default_params: dict[str, Any] | None = None,
+    cli_model_name: Any = "",
 ) -> dict[str, Any] | None:
     model = _str_value(model_id).strip()
     if not model:
         return None
     normalized_type = _normalize_model_type(model_type, capabilities)
-    return {
+    record = {
         "id": f"{provider_id}:{model}",
         "model_id": model,
         "display_name": _str_value(display_name).strip() or model,
@@ -870,6 +912,10 @@ def _provider_model_record(
         "endpoint_path": _str_value(endpoint_path).strip() or _model_endpoint_path(normalized_type),
         "default_params": _model_default_params(provider_id, normalized_type, default_params),
     }
+    normalized_cli_model_name = _str_value(cli_model_name).strip()
+    if normalized_cli_model_name:
+        record["cli_model_name"] = normalized_cli_model_name
+    return record
 
 
 def _provider_record(
@@ -881,6 +927,8 @@ def _provider_record(
     api_key: Any = "",
     enabled: Any = True,
     api_mode: str = "chat_completions",
+    cli_path: Any = "",
+    timeout_sec: Any = 600,
     headers: dict[str, Any] | None = None,
     extra_body: dict[str, Any] | None = None,
     balance: dict[str, Any] | None = None,
@@ -894,6 +942,8 @@ def _provider_record(
         "api_base": _str_value(api_base),
         "api_key": _str_value(api_key),
         "api_mode": api_mode,
+        "cli_path": _str_value(cli_path),
+        "timeout_sec": _positive_int(timeout_sec, 600),
         "headers": headers if isinstance(headers, dict) else {},
         "extra_body": extra_body if isinstance(extra_body, dict) else {},
         "balance": balance if isinstance(balance, dict) else {"enabled": False, "endpoint_path": "", "method": "GET"},
@@ -946,6 +996,7 @@ def _normalize_provider_model_array(
             enabled=data.get("enabled", True),
             endpoint_path=data.get("endpoint_path"),
             default_params=data.get("default_params") if isinstance(data.get("default_params"), dict) else {},
+            cli_model_name=data.get("cli_model_name"),
         )
         if record is None:
             continue
@@ -1013,6 +1064,8 @@ def _upsert_provider(
             if _looks_masked_secret(existing.get("api_key")) and not _looks_masked_secret(record.get("api_key"))
             else existing.get("api_key", record["api_key"]),
             "api_mode": existing.get("api_mode") or record["api_mode"],
+            "cli_path": existing.get("cli_path", record["cli_path"]),
+            "timeout_sec": _positive_int(existing.get("timeout_sec", record["timeout_sec"]), 600),
             "enabled": bool(existing.get("enabled", record["enabled"])),
             "headers": existing.get("headers") if isinstance(existing.get("headers"), dict) else record["headers"],
             "extra_body": existing.get("extra_body") if isinstance(existing.get("extra_body"), dict) else record["extra_body"],
@@ -1233,6 +1286,42 @@ def _default_provider_records(data: dict[str, Any]) -> list[dict[str, Any]]:
         )
     )
 
+    coding_plan_model = _provider_model_record(
+        "codex-oauth",
+        "default",
+        display_name="CLI 当前默认模型",
+        model_type="llm",
+        capabilities=["reasoning", "json"],
+    )
+    providers.append(
+        _provider_record(
+            provider_id="codex-oauth",
+            name="Codex OAuth",
+            provider_type="codex_oauth",
+            api_mode="oauth_cli",
+            timeout_sec=600,
+            models=[coding_plan_model] if coding_plan_model else [],
+        )
+    )
+
+    agy_model = _provider_model_record(
+        "agy-oauth",
+        "default",
+        display_name="CLI 当前默认模型",
+        model_type="llm",
+        capabilities=["reasoning", "json"],
+    )
+    providers.append(
+        _provider_record(
+            provider_id="agy-oauth",
+            name="Antigravity OAuth",
+            provider_type="agy_oauth",
+            api_mode="oauth_cli",
+            timeout_sec=600,
+            models=[agy_model] if agy_model else [],
+        )
+    )
+
     for profile in _coerce_custom_profiles(data.get("custom_llm_profiles")):
         provider_id = _custom_provider_id(profile["id"])
         model = _provider_model_record(
@@ -1432,6 +1521,8 @@ def _normalize_provider_array(providers: list[Any]) -> list[dict[str, Any]]:
                 api_base=data.get("api_base"),
                 api_key=data.get("api_key"),
                 api_mode=_str_value(data.get("api_mode") or "chat_completions"),
+                cli_path=data.get("cli_path"),
+                timeout_sec=data.get("timeout_sec", 600),
                 headers=data.get("headers") if isinstance(data.get("headers"), dict) else {},
                 extra_body=data.get("extra_body") if isinstance(data.get("extra_body"), dict) else {},
                 balance=balance,
@@ -1840,6 +1931,12 @@ def _normalize_settings_document_state(
     *,
     sync_flat_keys: set[str] | None = None,
 ) -> None:
+    legacy_moss_chunk_config = "moss_cpp_chunk_duration_sec" not in data
+    data.setdefault("moss_cpp_chunk_duration_sec", 1200.0)
+    data.setdefault("moss_cpp_chunk_overlap_sec", 60.0)
+    if legacy_moss_chunk_config and data.get("moss_cpp_max_new_tokens") == 32768:
+        data["moss_cpp_max_new_tokens"] = 8192
+
     _ensure_service_connections(data)
     _ensure_service_models(data)
 

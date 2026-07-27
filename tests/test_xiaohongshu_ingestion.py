@@ -237,6 +237,7 @@ def test_xiaohongshu_image_download_records_candidate_diagnostics(tmp_path, monk
 
     monkeypatch.setattr(xhs_api, "urllib_urlopen", fake_urlopen)
     monkeypatch.setattr(xhs_api.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(xhs_api, "_xhs_image_strategy_order", lambda: ["raw_url"])
 
     info = {
         "webpage_url": "https://www.xiaohongshu.com/explore/demo",

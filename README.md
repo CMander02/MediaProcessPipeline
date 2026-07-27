@@ -12,6 +12,7 @@
 - **智能润色**: LLM 滑动窗口润色，修正错字、添加标点
 - **内容分析**: 自动提取关键信息、生成摘要和思维导图（支持 map-reduce 长文本）
 - **桌面应用**: Tauri 打包，双击即用
+- **Android 远程投递**: 从手机系统分享面板提交链接到远程 MPP
 
 ## 项目结构
 
@@ -34,8 +35,10 @@ MediaProcessPipeline/
 │   └── src/
 ├── web/src-tauri/              # Tauri 桌面壳
 │   └── src/main.rs
+├── android/                    # Kotlin + Jetpack Compose 远程投递客户端
 ├── scripts/                    # CLI 快捷脚本
 │   ├── mpp.ps1                 # PowerShell
+│   ├── android.ps1             # Android 检查、构建与调试
 │   └── mpp                     # bash
 └── data/                       # 配置目录（settings.json）；
                                 # 实际数据/任务输出/SQLite 走 settings.data_root
@@ -128,7 +131,7 @@ cd backend
 uv run python -m app.cli serve     # 启动 daemon :18000
 ```
 
-浏览器打开 http://127.0.0.1:18000
+浏览器打开 http://localhost:18000
 
 **方式 3: CLI**
 
@@ -147,6 +150,11 @@ uv run python -m app.cli serve     # 启动 daemon :18000
 ./scripts/mpp config preset api-flow
 ./scripts/mpp run --direct --api-flow <url-or-file>
 ```
+
+**方式 4: Android 远程投递客户端**
+
+安装 Android Studio 后打开 `android/` 目录，通过模拟器或 USB 真机运行。完整环境配置、
+Server URL 和系统分享测试见 [android/README.md](android/README.md)。
 
 ### 开发模式
 
@@ -217,6 +225,7 @@ cd web && npm run web:dev          # :5173
 - **Backend**: Python 3.11+, FastAPI, SQLite, uv
 - **Frontend**: React 19, Vite, shadcn/ui, Tailwind CSS 4
 - **Desktop**: Tauri
+- **Android**: Kotlin, Jetpack Compose, Android Gradle Plugin
 - **AI**: Qwen3-ASR, pyannote-audio, UVR5 (audio-separator), OpenAI SDK（Anthropic / OpenAI / DeepSeek v4 / OpenAI-compatible）
 - **下载**: yt-dlp, FFmpeg
 

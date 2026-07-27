@@ -27,7 +27,7 @@ import { useMediaSync } from "@/hooks/use-media-sync"
 import { usePreferences } from "@/hooks/use-preferences"
 import { useViewPosition } from "@/hooks/use-view-position"
 import { useTaskSSE, type FileReadyEvent, type StepEvent } from "@/hooks/use-task-sse"
-import { parseSRT, subtitlesToSRT, type Subtitle } from "@/lib/srt"
+import { parseSRT, subtitlesToMarkdown, subtitlesToSRT, type Subtitle } from "@/lib/srt"
 import { navigate } from "@/lib/router"
 import { api, type Task, type TaskFlowSnapshot, type TaskTimelineEvent } from "@/lib/api"
 import { openExternalUrl } from "@/lib/tauri"
@@ -1122,11 +1122,39 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
 
   const [copied, setCopied] = useState(false)
 
+  const getTranscriptMarkdown = () => {
+    const publishedAt = firstTextValue(
+      archiveMetadata.upload_date,
+      archiveMetadata.published_at,
+      archiveMetadata.release_date,
+    )
+    return subtitlesToMarkdown(subtitles, {
+      title: displayTitle || archive?.title || "字幕",
+      source_url: sourceHref,
+      platform,
+      uploader,
+      published_at: publishedAt,
+      created_at: archive?.created_at,
+      duration_seconds: archive?.duration_seconds ?? duration,
+      language: archive?.analysis?.language,
+      subtitle_language: activeTrackLang,
+      subtitle_source: subtitleSourceType,
+      polished: isPolished,
+      task_id: resolvedTaskId,
+    })
+  }
+
   const getTabContent = () => {
     if (activeTab === "summary") return { content: summary, suffix: "摘要", ext: "md" }
     if (activeTab === "source" && isImageNote) return { content: noteText, suffix: "原帖", ext: "md" }
     if (activeTab === "transcript" && isTextNote && !isPureWebpage) return { content: noteText, suffix: "正文", ext: "md" }
-    if (activeTab === "transcript") return { content: transcript, suffix: "字幕", ext: "srt" }
+    if (activeTab === "transcript") {
+      return {
+        content: subtitles.length > 0 ? getTranscriptMarkdown() : null,
+        suffix: "字幕",
+        ext: "md",
+      }
+    }
     if (activeTab === "mindmap") return { content: mindmap, suffix: "导图", ext: "md" }
     if (activeTab === "detail") return { content: detail, suffix: "视频详情", ext: "md" }
     return null

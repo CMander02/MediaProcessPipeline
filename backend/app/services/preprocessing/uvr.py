@@ -2,12 +2,19 @@
 
 import logging
 import os
+import re
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from app.core.settings import get_runtime_settings
+from app.core.settings import RuntimeSettings, get_runtime_settings
 
 logger = logging.getLogger(__name__)
+
+UVRProgressCallback = Callable[[dict[str, Any]], None]
+_CHUNK_START_RE = re.compile(r"Processing chunk\s+(\d+)/(\d+):")
+_CHUNK_SPLIT_RE = re.compile(r"Splitting .+ audio into\s+(\d+)\s+chunks")
+_CHUNK_MERGE_RE = re.compile(r"Merging\s+(\d+)\s+chunks for stem:")
 
 # 默认本地 UVR 安装路径
 DEFAULT_UVR_PATHS = [
@@ -29,12 +36,87 @@ def find_local_uvr_model_dir() -> Path | None:
     return None
 
 
+def _available_onnx_providers() -> list[str]:
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        return []
+    return list(ort.get_available_providers())
+
+
+def _notify_progress(callback: UVRProgressCallback | None, payload: dict[str, Any]) -> None:
+    if callback is None:
+        return
+    try:
+        callback(payload)
+    except Exception:
+        logger.debug("UVR progress callback failed", exc_info=True)
+
+
+class _UVRProgressLogHandler(logging.Handler):
+    """Translate audio-separator chunk logs into structured progress callbacks."""
+
+    def __init__(self, callback: UVRProgressCallback):
+        super().__init__(level=logging.INFO)
+        self._callback = callback
+        self._total_chunks = 0
+        self._thread_id = threading.get_ident()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.thread != self._thread_id:
+            return
+        message = record.getMessage()
+
+        split_match = _CHUNK_SPLIT_RE.search(message)
+        if split_match:
+            self._total_chunks = int(split_match.group(1))
+            _notify_progress(self._callback, {
+                "phase": "splitting",
+                "current_chunk": 0,
+                "completed_chunks": 0,
+                "total_chunks": self._total_chunks,
+                "progress": 0.0,
+                "message": f"准备分离人声：共 {self._total_chunks} 段",
+            })
+            return
+
+        chunk_match = _CHUNK_START_RE.search(message)
+        if chunk_match:
+            current = int(chunk_match.group(1))
+            total = int(chunk_match.group(2))
+            self._total_chunks = total
+            completed = max(0, current - 1)
+            _notify_progress(self._callback, {
+                "phase": "separating",
+                "current_chunk": current,
+                "completed_chunks": completed,
+                "total_chunks": total,
+                "progress": completed / total if total else 0.0,
+                "message": f"分离人声：第 {current}/{total} 段",
+            })
+            return
+
+        merge_match = _CHUNK_MERGE_RE.search(message)
+        if merge_match:
+            total = self._total_chunks or int(merge_match.group(1))
+            _notify_progress(self._callback, {
+                "phase": "merging",
+                "current_chunk": total,
+                "completed_chunks": total,
+                "total_chunks": total,
+                "progress": 0.99,
+                "message": "合并人声分离结果",
+            })
+
+
 class UVRService:
     def __init__(self):
         self._separator = None
         self._current_model: str | None = None
         self._current_model_dir: str | None = None
         self._current_chunk_duration: float | None = None
+        self._current_device: str | None = None
+        self._execution_provider: str | None = None
 
     def release(self) -> None:
         """Release the loaded separator so downstream GPU steps can use VRAM."""
@@ -42,6 +124,48 @@ class UVRService:
         self._current_model = None
         self._current_model_dir = None
         self._current_chunk_duration = None
+        self._current_device = None
+        self._execution_provider = None
+
+    def _configure_separator_device(
+        self,
+        separator: Any,
+        device: str,
+        *,
+        onnx_model: bool,
+    ) -> str:
+        import torch
+
+        if device == "cpu":
+            separator.torch_device_cpu = torch.device("cpu")
+            separator.torch_device = separator.torch_device_cpu
+            separator.onnx_execution_provider = ["CPUExecutionProvider"]
+            logger.info("UVR device configured: cpu provider=CPUExecutionProvider")
+            return "CPUExecutionProvider"
+
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "UVR device is set to CUDA, but PyTorch cannot access CUDA. "
+                "Check the CUDA-enabled PyTorch installation and NVIDIA driver."
+            )
+
+        providers = _available_onnx_providers()
+        if onnx_model and "CUDAExecutionProvider" not in providers:
+            raise RuntimeError(
+                "UVR device is set to CUDA, but ONNX Runtime has no CUDAExecutionProvider. "
+                f"Available providers: {providers or ['none']}. "
+                "Install only onnxruntime-gpu for the local-models environment "
+                "and restart the daemon."
+            )
+
+        separator.torch_device = torch.device("cuda")
+        if onnx_model:
+            separator.onnx_execution_provider = ["CUDAExecutionProvider"]
+            provider = "CUDAExecutionProvider"
+        else:
+            provider = "CUDA"
+        logger.info(f"UVR device configured: cuda provider={provider}")
+        return provider
 
     def _get_model_path(self, model_name: str) -> str | None:
         """Get specific model path from runtime settings."""
@@ -56,12 +180,13 @@ class UVRService:
         }
         return model_paths.get(model_name, "")
 
-    def _ensure_init(self):
+    def _ensure_init(self, rt: RuntimeSettings | None = None):
         """Initialize or reinitialize separator with current settings."""
-        rt = get_runtime_settings()
+        rt = rt or get_runtime_settings()
         model_name = rt.uvr_model
         model_dir = rt.uvr_model_dir
-        chunk_duration = float(getattr(rt, "uvr_chunk_duration_sec", 300.0) or 0)
+        device = rt.uvr_device
+        chunk_duration = float(rt.uvr_chunk_duration_sec or 0)
         chunk_duration_arg = chunk_duration if chunk_duration > 0 else None
 
         # Check if we need to reinitialize (settings changed)
@@ -70,6 +195,7 @@ class UVRService:
             and self._current_model == model_name
             and self._current_model_dir == model_dir
             and self._current_chunk_duration == chunk_duration_arg
+            and self._current_device == device
         ):
             return
 
@@ -136,6 +262,11 @@ class UVRService:
                     output_single_stem="Vocals",
                     chunk_duration=chunk_duration_arg,
                 )
+                self._execution_provider = self._configure_separator_device(
+                    self._separator,
+                    device,
+                    onnx_model=model_file.suffix.lower() == ".onnx",
+                )
                 # Load using filename (not full path) since we set model_file_dir
                 self._separator.load_model(model_file.name)
             elif base_model_dir:
@@ -147,6 +278,11 @@ class UVRService:
                     output_single_stem="Vocals",
                     chunk_duration=chunk_duration_arg,
                 )
+                self._execution_provider = self._configure_separator_device(
+                    self._separator,
+                    device,
+                    onnx_model=model_name.startswith("UVR-MDX"),
+                )
                 self._separator.load_model(model_name)
             else:
                 # Use default download directory
@@ -156,27 +292,44 @@ class UVRService:
                     output_single_stem="Vocals",
                     chunk_duration=chunk_duration_arg,
                 )
+                self._execution_provider = self._configure_separator_device(
+                    self._separator,
+                    device,
+                    onnx_model=model_name.startswith("UVR-MDX"),
+                )
                 self._separator.load_model(model_name)
 
             self._current_model = model_name
             self._current_model_dir = model_dir
             self._current_chunk_duration = chunk_duration_arg
+            self._current_device = device
 
-        except ImportError:
-            logger.warning("audio-separator not installed - mock mode")
+        except ImportError as exc:
+            if exc.name and exc.name.startswith("audio_separator"):
+                logger.warning("audio-separator not installed - mock mode")
+                return
+            raise
 
-    def separate(self, audio_path: str, output_dir: Path | None = None) -> dict[str, Any]:
+    def separate(
+        self,
+        audio_path: str,
+        output_dir: Path | None = None,
+        progress_callback: UVRProgressCallback | None = None,
+    ) -> dict[str, Any]:
         if not audio_path:
             raise ValueError("UVR separation requires a non-empty audio path")
 
-        self._ensure_init()
+        # Read one validated settings snapshot for the whole separation request.
+        # Runtime settings updates replace the singleton, so this avoids mixing
+        # values from two settings revisions while a model is being initialized.
+        rt = get_runtime_settings()
+        self._ensure_init(rt)
 
         audio_file = Path(audio_path)
         if not audio_file.exists():
             raise FileNotFoundError(f"File not found: {audio_path}")
 
         if output_dir is None:
-            rt = get_runtime_settings()
             output_dir = Path(rt.data_root).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -193,7 +346,26 @@ class UVRService:
         self._separator.output_dir = str(output_dir_abs)
 
         logger.info(f"Separating vocals: {audio_path} -> {output_dir_abs}")
-        output_files = self._separator.separate(str(audio_file))
+        _notify_progress(progress_callback, {
+            "phase": "starting",
+            "current_chunk": 0,
+            "completed_chunks": 0,
+            "total_chunks": 0,
+            "progress": 0.0,
+            "message": "准备分离人声",
+        })
+
+        progress_handler = None
+        separator_logger = getattr(self._separator, "logger", None)
+        if progress_callback is not None and isinstance(separator_logger, logging.Logger):
+            progress_handler = _UVRProgressLogHandler(progress_callback)
+            separator_logger.addHandler(progress_handler)
+        try:
+            output_files = self._separator.separate(str(audio_file))
+        finally:
+            if progress_handler is not None:
+                separator_logger.removeHandler(progress_handler)
+
         if not output_files:
             raise RuntimeError(
                 f"UVR separation did not produce any output for {audio_path}. "
@@ -234,12 +406,13 @@ class UVRService:
                 f"Outputs: {output_files}"
             )
 
-        rt = get_runtime_settings()
         return {
             "input_path": audio_path,
             "vocals_path": vocals_path,
             "output_dir": str(output_dir),
             "model_used": rt.uvr_model,
+            "device": self._current_device,
+            "execution_provider": self._execution_provider,
         }
 
 
@@ -258,6 +431,15 @@ def release_uvr_service() -> None:
         _service.release()
 
 
-async def separate_vocals(audio_path: str, output_dir: Path | None = None) -> dict[str, Any]:
+async def separate_vocals(
+    audio_path: str,
+    output_dir: Path | None = None,
+    progress_callback: UVRProgressCallback | None = None,
+) -> dict[str, Any]:
     import asyncio
-    return await asyncio.to_thread(get_uvr_service().separate, audio_path, output_dir=output_dir)
+    return await asyncio.to_thread(
+        get_uvr_service().separate,
+        audio_path,
+        output_dir=output_dir,
+        progress_callback=progress_callback,
+    )

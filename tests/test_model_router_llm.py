@@ -125,3 +125,81 @@ def test_polish_provider_local_falls_back_to_main_provider_when_path_is_empty():
     assert binding.provider == "openai"
     assert binding.fallback_from == "local"
     assert binding.model == "openai/gpt-4.1"
+
+
+def test_codex_oauth_provider_uses_cli_transport_without_api_credentials():
+    settings = RuntimeSettings(
+        runtime_model_bindings={
+            "summary": {
+                "provider_id": "codex-oauth",
+                "model_id": "default",
+                "capability": "llm",
+            }
+        },
+        providers=[
+            {
+                "id": "codex-oauth",
+                "name": "Codex OAuth",
+                "provider_type": "codex_oauth",
+                "enabled": True,
+                "cli_path": "C:/Tools/codex.exe",
+                "timeout_sec": 900,
+                "models": [
+                    {
+                        "id": "codex-oauth:default",
+                        "model_id": "default",
+                        "model_type": "llm",
+                        "capabilities": ["llm", "chat"],
+                        "enabled": True,
+                    }
+                ],
+            }
+        ],
+    )
+
+    binding = resolve_llm_binding(settings, stage="summary")
+
+    assert binding.provider == "codex-oauth"
+    assert binding.transport == "codex_cli"
+    assert binding.model == "default"
+    assert binding.configured is True
+    assert binding.request_kwargs["provider_type"] == "codex_oauth"
+    assert binding.request_kwargs["cli_path"] == "C:/Tools/codex.exe"
+    assert binding.request_kwargs["timeout_sec"] == 900
+
+
+def test_agy_oauth_provider_uses_cli_transport_without_api_base():
+    settings = RuntimeSettings(
+        runtime_model_bindings={
+            "analyze": {
+                "provider_id": "agy-oauth",
+                "model_id": "gemini-3.1-pro-high",
+                "capability": "llm",
+            }
+        },
+        providers=[
+            {
+                "id": "agy-oauth",
+                "name": "Antigravity OAuth",
+                "provider_type": "agy_oauth",
+                "enabled": True,
+                "models": [
+                    {
+                        "id": "agy-oauth:gemini-3.1-pro-high",
+                        "model_id": "gemini-3.1-pro-high",
+                        "cli_model_name": "Gemini 3.1 Pro (High)",
+                        "model_type": "llm",
+                        "capabilities": ["llm", "chat"],
+                        "enabled": True,
+                    }
+                ],
+            }
+        ],
+    )
+
+    binding = resolve_llm_binding(settings, stage="analyze")
+
+    assert binding.provider == "agy-oauth"
+    assert binding.transport == "agy_cli"
+    assert binding.model == "Gemini 3.1 Pro (High)"
+    assert binding.configured is True

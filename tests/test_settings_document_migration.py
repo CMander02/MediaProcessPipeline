@@ -244,6 +244,50 @@ async def test_provider_model_payload_uses_urllib_fallback_on_httpx_timeout(monk
     }
 
 
+@pytest.mark.asyncio
+async def test_oauth_provider_model_payload_uses_cli_catalog(monkeypatch):
+    from app.services.analysis import coding_plan_cli
+
+    async def fake_models(provider_type: str, *, cli_path: str):
+        assert provider_type == "codex_oauth"
+        assert cli_path == "C:/Tools/codex.exe"
+        return [
+            {"id": "default", "display_name": "CLI 当前默认模型", "model_type": "llm"},
+            {"id": "gpt-5.6-sol", "display_name": "gpt-5.6-sol", "model_type": "llm"},
+        ]
+
+    monkeypatch.setattr(coding_plan_cli, "coding_plan_models", fake_models)
+
+    payload = await settings_route._fetch_provider_models_payload({
+        "id": "codex-oauth",
+        "provider_type": "codex_oauth",
+        "cli_path": "C:/Tools/codex.exe",
+    })
+
+    assert [model["id"] for model in payload["data"]] == ["default", "gpt-5.6-sol"]
+
+
+def test_agy_cli_model_name_survives_provider_normalization():
+    normalized = core_settings._normalize_provider_array(
+        [
+            {
+                "id": "agy-oauth",
+                "name": "Antigravity OAuth",
+                "provider_type": "agy_oauth",
+                "models": [
+                    {
+                        "model_id": "gemini-3.1-pro-high",
+                        "display_name": "Gemini 3.1 Pro (High)",
+                        "cli_model_name": "Gemini 3.1 Pro (High)",
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert normalized[0]["models"][0]["cli_model_name"] == "Gemini 3.1 Pro (High)"
+
+
 def test_flat_config_load_migrates_default_service_registry(isolated_settings_file):
     _write_config(
         isolated_settings_file,
@@ -306,6 +350,13 @@ def test_flat_config_load_migrates_default_service_registry(isolated_settings_fi
     }
     assert _models_for_provider(data, "siliconflow")[0]["model_id"] == "SenseVoiceFlat"
     assert _models_for_provider(data, "siliconflow")[0]["model_type"] == "asr"
+    codex_oauth = _by_id(data["providers"], "codex-oauth")
+    assert codex_oauth["provider_type"] == "codex_oauth"
+    assert codex_oauth["api_key"] == ""
+    assert codex_oauth["models"][0]["model_id"] == "default"
+    agy_oauth = _by_id(data["providers"], "agy-oauth")
+    assert agy_oauth["provider_type"] == "agy_oauth"
+    assert agy_oauth["timeout_sec"] == 600
     assert data["runtime_model_bindings"]["summary"] == {
         "provider_id": "deepseek",
         "model_id": "deepseek-summary",

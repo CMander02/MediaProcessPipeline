@@ -19,7 +19,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Loading03Icon, FolderOpenIcon } from "@hugeicons/core-free-icons"
 
-const PAGE_SIZE = 24
+const PAGE_SIZE = 28
 const MIN_PAGE_SIZE = 1
 
 interface FilesPageProps {
@@ -231,7 +231,7 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
         <div
           ref={gridRef}
           data-testid="archive-grid"
-          className="grid h-full min-h-0 grid-cols-2 content-start gap-3 overflow-hidden sm:grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] sm:gap-x-5 sm:gap-y-4"
+          className="grid h-full min-h-0 grid-cols-2 content-start gap-3 overflow-hidden sm:gap-x-5 sm:gap-y-4 lg:grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] min-[1600px]:grid-cols-7!"
         >
           {paged.map((a) => (
             <ArchiveCard

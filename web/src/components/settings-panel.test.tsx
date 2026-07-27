@@ -117,7 +117,9 @@ const { mockSettings } = vi.hoisted(() => ({
     moss_cpp_model_path: "",
     moss_cpp_device: "auto",
     moss_cpp_threads: 8,
-    moss_cpp_max_new_tokens: 32768,
+    moss_cpp_max_new_tokens: 8192,
+    moss_cpp_chunk_duration_sec: 1200,
+    moss_cpp_chunk_overlap_sec: 60,
     moss_cpp_timeout_sec: 3600,
   },
 }))
@@ -234,6 +236,15 @@ vi.mock("@/lib/api", () => ({
         default_params: {},
       })),
       queryProviderBalance: vi.fn().mockResolvedValue({ provider_id: "siliconflow", balance: {} }),
+      providerOAuthStatus: vi.fn().mockResolvedValue({
+        provider_type: "codex_oauth",
+        installed: true,
+        authenticated: true,
+        executable: "C:/Users/test/AppData/Roaming/npm/codex.exe",
+        current_model: "gpt-5.6-sol",
+        models: ["gpt-5.6-sol"],
+        message: "已连接 Codex OAuth 会话。",
+      }),
       ytdlpStatus: vi.fn().mockResolvedValue({
         installed: "2026.03.17",
         latest: "2026.07.09",
@@ -385,6 +396,9 @@ describe("SettingsPanel", () => {
     expect(within(providerList as HTMLElement).getByRole("button", { name: /DeepSeek/ })).toBeInTheDocument()
     const siliconFlowButton = within(providerList as HTMLElement).getByRole("button", { name: /SiliconFlow/ })
     expect(siliconFlowButton).toBeInTheDocument()
+    const codexOAuthButton = within(providerList as HTMLElement).getByRole("button", { name: /Codex OAuth/ })
+    expect(codexOAuthButton).toBeInTheDocument()
+    expect(within(providerList as HTMLElement).getByRole("button", { name: /Antigravity OAuth/ })).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /本地 HF 模型/ })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /Vision Server/ })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /Purpose Binding/ })).not.toBeInTheDocument()
@@ -416,6 +430,18 @@ describe("SettingsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "添加模型" }))
     expect(screen.getByPlaceholderText("模型 ID，例如 Qwen/Qwen3.5-8B")).toBeInTheDocument()
     expect(screen.getByLabelText("模型类型")).toBeInTheDocument()
+
+    fireEvent.click(codexOAuthButton)
+    expect(screen.getByRole("heading", { name: "Codex OAuth" })).toBeInTheDocument()
+    expect(screen.getByText("OAuth 登录")).toBeInTheDocument()
+    expect(screen.getByLabelText("CLI 路径")).toBeInTheDocument()
+    expect(screen.getByLabelText("推理超时（秒）")).toHaveValue(600)
+    expect(screen.getByText(/复用本机 CLI 的 OAuth 登录与 Coding Plan 配额/)).toBeInTheDocument()
+    expect(screen.getByText(/Codex 调用使用临时会话/)).toBeInTheDocument()
+    expect(screen.queryByText("API Key")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "检测 OAuth" }))
+    await waitFor(() => expect(api.settings.providerOAuthStatus).toHaveBeenCalledWith("codex-oauth"))
+    expect(await screen.findByText("已连接")).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "Local Models" }))
 

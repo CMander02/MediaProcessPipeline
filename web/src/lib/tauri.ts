@@ -106,20 +106,42 @@ function getTauriBackendBridge(): MppBackendBridge | undefined {
     },
     onLog(callback) {
       let disposed = false
-      let seenCount: number | null = null
+      let lastSeenEntryKey: string | null = null
+
+      const entryKey = (entry: BackendLogEntry) =>
+        `${entry.ts}\u0000${entry.source}\u0000${entry.line}`
 
       const tick = async () => {
         try {
           const logs = await getLogs()
           if (disposed) return
-          if (seenCount === null) {
-            seenCount = logs.length
+          if (logs.length === 0) {
             return
           }
-          for (const entry of logs.slice(seenCount)) {
+
+          if (lastSeenEntryKey === null) {
+            lastSeenEntryKey = entryKey(logs[logs.length - 1])
+            return
+          }
+
+          let lastSeenIndex = -1
+          for (let index = logs.length - 1; index >= 0; index -= 1) {
+            if (entryKey(logs[index]) === lastSeenEntryKey) {
+              lastSeenIndex = index
+              break
+            }
+          }
+
+          // The native backend keeps a rolling fixed-size buffer. Once it is
+          // full, its length no longer changes, so a count-based cursor misses
+          // every subsequent line. An entry cursor follows the rolling window;
+          // if polling falls behind the whole window, replay the current buffer
+          // so the UI converges to the backend's latest 1200 lines.
+          const newEntries = lastSeenIndex >= 0 ? logs.slice(lastSeenIndex + 1) : logs
+          for (const entry of newEntries) {
             callback(entry)
           }
-          seenCount = logs.length
+          lastSeenEntryKey = entryKey(logs[logs.length - 1])
         } catch {
           // Log polling is best-effort; direct getLogs() still populates the initial buffer.
         }

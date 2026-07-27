@@ -124,9 +124,9 @@ async def _fetch_siliconflow_models_payload(api_base: str, api_key: str) -> Any:
     try:
         async with httpx.AsyncClient(timeout=20.0, **httpx_client_kwargs(url)) as client:
             response = await client.get(url, headers=headers)
-    except httpx.TimeoutException as e:
+    except httpx.TimeoutException:
         return await _fetch_json_with_urllib(url, headers, timeout=30.0, label="SiliconFlow models")
-    except httpx.RequestError as e:
+    except httpx.RequestError:
         return await _fetch_json_with_urllib(url, headers, timeout=30.0, label="SiliconFlow models")
 
     if response.status_code >= 400:
@@ -576,6 +576,7 @@ def _provider_model_record(provider_id: str, model: dict[str, str]) -> dict[str,
     if model.get("model_type"):
         model_type = str(model["model_type"]).strip().lower()
     return {
+        **({"cli_model_name": model["cli_model_name"]} if model.get("cli_model_name") else {}),
         "id": f"{provider_id}:{model['id']}",
         "model_id": model["id"],
         "display_name": model.get("display_name") or model["id"],
@@ -667,6 +668,20 @@ async def _fetch_provider_models_payload(provider: dict[str, Any]) -> Any:
     provider_type = str(provider.get("provider_type") or "")
     api_base = str(provider.get("api_base") or "")
     api_key = str(provider.get("api_key") or "")
+    if provider_type in {"codex_oauth", "agy_oauth"}:
+        from app.services.analysis.coding_plan_cli import (
+            CodingPlanCLIError,
+            coding_plan_models,
+        )
+
+        try:
+            models = await coding_plan_models(
+                provider_type,
+                cli_path=str(provider.get("cli_path") or ""),
+            )
+        except CodingPlanCLIError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"data": models}
     if provider_id == "siliconflow" or provider_type == "siliconflow":
         return await _fetch_siliconflow_models_payload(api_base, api_key)
 
@@ -685,9 +700,9 @@ async def _fetch_provider_models_payload(provider: dict[str, Any]) -> Any:
     try:
         async with httpx.AsyncClient(timeout=20.0, **httpx_client_kwargs(url)) as client:
             response = await client.get(url, headers=headers)
-    except httpx.TimeoutException as e:
+    except httpx.TimeoutException:
         return await _fetch_json_with_urllib(url, headers, timeout=30.0, label="Provider models")
-    except httpx.RequestError as e:
+    except httpx.RequestError:
         return await _fetch_json_with_urllib(url, headers, timeout=30.0, label="Provider models")
 
     if response.status_code >= 400:
@@ -735,6 +750,26 @@ async def list_provider_model_catalog(provider_id: str, capability: str = ""):
         "allowed_models": allowed_models,
         "error": error,
     }
+
+
+@router.get("/providers/{provider_id}/oauth/status")
+async def provider_oauth_status(provider_id: str):
+    data = get_runtime_settings().model_dump()
+    provider = _settings_provider(data, provider_id)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="Provider not found.")
+    provider_type = str(provider.get("provider_type") or "").strip().lower()
+    if provider_type not in {"codex_oauth", "agy_oauth"}:
+        raise HTTPException(status_code=400, detail="Provider does not use CLI OAuth.")
+
+    from app.services.analysis.coding_plan_cli import coding_plan_status
+
+    timeout_sec = min(60.0, max(5.0, float(provider.get("timeout_sec") or 30)))
+    return await coding_plan_status(
+        provider_type,
+        cli_path=str(provider.get("cli_path") or ""),
+        timeout_sec=timeout_sec,
+    )
 
 
 @router.post("/providers/{provider_id}/models/sync")

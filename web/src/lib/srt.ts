@@ -11,6 +11,21 @@ export interface Subtitle {
   speaker?: string
 }
 
+export interface TranscriptMarkdownHeader {
+  title: string
+  source_url?: string | null
+  platform?: string | null
+  uploader?: string | null
+  published_at?: string | null
+  created_at?: string | null
+  duration_seconds?: number | null
+  language?: string | null
+  subtitle_language?: string | null
+  subtitle_source?: string | null
+  polished?: boolean
+  task_id?: string | null
+}
+
 /**
  * Parse SRT content into Subtitle array
  */
@@ -131,6 +146,50 @@ export function subtitlesToSRT(subtitles: Subtitle[]): string {
       return `${i + 1}\n${formatSRTTime(sub.startTime)} --> ${formatSRTTime(sub.endTime)}\n${speakerTag}${sub.text}`
     })
     .join("\n\n")
+}
+
+function yamlValue(value: string | number | boolean | string[]): string {
+  return JSON.stringify(value)
+}
+
+/**
+ * Export a readable Markdown transcript with YAML frontmatter.
+ * Each subtitle is kept as its own paragraph so turn boundaries remain explicit.
+ */
+export function subtitlesToMarkdown(
+  subtitles: Subtitle[],
+  header: TranscriptMarkdownHeader,
+): string {
+  const speakers = extractSpeakers(subtitles)
+  const fields: Array<[string, string | number | boolean | string[] | null | undefined]> = [
+    ["title", header.title],
+    ["document_type", "transcript"],
+    ["source_url", header.source_url],
+    ["platform", header.platform],
+    ["uploader", header.uploader],
+    ["published_at", header.published_at],
+    ["created_at", header.created_at],
+    ["duration_seconds", header.duration_seconds],
+    ["language", header.language],
+    ["subtitle_language", header.subtitle_language],
+    ["subtitle_source", header.subtitle_source],
+    ["polished", header.polished],
+    ["speakers", speakers.length > 0 ? speakers : undefined],
+    ["task_id", header.task_id],
+  ]
+  const frontmatter = fields
+    .filter(([, value]) => value !== null && value !== undefined && value !== "")
+    .map(([key, value]) => `${key}: ${yamlValue(value as string | number | boolean | string[])}`)
+    .join("\n")
+  const body = subtitles
+    .map((subtitle) => {
+      const speaker = subtitle.speaker?.trim() || "Speaker"
+      const text = subtitle.text.trim().replace(/\s*\n\s*/g, " ")
+      return `${speaker}: ${text}`
+    })
+    .join("\n\n")
+
+  return `---\n${frontmatter}\n---\n\n${body}\n`
 }
 
 /**

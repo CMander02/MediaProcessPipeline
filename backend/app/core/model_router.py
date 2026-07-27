@@ -568,16 +568,18 @@ def resolve_provider_model_binding(
             reason="provider model not found",
         )
 
+    provider_type = _clean_text(provider.get("provider_type")).lower()
     model_type = _model_type_from_capabilities(model.get("model_type"), model.get("capabilities"))
     api_base = _base_with_optional_v1(_clean_text(provider.get("api_base")))
     api_key = _openai_compatible_api_key(_clean_text(provider.get("api_key")))
     endpoint = _endpoint_for_model_type(api_base, model_type, _clean_text(model.get("endpoint_path")))
     enabled = bool(provider.get("enabled", True) and model.get("enabled", True))
     resolved_model = _clean_text(model.get("model_id"))
-    configured = bool(enabled and resolved_model and api_base)
+    cli_oauth = provider_type in {"codex_oauth", "agy_oauth"}
+    configured = bool(enabled and resolved_model and (api_base or cli_oauth))
     return ProviderModelBinding(
         provider_id=requested_provider,
-        provider_type=_clean_text(provider.get("provider_type")),
+        provider_type=provider_type,
         model_id=resolved_model,
         model_type=model_type,
         api_base=api_base,
@@ -594,6 +596,9 @@ def resolve_provider_model_binding(
             "headers": provider.get("headers") if isinstance(provider.get("headers"), dict) else {},
             "extra_body": provider.get("extra_body") if isinstance(provider.get("extra_body"), dict) else {},
             "default_params": model.get("default_params") if isinstance(model.get("default_params"), dict) else {},
+            "cli_path": _clean_text(provider.get("cli_path")),
+            "timeout_sec": provider.get("timeout_sec", 600),
+            "cli_model_name": _clean_text(model.get("cli_model_name")),
         },
     )
 
@@ -608,17 +613,35 @@ def _llm_binding_from_provider(
     if not provider_id or provider_id in {"local", "deepseek", "anthropic", "openai", "custom"}:
         return None
     binding = resolve_provider_model_binding(rt, provider_id, model_id, "llm")
+    transport = {
+        "codex_oauth": "codex_cli",
+        "agy_oauth": "agy_cli",
+    }.get(binding.provider_type, "litellm")
     if not binding.configured:
         return LLMBinding(
             provider=provider_id,
             stage=_normalize_stage(stage),
-            transport="litellm",
+            transport=transport,
             model=binding.model_id,
             api_base=binding.api_base,
             api_key=binding.api_key,
             configured=False,
             reason=binding.reason,
             request_kwargs={},
+        )
+    if transport in {"codex_cli", "agy_cli"}:
+        return LLMBinding(
+            provider=provider_id,
+            stage=_normalize_stage(stage),
+            transport=transport,
+            model=_clean_text(binding.request_kwargs.get("cli_model_name")) or binding.model_id,
+            configured=True,
+            request_kwargs={
+                "model": binding.model_id,
+                "cli_path": binding.request_kwargs.get("cli_path", ""),
+                "timeout_sec": binding.request_kwargs.get("timeout_sec", 600),
+                "provider_type": binding.provider_type,
+            },
         )
     return LLMBinding(
         provider=provider_id,
@@ -778,6 +801,8 @@ def resolve_asr_binding(
                 "device": rt.moss_cpp_device,
                 "threads": rt.moss_cpp_threads,
                 "max_new_tokens": rt.moss_cpp_max_new_tokens,
+                "chunk_duration_sec": rt.moss_cpp_chunk_duration_sec,
+                "chunk_overlap_sec": rt.moss_cpp_chunk_overlap_sec,
                 "timeout_sec": rt.moss_cpp_timeout_sec,
             },
         )

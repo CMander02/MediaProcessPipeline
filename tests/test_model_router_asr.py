@@ -114,6 +114,9 @@ def test_moss_audio_flow_selects_cpp_engine_and_model(tmp_path):
     assert binding.request_kwargs["binary_path"] == str(binary.resolve())
     assert binding.request_kwargs["device"] == "cpu"
     assert binding.request_kwargs["threads"] == 6
+    assert binding.request_kwargs["max_new_tokens"] == 8192
+    assert binding.request_kwargs["chunk_duration_sec"] == 1200.0
+    assert binding.request_kwargs["chunk_overlap_sec"] == 60.0
 
 
 def test_explicit_asr_provider_overrides_moss_audio_flow():

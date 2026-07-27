@@ -427,6 +427,52 @@ class LLMService:
         if provider == "deepseek":
             return await self._call_deepseek(prompt, stage=stage, max_retries=max_retries)
 
+        if binding.transport in {"codex_cli", "agy_cli"}:
+            from app.services.analysis.coding_plan_cli import call_coding_plan_cli
+
+            if not binding.configured:
+                raise RuntimeError(f"OAuth CLI Provider 配置不完整：{binding.reason}")
+            t0 = time.perf_counter()
+            log_event(
+                logger,
+                logging.INFO,
+                "llm.coding_plan_cli.started",
+                provider=provider,
+                model=binding.model,
+                stage=stage,
+            )
+            try:
+                content = await call_coding_plan_cli(
+                    str(binding.request_kwargs.get("provider_type") or ""),
+                    model=binding.model,
+                    prompt=prompt,
+                    cli_path=str(binding.request_kwargs.get("cli_path") or ""),
+                    timeout_sec=float(binding.request_kwargs.get("timeout_sec") or 600),
+                )
+            except Exception as exc:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "llm.coding_plan_cli.failed",
+                    provider=provider,
+                    model=binding.model,
+                    stage=stage,
+                    duration_ms=round((time.perf_counter() - t0) * 1000),
+                    error=exc,
+                )
+                raise
+            log_event(
+                logger,
+                logging.INFO,
+                "llm.coding_plan_cli.completed",
+                provider=provider,
+                model=binding.model,
+                stage=stage,
+                duration_ms=round((time.perf_counter() - t0) * 1000),
+                chars=len(content),
+            )
+            return content
+
         import litellm
         params = _get_litellm_params(provider_override=provider_override, stage=stage)
         if params is None:

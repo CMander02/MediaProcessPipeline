@@ -10,6 +10,7 @@ import {
 } from "@hugeicons/core-free-icons"
 import AnthropicMono from "@lobehub/icons/es/Anthropic/components/Mono"
 import DeepSeekColor from "@lobehub/icons/es/DeepSeek/components/Color"
+import GeminiColor from "@lobehub/icons/es/Gemini/components/Color"
 import LobeHubColor from "@lobehub/icons/es/LobeHub/components/Color"
 import OpenAIMono from "@lobehub/icons/es/OpenAI/components/Mono"
 import SiliconCloudColor from "@lobehub/icons/es/SiliconCloud/components/Color"
@@ -17,7 +18,7 @@ import SiliconCloudColor from "@lobehub/icons/es/SiliconCloud/components/Color"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { api, type ProviderModelCatalogResult, type Settings } from "@/lib/api"
+import { api, type ProviderModelCatalogResult, type ProviderOAuthStatus, type Settings } from "@/lib/api"
 import {
   SERVICE_MODEL_TYPES,
   getCapabilitiesForModelType,
@@ -223,6 +224,9 @@ export function RegistrySettings({
   const [message, setMessage] = useState<string | null>(null)
   const [modelCatalog, setModelCatalog] = useState<ProviderModelCatalogResult | null>(null)
   const [catalogLoading, setCatalogLoading] = useState(false)
+  const [oauthStatus, setOauthStatus] = useState<{ providerId: string; status: ProviderOAuthStatus } | null>(null)
+  const [oauthLoadingProviderId, setOauthLoadingProviderId] = useState("")
+  const pendingProviderSave = useRef<Promise<void>>(Promise.resolve())
 
   const providers = getProviders(settings)
   const deletedProviderIds = getDeletedProviderIds(settings)
@@ -232,9 +236,16 @@ export function RegistrySettings({
     ?? null
   const providerEntries: ModelListItem[] = visibleProviders.map(providerListItem)
 
-  const saveProviders = (nextProviders: ProviderConfig[]) => updateSettings({ providers: nextProviders })
+  const saveProviders = (nextProviders: ProviderConfig[]) => {
+    const operation = updateSettings({ providers: nextProviders })
+    pendingProviderSave.current = operation
+    return operation
+  }
 
   const updateProvider = (providerId: string, patch: Partial<ProviderConfig>) => {
+    if ("provider_type" in patch || "cli_path" in patch || "timeout_sec" in patch) {
+      setOauthStatus((current) => current?.providerId === providerId ? null : current)
+    }
     void saveProviders(providers.map((provider) =>
       provider.id === providerId ? normalizeProvider({ ...provider, ...patch }) : provider,
     ))
@@ -314,6 +325,7 @@ export function RegistrySettings({
   const syncModels = async (providerId: string) => {
     setMessage(null)
     try {
+      await pendingProviderSave.current
       const result = await api.settings.syncProviderModels(providerId)
       await saveProviders(providers.map((provider) =>
         provider.id === providerId ? normalizeProvider(result.provider) : provider,
@@ -328,6 +340,7 @@ export function RegistrySettings({
     setMessage(null)
     setCatalogLoading(true)
     try {
+      await pendingProviderSave.current
       const result = await api.settings.fetchProviderModels(providerId)
       setModelCatalog(result)
       setMessage(
@@ -352,6 +365,27 @@ export function RegistrySettings({
     }
   }
 
+  const checkOAuthStatus = async (providerId: string) => {
+    setMessage(null)
+    setOauthStatus((current) => current?.providerId === providerId ? null : current)
+    setOauthLoadingProviderId(providerId)
+    try {
+      await pendingProviderSave.current
+      const status = await api.settings.providerOAuthStatus(providerId)
+      const expectedType = providers.find((provider) => provider.id === providerId)?.provider_type
+      if (expectedType && status.provider_type !== expectedType) {
+        throw new Error("OAuth 检测结果与当前 Provider 类型不一致，请重试。")
+      }
+      setOauthStatus({ providerId, status })
+      setMessage(status.message)
+    } catch (error) {
+      setOauthStatus((current) => current?.providerId === providerId ? null : current)
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setOauthLoadingProviderId((current) => current === providerId ? "" : current)
+    }
+  }
+
   return (
     <ModelListLayout
       searchPlaceholder="搜索 Providers..."
@@ -359,7 +393,10 @@ export function RegistrySettings({
       onQueryChange={setQuery}
       items={providerEntries}
       selectedId={activeProvider?.id ?? ""}
-      onSelect={setSelectedId}
+      onSelect={(providerId) => {
+        setSelectedId(providerId)
+        setMessage(null)
+      }}
       footer={(
         <div className="mt-3 space-y-2 border-t border-border pt-3">
           <Button type="button" variant="outline" size="sm" onClick={addProvider} className="h-9 w-full gap-1.5">
@@ -378,6 +415,8 @@ export function RegistrySettings({
           message={message}
           modelCatalog={modelCatalog?.provider_id === activeProvider.id ? modelCatalog : null}
           catalogLoading={catalogLoading}
+          oauthStatus={oauthStatus?.providerId === activeProvider.id ? oauthStatus.status : null}
+          oauthLoading={oauthLoadingProviderId === activeProvider.id}
           onNewModelIdChange={setNewModelId}
           onNewModelTypeChange={setNewModelType}
           onToggleAddModel={() => setIsAddingModelFor((value) => value === activeProvider.id ? "" : activeProvider.id)}
@@ -390,6 +429,7 @@ export function RegistrySettings({
           onFetchModels={() => void fetchProviderModels(activeProvider.id)}
           onSyncModels={() => void syncModels(activeProvider.id)}
           onQueryBalance={() => void queryBalance(activeProvider.id)}
+          onCheckOAuthStatus={() => void checkOAuthStatus(activeProvider.id)}
         />
       ) : (
         <ProviderEmptyState hasProviders={providers.length > 0} />
@@ -406,6 +446,8 @@ function ProviderDetailPanel({
   message,
   modelCatalog,
   catalogLoading,
+  oauthStatus,
+  oauthLoading,
   onNewModelIdChange,
   onNewModelTypeChange,
   onToggleAddModel,
@@ -418,6 +460,7 @@ function ProviderDetailPanel({
   onFetchModels,
   onSyncModels,
   onQueryBalance,
+  onCheckOAuthStatus,
 }: {
   provider: ProviderConfig
   isAddingModel: boolean
@@ -426,6 +469,8 @@ function ProviderDetailPanel({
   message: string | null
   modelCatalog: ProviderModelCatalogResult | null
   catalogLoading: boolean
+  oauthStatus: ProviderOAuthStatus | null
+  oauthLoading: boolean
   onNewModelIdChange: (value: string) => void
   onNewModelTypeChange: (value: ServiceModelType) => void
   onToggleAddModel: () => void
@@ -438,8 +483,10 @@ function ProviderDetailPanel({
   onFetchModels: () => void
   onSyncModels: () => void
   onQueryBalance: () => void
+  onCheckOAuthStatus: () => void
 }) {
   const models = getProviderModels(provider)
+  const oauthProvider = isOAuthProvider(provider)
   return (
     <div className="space-y-5">
       <DetailHeader
@@ -447,7 +494,7 @@ function ProviderDetailPanel({
         description={`${provider.id} · ${providerTypeLabel(provider)} · ${models.length} models`}
       />
 
-      {message && <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">{message}</p>}
+      {message && <p role="status" aria-live="polite" className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">{message}</p>}
 
       <div className="grid gap-3 xl:grid-cols-2">
         <ProviderFormRow label="启用">
@@ -459,6 +506,7 @@ function ProviderDetailPanel({
         </ProviderFormRow>
         <ProviderFormRow label="类型">
           <select
+            aria-label="Provider 类型"
             value={provider.provider_type || "openai_compatible"}
             onChange={(event) => onUpdateProvider(provider.id, { provider_type: event.target.value })}
             className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm"
@@ -467,6 +515,8 @@ function ProviderDetailPanel({
             <option value="siliconflow">SiliconFlow</option>
             <option value="openai_compatible">OpenAI-compatible</option>
             <option value="anthropic">Anthropic</option>
+            <option value="codex_oauth">Codex OAuth</option>
+            <option value="agy_oauth">Antigravity OAuth</option>
           </select>
         </ProviderFormRow>
         <ProviderFormRow label="名称">
@@ -476,30 +526,77 @@ function ProviderDetailPanel({
             onCommit={(value) => onUpdateProvider(provider.id, { name: value })}
           />
         </ProviderFormRow>
-        <ProviderFormRow label="API Mode">
-          <ProviderTextInput
-            fieldKey={`${provider.id}-api-mode`}
-            value={provider.api_mode || "chat_completions"}
-            onCommit={(value) => onUpdateProvider(provider.id, { api_mode: value })}
-          />
-        </ProviderFormRow>
-        <ProviderFormRow label="API Base" className="xl:col-span-2">
-          <ProviderTextInput
-            fieldKey={`${provider.id}-api-base`}
-            value={provider.api_base || ""}
-            onCommit={(value) => onUpdateProvider(provider.id, { api_base: value })}
-            placeholder="https://api.example.com/v1"
-          />
-        </ProviderFormRow>
-        <ProviderFormRow label="API Key" className="xl:col-span-2">
-          <ProviderTextInput
-            fieldKey={`${provider.id}-api-key`}
-            type="password"
-            value={provider.api_key || ""}
-            onCommit={(value) => onUpdateProvider(provider.id, { api_key: value })}
-            placeholder="API Key"
-          />
-        </ProviderFormRow>
+        {oauthProvider ? (
+          <>
+            <ProviderFormRow label="CLI 路径" className="xl:col-span-2">
+              <ProviderTextInput
+                fieldKey={`${provider.id}-cli-path`}
+                value={provider.cli_path || ""}
+                onCommit={(value) => onUpdateProvider(provider.id, { cli_path: value })}
+                placeholder="留空时自动查找本机 CLI"
+                ariaLabel="CLI 路径"
+              />
+            </ProviderFormRow>
+            <ProviderFormRow label="推理超时（秒）">
+              <ProviderTextInput
+                fieldKey={`${provider.id}-timeout-sec`}
+                type="number"
+                value={String(provider.timeout_sec || 600)}
+                onCommit={(value) => onUpdateProvider(provider.id, { timeout_sec: Math.max(1, Math.trunc(Number(value) || 600)) })}
+                ariaLabel="推理超时（秒）"
+              />
+            </ProviderFormRow>
+            <ProviderFormRow label="OAuth 登录">
+              <div className="flex flex-wrap items-center gap-2">
+                <span aria-live="polite" className={[
+                  "rounded-full px-2 py-0.5 text-xs",
+                  oauthStatus?.authenticated
+                    ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                    : "bg-muted text-muted-foreground",
+                ].join(" ")}>
+                  {oauthStatus
+                    ? (oauthStatus.authenticated ? "已连接" : (oauthStatus.installed ? "等待登录" : "CLI 未安装"))
+                    : "等待检测"}
+                </span>
+                <Button type="button" variant="outline" size="sm" onClick={onCheckOAuthStatus} disabled={oauthLoading} className="h-8">
+                  {oauthLoading ? "检测中..." : "检测 OAuth"}
+                </Button>
+              </div>
+            </ProviderFormRow>
+            <p className="text-xs leading-5 text-muted-foreground xl:col-span-2">
+              复用本机 CLI 的 OAuth 登录与 Coding Plan 配额，凭据由 CLI 自己保存和刷新。
+              {provider.provider_type === "agy_oauth" ? " Antigravity CLI 会在本机保留会话与日志。" : " Codex 调用使用临时会话，不写入会话历史。"}
+              {oauthStatus?.current_model ? ` 当前模型：${oauthStatus.current_model}` : ""}
+            </p>
+          </>
+        ) : (
+          <>
+            <ProviderFormRow label="API Mode">
+              <ProviderTextInput
+                fieldKey={`${provider.id}-api-mode`}
+                value={provider.api_mode || "chat_completions"}
+                onCommit={(value) => onUpdateProvider(provider.id, { api_mode: value })}
+              />
+            </ProviderFormRow>
+            <ProviderFormRow label="API Base" className="xl:col-span-2">
+              <ProviderTextInput
+                fieldKey={`${provider.id}-api-base`}
+                value={provider.api_base || ""}
+                onCommit={(value) => onUpdateProvider(provider.id, { api_base: value })}
+                placeholder="https://api.example.com/v1"
+              />
+            </ProviderFormRow>
+            <ProviderFormRow label="API Key" className="xl:col-span-2">
+              <ProviderTextInput
+                fieldKey={`${provider.id}-api-key`}
+                type="password"
+                value={provider.api_key || ""}
+                onCommit={(value) => onUpdateProvider(provider.id, { api_key: value })}
+                placeholder="API Key"
+              />
+            </ProviderFormRow>
+          </>
+        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -507,7 +604,9 @@ function ProviderDetailPanel({
           {catalogLoading ? "获取中..." : "获取模型"}
         </Button>
         <Button type="button" variant="outline" size="sm" onClick={onSyncModels} className="h-8">同步模型</Button>
-        <Button type="button" variant="outline" size="sm" onClick={onQueryBalance} className="h-8">查询余额</Button>
+        {provider.balance?.enabled && (
+          <Button type="button" variant="outline" size="sm" onClick={onQueryBalance} className="h-8">查询余额</Button>
+        )}
         <Button type="button" variant="outline" size="sm" onClick={onToggleAddModel} className="h-8 gap-1.5">
           <HugeiconsIcon icon={PlusSignIcon} className="h-3.5 w-3.5" />
           添加模型
@@ -825,18 +924,23 @@ function ProviderTextInput({
   type = "text",
   placeholder,
   className,
+  ariaLabel,
 }: {
   fieldKey: string
   value: string
   onCommit: (value: string) => void
-  type?: "text" | "password"
+  type?: "text" | "password" | "number"
   placeholder?: string
   className?: string
+  ariaLabel?: string
 }) {
   return (
     <input
-      key={fieldKey}
+      key={`${fieldKey}:${value}`}
       type={type}
+      min={type === "number" ? 1 : undefined}
+      step={type === "number" ? 1 : undefined}
+      aria-label={ariaLabel}
       defaultValue={value}
       onBlur={(event) => onCommit(event.target.value)}
       placeholder={placeholder}
@@ -891,7 +995,8 @@ function providerListItem(provider: ProviderConfig): ModelListItem {
 function providerIcon(provider: ProviderConfig): ReactNode {
   if (provider.id === "deepseek" || provider.provider_type === "deepseek") return <DeepSeekColor size={18} aria-hidden />
   if (provider.id === "siliconflow" || provider.provider_type === "siliconflow") return <SiliconCloudColor size={18} aria-hidden />
-  if (provider.id === "openai") return <OpenAIMono size={18} aria-hidden />
+  if (provider.id === "openai" || provider.provider_type === "codex_oauth") return <OpenAIMono size={18} aria-hidden />
+  if (provider.provider_type === "agy_oauth") return <GeminiColor size={18} aria-hidden />
   if (provider.id === "anthropic" || provider.provider_type === "anthropic") return <AnthropicMono size={18} aria-hidden />
   return <LobeHubColor size={18} aria-hidden />
 }
@@ -1013,7 +1118,7 @@ function fallbackProvidersFromLegacy(settings: Settings): ProviderConfig[] {
     createProvider("siliconflow", []),
     createProvider("custom", []),
   ]
-  return providers.map((provider) => {
+  const legacyProviders = providers.map((provider) => {
     if (provider.id === "deepseek") {
       return normalizeProvider({
         ...provider,
@@ -1048,6 +1153,9 @@ function fallbackProvidersFromLegacy(settings: Settings): ProviderConfig[] {
       models: [providerModel("custom-default", settings.custom_model, "llm")].filter(Boolean) as ProviderModelRecord[],
     })
   })
+  const codex = createProvider("codex_oauth", legacyProviders)
+  const agy = createProvider("agy_oauth", [...legacyProviders, codex])
+  return [...legacyProviders, codex, agy]
 }
 
 function createProvider(type: string, existing: ProviderConfig[]): ProviderConfig {
@@ -1082,6 +1190,48 @@ function createProvider(type: string, existing: ProviderConfig[]): ProviderConfi
       ].filter(Boolean) as ProviderModelRecord[],
     })
   }
+  if (type === "codex_oauth" && !taken.has("codex-oauth")) {
+    return normalizeProvider({
+      id: "codex-oauth",
+      name: "Codex OAuth",
+      provider_type: "codex_oauth",
+      api_mode: "oauth_cli",
+      cli_path: "",
+      timeout_sec: 600,
+      enabled: true,
+      models: [{
+        id: "codex-oauth:default",
+        model_id: "default",
+        display_name: "CLI 当前默认模型",
+        model_type: "llm",
+        enabled: true,
+        capabilities: ["llm", "chat", "json", "reasoning"],
+        endpoint_path: "/chat/completions",
+        default_params: {},
+      }],
+    })
+  }
+  if (type === "agy_oauth" && !taken.has("agy-oauth")) {
+    return normalizeProvider({
+      id: "agy-oauth",
+      name: "Antigravity OAuth",
+      provider_type: "agy_oauth",
+      api_mode: "oauth_cli",
+      cli_path: "",
+      timeout_sec: 600,
+      enabled: true,
+      models: [{
+        id: "agy-oauth:default",
+        model_id: "default",
+        display_name: "CLI 当前默认模型",
+        model_type: "llm",
+        enabled: true,
+        capabilities: ["llm", "chat", "json", "reasoning"],
+        endpoint_path: "/chat/completions",
+        default_params: {},
+      }],
+    })
+  }
   const index = existing.filter((provider) => provider.id.startsWith("custom")).length + 1
   return normalizeProvider({
     id: uniqueProviderId(`custom-${index}`, taken),
@@ -1111,6 +1261,8 @@ function normalizeProvider(provider: ProviderConfig): ProviderConfig {
     api_base: String(provider.api_base ?? ""),
     api_key: String(provider.api_key ?? ""),
     api_mode: String(provider.api_mode ?? "chat_completions"),
+    cli_path: String(provider.cli_path ?? ""),
+    timeout_sec: Math.max(1, Number(provider.timeout_sec) || 600),
     headers: isRecord(provider.headers) ? provider.headers : {},
     extra_body: isRecord(provider.extra_body) ? provider.extra_body : {},
     balance: isRecord(provider.balance) ? provider.balance : { enabled: false, endpoint_path: "", method: "GET" },
@@ -1190,7 +1342,13 @@ function providerTypeLabel(provider: ProviderConfig): string {
   if (type === "deepseek") return "DeepSeek"
   if (type === "siliconflow") return "SiliconFlow"
   if (type === "anthropic") return "Anthropic"
+  if (type === "codex_oauth") return "Codex OAuth"
+  if (type === "agy_oauth") return "Antigravity OAuth"
   return "OpenAI-compatible"
+}
+
+function isOAuthProvider(provider: ProviderConfig): boolean {
+  return provider.provider_type === "codex_oauth" || provider.provider_type === "agy_oauth"
 }
 
 function providerModel(providerId: string, model: unknown, modelType: ServiceModelType): ProviderModelRecord | null {
@@ -2059,7 +2217,23 @@ function AudioFlowControls({
           <SettingRow
             label="最大输出"
             settingKey="moss_cpp_max_new_tokens"
-            value={String(settings.moss_cpp_max_new_tokens ?? 32768)}
+            value={String(settings.moss_cpp_max_new_tokens ?? 8192)}
+            onSave={(key, value) => updateSetting(key, Number(value))}
+            saving={saving}
+            saved={saved}
+          />
+          <SettingRow
+            label="分段时长（秒）"
+            settingKey="moss_cpp_chunk_duration_sec"
+            value={String(settings.moss_cpp_chunk_duration_sec ?? 1200)}
+            onSave={(key, value) => updateSetting(key, Number(value))}
+            saving={saving}
+            saved={saved}
+          />
+          <SettingRow
+            label="分段重叠（秒）"
+            settingKey="moss_cpp_chunk_overlap_sec"
+            value={String(settings.moss_cpp_chunk_overlap_sec ?? 60)}
             onSave={(key, value) => updateSetting(key, Number(value))}
             saving={saving}
             saved={saved}
@@ -2067,13 +2241,14 @@ function AudioFlowControls({
           <SettingRow
             label="超时（秒）"
             settingKey="moss_cpp_timeout_sec"
-            value={String(settings.moss_cpp_timeout_sec ?? 3600)}
+            value={String(settings.moss_cpp_timeout_sec ?? 14400)}
             onSave={(key, value) => updateSetting(key, Number(value))}
             saving={saving}
             saved={saved}
           />
           <p className="text-xs text-muted-foreground">
-            MOSS 自动估计说话人数；任务中的 num_speakers 会记录为结果校验参数。
+            长录音按重叠分段顺序推理，以限制 CUDA KV Cache 显存；重叠区用于衔接说话人标签。
+            MOSS 自动估计说话人数，任务中的 num_speakers 会记录为结果校验参数。
           </p>
         </div>
       )}
