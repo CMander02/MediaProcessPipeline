@@ -195,6 +195,12 @@
           "markdownDescription": "Allows restarting the desktop-managed backend process."
         },
         {
+          "description": "Allows retrying the fixed desktop bootstrap sequence.",
+          "type": "string",
+          "const": "allow-backend-retry",
+          "markdownDescription": "Allows retrying the fixed desktop bootstrap sequence."
+        },
+        {
           "description": "Allows starting the desktop-managed backend process.",
           "type": "string",
           "const": "allow-backend-start",
@@ -211,6 +217,12 @@
           "type": "string",
           "const": "allow-open-external-url",
           "markdownDescription": "Allows opening http(s) source links in the system default browser."
+        },
+        {
+          "description": "Allows opening the desktop-owned log directory.",
+          "type": "string",
+          "const": "allow-open-logs",
+          "markdownDescription": "Allows opening the desktop-owned log directory."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

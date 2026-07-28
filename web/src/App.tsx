@@ -6,6 +6,7 @@ import { SubmitPage } from "@/components/pages/submit-page"
 import { BackendPage } from "@/components/pages/backend-page"
 import { ResultPageWrapper } from "@/components/pages/result-page-wrapper"
 import { SettingsPage } from "@/components/pages/settings-page"
+import { BootstrapPage } from "@/components/pages/bootstrap-page"
 import { TaskQueueDropdown } from "@/components/task-queue-dropdown"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger } from "@/components/ui/select"
@@ -21,6 +22,7 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import { ComputerTerminal01Icon, FolderOpenIcon, PlusSignIcon, Settings01Icon, Search01Icon } from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
 import { APP_VERSION } from "@/generated/app-version"
+import { isBootstrapEntry } from "@/lib/bootstrap-entry"
 
 const SOURCE_ICON_PLATFORMS = new Set([
   "apple_podcast",
@@ -40,6 +42,14 @@ function SourceFilterIcon({ option, className }: { option: SourceFilterOption; c
 }
 
 export default function App() {
+  if (isBootstrapEntry()) {
+    return <BootstrapPage />
+  }
+
+  return <MainApp />
+}
+
+function MainApp() {
   const route = useRoute()
   const [search, setSearch] = useState("")
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>("all")

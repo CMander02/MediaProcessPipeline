@@ -24,6 +24,16 @@ description = "Allows restarting the desktop-managed backend process."
 commands.allow = ["backend_restart"]
 
 [[permission]]
+identifier = "allow-backend-retry"
+description = "Allows retrying the fixed desktop bootstrap sequence."
+commands.allow = ["backend_retry"]
+
+[[permission]]
+identifier = "allow-open-logs"
+description = "Allows opening the desktop-owned log directory."
+commands.allow = ["open_logs"]
+
+[[permission]]
 identifier = "allow-open-external-url"
 description = "Allows opening http(s) source links in the system default browser."
 commands.allow = ["open_external_url"]

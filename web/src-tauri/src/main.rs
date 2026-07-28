@@ -353,6 +353,11 @@ struct BackendStatus {
     pid: Option<u32>,
     url: String,
     message: String,
+    phase: String,
+    error_code: Option<String>,
+    component_id: Option<String>,
+    remediation: Option<String>,
+    local_path: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -408,14 +413,97 @@ impl Default for BackendProcess {
         Self {
             lifecycle: Mutex::new(BackendLifecycle::default()),
             status: Mutex::new(BackendStatus {
-                state: "stopped".to_string(),
+                state: "starting".to_string(),
                 command: BACKEND_COMMAND.to_string(),
                 cwd: "backend".to_string(),
                 pid: None,
                 url: APP_URL.to_string(),
-                message: "Not started.".to_string(),
+                message: "Scanning the installed runtime.".to_string(),
+                phase: "SCANNING".to_string(),
+                error_code: None,
+                component_id: None,
+                remediation: None,
+                local_path: None,
             }),
             logs: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BootstrapFailure {
+    retryable: bool,
+    error_code: &'static str,
+    component_id: &'static str,
+    remediation: &'static str,
+    detail: String,
+    local_path: Option<String>,
+}
+
+impl BootstrapFailure {
+    fn retryable(
+        error_code: &'static str,
+        component_id: &'static str,
+        remediation: &'static str,
+        detail: impl Into<String>,
+        local_path: Option<&Path>,
+    ) -> Self {
+        Self {
+            retryable: true,
+            error_code,
+            component_id,
+            remediation,
+            detail: detail.into(),
+            local_path: local_path.map(|path| path.to_string_lossy().into_owned()),
+        }
+    }
+
+    fn manual(
+        error_code: &'static str,
+        component_id: &'static str,
+        remediation: &'static str,
+        detail: impl Into<String>,
+        local_path: Option<&Path>,
+    ) -> Self {
+        Self {
+            retryable: false,
+            error_code,
+            component_id,
+            remediation,
+            detail: detail.into(),
+            local_path: local_path.map(|path| path.to_string_lossy().into_owned()),
+        }
+    }
+
+    fn phase(&self) -> &'static str {
+        if self.retryable {
+            "FAILED_RETRYABLE"
+        } else {
+            "FAILED_MANUAL"
+        }
+    }
+}
+
+#[derive(Default)]
+struct BootstrapRuntime {
+    layout: Option<RuntimeLayout>,
+    proxy_started: bool,
+    attempt_running: bool,
+    attempt_epoch: u64,
+    bootstrap_complete: bool,
+    shutdown_requested: bool,
+}
+
+struct BootstrapController {
+    runtime: Mutex<BootstrapRuntime>,
+    fallback_log_dir: Option<PathBuf>,
+}
+
+impl BootstrapController {
+    fn new(fallback_log_dir: Option<PathBuf>) -> Self {
+        Self {
+            runtime: Mutex::new(BootstrapRuntime::default()),
+            fallback_log_dir,
         }
     }
 }
@@ -1085,7 +1173,7 @@ fn runtime_layout_from_parts(
     }
 }
 
-fn resolve_runtime_layout(app: &AppHandle) -> Result<RuntimeLayout, String> {
+fn resolve_runtime_layout(app: &AppHandle) -> Result<RuntimeLayout, BootstrapFailure> {
     let policy = RuntimeResolutionPolicy::current_build();
     let explicit_root = env::var_os("MPP_PROJECT_ROOT")
         .filter(|value| !value.is_empty())
@@ -1098,13 +1186,28 @@ fn resolve_runtime_layout(app: &AppHandle) -> Result<RuntimeLayout, String> {
         policy,
         configured_uv.as_ref(),
         explicit_user_root.as_ref(),
-    )?;
+    )
+    .map_err(|error| {
+        BootstrapFailure::manual(
+            "RUNTIME_CONFIGURATION_REJECTED",
+            "desktop-runtime",
+            "Remove unsupported desktop runtime overrides and restart the application.",
+            error,
+            explicit_root.as_deref(),
+        )
+    })?;
     let executable = env::current_exe().ok();
     let resource_dir = app.path().resource_dir().ok();
-    let local_data_dir = app
-        .path()
-        .local_data_dir()
-        .map_err(|error| format!("failed to resolve the Windows local data directory: {error}"))?;
+    let runtime_hint = resource_dir.as_ref().map(|path| path.join("runtime"));
+    let local_data_dir = app.path().local_data_dir().map_err(|error| {
+        BootstrapFailure::retryable(
+            "DATA_ROOT_UNAVAILABLE",
+            "data-root",
+            "Check the Windows user profile and local application data directory, then retry.",
+            format!("failed to resolve the Windows local data directory: {error}"),
+            None,
+        )
+    })?;
     let candidates = RuntimeCandidates {
         explicit_root,
         executable,
@@ -1112,20 +1215,95 @@ fn resolve_runtime_layout(app: &AppHandle) -> Result<RuntimeLayout, String> {
         manifest_dir: Some(PathBuf::from(env!("CARGO_MANIFEST_DIR"))),
         allow_manifest_fallback: cfg!(debug_assertions),
     };
-    let (mode, runtime_root) = resolve_runtime_candidate(&candidates, policy)?;
-    let user = resolve_user_paths(explicit_user_root, local_data_dir)?;
+    let (mode, runtime_root) = resolve_runtime_candidate(&candidates, policy).map_err(|error| {
+        BootstrapFailure::manual(
+            "RUNTIME_INVALID",
+            "desktop-runtime",
+            "Repair or reinstall MediaProcessPipeline, then retry.",
+            error,
+            runtime_hint.as_deref(),
+        )
+    })?;
+    let user = resolve_user_paths(explicit_user_root, local_data_dir).map_err(|error| {
+        BootstrapFailure::retryable(
+            "DATA_ROOT_UNWRITABLE",
+            "data-root",
+            "Choose or restore a writable local data directory, then retry.",
+            error,
+            None,
+        )
+    })?;
     if mode == RuntimeMode::Installed {
-        ensure_user_directories(&user)?;
+        ensure_user_directories(&user).map_err(|error| {
+            BootstrapFailure::retryable(
+                "DATA_ROOT_UNWRITABLE",
+                "data-root",
+                "Restore write access to the local data directory, then retry.",
+                error,
+                Some(&user.root),
+            )
+        })?;
     }
+    let session_token = generate_session_token().map_err(|error| {
+        BootstrapFailure::retryable(
+            "DESKTOP_SESSION_INIT_FAILED",
+            "desktop-session",
+            "Restart the application. If the problem continues, open diagnostics.",
+            error,
+            Some(&user.state_dir),
+        )
+    })?;
+    let proxy_token = generate_session_token().map_err(|error| {
+        BootstrapFailure::retryable(
+            "DESKTOP_SESSION_INIT_FAILED",
+            "desktop-session",
+            "Restart the application. If the problem continues, open diagnostics.",
+            error,
+            Some(&user.state_dir),
+        )
+    })?;
+    let backend_port = select_private_backend_port().map_err(|error| {
+        BootstrapFailure::retryable(
+            "PRIVATE_PORT_UNAVAILABLE",
+            "backend-port",
+            "Close conflicting local services and retry.",
+            error,
+            None,
+        )
+    })?;
     Ok(runtime_layout_from_parts(
         mode,
         runtime_root,
         user,
         configured_uv,
-        generate_session_token()?,
-        generate_session_token()?,
-        select_private_backend_port()?,
+        session_token,
+        proxy_token,
+        backend_port,
     ))
+}
+
+fn current_runtime_layout(app: &AppHandle) -> Result<RuntimeLayout, String> {
+    let controller = app.state::<BootstrapController>();
+    let layout = controller
+        .runtime
+        .lock()
+        .map_err(|_| "bootstrap runtime lock poisoned".to_string())?
+        .layout
+        .clone();
+    layout.ok_or_else(|| "desktop runtime is still being initialized".to_string())
+}
+
+fn bootstrap_controls_status(runtime: &BootstrapRuntime) -> bool {
+    runtime.attempt_running || !runtime.bootstrap_complete || runtime.shutdown_requested
+}
+
+fn bootstrap_controls_status_for_app(app: &AppHandle) -> Result<bool, String> {
+    let controller = app.state::<BootstrapController>();
+    let runtime = controller
+        .runtime
+        .lock()
+        .map_err(|_| "bootstrap runtime lock poisoned".to_string())?;
+    Ok(bootstrap_controls_status(&runtime))
 }
 
 fn path_env(path: &Path) -> OsString {
@@ -1315,6 +1493,30 @@ fn set_status(
     message: impl Into<String>,
     cwd: Option<String>,
 ) -> Result<BackendStatus, String> {
+    let phase = match state_name {
+        "running" | "external" => "APP_READY",
+        "starting" => "STARTING_BACKEND",
+        "error" => "FAILED_RETRYABLE",
+        _ => "READY_TO_START",
+    };
+    set_status_details(
+        app, state_name, pid, message, cwd, phase, None, None, None, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn set_status_details(
+    app: &AppHandle,
+    state_name: &str,
+    pid: Option<u32>,
+    message: impl Into<String>,
+    cwd: Option<String>,
+    phase: &str,
+    error_code: Option<&str>,
+    component_id: Option<&str>,
+    remediation: Option<&str>,
+    local_path: Option<String>,
+) -> Result<BackendStatus, String> {
     let backend = app.state::<BackendProcess>();
     let mut status = backend
         .status
@@ -1329,10 +1531,70 @@ fn set_status(
     if let Some(cwd) = cwd {
         status.cwd = cwd;
     }
+    status.phase = phase.to_string();
+    status.error_code = error_code.map(str::to_string);
+    status.component_id = component_id.map(str::to_string);
+    status.remediation = remediation.map(str::to_string);
+    status.local_path = local_path;
 
     let next = status.clone();
     let _ = app.emit("mpp-backend:status", &next);
     Ok(next)
+}
+
+fn set_bootstrap_phase(
+    app: &AppHandle,
+    phase: &str,
+    message: impl Into<String>,
+    local_path: Option<&Path>,
+) -> Result<BackendStatus, String> {
+    let current = current_status(app)?;
+    let state = if phase == "APP_READY" {
+        "running"
+    } else if phase == "READY_TO_START" {
+        "stopped"
+    } else {
+        "starting"
+    };
+    set_status_details(
+        app,
+        state,
+        current.pid,
+        message,
+        None,
+        phase,
+        None,
+        None,
+        None,
+        local_path.map(|path| path.to_string_lossy().into_owned()),
+    )
+}
+
+fn set_bootstrap_failure(
+    app: &AppHandle,
+    failure: &BootstrapFailure,
+) -> Result<BackendStatus, String> {
+    append_log(
+        app,
+        "error",
+        format!(
+            "{} [{}]: {}",
+            failure.error_code, failure.component_id, failure.detail
+        ),
+    );
+    let pid = current_status(app)?.pid;
+    set_status_details(
+        app,
+        "error",
+        pid,
+        &failure.detail,
+        None,
+        failure.phase(),
+        Some(failure.error_code),
+        Some(failure.component_id),
+        Some(failure.remediation),
+        failure.local_path.clone(),
+    )
 }
 
 fn current_status(app: &AppHandle) -> Result<BackendStatus, String> {
@@ -3260,8 +3522,7 @@ fn stop_managed_backend_until(
         .checked_sub(PROCESS_FORCE_TIMEOUT)
         .unwrap_or(deadline);
     let graceful_request = if try_graceful && Instant::now() < deadline {
-        let layout = app.state::<RuntimeLayout>();
-        request_private_backend_shutdown(&layout)
+        current_runtime_layout(app).and_then(|layout| request_private_backend_shutdown(&layout))
     } else {
         Err("graceful shutdown window is unavailable".to_string())
     };
@@ -3351,6 +3612,36 @@ fn fail_managed_backend(
     )
 }
 
+fn cancel_managed_backend_generation(
+    app: &AppHandle,
+    generation: u64,
+    reason: &str,
+) -> Result<bool, String> {
+    let backend = app.state::<BackendProcess>();
+    let mut lifecycle = backend
+        .lifecycle
+        .lock()
+        .map_err(|_| "backend lifecycle lock poisoned".to_string())?;
+    if !managed_generation_is_current(&lifecycle, generation) {
+        return Ok(false);
+    }
+
+    append_log(app, "system", reason);
+    let replacement_generation = advance_lifecycle_generation(&mut lifecycle);
+    let mut managed = lifecycle
+        .managed
+        .take()
+        .expect("current managed generation requires a process");
+    managed.generation = replacement_generation;
+    let deadline = Instant::now() + BACKEND_SHUTDOWN_TIMEOUT;
+    if let Err(error) = stop_managed_backend_until(app, &mut managed, deadline, true) {
+        lifecycle.managed = Some(managed);
+        return Err(error);
+    }
+    drop(managed);
+    Ok(true)
+}
+
 fn start_backend_locked(
     app: &AppHandle,
     lifecycle: &mut BackendLifecycle,
@@ -3361,7 +3652,7 @@ fn start_backend_locked(
         let pid = managed.child.id();
         let generation = managed.generation;
         let probe = {
-            let layout = app.state::<RuntimeLayout>();
+            let layout = current_runtime_layout(app)?;
             probe_backend(&layout.session_token, layout.backend_port)
         };
         let status = match probe {
@@ -3397,7 +3688,7 @@ fn start_backend_locked(
         return Ok((status, lifecycle.generation));
     }
 
-    let layout = app.state::<RuntimeLayout>();
+    let layout = current_runtime_layout(app)?;
     let cwd = layout.backend_dir.to_string_lossy().into_owned();
     let backend_port = layout.backend_port;
     match probe_backend(&layout.session_token, layout.backend_port) {
@@ -3457,65 +3748,109 @@ fn start_backend(app: &AppHandle) -> Result<(BackendStatus, u64), String> {
     start_backend_locked(app, &mut lifecycle)
 }
 
+#[derive(Debug)]
+enum BackendWaitFailure {
+    Internal(String),
+    ProcessExited(&'static str),
+    Incompatible(String),
+    Occupied(String),
+    Timeout,
+}
+
+impl std::fmt::Display for BackendWaitFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Internal(message) => formatter.write_str(message),
+            Self::ProcessExited(message) => formatter.write_str(message),
+            Self::Incompatible(reason) => {
+                write!(
+                    formatter,
+                    "backend health contract is incompatible: {reason}"
+                )
+            }
+            Self::Occupied(reason) => {
+                write!(
+                    formatter,
+                    "private backend port is occupied by an untrusted service: {reason}"
+                )
+            }
+            Self::Timeout => {
+                formatter.write_str("backend did not become healthy within the wait window")
+            }
+        }
+    }
+}
+
 fn wait_for_backend_ready(
     app: &AppHandle,
     generation: u64,
     timeout: Duration,
-) -> Result<bool, String> {
+) -> Result<bool, BackendWaitFailure> {
     let deadline = Instant::now() + timeout;
-    let backend_port = app.state::<RuntimeLayout>().backend_port;
+    let backend_port = current_runtime_layout(app)
+        .map_err(BackendWaitFailure::Internal)?
+        .backend_port;
 
     loop {
         {
             let backend = app.state::<BackendProcess>();
-            let mut lifecycle = backend
-                .lifecycle
-                .lock()
-                .map_err(|_| "backend lifecycle lock poisoned".to_string())?;
+            let mut lifecycle = backend.lifecycle.lock().map_err(|_| {
+                BackendWaitFailure::Internal("backend lifecycle lock poisoned".to_string())
+            })?;
             if !managed_generation_is_current(&lifecycle, generation) {
                 return Ok(false);
             }
-            if refresh_child_exit_locked(app, &mut lifecycle)?.is_some() {
-                return Err("backend exited before it became healthy".to_string());
+            if refresh_child_exit_locked(app, &mut lifecycle)
+                .map_err(BackendWaitFailure::Internal)?
+                .is_some()
+            {
+                return Err(BackendWaitFailure::ProcessExited(
+                    "backend exited before it became healthy",
+                ));
             }
         }
 
         let probe = {
-            let layout = app.state::<RuntimeLayout>();
+            let layout = current_runtime_layout(app).map_err(BackendWaitFailure::Internal)?;
             probe_backend(&layout.session_token, layout.backend_port)
         };
         match probe {
             BackendProbe::Compatible => {
                 let backend = app.state::<BackendProcess>();
-                let mut lifecycle = backend
-                    .lifecycle
-                    .lock()
-                    .map_err(|_| "backend lifecycle lock poisoned".to_string())?;
+                let mut lifecycle = backend.lifecycle.lock().map_err(|_| {
+                    BackendWaitFailure::Internal("backend lifecycle lock poisoned".to_string())
+                })?;
                 if !managed_generation_is_current(&lifecycle, generation) {
                     return Ok(false);
                 }
-                if refresh_child_exit_locked(app, &mut lifecycle)?.is_some() {
-                    return Err("backend exited during its health check".to_string());
+                if refresh_child_exit_locked(app, &mut lifecycle)
+                    .map_err(BackendWaitFailure::Internal)?
+                    .is_some()
+                {
+                    return Err(BackendWaitFailure::ProcessExited(
+                        "backend exited during its health check",
+                    ));
                 }
                 let pid = lifecycle.managed.as_ref().map(|managed| managed.child.id());
                 append_log(app, "system", "Backend health contract passed.");
-                let _ = set_status(app, "running", pid, "Backend is ready.", None)?;
+                let _ = set_status(app, "running", pid, "Backend is ready.", None)
+                    .map_err(BackendWaitFailure::Internal)?;
                 return Ok(true);
             }
             BackendProbe::Unavailable => {}
             BackendProbe::Incompatible(reason) => {
-                return Err(format!("backend health contract is incompatible: {reason}"));
+                return Err(BackendWaitFailure::Incompatible(reason));
             }
             BackendProbe::Occupied(reason) => {
-                return Err(format!(
-                    "private backend port {backend_port} is occupied by an untrusted service: {reason}"
-                ));
+                return Err(BackendWaitFailure::Occupied(format!(
+                    "port {backend_port}: {reason}"
+                )));
             }
         }
 
         if Instant::now() >= deadline {
             append_log(app, "system", "Backend health check timed out.");
-            return Err("backend did not become healthy within the wait window".to_string());
+            return Err(BackendWaitFailure::Timeout);
         }
         thread::sleep(
             deadline
@@ -3601,6 +3936,7 @@ fn force_backend_shutdown(state: &BackendProcess) {
 }
 
 fn stop_backend_on_close(app: &AppHandle) {
+    cancel_bootstrap_for_shutdown(app);
     if stop_backend(app).is_err() {
         let state = app.state::<BackendProcess>();
         force_backend_shutdown(&state);
@@ -3609,6 +3945,9 @@ fn stop_backend_on_close(app: &AppHandle) {
 
 #[tauri::command]
 fn backend_get_status(app: AppHandle) -> Result<BackendStatus, String> {
+    if bootstrap_controls_status_for_app(&app)? {
+        return current_status(&app);
+    }
     let backend = app.state::<BackendProcess>();
     let mut lifecycle = backend
         .lifecycle
@@ -3621,7 +3960,7 @@ fn backend_get_status(app: AppHandle) -> Result<BackendStatus, String> {
         let pid = managed.child.id();
         let generation = managed.generation;
         let probe = {
-            let layout = app.state::<RuntimeLayout>();
+            let layout = current_runtime_layout(&app)?;
             probe_backend(&layout.session_token, layout.backend_port)
         };
         return match probe {
@@ -3662,7 +4001,7 @@ fn backend_get_status(app: AppHandle) -> Result<BackendStatus, String> {
 
     if status.state == "stopped" {
         let (probe, backend_port) = {
-            let layout = app.state::<RuntimeLayout>();
+            let layout = current_runtime_layout(&app)?;
             (
                 probe_backend(&layout.session_token, layout.backend_port),
                 layout.backend_port,
@@ -3729,8 +4068,27 @@ fn backend_get_logs(app: AppHandle) -> Result<Vec<BackendLogEntry>, String> {
         .map_err(|_| "backend logs lock poisoned".to_string())
 }
 
+fn ensure_backend_command_available(app: &AppHandle) -> Result<(), String> {
+    let controller = app.state::<BootstrapController>();
+    let runtime = controller
+        .runtime
+        .lock()
+        .map_err(|_| "bootstrap runtime lock poisoned".to_string())?;
+    if runtime.shutdown_requested {
+        return Err("the desktop application is shutting down".to_string());
+    }
+    if !runtime.bootstrap_complete || runtime.attempt_running {
+        return Err(
+            "backend lifecycle commands are unavailable until desktop bootstrap completes"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn backend_start(app: AppHandle) -> Result<BackendStatus, String> {
+    ensure_backend_command_available(&app)?;
     let (status, generation) = start_backend(&app)?;
     if status.state == "starting" {
         let app_for_wait = app.clone();
@@ -3741,7 +4099,7 @@ fn backend_start(app: AppHandle) -> Result<BackendStatus, String> {
                 let _ = fail_managed_backend(
                     &app_for_wait,
                     generation,
-                    error,
+                    error.to_string(),
                     "Backend failed to become ready.",
                 );
             }
@@ -3752,11 +4110,13 @@ fn backend_start(app: AppHandle) -> Result<BackendStatus, String> {
 
 #[tauri::command]
 fn backend_stop(app: AppHandle) -> Result<BackendStatus, String> {
+    ensure_backend_command_available(&app)?;
     stop_backend(&app)
 }
 
 #[tauri::command]
 fn backend_restart(app: AppHandle) -> Result<BackendStatus, String> {
+    ensure_backend_command_available(&app)?;
     let (status, generation) = restart_backend(&app)?;
     if status.state == "starting" {
         let app_for_wait = app.clone();
@@ -3767,13 +4127,610 @@ fn backend_restart(app: AppHandle) -> Result<BackendStatus, String> {
                 let _ = fail_managed_backend(
                     &app_for_wait,
                     generation,
-                    error,
+                    error.to_string(),
                     "Backend failed to become ready.",
                 );
             }
         });
     }
     Ok(status)
+}
+
+fn bootstrap_internal_failure(error: impl Into<String>) -> BootstrapFailure {
+    BootstrapFailure::manual(
+        "DESKTOP_BOOTSTRAP_FAILED",
+        "desktop-bootstrap",
+        "Open diagnostics, restart the application, and retry.",
+        error,
+        None,
+    )
+}
+
+fn bootstrap_wait_failure(error: BackendWaitFailure, layout: &RuntimeLayout) -> BootstrapFailure {
+    let local_path = Some(layout.backend_dir.as_path());
+    match error {
+        BackendWaitFailure::ProcessExited(detail) => BootstrapFailure::retryable(
+            "BACKEND_EXITED",
+            "python-runtime",
+            "Open the logs, correct the reported runtime or configuration error, and retry.",
+            detail,
+            local_path,
+        ),
+        BackendWaitFailure::Incompatible(detail) => BootstrapFailure::manual(
+            "BACKEND_HEALTH_INVALID",
+            "backend-health",
+            "Repair or reinstall the matching desktop runtime, then retry.",
+            detail,
+            local_path,
+        ),
+        BackendWaitFailure::Occupied(detail) => BootstrapFailure::retryable(
+            "PRIVATE_PORT_IN_USE",
+            "backend-port",
+            "Close the conflicting local process and retry.",
+            detail,
+            None,
+        ),
+        BackendWaitFailure::Timeout => BootstrapFailure::retryable(
+            "BACKEND_START_TIMEOUT",
+            "backend-health",
+            "Open the logs, check runtime initialization and network access, then retry.",
+            BackendWaitFailure::Timeout.to_string(),
+            local_path,
+        ),
+        BackendWaitFailure::Internal(detail) => bootstrap_internal_failure(detail),
+    }
+}
+
+fn prepare_bootstrap_runtime(app: &AppHandle) -> Result<RuntimeLayout, BootstrapFailure> {
+    let controller = app.state::<BootstrapController>();
+    if let Some(layout) = controller
+        .runtime
+        .lock()
+        .map_err(|_| bootstrap_internal_failure("bootstrap runtime lock poisoned"))?
+        .layout
+        .clone()
+    {
+        return Ok(layout);
+    }
+
+    let layout = resolve_runtime_layout(app)?;
+    let mut runtime = controller
+        .runtime
+        .lock()
+        .map_err(|_| bootstrap_internal_failure("bootstrap runtime lock poisoned"))?;
+    if runtime.layout.is_none() {
+        runtime.layout = Some(layout.clone());
+    }
+    Ok(runtime.layout.clone().unwrap_or(layout))
+}
+
+fn ensure_bootstrap_proxy(
+    app: &AppHandle,
+    layout: &RuntimeLayout,
+    attempt_epoch: u64,
+) -> Result<bool, BootstrapFailure> {
+    let controller = app.state::<BootstrapController>();
+    let mut runtime = controller
+        .runtime
+        .lock()
+        .map_err(|_| bootstrap_internal_failure("bootstrap runtime lock poisoned"))?;
+    if !bootstrap_attempt_is_current(&runtime, attempt_epoch) {
+        return Ok(false);
+    }
+    if runtime.proxy_started {
+        return Ok(true);
+    }
+
+    let listeners = bind_desktop_proxy_at(BACKEND_PORT).map_err(|error| {
+        BootstrapFailure::retryable(
+            "PORT_IN_USE",
+            "desktop-proxy",
+            "Close the process using localhost port 18000 and retry.",
+            error,
+            None,
+        )
+    })?;
+    start_desktop_proxy(listeners, layout.clone());
+    runtime.proxy_started = true;
+    Ok(true)
+}
+
+fn complete_bootstrap_navigation(
+    app: &AppHandle,
+    layout: &RuntimeLayout,
+    attempt_epoch: u64,
+) -> Result<BootstrapAttemptOutcome, BootstrapFailure> {
+    let controller = app.state::<BootstrapController>();
+    let mut runtime = controller
+        .runtime
+        .lock()
+        .map_err(|_| bootstrap_internal_failure("bootstrap runtime lock poisoned"))?;
+    if !bootstrap_attempt_is_current(&runtime, attempt_epoch) {
+        return Ok(BootstrapAttemptOutcome::Cancelled);
+    }
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        BootstrapFailure::manual(
+            "WEBVIEW_UNAVAILABLE",
+            "desktop-webview",
+            "Restart the application. Repair the WebView2 runtime if the problem continues.",
+            "the main desktop WebView is unavailable",
+            None,
+        )
+    })?;
+    let proxy_cookie = Cookie::build((DESKTOP_PROXY_COOKIE, layout.proxy_token.clone()))
+        .domain(DESKTOP_API_HOST)
+        .path("/")
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .secure(false)
+        .build();
+    window.set_cookie(proxy_cookie).map_err(|error| {
+        BootstrapFailure::retryable(
+            "PROXY_SESSION_FAILED",
+            "desktop-proxy",
+            "Restart the application and retry.",
+            format!("failed to install desktop proxy cookie: {error}"),
+            None,
+        )
+    })?;
+    window
+        .navigate(packaged_app_navigation_url().map_err(bootstrap_internal_failure)?)
+        .map_err(|error| {
+            BootstrapFailure::retryable(
+                "APP_NAVIGATION_FAILED",
+                "desktop-webview",
+                "Restart the application and retry.",
+                format!("failed to load the packaged app UI: {error}"),
+                None,
+            )
+        })?;
+    set_bootstrap_phase(
+        app,
+        "APP_READY",
+        "The desktop application is ready.",
+        Some(&layout.runtime_root),
+    )
+    .map_err(bootstrap_internal_failure)?;
+    runtime.bootstrap_complete = true;
+    Ok(BootstrapAttemptOutcome::Completed)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BootstrapAttemptOutcome {
+    Completed,
+    Cancelled,
+}
+
+fn next_bootstrap_epoch(current: u64) -> u64 {
+    next_lifecycle_generation(current)
+}
+
+fn bootstrap_attempt_is_current(runtime: &BootstrapRuntime, attempt_epoch: u64) -> bool {
+    runtime.attempt_running && runtime.attempt_epoch == attempt_epoch && !runtime.shutdown_requested
+}
+
+fn bootstrap_attempt_is_current_for_app(
+    app: &AppHandle,
+    attempt_epoch: u64,
+) -> Result<bool, BootstrapFailure> {
+    let controller = app.state::<BootstrapController>();
+    let runtime = controller
+        .runtime
+        .lock()
+        .map_err(|_| bootstrap_internal_failure("bootstrap runtime lock poisoned"))?;
+    Ok(bootstrap_attempt_is_current(&runtime, attempt_epoch))
+}
+
+fn set_bootstrap_phase_for_attempt(
+    app: &AppHandle,
+    attempt_epoch: u64,
+    phase: &str,
+    message: impl Into<String>,
+    local_path: Option<&Path>,
+) -> Result<bool, BootstrapFailure> {
+    let controller = app.state::<BootstrapController>();
+    let runtime = controller
+        .runtime
+        .lock()
+        .map_err(|_| bootstrap_internal_failure("bootstrap runtime lock poisoned"))?;
+    if !bootstrap_attempt_is_current(&runtime, attempt_epoch) {
+        return Ok(false);
+    }
+    set_bootstrap_phase(app, phase, message, local_path).map_err(bootstrap_internal_failure)?;
+    Ok(true)
+}
+
+fn publish_bootstrap_failure_for_attempt(
+    app: &AppHandle,
+    attempt_epoch: u64,
+    failure: &BootstrapFailure,
+) -> Result<bool, String> {
+    let controller = app.state::<BootstrapController>();
+    let runtime = controller
+        .runtime
+        .lock()
+        .map_err(|_| "bootstrap runtime lock poisoned".to_string())?;
+    if !bootstrap_attempt_is_current(&runtime, attempt_epoch) {
+        return Ok(false);
+    }
+    set_bootstrap_failure(app, failure)?;
+    Ok(true)
+}
+
+fn run_bootstrap_attempt(
+    app: &AppHandle,
+    attempt_epoch: u64,
+) -> Result<BootstrapAttemptOutcome, BootstrapFailure> {
+    if !bootstrap_attempt_is_current_for_app(app, attempt_epoch)? {
+        return Ok(BootstrapAttemptOutcome::Cancelled);
+    }
+    let layout = prepare_bootstrap_runtime(app)?;
+    if !ensure_bootstrap_proxy(app, &layout, attempt_epoch)? {
+        return Ok(BootstrapAttemptOutcome::Cancelled);
+    }
+    if !set_bootstrap_phase_for_attempt(
+        app,
+        attempt_epoch,
+        "READY_TO_START",
+        "The desktop runtime is ready to start.",
+        Some(&layout.runtime_root),
+    )? {
+        return Ok(BootstrapAttemptOutcome::Cancelled);
+    }
+    if !set_bootstrap_phase_for_attempt(
+        app,
+        attempt_epoch,
+        "STARTING_BACKEND",
+        "Starting the local backend.",
+        Some(&layout.backend_dir),
+    )? {
+        return Ok(BootstrapAttemptOutcome::Cancelled);
+    }
+
+    let (status, generation) = start_backend(app).map_err(|error| {
+        BootstrapFailure::retryable(
+            "BACKEND_START_FAILED",
+            "python-runtime",
+            "Open the logs, verify the bundled runtime, and retry.",
+            error,
+            Some(&layout.backend_dir),
+        )
+    })?;
+    if !bootstrap_attempt_is_current_for_app(app, attempt_epoch)? {
+        let _ = cancel_managed_backend_generation(
+            app,
+            generation,
+            "desktop bootstrap was cancelled after backend process creation",
+        );
+        return Ok(BootstrapAttemptOutcome::Cancelled);
+    }
+    if status.state == "starting" {
+        if !set_bootstrap_phase_for_attempt(
+            app,
+            attempt_epoch,
+            "WAITING_HEALTH",
+            "Waiting for the authenticated backend health check.",
+            Some(&layout.backend_dir),
+        )? {
+            return Ok(BootstrapAttemptOutcome::Cancelled);
+        }
+        match wait_for_backend_ready(app, generation, Duration::from_secs(90)) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Ok(BootstrapAttemptOutcome::Cancelled);
+            }
+            Err(error) => {
+                if !bootstrap_attempt_is_current_for_app(app, attempt_epoch)? {
+                    return Ok(BootstrapAttemptOutcome::Cancelled);
+                }
+                let failure = bootstrap_wait_failure(error, &layout);
+                let _ = fail_managed_backend(
+                    app,
+                    generation,
+                    &failure.detail,
+                    "Backend failed to become ready.",
+                );
+                return Err(failure);
+            }
+        }
+    } else if status.state != "running" {
+        return Err(BootstrapFailure::retryable(
+            "BACKEND_START_FAILED",
+            "python-runtime",
+            "Open the logs, verify the bundled runtime, and retry.",
+            status.message,
+            Some(&layout.backend_dir),
+        ));
+    }
+
+    complete_bootstrap_navigation(app, &layout, attempt_epoch)
+}
+
+fn finish_bootstrap_attempt(app: &AppHandle, attempt_epoch: u64) {
+    let controller = app.state::<BootstrapController>();
+    let mut runtime = controller
+        .runtime
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    end_bootstrap_attempt(&mut runtime, attempt_epoch);
+}
+
+fn begin_bootstrap_attempt(runtime: &mut BootstrapRuntime) -> Option<u64> {
+    if runtime.attempt_running || runtime.bootstrap_complete || runtime.shutdown_requested {
+        return None;
+    }
+    runtime.attempt_epoch = next_bootstrap_epoch(runtime.attempt_epoch);
+    runtime.attempt_running = true;
+    Some(runtime.attempt_epoch)
+}
+
+fn end_bootstrap_attempt(runtime: &mut BootstrapRuntime, attempt_epoch: u64) {
+    if runtime.attempt_epoch == attempt_epoch {
+        runtime.attempt_running = false;
+    }
+}
+
+fn cancel_bootstrap_runtime_for_shutdown(runtime: &mut BootstrapRuntime) {
+    runtime.shutdown_requested = true;
+    runtime.bootstrap_complete = false;
+    runtime.attempt_running = false;
+    runtime.attempt_epoch = next_bootstrap_epoch(runtime.attempt_epoch);
+}
+
+fn cancel_bootstrap_for_shutdown(app: &AppHandle) {
+    let controller = app.state::<BootstrapController>();
+    let mut runtime = controller
+        .runtime
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cancel_bootstrap_runtime_for_shutdown(&mut runtime);
+}
+
+fn schedule_bootstrap_attempt(app: &AppHandle) -> Result<BackendStatus, String> {
+    let controller = app.state::<BootstrapController>();
+    let attempt_epoch = {
+        let mut runtime = controller
+            .runtime
+            .lock()
+            .map_err(|_| "bootstrap runtime lock poisoned".to_string())?;
+        let Some(attempt_epoch) = begin_bootstrap_attempt(&mut runtime) else {
+            return current_status(app);
+        };
+        attempt_epoch
+    };
+
+    match set_bootstrap_phase_for_attempt(
+        app,
+        attempt_epoch,
+        "SCANNING",
+        "Scanning the installed runtime.",
+        None,
+    ) {
+        Ok(true) => {}
+        Ok(false) => {
+            finish_bootstrap_attempt(app, attempt_epoch);
+            return current_status(app);
+        }
+        Err(error) => {
+            finish_bootstrap_attempt(app, attempt_epoch);
+            return Err(error.detail);
+        }
+    }
+    let app_for_attempt = app.clone();
+    thread::spawn(move || {
+        if let Err(failure) = run_bootstrap_attempt(&app_for_attempt, attempt_epoch) {
+            let _ =
+                publish_bootstrap_failure_for_attempt(&app_for_attempt, attempt_epoch, &failure);
+        }
+        finish_bootstrap_attempt(&app_for_attempt, attempt_epoch);
+    });
+    current_status(app)
+}
+
+#[tauri::command]
+fn backend_retry(app: AppHandle) -> Result<BackendStatus, String> {
+    schedule_bootstrap_attempt(&app)
+}
+
+fn bootstrap_log_directory(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Ok(layout) = current_runtime_layout(app) {
+        return Ok(layout.user.log_dir);
+    }
+    app.state::<BootstrapController>()
+        .fallback_log_dir
+        .clone()
+        .ok_or_else(|| "the local desktop log directory is unavailable".to_string())
+}
+
+fn open_local_path(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt, ptr};
+        use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+
+        let operation = OsStr::new("open")
+            .encode_wide()
+            .chain(once(0))
+            .collect::<Vec<_>>();
+        let target = path
+            .as_os_str()
+            .encode_wide()
+            .chain(once(0))
+            .collect::<Vec<_>>();
+        let result = unsafe {
+            ShellExecuteW(
+                ptr::null_mut(),
+                operation.as_ptr(),
+                target.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        let result_code = result as isize;
+        if result_code <= 32 {
+            return Err(format!(
+                "Windows could not open the log directory (ShellExecuteW code {result_code})"
+            ));
+        }
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(path)
+            .spawn()
+            .map_err(|error| format!("failed to open the log directory: {error}"))?;
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map_err(|error| format!("failed to open the log directory: {error}"))?;
+        return Ok(());
+    }
+}
+
+fn validate_bootstrap_diagnostics_target(path: &Path) -> Result<(), String> {
+    validate_existing_path_chain(path, "desktop bootstrap diagnostics file")?;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata_is_link_or_reparse(&metadata) => Err(format!(
+            "desktop bootstrap diagnostics file must not be a symlink or reparse point: {}",
+            path.display()
+        )),
+        Ok(metadata) if !metadata.is_file() => Err(format!(
+            "desktop bootstrap diagnostics target must be a regular file: {}",
+            path.display()
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "failed to inspect desktop bootstrap diagnostics target {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn write_bootstrap_diagnostics(log_dir: &Path, snapshot: &[u8]) -> Result<(), String> {
+    validate_existing_path_chain(log_dir, "desktop log directory")?;
+    fs::create_dir_all(log_dir).map_err(|error| {
+        format!(
+            "failed to create log directory {}: {error}",
+            log_dir.display()
+        )
+    })?;
+    validate_existing_path_chain(log_dir, "desktop log directory")?;
+    let log_metadata = fs::symlink_metadata(log_dir).map_err(|error| {
+        format!(
+            "failed to inspect desktop log directory {}: {error}",
+            log_dir.display()
+        )
+    })?;
+    if metadata_is_link_or_reparse(&log_metadata) || !log_metadata.is_dir() {
+        return Err(format!(
+            "desktop log directory must be a real directory: {}",
+            log_dir.display()
+        ));
+    }
+
+    let destination = log_dir.join("desktop-bootstrap.json");
+    validate_bootstrap_diagnostics_target(&destination)?;
+    let temporary_name = format!(
+        ".desktop-bootstrap-{}.tmp",
+        generate_session_token()
+            .map_err(|error| format!("failed to create diagnostics file identity: {error}"))?
+    );
+    let temporary = log_dir.join(temporary_name);
+    let write_result = (|| -> Result<(), String> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| {
+                format!(
+                    "failed to create temporary desktop diagnostics file {}: {error}",
+                    temporary.display()
+                )
+            })?;
+        file.write_all(snapshot).map_err(|error| {
+            format!(
+                "failed to write temporary desktop diagnostics file {}: {error}",
+                temporary.display()
+            )
+        })?;
+        file.flush().map_err(|error| {
+            format!(
+                "failed to flush temporary desktop diagnostics file {}: {error}",
+                temporary.display()
+            )
+        })?;
+        file.sync_all().map_err(|error| {
+            format!(
+                "failed to persist temporary desktop diagnostics file {}: {error}",
+                temporary.display()
+            )
+        })?;
+        drop(file);
+
+        validate_existing_path_chain(log_dir, "desktop log directory")?;
+        let log_metadata = fs::symlink_metadata(log_dir).map_err(|error| {
+            format!(
+                "failed to re-inspect desktop log directory {}: {error}",
+                log_dir.display()
+            )
+        })?;
+        if metadata_is_link_or_reparse(&log_metadata) || !log_metadata.is_dir() {
+            return Err(format!(
+                "desktop log directory changed before diagnostics replacement: {}",
+                log_dir.display()
+            ));
+        }
+        validate_bootstrap_diagnostics_target(&destination)?;
+        match fs::symlink_metadata(&destination) {
+            Ok(_) => fs::remove_file(&destination).map_err(|error| {
+                format!(
+                    "failed to remove the previous desktop diagnostics file {}: {error}",
+                    destination.display()
+                )
+            })?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect the previous desktop diagnostics file {}: {error}",
+                    destination.display()
+                ));
+            }
+        }
+        fs::rename(&temporary, &destination).map_err(|error| {
+            format!(
+                "failed to replace desktop diagnostics file {}: {error}",
+                destination.display()
+            )
+        })?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    write_result
+}
+
+#[tauri::command]
+fn open_logs(app: AppHandle) -> Result<(), String> {
+    let log_dir = bootstrap_log_directory(&app)?;
+    let status = current_status(&app)?;
+    let logs = backend_get_logs(app.clone())?;
+    let snapshot = serde_json::to_vec_pretty(&serde_json::json!({
+        "status": status,
+        "logs": logs,
+    }))
+    .map_err(|error| format!("failed to serialize desktop diagnostics: {error}"))?;
+    write_bootstrap_diagnostics(&log_dir, &snapshot)?;
+    open_local_path(&log_dir)
 }
 
 fn validated_external_url(value: &str) -> Result<String, String> {
@@ -3853,59 +4810,31 @@ fn open_external_url(url: String) -> Result<(), String> {
 }
 
 fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn Error>> {
-    let layout = resolve_runtime_layout(&app.handle().clone()).map_err(boxed_error)?;
-    let proxy_listeners = bind_desktop_proxy_at(BACKEND_PORT).map_err(boxed_error)?;
-    app.manage(layout.clone());
+    let fallback_log_dir = app
+        .path()
+        .local_data_dir()
+        .ok()
+        .map(|path| path.join("MediaProcessPipeline").join("logs"));
     app.manage(BackendProcess::default());
-    start_desktop_proxy(proxy_listeners, layout.clone());
+    app.manage(BootstrapController::new(fallback_log_dir));
+    let bootstrap_url = packaged_bootstrap_navigation_url().map_err(boxed_error)?;
+    let _window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(bootstrap_url))
+        .on_navigation(trusted_app_navigation)
+        .on_new_window(|url, _features| {
+            let _ = open_external_url(url.to_string());
+            NewWindowResponse::Deny
+        })
+        .title("MediaProcessPipeline")
+        .inner_size(1440.0, 980.0)
+        .min_inner_size(1024.0, 720.0)
+        .build()
+        .map_err(|err| boxed_error(format!("failed to create app window: {err}")))?;
+
     let app_handle = app.handle().clone();
-
-    let (status, generation) = start_backend(&app_handle).map_err(boxed_error)?;
-    if status.state == "starting" {
-        if let Err(error) = wait_for_backend_ready(&app_handle, generation, Duration::from_secs(90))
-        {
-            let _ = fail_managed_backend(
-                &app_handle,
-                generation,
-                &error,
-                "Backend failed to become ready.",
-            );
-            return Err(boxed_error(error));
-        }
+    if let Err(error) = schedule_bootstrap_attempt(&app_handle) {
+        let failure = bootstrap_internal_failure(error);
+        let _ = set_bootstrap_failure(&app_handle, &failure);
     }
-
-    let window = WebviewWindowBuilder::new(
-        app,
-        "main",
-        WebviewUrl::External(
-            url::Url::parse("about:blank").expect("about:blank is a valid bootstrap URL"),
-        ),
-    )
-    .on_navigation(trusted_app_navigation)
-    .on_new_window(|url, _features| {
-        let _ = open_external_url(url.to_string());
-        NewWindowResponse::Deny
-    })
-    .title("MediaProcessPipeline")
-    .inner_size(1440.0, 980.0)
-    .min_inner_size(1024.0, 720.0)
-    .build()
-    .map_err(|err| boxed_error(format!("failed to create app window: {err}")))?;
-    let proxy_cookie = Cookie::build((DESKTOP_PROXY_COOKIE, layout.proxy_token))
-        .domain(DESKTOP_API_HOST)
-        .path("/")
-        .http_only(true)
-        .same_site(SameSite::Lax)
-        .secure(false)
-        .build();
-    // The blank bootstrap page guarantees that app JavaScript cannot race the
-    // private cookie installation on its first API request.
-    window
-        .set_cookie(proxy_cookie)
-        .map_err(|error| boxed_error(format!("failed to install desktop proxy cookie: {error}")))?;
-    window
-        .navigate(packaged_app_navigation_url().map_err(boxed_error)?)
-        .map_err(|error| boxed_error(format!("failed to load the packaged app UI: {error}")))?;
 
     Ok(())
 }
@@ -3923,6 +4852,12 @@ fn packaged_app_navigation_url() -> Result<url::Url, String> {
         env!("MPP_RUNTIME_MANIFEST_SHA256")
     ))
     .map_err(|error| format!("packaged app URL is invalid: {error}"))
+}
+
+fn packaged_bootstrap_navigation_url() -> Result<url::Url, String> {
+    let mut url = packaged_app_navigation_url()?;
+    url.query_pairs_mut().append_pair("bootstrap", "1");
+    Ok(url)
 }
 
 fn trusted_app_navigation(url: &url::Url) -> bool {
@@ -3946,6 +4881,8 @@ fn main() {
             backend_start,
             backend_stop,
             backend_restart,
+            backend_retry,
+            open_logs,
             open_external_url
         ])
         .setup(setup_app)
@@ -5612,6 +6549,181 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_failure_phases_and_status_fields_are_stable() {
+        let retryable = BootstrapFailure::retryable(
+            "PORT_IN_USE",
+            "desktop-proxy",
+            "Close the conflicting process and retry.",
+            "localhost port 18000 is occupied",
+            Some(Path::new(
+                "C:/Users/test/AppData/Local/MediaProcessPipeline",
+            )),
+        );
+        let manual = BootstrapFailure::manual(
+            "RUNTIME_INVALID",
+            "desktop-runtime",
+            "Repair the installation.",
+            "runtime manifest is invalid",
+            None,
+        );
+        assert_eq!(retryable.phase(), "FAILED_RETRYABLE");
+        assert_eq!(manual.phase(), "FAILED_MANUAL");
+        assert_eq!(retryable.error_code, "PORT_IN_USE");
+        assert_eq!(manual.component_id, "desktop-runtime");
+
+        let status = BackendStatus {
+            state: "error".to_string(),
+            command: BACKEND_COMMAND.to_string(),
+            cwd: "backend".to_string(),
+            pid: None,
+            url: APP_URL.to_string(),
+            message: retryable.detail.clone(),
+            phase: retryable.phase().to_string(),
+            error_code: Some(retryable.error_code.to_string()),
+            component_id: Some(retryable.component_id.to_string()),
+            remediation: Some(retryable.remediation.to_string()),
+            local_path: retryable.local_path.clone(),
+        };
+        let serialized = serde_json::to_value(status).expect("status should serialize");
+        assert_eq!(serialized["phase"], "FAILED_RETRYABLE");
+        assert_eq!(serialized["error_code"], "PORT_IN_USE");
+        assert_eq!(serialized["component_id"], "desktop-proxy");
+        assert!(serialized["remediation"].as_str().is_some());
+        assert!(serialized["local_path"].as_str().is_some());
+    }
+
+    #[test]
+    fn bootstrap_attempt_epoch_rejects_stale_completion_and_shutdown_work() {
+        let mut runtime = BootstrapRuntime::default();
+        assert!(bootstrap_controls_status(&runtime));
+
+        let first = begin_bootstrap_attempt(&mut runtime).expect("first attempt should start");
+        assert!(bootstrap_attempt_is_current(&runtime, first));
+        assert!(begin_bootstrap_attempt(&mut runtime).is_none());
+        end_bootstrap_attempt(&mut runtime, first);
+
+        let second = begin_bootstrap_attempt(&mut runtime).expect("retry should advance epoch");
+        assert_ne!(first, second);
+        assert!(!bootstrap_attempt_is_current(&runtime, first));
+        end_bootstrap_attempt(&mut runtime, first);
+        assert!(bootstrap_attempt_is_current(&runtime, second));
+
+        cancel_bootstrap_runtime_for_shutdown(&mut runtime);
+        assert!(!bootstrap_attempt_is_current(&runtime, second));
+        assert!(runtime.shutdown_requested);
+        assert!(!runtime.bootstrap_complete);
+        assert!(begin_bootstrap_attempt(&mut runtime).is_none());
+        assert!(bootstrap_controls_status(&runtime));
+    }
+
+    #[test]
+    fn completed_bootstrap_releases_status_ownership_only_after_attempt_finishes() {
+        let mut runtime = BootstrapRuntime::default();
+        let attempt = begin_bootstrap_attempt(&mut runtime).expect("attempt should start");
+        runtime.bootstrap_complete = true;
+        assert!(bootstrap_controls_status(&runtime));
+
+        end_bootstrap_attempt(&mut runtime, attempt);
+        assert!(!bootstrap_controls_status(&runtime));
+    }
+
+    #[test]
+    fn bootstrap_diagnostics_are_flushed_and_replace_only_regular_files() {
+        let temporary = TestDirectory::new("bootstrap-diagnostics");
+        let log_dir = temporary.path.join("logs");
+        write_bootstrap_diagnostics(&log_dir, b"{\"attempt\":1}\n")
+            .expect("first diagnostics snapshot should be written");
+        write_bootstrap_diagnostics(&log_dir, b"{\"attempt\":2}\n")
+            .expect("regular diagnostics snapshot should be replaced");
+
+        assert_eq!(
+            fs::read(log_dir.join("desktop-bootstrap.json"))
+                .expect("diagnostics snapshot should be readable"),
+            b"{\"attempt\":2}\n"
+        );
+        assert!(
+            fs::read_dir(&log_dir)
+                .expect("log directory should be readable")
+                .all(|entry| {
+                    !entry
+                        .expect("log directory entry should be readable")
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".desktop-bootstrap-")
+                }),
+            "temporary diagnostics files must be cleaned up"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bootstrap_diagnostics_reject_a_windows_reparse_target() {
+        let temporary = TestDirectory::new("bootstrap-diagnostics-junction");
+        let log_dir = temporary.path.join("logs");
+        let redirect_target = temporary.path.join("redirect-target");
+        let diagnostics = log_dir.join("desktop-bootstrap.json");
+        fs::create_dir_all(&log_dir).expect("log directory should be created");
+        fs::create_dir_all(&redirect_target).expect("redirect target should be created");
+        let output = Command::new("cmd")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&diagnostics)
+            .arg(&redirect_target)
+            .output()
+            .expect("cmd should create a diagnostics junction");
+        assert!(
+            output.status.success(),
+            "junction fixture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let error = write_bootstrap_diagnostics(&log_dir, b"blocked")
+            .expect_err("diagnostics must reject a reparse target");
+        assert!(error.contains("reparse point") || error.contains("symlink"));
+        fs::remove_dir(&diagnostics).expect("diagnostics junction should be removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bootstrap_diagnostics_reject_a_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = TestDirectory::new("bootstrap-diagnostics-symlink");
+        let log_dir = temporary.path.join("logs");
+        let redirect_target = temporary.path.join("redirect-target.json");
+        let diagnostics = log_dir.join("desktop-bootstrap.json");
+        fs::create_dir_all(&log_dir).expect("log directory should be created");
+        write_file(&redirect_target, "preserve");
+        symlink(&redirect_target, &diagnostics).expect("diagnostics symlink should be created");
+
+        let error = write_bootstrap_diagnostics(&log_dir, b"blocked")
+            .expect_err("diagnostics must reject a symlink target");
+        assert!(error.contains("symlink") || error.contains("reparse point"));
+        assert_eq!(
+            fs::read_to_string(&redirect_target).expect("redirect target should remain readable"),
+            "preserve"
+        );
+    }
+
+    #[test]
+    fn backend_wait_failures_map_to_actionable_bootstrap_codes() {
+        let layout = proxy_test_layout(18001);
+        let timeout = bootstrap_wait_failure(BackendWaitFailure::Timeout, &layout);
+        let exited =
+            bootstrap_wait_failure(BackendWaitFailure::ProcessExited("backend exited"), &layout);
+        let incompatible = bootstrap_wait_failure(
+            BackendWaitFailure::Incompatible("protocol mismatch".to_string()),
+            &layout,
+        );
+
+        assert_eq!(timeout.error_code, "BACKEND_START_TIMEOUT");
+        assert!(timeout.retryable);
+        assert_eq!(exited.error_code, "BACKEND_EXITED");
+        assert!(exited.retryable);
+        assert_eq!(incompatible.error_code, "BACKEND_HEALTH_INVALID");
+        assert!(!incompatible.retryable);
+    }
+
+    #[test]
     fn navigation_guard_only_accepts_the_packaged_app_origin() {
         for accepted in [
             "about:blank",
@@ -5642,9 +6754,9 @@ mod tests {
             );
         }
 
-        let bootstrap = packaged_app_navigation_url().expect("packaged app URL should build");
-        assert!(trusted_app_navigation(&bootstrap));
-        let query = bootstrap.query_pairs().collect::<BTreeMap<_, _>>();
+        let app_url = packaged_app_navigation_url().expect("packaged app URL should build");
+        assert!(trusted_app_navigation(&app_url));
+        let query = app_url.query_pairs().collect::<BTreeMap<_, _>>();
         assert_eq!(
             query.get("appVersion").map(|value| value.as_ref()),
             Some(env!("CARGO_PKG_VERSION"))
@@ -5656,6 +6768,22 @@ mod tests {
         assert_eq!(
             query.get("runtime").map(|value| value.as_ref()),
             Some(env!("MPP_RUNTIME_MANIFEST_SHA256"))
+        );
+        assert!(!query.contains_key("bootstrap"));
+
+        let bootstrap =
+            packaged_bootstrap_navigation_url().expect("packaged bootstrap URL should build");
+        assert!(trusted_app_navigation(&bootstrap));
+        let bootstrap_query = bootstrap.query_pairs().collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            bootstrap_query.get("bootstrap").map(|value| value.as_ref()),
+            Some("1")
+        );
+        assert_eq!(
+            bootstrap_query
+                .get("appVersion")
+                .map(|value| value.as_ref()),
+            Some(env!("CARGO_PKG_VERSION"))
         );
     }
 

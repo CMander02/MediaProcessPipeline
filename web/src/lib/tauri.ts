@@ -3,6 +3,18 @@ import { open } from "@tauri-apps/plugin-dialog"
 
 export type BackendState = "stopped" | "starting" | "running" | "stopping" | "external" | "error"
 
+export const BOOTSTRAP_PHASES = [
+  "SCANNING",
+  "READY_TO_START",
+  "STARTING_BACKEND",
+  "WAITING_HEALTH",
+  "APP_READY",
+  "FAILED_RETRYABLE",
+  "FAILED_MANUAL",
+] as const
+
+export type BootstrapPhase = (typeof BOOTSTRAP_PHASES)[number]
+
 export interface BackendStatus {
   state: BackendState
   command: string
@@ -10,6 +22,11 @@ export interface BackendStatus {
   pid: number | null
   url: string
   message: string
+  phase?: BootstrapPhase
+  error_code?: string | null
+  component_id?: string | null
+  remediation?: string | null
+  local_path?: string | null
 }
 
 export interface BackendLogEntry {
@@ -28,7 +45,29 @@ export interface MppBackendBridge {
   onLog(callback: (entry: BackendLogEntry) => void): () => void
 }
 
+export interface BootstrapStatus extends BackendStatus {
+  phase: BootstrapPhase
+  error_code: string | null
+  component_id: string | null
+  remediation: string | null
+  local_path: string | null
+}
+
+export interface BootstrapDiagnostics {
+  status: BootstrapStatus
+  logs: BackendLogEntry[]
+}
+
+export interface BootstrapBridge {
+  getStatus(): Promise<BootstrapStatus>
+  retry(): Promise<BootstrapStatus>
+  openLogs(): Promise<void>
+  getDiagnostics(): Promise<BootstrapDiagnostics>
+  onStatus(callback: (status: BootstrapStatus) => void): () => void
+}
+
 let tauriBackendBridge: MppBackendBridge | undefined
+let tauriBootstrapBridge: BootstrapBridge | undefined
 
 type TauriWindow = Window & {
   __TAURI_INTERNALS__?: {
@@ -65,6 +104,33 @@ function tauriInvoke<T>(command: string, args?: Record<string, unknown>) {
     return globalInvoke<T>(command, args)
   }
   return invoke<T>(command, args)
+}
+
+function isBootstrapPhase(value: unknown): value is BootstrapPhase {
+  return typeof value === "string" && BOOTSTRAP_PHASES.some((phase) => phase === value)
+}
+
+function fallbackBootstrapPhase(status: BackendStatus): BootstrapPhase {
+  if (status.state === "running" || status.state === "external") return "APP_READY"
+  if (status.state === "starting") {
+    return /\b(health|healthy|ready|wait)\b/i.test(status.message)
+      ? "WAITING_HEALTH"
+      : "STARTING_BACKEND"
+  }
+  if (status.state === "error") return "FAILED_RETRYABLE"
+  if (status.state === "stopping") return "SCANNING"
+  return "READY_TO_START"
+}
+
+export function normalizeBootstrapStatus(status: BackendStatus): BootstrapStatus {
+  return {
+    ...status,
+    phase: isBootstrapPhase(status.phase) ? status.phase : fallbackBootstrapPhase(status),
+    error_code: status.error_code ?? null,
+    component_id: status.component_id ?? null,
+    remediation: status.remediation ?? null,
+    local_path: status.local_path ?? null,
+  }
 }
 
 function getTauriBackendBridge(): MppBackendBridge | undefined {
@@ -167,6 +233,57 @@ function getTauriBackendBridge(): MppBackendBridge | undefined {
 
 export function getBackendBridge(): MppBackendBridge | undefined {
   return getTauriBackendBridge()
+}
+
+export function getBootstrapBridge(): BootstrapBridge | undefined {
+  if (!isTauriRuntime()) return undefined
+  if (tauriBootstrapBridge) return tauriBootstrapBridge
+
+  const getRawStatus = () => tauriInvoke<BackendStatus>("backend_get_status")
+  const getStatus = async () => normalizeBootstrapStatus(await getRawStatus())
+  const getLogs = () => tauriInvoke<BackendLogEntry[]>("backend_get_logs")
+
+  tauriBootstrapBridge = {
+    getStatus,
+    retry: async () => normalizeBootstrapStatus(await tauriInvoke<BackendStatus>("backend_retry")),
+    openLogs: () => tauriInvoke<void>("open_logs"),
+    async getDiagnostics() {
+      const [status, logs] = await Promise.all([getStatus(), getLogs()])
+      return { status, logs }
+    },
+    onStatus(callback) {
+      let disposed = false
+      let lastStatus = ""
+      let timer: number | null = null
+
+      const tick = async () => {
+        try {
+          const status = await getStatus()
+          const serialized = JSON.stringify(status)
+          if (!disposed && serialized !== lastStatus) {
+            lastStatus = serialized
+            callback(status)
+          }
+        } catch {
+          // The page keeps its last stable bootstrap state while one IPC poll is unavailable.
+        } finally {
+          if (!disposed) {
+            timer = window.setTimeout(() => void tick(), 750)
+          }
+        }
+      }
+
+      void tick()
+      return () => {
+        disposed = true
+        if (timer !== null) {
+          window.clearTimeout(timer)
+        }
+      }
+    },
+  }
+
+  return tauriBootstrapBridge
 }
 
 export interface SelectDirectoryOptions {
