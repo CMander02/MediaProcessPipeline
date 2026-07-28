@@ -662,6 +662,8 @@ def test_release_entry_enforces_formal_offline_build_contract():
     assert "[switch]$SafeOutputOnFailure" in script
     assert ") -SafeOutputOnFailure" in script
     assert "$MaximumDiagnosticLength = 4096" in script
+    assert '"prepare:desktop-runtime"' in script
+    assert '(Join-Path $WebRoot "scripts\\prepare-desktop-runtime.mjs")' not in script
     assert "Runtime manifest changed during desktop compilation" in script
     assert "Test-FileContainsAscii" in script
     assert "scripts/build-desktop.ps1 -Phase Prepare -NoBundle -Ci" in workflow

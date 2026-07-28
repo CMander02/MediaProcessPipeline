@@ -445,8 +445,11 @@ try {
     $env:UV_OFFLINE = "1"
     $env:MPP_BUNDLED_UV = (Get-Command uv -ErrorAction Stop).Source
 
-    [void](Invoke-NativeText -Command "node" -Arguments @(
-        (Join-Path $WebRoot "scripts\prepare-desktop-runtime.mjs")
+    [void](Invoke-NativeText -Command "npm" -Arguments @(
+        "--prefix",
+        "web",
+        "run",
+        "prepare:desktop-runtime"
     ))
     Invoke-RuntimeVerification -PythonPath $PythonPath `
         -SourceCommit $SourceCommit `
