@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { api, getApiToken, persistApiToken, type Settings, type YtdlpStatus } from "@/lib/api"
+import { isTauriRuntime } from "@/lib/tauri"
 import { usePreferences } from "@/hooks/use-preferences"
 import { ProxySetting, SettingRow } from "@/components/settings/setting-controls"
 import { LocalModelSettings, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
@@ -34,6 +35,7 @@ const TABS: TabDef[] = [
 ]
 
 export function SettingsPanel() {
+  const desktopRuntime = isTauriRuntime()
   const [settings, setSettings] = useState<Settings | null>(null)
   const [saving, setSaving] = useState<Record<string, boolean>>({})
   const [saved, setSaved] = useState<Record<string, boolean>>({})
@@ -105,6 +107,12 @@ export function SettingsPanel() {
     setAuthenticating(false)
   }
 
+  const retryDesktopSettings = async () => {
+    setAuthenticating(true)
+    await loadSettings()
+    setAuthenticating(false)
+  }
+
   const updateSettings = useCallback(
     async (updates: Record<string, unknown>) => {
       const keys = Object.keys(updates)
@@ -144,6 +152,42 @@ export function SettingsPanel() {
   }
 
   if (!settings) {
+    if (desktopRuntime) {
+      return (
+        <div className="flex min-h-[320px] items-center justify-center px-4">
+          <Card className="w-full max-w-md">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">
+                {loadError ? "本地服务连接失败" : "正在连接本地服务"}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {loadError ? (
+                <>
+                  <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                    {loadError}
+                  </p>
+                  <Button
+                    type="button"
+                    className="w-full"
+                    disabled={authenticating}
+                    onClick={() => void retryDesktopSettings()}
+                  >
+                    {authenticating ? "重试中..." : "重试连接"}
+                  </Button>
+                </>
+              ) : (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin" />
+                  <span>正在读取桌面设置…</span>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )
+    }
+
     return (
       <div className="flex min-h-[320px] items-center justify-center px-4">
         <Card className="w-full max-w-md">
@@ -494,24 +538,26 @@ export function SettingsPanel() {
                 </CardContent>
               </Card>
 
-              {/* Security */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">访问控制</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <SettingRow
-                    label="API Token"
-                    settingKey="api_token"
-                    value={String(settings.api_token ?? "")}
-                    onSave={updateSetting}
-                    saving={saving}
-                    saved={saved}
-                    masked
-                    placeholder="留空则不启用"
-                  />
-                </CardContent>
-              </Card>
+              {/* Browser/server access control is configured outside the desktop shell. */}
+              {!desktopRuntime && (
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base">访问控制</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <SettingRow
+                      label="API Token"
+                      settingKey="api_token"
+                      value={String(settings.api_token ?? "")}
+                      onSave={updateSetting}
+                      saving={saving}
+                      saved={saved}
+                      masked
+                      placeholder="留空则不启用"
+                    />
+                  </CardContent>
+                </Card>
+              )}
 
               {/* Queue */}
               <Card>

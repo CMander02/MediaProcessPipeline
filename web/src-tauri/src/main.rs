@@ -35,6 +35,10 @@ const BACKEND_PORT: u16 = 18000;
 const APP_URL: &str = "http://localhost:18000";
 const DESKTOP_API_HOST: &str = "api.tauri.localhost";
 const DESKTOP_PROXY_COOKIE: &str = "mpp_desktop_proxy";
+#[cfg(target_os = "windows")]
+const WEBVIEW2_BROWSER_ARGUMENTS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+     --proxy-bypass-list=api.tauri.localhost";
 const MAX_PROXY_CONNECTIONS: usize = 128;
 const MAX_HTTP_HEAD_BYTES: usize = 64 * 1024;
 const MAX_HEALTH_RESPONSE_BYTES: usize = 64 * 1024;
@@ -5391,6 +5395,10 @@ fn classify_settings_preflight_output(output: &ProbeCommandOutput) -> SettingsPr
     }
 }
 
+fn settings_preflight_arguments<'a>(helper: &'a str, config: &'a str) -> [&'a str; 4] {
+    ["-I", "-B", helper, config]
+}
+
 fn probe_runtime_settings_component(layout: &RuntimeLayout) -> BootstrapPreflightComponent {
     let required = layout.mode == RuntimeMode::Installed;
     let path = &layout.user.config_file;
@@ -5510,7 +5518,8 @@ fn probe_runtime_settings_component(layout: &RuntimeLayout) -> BootstrapPrefligh
 
     let helper_argument = helper.to_string_lossy().into_owned();
     let config_argument = path.to_string_lossy().into_owned();
-    let arguments = ["-I", helper_argument.as_str(), config_argument.as_str()];
+    let arguments =
+        settings_preflight_arguments(helper_argument.as_str(), config_argument.as_str());
     let output = match run_bounded_probe_command(&python, &arguments, PREFLIGHT_PROCESS_TIMEOUT) {
         Ok(output) => output,
         Err(failure) => {
@@ -6466,15 +6475,19 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn Error>> {
     app.manage(BackendProcess::default());
     app.manage(BootstrapController::new(fallback_log_dir));
     let bootstrap_url = packaged_bootstrap_navigation_url().map_err(boxed_error)?;
-    let _window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(bootstrap_url))
-        .on_navigation(trusted_app_navigation)
-        .on_new_window(|url, _features| {
-            let _ = open_external_url(url.to_string());
-            NewWindowResponse::Deny
-        })
-        .title("MediaProcessPipeline")
-        .inner_size(1440.0, 980.0)
-        .min_inner_size(1024.0, 720.0)
+    let window_builder =
+        WebviewWindowBuilder::new(app, "main", WebviewUrl::External(bootstrap_url))
+            .on_navigation(trusted_app_navigation)
+            .on_new_window(|url, _features| {
+                let _ = open_external_url(url.to_string());
+                NewWindowResponse::Deny
+            })
+            .title("MediaProcessPipeline")
+            .inner_size(1440.0, 980.0)
+            .min_inner_size(1024.0, 720.0);
+    #[cfg(target_os = "windows")]
+    let window_builder = window_builder.additional_browser_args(WEBVIEW2_BROWSER_ARGUMENTS);
+    let _window = window_builder
         .build()
         .map_err(|err| boxed_error(format!("failed to create app window: {err}")))?;
 
@@ -7899,6 +7912,10 @@ mod tests {
     #[test]
     fn settings_preflight_accepts_only_the_fixed_credential_safe_contract() {
         assert_eq!(
+            settings_preflight_arguments("settings_preflight.py", "config.json"),
+            ["-I", "-B", "settings_preflight.py", "config.json"]
+        );
+        assert_eq!(
             classify_settings_preflight_output(&ProbeCommandOutput {
                 success: true,
                 output: SETTINGS_PREFLIGHT_OK_TOKEN.to_string(),
@@ -8940,6 +8957,16 @@ mod tests {
                 .map(|value| value.as_ref()),
             Some(env!("CARGO_PKG_VERSION"))
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn webview_bypasses_the_system_proxy_for_the_private_desktop_api() {
+        assert!(
+            WEBVIEW2_BROWSER_ARGUMENTS.contains(&format!("--proxy-bypass-list={DESKTOP_API_HOST}"))
+        );
+        assert!(WEBVIEW2_BROWSER_ARGUMENTS
+            .contains("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"));
     }
 
     #[test]

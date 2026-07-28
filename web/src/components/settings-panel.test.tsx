@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { SettingsPanel } from "./settings-panel"
 import { api } from "@/lib/api"
 
+type DesktopWindow = Window & { isTauri?: boolean }
+
 const { mockSettings } = vi.hoisted(() => ({
   mockSettings: {
     llm_provider: "deepseek",
@@ -328,9 +330,27 @@ vi.stubGlobal("ResizeObserver", class {
 
 afterEach(() => {
   cleanup()
+  delete (window as DesktopWindow).isTauri
 })
 
 describe("SettingsPanel", () => {
+  it("uses the desktop session directly and never asks for an API token", async () => {
+    ;(window as DesktopWindow).isTauri = true
+    vi.mocked(api.settings.get).mockRejectedValueOnce(new TypeError("Failed to fetch"))
+
+    render(<SettingsPanel />)
+
+    expect(await screen.findByText("本地服务连接失败")).toBeInTheDocument()
+    expect(screen.getByText("Failed to fetch")).toBeInTheDocument()
+    expect(screen.queryByText("API Token")).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText("输入服务器 API Token")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "重试连接" }))
+
+    expect(await screen.findByRole("button", { name: "Overall" })).toBeInTheDocument()
+    expect(screen.queryByText("访问控制")).not.toBeInTheDocument()
+  })
+
   it("renders six hierarchical tabs", async () => {
     render(<SettingsPanel />)
 
