@@ -25,6 +25,10 @@ export interface Task {
   flow?: TaskFlowSnapshot | null
   content_subtype?: string | null
   platform?: string | null
+  origin_client?: string
+  requested_executor?: "server" | "exe" | string
+  assigned_executor?: string | null
+  sync_revision?: number
 }
 
 export interface TaskFlowStep {
@@ -68,6 +72,16 @@ export interface TaskStats {
   failed?: number
   cancelled?: number
   paused?: number
+}
+
+export interface WorkerStatus {
+  id: string
+  name: string
+  executor: "server" | "exe" | string
+  online: boolean
+  status: string
+  last_seen_at?: string | null
+  capabilities?: Record<string, unknown>
 }
 
 export interface BilibiliCollectionItem {
@@ -335,10 +349,18 @@ export const api = {
   health: () => get<{ status: string }>("/health"),
 
   tasks: {
-    create: (source: string, options: Record<string, unknown> = {}) =>
-      post<Task>("/api/tasks", { task_type: "pipeline", source, options }),
-    createBatch: (sources: string[], options: Record<string, unknown> = {}) =>
-      post<Task[]>("/api/tasks/batch", { task_type: "pipeline", sources, options }),
+    create: (
+      source: string,
+      options: Record<string, unknown> = {},
+      routing: { origin_client?: string; requested_executor?: "server" | "exe" } = {},
+    ) =>
+      post<Task>("/api/tasks", { task_type: "pipeline", source, options, ...routing }),
+    createBatch: (
+      sources: string[],
+      options: Record<string, unknown> = {},
+      routing: { origin_client?: string; requested_executor?: "server" | "exe" } = {},
+    ) =>
+      post<Task[]>("/api/tasks/batch", { task_type: "pipeline", sources, options, ...routing }),
     list: (status?: string, limit = 50) => {
       const params = new URLSearchParams({ limit: String(limit) })
       if (status) params.set("status", status)
@@ -353,6 +375,10 @@ export const api = {
     checkpointRerun: (id: string) => post<{ message: string }>(`/api/tasks/${id}/checkpoint-rerun`),
     delete: (id: string) => httpDelete<{ message: string; deleted_paths?: string[]; errors?: Array<Record<string, string>> }>(`/api/tasks/${id}`),
     stats: () => get<TaskStats>("/api/tasks/stats"),
+  },
+
+  workers: {
+    list: () => get<{ workers: WorkerStatus[] }>("/api/workers"),
   },
 
   settings: {
@@ -399,6 +425,12 @@ export const api = {
       httpDelete<{ message: string; path: string }>("/api/pipeline/archives", { path }),
     rename: (path: string, title: string) =>
       post<{ success: boolean; title: string }>("/api/pipeline/archives/rename", { path, title }),
+    polish: (path: string, text?: string, sourceFilename?: string) =>
+      post<{ polished: string; filename: string; path: string }>("/api/pipeline/archives/polish", {
+        path,
+        ...(text === undefined ? {} : { text }),
+        ...(sourceFilename ? { source_filename: sourceFilename } : {}),
+      }),
     thumbnailUrl: (path: string) => `/api/pipeline/archives/thumbnail?path=${encodeURIComponent(path)}`,
   },
 

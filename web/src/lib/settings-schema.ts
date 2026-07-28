@@ -181,12 +181,23 @@ export interface RuntimeSettings {
   data_root?: string
   network_proxy?: string
   ytdlp_auto_update?: boolean
+  remote_sync_enabled?: boolean
+  remote_server_url?: string
+  remote_api_token?: string
+  remote_worker_id?: string
+  remote_worker_name?: string
+  remote_sync_interval_sec?: number
+  remote_sync_upload_results?: boolean
+  remote_sync_download_results?: boolean
+  remote_sync_include_media?: boolean
+  default_task_executor?: "server" | "exe" | string
 
   [key: string]: unknown
 }
 
 export const SECRET_SETTING_KEYS = [
   "api_token",
+  "remote_api_token",
   "anthropic_api_key",
   "openai_api_key",
   "custom_api_key",

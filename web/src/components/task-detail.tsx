@@ -33,7 +33,9 @@ export function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () =>
     try {
       await api.tasks.cancel(taskId)
       api.tasks.get(taskId).then(setTask)
-    } catch {}
+    } catch {
+      // Keep the current task state when cancellation fails.
+    }
   }
 
   return (
@@ -74,6 +76,24 @@ export function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () =>
             <dd className="truncate font-mono text-xs" title={task.source}>{task.source}</dd>
             <dt className="text-muted-foreground">创建</dt>
             <dd>{new Date(task.created_at).toLocaleString()}</dd>
+            {task.origin_client && (
+              <>
+                <dt className="text-muted-foreground">发起端</dt>
+                <dd>{task.origin_client}</dd>
+              </>
+            )}
+            {task.requested_executor && (
+              <>
+                <dt className="text-muted-foreground">处理端</dt>
+                <dd>{task.requested_executor === "exe" ? "EXE" : "服务器"}</dd>
+              </>
+            )}
+            {task.assigned_executor && (
+              <>
+                <dt className="text-muted-foreground">执行实例</dt>
+                <dd className="font-mono text-xs">{task.assigned_executor}</dd>
+              </>
+            )}
             {task.completed_at && (
               <>
                 <dt className="text-muted-foreground">完成</dt>

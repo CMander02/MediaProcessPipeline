@@ -364,6 +364,110 @@ export function SettingsPanel() {
                 </CardContent>
               </Card>
 
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">远程服务器与同步</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    将本机 EXE 注册为远程处理端。任务完成后上传归档；EXE 在线时领取分配给 EXE 的任务，并同步服务器结果。
+                  </p>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label>启用远程同步</Label>
+                      <p className="mt-0.5 text-xs text-muted-foreground">后台启动注册、心跳、任务领取和结果同步。</p>
+                    </div>
+                    <Switch
+                      checked={Boolean(settings.remote_sync_enabled ?? false)}
+                      onCheckedChange={(v) => updateSetting("remote_sync_enabled", v)}
+                    />
+                  </div>
+                  <SettingRow
+                    label="服务器地址"
+                    settingKey="remote_server_url"
+                    value={String(settings.remote_server_url ?? "")}
+                    onSave={updateSetting}
+                    saving={saving}
+                    saved={saved}
+                    placeholder="https://mpp.example.com"
+                  />
+                  <SettingRow
+                    label="访问令牌"
+                    settingKey="remote_api_token"
+                    value={String(settings.remote_api_token ?? "")}
+                    onSave={updateSetting}
+                    saving={saving}
+                    saved={saved}
+                    masked
+                    placeholder="远程服务器 API Token"
+                  />
+                  <SettingRow
+                    label="Worker ID"
+                    settingKey="remote_worker_id"
+                    value={String(settings.remote_worker_id ?? "")}
+                    onSave={updateSetting}
+                    saving={saving}
+                    saved={saved}
+                    placeholder="留空时使用本机名"
+                  />
+                  <SettingRow
+                    label="显示名称"
+                    settingKey="remote_worker_name"
+                    value={String(settings.remote_worker_name ?? "")}
+                    onSave={updateSetting}
+                    saving={saving}
+                    saved={saved}
+                    placeholder="我的 EXE"
+                  />
+                  <SettingRow
+                    label="同步间隔"
+                    settingKey="remote_sync_interval_sec"
+                    value={String(settings.remote_sync_interval_sec ?? 15)}
+                    onSave={(key, value) => updateSetting(key, Math.max(5, Number(value) || 15))}
+                    saving={saving}
+                    saved={saved}
+                    placeholder="15"
+                  />
+                  <div className="flex items-center gap-3">
+                    <Label className="w-24 shrink-0 text-sm text-muted-foreground">默认处理端</Label>
+                    <select
+                      value={String(settings.default_task_executor ?? "server")}
+                      onChange={(event) => updateSetting("default_task_executor", event.target.value)}
+                      className="h-8 rounded-md border border-input bg-background px-3 text-sm"
+                    >
+                      <option value="exe">本机 EXE</option>
+                      <option value="server">远程服务器</option>
+                    </select>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+                      <Label className="text-sm">上传本机结果</Label>
+                      <Switch
+                        checked={Boolean(settings.remote_sync_upload_results ?? true)}
+                        onCheckedChange={(v) => updateSetting("remote_sync_upload_results", v)}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+                      <Label className="text-sm">同步服务器结果</Label>
+                      <Switch
+                        checked={Boolean(settings.remote_sync_download_results ?? true)}
+                        onCheckedChange={(v) => updateSetting("remote_sync_download_results", v)}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 sm:col-span-2">
+                      <div>
+                        <Label className="text-sm">同步大体积音视频</Label>
+                        <p className="mt-0.5 text-xs text-muted-foreground">关闭时仍同步摘要、字幕、导图、图片与缩略图。</p>
+                      </div>
+                      <Switch
+                        checked={Boolean(settings.remote_sync_include_media ?? false)}
+                        onCheckedChange={(v) => updateSetting("remote_sync_include_media", v)}
+                      />
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
               {/* Security */}
               <Card>
                 <CardHeader className="pb-3">

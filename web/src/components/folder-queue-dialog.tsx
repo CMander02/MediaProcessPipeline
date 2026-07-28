@@ -14,6 +14,12 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { api } from "@/lib/api"
+import {
+  isServerProcessingTarget,
+  requestedExecutorForTarget,
+  withProcessingTargetOptions,
+  type ProcessingTarget,
+} from "@/lib/task-routing"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
   ArrowRight01Icon,
@@ -40,11 +46,6 @@ interface MediaFile {
   size: number
 }
 
-const MEDIA_EXTS = new Set([
-  "mp4", "mkv", "avi", "webm", "mov", "flv", "wmv",
-  "mp3", "wav", "aac", "flac", "ogg", "m4a", "wma",
-])
-
 function isVideo(name: string) {
   const ext = name.split(".").pop()?.toLowerCase() ?? ""
   return ["mp4", "mkv", "avi", "webm", "mov", "flv", "wmv"].includes(ext)
@@ -60,11 +61,19 @@ interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   options: Record<string, unknown>
+  processingTarget?: ProcessingTarget
+  serverLocalPathsBlocked?: boolean
   onSubmitted?: () => void
 }
 
-export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: Props) {
-  const [currentPath, setCurrentPath] = useState("")
+export function FolderQueueDialog({
+  open,
+  onOpenChange,
+  options,
+  processingTarget = "server",
+  serverLocalPathsBlocked = false,
+  onSubmitted,
+}: Props) {
   const [items, setItems] = useState<BrowseItem[]>([])
   const [drives, setDrives] = useState<BrowseItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -105,7 +114,6 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
     try {
       const data = await api.filesystem.browse(path, "directory")
       if (data.success) {
-        setCurrentPath(data.path)
         setPathInput(data.path)
         setItems(data.items ?? [])
       }
@@ -131,17 +139,25 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
   }
 
   const handleSubmitAll = async () => {
-    if (!mediaFiles.length) return
+    if (
+      !mediaFiles.length
+      || (serverLocalPathsBlocked && isServerProcessingTarget(processingTarget))
+    ) return
     setSubmitting(true)
     setSubmitProgress(0)
     setFailedFiles([])
     cancelledRef.current = false
     let count = 0
     const failed: string[] = []
+    const taskOptions = withProcessingTargetOptions(options, processingTarget)
+    const requestedExecutor = requestedExecutorForTarget(processingTarget)
     for (const file of mediaFiles) {
       if (cancelledRef.current) break
       try {
-        await api.tasks.create(file.path, options)
+        await api.tasks.create(file.path, taskOptions, {
+          origin_client: "web",
+          requested_executor: requestedExecutor,
+        })
       } catch {
         failed.push(file.name)
       }
@@ -294,6 +310,11 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
                       ))}
                     </div>
                   )}
+                  {serverLocalPathsBlocked && isServerProcessingTarget(processingTarget) && (
+                    <p role="alert" className="mt-2 text-xs leading-5 text-destructive">
+                      服务器无法访问此 EXE 上的文件夹。请选择 EXE 或具体 Worker 处理，URL 任务仍可由服务器处理。
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -312,7 +333,13 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
           ) : (
             <Button
               onClick={handleSubmitAll}
-              disabled={!selectedFolder || mediaFiles.length === 0 || done || scanning}
+              disabled={
+                !selectedFolder
+                || mediaFiles.length === 0
+                || done
+                || scanning
+                || (serverLocalPathsBlocked && isServerProcessingTarget(processingTarget))
+              }
             >
               <HugeiconsIcon icon={PlayIcon} className="h-4 w-4 mr-1.5" />
               {mediaFiles.length > 0 ? `提交全部 ${mediaFiles.length} 个文件` : "提交"}

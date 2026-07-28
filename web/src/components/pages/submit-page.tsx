@@ -1,7 +1,7 @@
-import { useState, useRef, useCallback, type FormEvent, type KeyboardEvent } from "react"
+import { useState, useRef, useCallback, useEffect, type FormEvent, type KeyboardEvent } from "react"
 import { useDropZone } from "@/hooks/use-drop-zone"
 import { navigate } from "@/lib/router"
-import { api, type BilibiliCollectionItem } from "@/lib/api"
+import { api, type BilibiliCollectionItem, type WorkerStatus } from "@/lib/api"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
@@ -13,6 +13,13 @@ import {
 } from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
 import { formatDuration } from "@/lib/format"
+import {
+  isExeLocalSourceBlocked,
+  preferredWorkerId,
+  requestedExecutorForTarget,
+  withProcessingTargetOptions,
+  type ProcessingTarget,
+} from "@/lib/task-routing"
 
 interface QueuedFile {
   id: string
@@ -73,9 +80,28 @@ export function SubmitPage() {
   const [error, setError] = useState("")
   const [collection, setCollection] = useState<CollectionSelection | null>(null)
   const [showFolderDialog, setShowFolderDialog] = useState(false)
+  const [processingTarget, setProcessingTarget] = useState<ProcessingTarget>("server")
+  const [workers, setWorkers] = useState<WorkerStatus[]>([])
+  const [remoteSyncEnabled, setRemoteSyncEnabled] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const hotwordInputRef = useRef<HTMLInputElement>(null)
   const abortControllers = useRef<Map<string, AbortController>>(new Map())
+
+  useEffect(() => {
+    let active = true
+    Promise.allSettled([api.settings.get(), api.workers.list()]).then(([settingsResult, workersResult]) => {
+      if (!active) return
+      if (settingsResult.status === "fulfilled") {
+        const configured = settingsResult.value.default_task_executor
+        if (configured === "server" || configured === "exe") setProcessingTarget(configured)
+        setRemoteSyncEnabled(Boolean(settingsResult.value.remote_sync_enabled))
+      }
+      if (workersResult.status === "fulfilled") {
+        setWorkers(workersResult.value.workers)
+      }
+    })
+    return () => { active = false }
+  }, [])
 
   const buildOptions = () => {
     const opts: Record<string, unknown> = {}
@@ -85,9 +111,6 @@ export function SubmitPage() {
     if (hotwordTags.length > 0) opts.hotwords = hotwordTags
     return opts
   }
-  const buildOptionsRef = useRef(buildOptions)
-  buildOptionsRef.current = buildOptions
-
   const uploadAndQueue = useCallback(async (file: File) => {
     const id = `${file.name}-${Date.now()}-${Math.random()}`
     const controller = new AbortController()
@@ -106,7 +129,7 @@ export function SubmitPage() {
           ? { ...f, duration, stagingId: staged.staging_id, stagingPath: staged.path, uploading: false }
           : f
       ))
-    } catch (err) {
+    } catch {
       if (controller.signal.aborted) {
         setQueuedFiles((prev) => prev.filter((f) => f.id !== id))
       } else {
@@ -174,11 +197,20 @@ export function SubmitPage() {
     const urlSource = source.trim()
     if (!urlSource && !readyFiles.length) return
     if (submitting) return
+    if (isExeLocalSourceBlocked({
+      remoteSyncEnabled,
+      target: processingTarget,
+      source: urlSource,
+      hasStagedFiles: readyFiles.length > 0,
+    })) {
+      setError("服务器无法访问此 EXE 上的本地文件。请选择 EXE 或具体 Worker 处理，或改用服务器可访问的 URL。")
+      return
+    }
 
     setSubmitting(true)
     setError("")
     try {
-      const opts = buildOptions()
+      const opts = withProcessingTargetOptions(buildOptions(), processingTarget)
 
       if (
         urlSource
@@ -215,7 +247,10 @@ export function SubmitPage() {
         setSubmitting(false)
         return
       }
-      await api.tasks.createBatch(sources, opts)
+      await api.tasks.createBatch(sources, opts, {
+        origin_client: "web",
+        requested_executor: requestedExecutorForTarget(processingTarget),
+      })
 
       navigate("#/files")
     } catch (err) {
@@ -257,7 +292,19 @@ export function SubmitPage() {
       ? selectedCollectionCount
       : source.trim() ? 1 : 0
   )
-  const canSubmit = totalCount > 0 && !submitting && !anyUploading
+  const localFileTargetBlocked = isExeLocalSourceBlocked({
+    remoteSyncEnabled,
+    target: processingTarget,
+    source,
+    hasStagedFiles: readyCount > 0,
+  })
+  const canSubmit = totalCount > 0 && !submitting && !anyUploading && !localFileTargetBlocked
+  const exeWorkers = workers.filter((worker) => worker.executor === "exe")
+  const exeOnline = exeWorkers.some((worker) => worker.online)
+  const selectedWorkerId = preferredWorkerId(processingTarget)
+  const selectedWorker = selectedWorkerId
+    ? exeWorkers.find((worker) => worker.id === selectedWorkerId)
+    : undefined
   const hasFiles = queuedFiles.length > 0
   const hasRightPanel = hasFiles || collection !== null
   const activeOptions = [forceAsr, !!numSpeakers, hotwordTags.length > 0].filter(Boolean).length
@@ -268,6 +315,8 @@ export function SubmitPage() {
         open={showFolderDialog}
         onOpenChange={setShowFolderDialog}
         options={buildOptions()}
+        processingTarget={processingTarget}
+        serverLocalPathsBlocked={remoteSyncEnabled}
         onSubmitted={() => navigate("#/files")}
       />
 
@@ -303,13 +352,18 @@ export function SubmitPage() {
                 <HugeiconsIcon icon={Upload01Icon} className="h-3.5 w-3.5 mr-1.5" />
                 选择文件
               </Button>
-              <Button variant="outline" size="sm" onClick={() => setShowFolderDialog(true)}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowFolderDialog(true)}
+              >
                 <HugeiconsIcon icon={FolderOpenIcon} className="h-3.5 w-3.5 mr-1.5" />
                 选择文件夹
               </Button>
             </div>
             <input
               ref={fileInputRef}
+              aria-label="选择本地媒体文件"
               type="file"
               accept="video/*,audio/*"
               multiple
@@ -336,6 +390,7 @@ export function SubmitPage() {
                 onChange={(e) => {
                   setSource(e.target.value)
                   setCollection(null)
+                  setError("")
                 }}
                 placeholder="粘贴视频链接或本地路径..."
                 className="pl-9"
@@ -344,6 +399,47 @@ export function SubmitPage() {
               />
             </div>
           </form>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="task-executor">处理端</Label>
+            <select
+              id="task-executor"
+              value={processingTarget}
+              onChange={(event) => {
+                setProcessingTarget(event.target.value as ProcessingTarget)
+                setError("")
+              }}
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+              disabled={submitting}
+            >
+              <option value="server">服务器</option>
+              <option value="exe">任意 EXE</option>
+              {exeWorkers.map((worker) => (
+                <option key={worker.id} value={`worker:${worker.id}`}>
+                  {worker.name || worker.id}{worker.online ? "（在线）" : "（离线）"}
+                </option>
+              ))}
+            </select>
+            <p
+              role={localFileTargetBlocked ? "alert" : undefined}
+              className={cn(
+                "text-xs",
+                localFileTargetBlocked ? "text-destructive" : "text-muted-foreground",
+              )}
+            >
+              {localFileTargetBlocked
+                ? "服务器无法访问此 EXE 上的本地文件或文件夹。请选择 EXE 或具体 Worker 处理，URL 任务仍可由服务器处理。"
+                : processingTarget === "server"
+                ? "任务由服务器处理。"
+                : selectedWorker
+                  ? selectedWorker.online
+                    ? `任务将由 ${selectedWorker.name || selectedWorker.id} 处理。`
+                    : `任务将等待 ${selectedWorker.name || selectedWorker.id} 上线后处理。`
+                : exeOnline
+                  ? "EXE 已在线，将自动领取任务。"
+                  : "任务保存在服务器，等待 EXE 上线后自动领取。"}
+            </p>
+          </div>
 
           {/* Submit */}
           <Button size="lg" disabled={!canSubmit} onClick={handleSubmitAll} className="w-full">

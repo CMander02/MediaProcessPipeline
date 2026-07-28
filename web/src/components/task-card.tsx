@@ -51,6 +51,11 @@ export function TaskCard({ task, onClick }: { task: Task; onClick?: () => void }
             </span>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            {task.requested_executor && (
+              <Badge variant="outline" className="text-xs">
+                {task.requested_executor === "exe" ? "EXE" : "服务器"}
+              </Badge>
+            )}
             <Badge variant={isActive ? "default" : "secondary"} className="text-xs">
               {cfg.label}
             </Badge>
