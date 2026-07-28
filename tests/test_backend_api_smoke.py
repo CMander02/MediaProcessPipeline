@@ -20,6 +20,7 @@ from app.core import database, pipeline as pipeline_core, queue as queue_module,
 from app.core.events import EventBus  # noqa: E402
 from app.core.settings import RuntimeSettings  # noqa: E402
 from app.models import Task, TaskStatus, TaskType  # noqa: E402
+from app.services import analysis as analysis_service  # noqa: E402
 from app.services.ingestion import ytdlp  # noqa: E402
 from app.services.ingestion.platform.bilibili import auth as bilibili_auth  # noqa: E402
 from app.services.ingestion.platform.bilibili import collection as bilibili_collection  # noqa: E402
@@ -124,6 +125,66 @@ def test_backend_api_smoke_triggers_core_boundaries(tmp_path, monkeypatch):
     delete_staged = client.delete(f"/api/pipeline/stage/{staged_data['staging_id']}")
     assert delete_staged.status_code == 200
     assert delete_staged.json() == {"deleted": True}
+
+
+def test_archive_extra_polish_is_persisted(tmp_path, monkeypatch):
+    client, _queue = _client(tmp_path, monkeypatch)
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    (archive_dir / "metadata.json").write_text(
+        json.dumps({"title": "演示任务"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (archive_dir / "transcript_polished.md").write_text("初次润色内容", encoding="utf-8")
+    task = Task(
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.COMPLETED,
+        source="https://example.com/video",
+        result={
+            "output_dir": str(archive_dir),
+            "metadata": {"title": "演示任务"},
+        },
+        sync_revision=2,
+    )
+    database.get_task_store().save(task)
+
+    async def fake_polish(text, context=None):
+        assert text == "初次润色内容"
+        assert context == {"title": "演示任务", "additional_pass": True}
+        return "额外润色内容"
+
+    monkeypatch.setattr(analysis_service, "polish_text", fake_polish)
+    response = client.post(
+        "/api/pipeline/archives/polish",
+        json={"path": str(archive_dir)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["filename"] == "transcript_extra_polished.md"
+    assert (
+        archive_dir / "transcript_extra_polished.md"
+    ).read_text(encoding="utf-8") == "额外润色内容"
+    metadata = json.loads((archive_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["extra_polish_file"] == "transcript_extra_polished.md"
+    assert metadata["extra_polish_source"] == "transcript_polished.md"
+    saved = database.get_task_store().get(task.id)
+    assert response.json()["sync_revision"] == 3
+    assert saved.sync_revision == 3
+    assert saved.result["extra_polish_file"] == "transcript_extra_polished.md"
+
+
+def test_archive_extra_polish_rejects_outside_data_root(tmp_path, monkeypatch):
+    client, _queue = _client(tmp_path, monkeypatch)
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-polish"
+    outside.mkdir(exist_ok=True)
+    try:
+        response = client.post(
+            "/api/pipeline/archives/polish",
+            json={"path": str(outside), "text": "内容"},
+        )
+        assert response.status_code == 403
+    finally:
+        outside.rmdir()
 
 
 def test_batch_task_creation_uses_shared_options(tmp_path, monkeypatch):
@@ -433,6 +494,123 @@ def test_archives_lite_omits_heavy_metadata_and_detail_returns_full(tmp_path, mo
     assert full["analysis"]["keywords"] == ["heavy"]
 
 
+def test_archive_delete_only_removes_registered_terminal_archive(tmp_path, monkeypatch):
+    client, _queue = _client(tmp_path, monkeypatch)
+    internal_dir = tmp_path / "_remote_sync"
+    internal_dir.mkdir()
+    unregistered_dir = tmp_path / "unregistered"
+    unregistered_dir.mkdir()
+
+    assert client.request(
+        "DELETE",
+        "/api/pipeline/archives",
+        json={"path": str(tmp_path)},
+    ).status_code == 403
+    assert client.request(
+        "DELETE",
+        "/api/pipeline/archives",
+        json={"path": str(internal_dir)},
+    ).status_code == 403
+    assert client.request(
+        "DELETE",
+        "/api/pipeline/archives",
+        json={"path": str(unregistered_dir)},
+    ).status_code == 404
+
+    archive_dir = tmp_path / "registered"
+    archive_dir.mkdir()
+    (archive_dir / "metadata.json").write_text(
+        json.dumps({"title": "Registered"}),
+        encoding="utf-8",
+    )
+    task = Task(
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.COMPLETED,
+        source="https://example.com/registered",
+        result={"output_dir": str(archive_dir)},
+    )
+    store = database.get_task_store()
+    store.save(task)
+
+    response = client.request(
+        "DELETE",
+        "/api/pipeline/archives",
+        json={"path": str(archive_dir)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["task_deleted"] is True
+    assert not archive_dir.exists()
+    assert store.get(task.id) is None
+
+
+def test_remote_mirror_extra_polish_is_applied_on_coordinator(tmp_path, monkeypatch):
+    client, _queue = _client(tmp_path, monkeypatch)
+    settings = pipeline.get_runtime_settings()
+    settings.remote_sync_enabled = True
+    settings.remote_server_url = "https://coordinator.example"
+    settings.remote_api_token = "worker-secret"
+
+    archive_dir = tmp_path / "remote-task"
+    archive_dir.mkdir()
+    (archive_dir / "metadata.json").write_text(
+        json.dumps({"title": "Remote"}),
+        encoding="utf-8",
+    )
+    task = Task(
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.COMPLETED,
+        source="https://example.com/remote",
+        options={"_mpp_remote_mirror": True},
+        result={
+            "output_dir": str(archive_dir),
+            "remote_sync": {
+                "mirror": True,
+                "remote_output_dir": "/srv/mpp/remote-task",
+            },
+        },
+    )
+    database.get_task_store().save_remote_mirror(task)
+    requests: list[tuple[str, dict, dict]] = []
+
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "polished": "remote polished",
+                "filename": "transcript_extra_polished.md",
+                "sync_revision": 9,
+            }
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, *, json, headers):
+            requests.append((url, json, headers))
+            return FakeResponse()
+
+    monkeypatch.setattr(pipeline.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+
+    response = client.post(
+        "/api/pipeline/archives/polish",
+        json={"path": str(archive_dir), "text": "local input"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["polished"] == "remote polished"
+    assert requests[0][0].endswith("/api/pipeline/archives/polish")
+    assert requests[0][1]["path"] == "/srv/mpp/remote-task"
+    assert requests[0][1]["text"] == "local input"
+    assert requests[0][2]["Authorization"] == "Bearer worker-secret"
+    assert not (archive_dir / "transcript_extra_polished.md").exists()
+
+
 def test_bilibili_opus_note_cover_thumbnail_is_cached_in_metadata(tmp_path):
     Image = pytest.importorskip("PIL.Image")
     from app.core.pipeline import _cache_note_cover_thumbnail
@@ -511,6 +689,19 @@ def test_main_app_lifespan_auth_and_task_submission_smoke(tmp_path, monkeypatch)
         assert queue.submitted == [UUID(created.json()["id"])]
 
     assert queue.stopped is True
+
+
+def test_main_app_required_api_token_fails_closed(tmp_path, monkeypatch):
+    from app import main as app_main
+
+    settings = RuntimeSettings(data_root=str(tmp_path), api_token="")
+    monkeypatch.setattr(settings_module, "_runtime_settings", settings)
+    monkeypatch.setattr(app_main, "get_runtime_settings", lambda: settings)
+    monkeypatch.setenv("MPP_REQUIRE_API_TOKEN", "1")
+
+    with pytest.raises(RuntimeError, match="api_token is empty or unavailable"):
+        with TestClient(app_main.app):
+            pass
 
 
 def test_main_app_lifespan_auto_updates_ytdlp_when_enabled(tmp_path, monkeypatch):

@@ -621,7 +621,7 @@ def _do_attach(task_id: str, client=None, quiet: bool = False) -> None:
 
     # Rich progress display — uv-style: each completed step prints a line,
     # current step shows a live spinner+bar.
-    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, MofNCompleteColumn
+    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
     from app.cli.display import STEP_LABELS
 
     src = current.get("source", task_id)
@@ -748,7 +748,7 @@ def _print_final(task: dict, quiet: bool = False) -> None:
 
 def _print_detach_hint(task_id: str) -> None:
     from app.cli.display import console
-    console.print(f"\n[yellow]已脱离，任务仍在后台运行[/yellow]")
+    console.print("\n[yellow]已脱离，任务仍在后台运行[/yellow]")
     console.print(f"  查看进度: [bold]mpp attach {task_id[:8]}[/bold]")
     console.print(f"  查看结果: [bold]mpp show {task_id[:8]}[/bold]")
 
@@ -868,7 +868,6 @@ def _tasks_watch(status_filter: str | None = None, limit: int = 20) -> None:
     from app.cli.display import console
     from rich.live import Live
     from rich.table import Table
-    from rich.text import Text
     from app.cli.display import styled_status, time_ago
 
     client = _require_daemon()
@@ -946,10 +945,9 @@ def show(
     else:
         # Offline: read from SQLite
         try:
-            from app.core.database import get_task_store, init_db
-            from uuid import UUID
+            from app.core.database import init_db
+
             init_db()
-            store = get_task_store()
 
             if task_ref.startswith("@"):
                 tasks_offline = _list_tasks_any(
@@ -1128,10 +1126,16 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "local_llm_model_path",
     ],
     "security": [
-        "api_token",
+        "api_token", "remote_api_token",
         "anthropic_api_key", "openai_api_key", "custom_api_key", "deepseek_api_key",
         "hf_token", "hf_proxy",
         "bilibili_sessdata", "bilibili_bili_jct", "bilibili_dede_user_id",
+    ],
+    "sync": [
+        "remote_sync_enabled", "remote_server_url", "remote_api_token",
+        "remote_worker_id", "remote_worker_name", "remote_sync_interval_sec",
+        "remote_sync_upload_results", "remote_sync_download_results",
+        "remote_sync_include_media", "default_task_executor",
     ],
     "bilibili": [
         "bilibili_sessdata", "bilibili_bili_jct", "bilibili_dede_user_id",
@@ -1144,7 +1148,7 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
 _SECRET_KEYS = {
     "anthropic_api_key", "openai_api_key", "custom_api_key",
     "deepseek_api_key", "siliconflow_api_key",
-    "hf_token", "hf_proxy", "api_token", "jina_reader_api_key",
+    "hf_token", "hf_proxy", "api_token", "remote_api_token", "jina_reader_api_key",
     "bilibili_sessdata", "bilibili_bili_jct",
 }
 
@@ -1372,7 +1376,6 @@ def doctor():
 
     ok  = "[green]+" if _plain_mode else "[green]✓"
     err = "[red]x"   if _plain_mode else "[red]✗"
-    warn = "[yellow]!"
 
     def check(label: str, passed: bool, detail: str = "") -> None:
         icon = ok if passed else err
@@ -1385,7 +1388,7 @@ def doctor():
     # Daemon
     client = _get_client()
     daemon_ok = client.ping()
-    check("Daemon", daemon_ok, "http://127.0.0.1:18000" if daemon_ok else "未运行 — mpp serve")
+    check("Daemon", daemon_ok, "http://localhost:18000" if daemon_ok else "未运行 — mpp serve")
 
     # ffmpeg
     ff = shutil.which("ffmpeg")

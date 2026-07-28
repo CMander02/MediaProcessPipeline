@@ -312,7 +312,7 @@ class RuntimeSettings(BaseModel):
     # VLM (image understanding) — OpenAI-Compatible API
     vlm_api_base: str = ""
     vlm_api_key: str = ""
-    vlm_model: str = "Qwen/Qwen3.5-4B"
+    vlm_model: str = "Qwen/Qwen3-VL-8B-Instruct"
     vlm_max_tokens: int = 1024
     vlm_concurrency: int = 1
     vlm_timeout_sec: float = 180.0
@@ -338,6 +338,18 @@ class RuntimeSettings(BaseModel):
 
     # Security
     api_token: str = ""  # Bearer token for API auth; empty = auth disabled
+
+    # Remote hub synchronization (desktop EXE worker)
+    remote_sync_enabled: bool = False
+    remote_server_url: str = ""
+    remote_api_token: str = ""
+    remote_worker_id: str = ""
+    remote_worker_name: str = ""
+    remote_sync_interval_sec: float = 15.0
+    remote_sync_upload_results: bool = True
+    remote_sync_download_results: bool = True
+    remote_sync_include_media: bool = False
+    default_task_executor: str = "server"  # server | exe
 
     # Paths
     data_root: str = "D:/Video/MediaProcessPipeline"
@@ -440,6 +452,21 @@ class RuntimeSettings(BaseModel):
         if not 0 <= value <= 1:
             raise ValueError("bilibili_subtitle_min_coverage must be between 0 and 1")
         return value
+
+    @field_validator("remote_sync_interval_sec")
+    @classmethod
+    def _validate_remote_sync_interval(cls, value: float) -> float:
+        if value < 5:
+            raise ValueError("remote_sync_interval_sec must be at least 5 seconds")
+        return value
+
+    @field_validator("default_task_executor")
+    @classmethod
+    def _validate_default_task_executor(cls, value: str) -> str:
+        executor = value.strip().lower()
+        if executor not in {"server", "exe"}:
+            raise ValueError("default_task_executor must be one of: server, exe")
+        return executor
 
 
 # Global runtime settings storage

@@ -161,7 +161,7 @@ class VLMService:
         b64, media_type, payload_meta = _encode_image(image_path)
         timeout_sec = int(binding.request_kwargs.get("timeout_sec") or 90)
         started = time.monotonic()
-        max_tokens = max(2048, int(binding.request_kwargs.get("max_tokens") or rt.vlm_max_tokens))
+        max_tokens = max(256, int(binding.request_kwargs.get("max_tokens") or rt.vlm_max_tokens))
         response = client.chat.completions.create(
             model=model,
             max_tokens=max_tokens,

@@ -1,39 +1,102 @@
 """Direct pipeline operation routes."""
 
 import asyncio
+import hashlib
+import ipaddress
 import json
 import logging
 import re
 import shutil
 import subprocess
 import urllib.request
+from datetime import datetime
+from email.utils import formatdate
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+import httpx
+from fastapi import APIRouter, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import Any
+
+from app.core.network import httpx_client_kwargs, urllib_urlopen
+from app.core.pipeline import pipeline_steps_schema
+from app.core.settings import get_runtime_settings
+from app.core.source_normalization import normalize_source_input
+from app.services.archiving.thumbnails import (
+    ArchiveImageFormatError,
+    ArchiveImageTooLargeError,
+    PillowUnavailableError,
+    create_image_thumbnail,
+    create_image_thumbnail_from_bytes,
+    first_image_note_image,
+    image_media_type,
+    resize_archive_image_to_jpeg,
+)
 
 # Windows reserved device names (case-insensitive, with or without extension)
 _WIN_RESERVED = re.compile(
     r'^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(\..+)?$', re.IGNORECASE
 )
 
-import ipaddress
-from urllib.parse import urlparse
-
-from app.core.settings import get_runtime_settings
-from app.core.pipeline import pipeline_steps_schema
-from app.core.source_normalization import normalize_source_input
-from app.core.network import urllib_urlopen
-from app.services.archiving.thumbnails import (
-    create_image_thumbnail,
-    create_image_thumbnail_from_bytes,
-    first_image_note_image,
-    image_media_type,
-)
-
 logger = logging.getLogger(__name__)
+
+
+async def _proxy_remote_mirror_mutation(
+    archive_dir: Path,
+    endpoint: str,
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Apply archive mutations to the coordinator that owns a local mirror."""
+    from app.core.database import get_task_store
+
+    task = get_task_store().find_by_output_dir(archive_dir)
+    result = task.result if task and isinstance(task.result, dict) else {}
+    sync_info = (
+        result.get("remote_sync")
+        if isinstance(result.get("remote_sync"), dict)
+        else {}
+    )
+    if not sync_info.get("mirror"):
+        return None
+
+    remote_path = str(sync_info.get("remote_output_dir") or "").strip()
+    settings = get_runtime_settings()
+    server_url = str(settings.remote_server_url or "").strip().rstrip("/")
+    if not remote_path or not settings.remote_sync_enabled or not server_url:
+        raise HTTPException(409, "Remote mirror coordinator is not configured")
+
+    request_payload = {**payload, "path": remote_path}
+    headers = {"X-Requested-With": "MPP-EXE-Remote-Mutation"}
+    if settings.remote_api_token:
+        headers["Authorization"] = f"Bearer {settings.remote_api_token}"
+    url = f"{server_url}/api/pipeline/archives/{endpoint.lstrip('/')}"
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(360.0, connect=15.0),
+            follow_redirects=False,
+            **httpx_client_kwargs(url),
+        ) as client:
+            response = await client.post(url, json=request_payload, headers=headers)
+    except httpx.RequestError as exc:
+        raise HTTPException(502, "Cannot reach the remote archive coordinator") from exc
+    if response.status_code >= 400:
+        try:
+            detail = response.json().get("detail")
+        except (ValueError, AttributeError):
+            detail = None
+        raise HTTPException(
+            response.status_code,
+            str(detail or f"Remote archive mutation failed ({response.status_code})"),
+        )
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise HTTPException(502, "Remote archive coordinator returned invalid JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(502, "Remote archive coordinator returned invalid data")
+    return body
 
 
 def _validate_url(url: str) -> None:
@@ -78,6 +141,12 @@ class AnalyzeRequest(BaseModel):
     text: str
 
 
+class ArchivePolishRequest(BaseModel):
+    path: str
+    text: str | None = None
+    source_filename: str | None = None
+
+
 class XiaohongshuLoginRequest(BaseModel):
     timeout_sec: int = 180
 
@@ -89,6 +158,20 @@ _ALLOWED_MEDIA_EXTS = {
 
 _THUMBNAIL_MAX_BYTES = 12 * 1024 * 1024
 _RAW_IMAGE_FALLBACK_MAX_BYTES = 1024 * 1024
+_ARCHIVE_IMAGE_CACHE_SECONDS = 24 * 60 * 60
+_ARCHIVE_INTERNAL_ROOTS = {
+    "_staging",
+    "_remote_sync",
+    "_sync_downloads",
+    "_remote_sync_client",
+}
+_ARCHIVE_MARKER_FILES = {
+    "metadata.json",
+    "source.md",
+    "summary.md",
+    "transcript.srt",
+    "transcript_polished.srt",
+}
 
 
 def _read_archive_metadata(archive_dir: Path) -> dict[str, Any]:
@@ -147,6 +230,122 @@ def _can_return_raw_image(path: Path) -> bool:
         return path.stat().st_size <= _RAW_IMAGE_FALLBACK_MAX_BYTES
     except OSError:
         return False
+
+
+def _resolve_archive_image(path: str) -> Path:
+    """Resolve a supported image belonging to a flat data_root archive."""
+    candidate = Path(path)
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise HTTPException(404, "Archive image not found")
+
+    data_root = Path(get_runtime_settings().data_root).resolve()
+    try:
+        relative = resolved.relative_to(data_root)
+    except ValueError:
+        raise HTTPException(403, "Cannot access paths outside data directory")
+
+    if (
+        len(relative.parts) < 2
+        or relative.parts[0].startswith(".")
+        or relative.parts[0] in _ARCHIVE_INTERNAL_ROOTS
+    ):
+        raise HTTPException(403, "Path does not belong to an archive")
+
+    archive_dir = data_root / relative.parts[0]
+    if not archive_dir.is_dir() or not any(
+        (archive_dir / marker).is_file()
+        for marker in _ARCHIVE_MARKER_FILES
+    ):
+        raise HTTPException(403, "Path does not belong to an archive")
+    if not resolved.is_file():
+        raise HTTPException(404, "Archive image not found")
+    if resolved.suffix.lower() not in {
+        ".avif",
+        ".bmp",
+        ".gif",
+        ".jpeg",
+        ".jpg",
+        ".png",
+        ".webp",
+    }:
+        raise HTTPException(415, "Unsupported archive image type")
+    return resolved
+
+
+def _archive_image_response_headers(
+    source: Path,
+    *,
+    max_edge: int,
+    quality: int,
+) -> dict[str, str]:
+    stat = source.stat()
+    fingerprint = hashlib.sha256(
+        f"{stat.st_mtime_ns}:{stat.st_size}:{max_edge}:{quality}".encode("ascii"),
+    ).hexdigest()
+    return {
+        "Cache-Control": f"private, max-age={_ARCHIVE_IMAGE_CACHE_SECONDS}",
+        "Content-Disposition": 'inline; filename="archive-image.jpg"',
+        "ETag": f'"{fingerprint}"',
+        "Last-Modified": formatdate(stat.st_mtime, usegmt=True),
+        "Vary": "Authorization",
+        "X-Content-Type-Options": "nosniff",
+    }
+
+
+def _etag_matches(if_none_match: str | None, etag: str) -> bool:
+    if not if_none_match:
+        return False
+    return any(
+        candidate.strip() in {"*", etag}
+        for candidate in if_none_match.split(",")
+    )
+
+
+def _generate_video_thumbnail(video_file: Path, archive_dir: Path) -> Path | None:
+    thumb_path = archive_dir / "thumbnail.jpg"
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        logger.warning("ffmpeg thumbnail failed: ffmpeg executable not found")
+        return None
+
+    try:
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-ss",
+                "3",
+                "-i",
+                str(video_file),
+                "-vframes",
+                "1",
+                "-vf",
+                "scale=480:-2",
+                "-q:v",
+                "5",
+                str(thumb_path),
+            ],
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+        if result.returncode == 0 and thumb_path.is_file() and thumb_path.stat().st_size > 0:
+            return thumb_path
+        logger.warning(
+            "ffmpeg thumbnail failed: returncode=%s stderr=%s",
+            result.returncode,
+            result.stderr.decode("utf-8", errors="replace").strip(),
+        )
+    except Exception as exc:
+        logger.warning("ffmpeg thumbnail failed: %s", exc)
+
+    try:
+        thumb_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return None
 
 
 @router.get("/steps")
@@ -255,10 +454,32 @@ def sweep_stale_staging(max_age_hours: float = 24.0) -> int:
     root = _staging_root()
     if not root.exists():
         return 0
+    protected_dirs: set[Path] = set()
+    try:
+        from app.core.database import get_task_store
+
+        active_tasks = get_task_store().list_by_statuses(
+            ["pending", "queued", "processing", "paused"]
+        )
+        resolved_root = root.resolve()
+        for task in active_tasks:
+            source = str(task.source or "")
+            if source.startswith(("http://", "https://", "upload://")):
+                continue
+            try:
+                relative = Path(source).resolve().relative_to(resolved_root)
+            except (OSError, ValueError):
+                continue
+            if relative.parts:
+                protected_dirs.add((resolved_root / relative.parts[0]).resolve())
+    except Exception:
+        logger.warning("Unable to resolve active staged inputs during cleanup", exc_info=True)
     cutoff = time.time() - max_age_hours * 3600
     removed = 0
     for entry in root.iterdir():
         try:
+            if entry.resolve() in protected_dirs:
+                continue
             if entry.is_dir() and entry.stat().st_mtime < cutoff:
                 shutil.rmtree(entry, ignore_errors=True)
                 removed += 1
@@ -352,6 +573,113 @@ async def polish(req: AnalyzeRequest):
     return {"polished": await polish_text(req.text)}
 
 
+@router.post("/archives/polish")
+async def polish_archive(req: ArchivePolishRequest):
+    """Run an additional polish pass and persist it as a portable archive artifact."""
+    archive_dir = Path(req.path)
+    if not archive_dir.is_dir():
+        raise HTTPException(404, "Archive directory not found")
+
+    data_root = Path(get_runtime_settings().data_root).resolve()
+    try:
+        archive_dir = archive_dir.resolve()
+        archive_dir.relative_to(data_root)
+    except ValueError:
+        raise HTTPException(403, "Cannot modify paths outside data directory")
+
+    source_name = (req.source_filename or "").strip()
+    if source_name and (
+        Path(source_name).name != source_name
+        or "/" in source_name
+        or "\\" in source_name
+    ):
+        raise HTTPException(400, "Invalid source filename")
+
+    proxied = await _proxy_remote_mirror_mutation(
+        archive_dir,
+        "polish",
+        {
+            "text": req.text,
+            "source_filename": source_name or None,
+        },
+    )
+    if proxied is not None:
+        return proxied
+
+    text = req.text
+    if text is None:
+        candidates = [
+            source_name,
+            "transcript_polished.md",
+            "transcript_raw.md",
+            "transcript.srt",
+            "content.md",
+            "source.md",
+        ]
+        for filename in candidates:
+            if not filename:
+                continue
+            candidate = archive_dir / filename
+            if candidate.is_file():
+                text = candidate.read_text(encoding="utf-8")
+                source_name = filename
+                break
+
+    content = (text or "").strip()
+    if not content:
+        raise HTTPException(400, "No text is available for additional polishing")
+    if len(content) > 2_000_000:
+        raise HTTPException(413, "Text is too large for additional polishing")
+
+    metadata = _read_archive_metadata(archive_dir)
+    from app.services.analysis import polish_text
+
+    polished = await polish_text(
+        content,
+        context={
+            "title": str(metadata.get("title") or ""),
+            "additional_pass": True,
+        },
+    )
+    output_name = "transcript_extra_polished.md"
+    output_path = archive_dir / output_name
+    temp_path = archive_dir / f".{output_name}.tmp"
+    temp_path.write_text(polished, encoding="utf-8")
+    temp_path.replace(output_path)
+
+    metadata["extra_polish_file"] = output_name
+    metadata["extra_polish_source"] = source_name or "request"
+    metadata["extra_polished_at"] = datetime.now().isoformat()
+    metadata_path = archive_dir / "metadata.json"
+    metadata_temp = archive_dir / ".metadata.json.extra-polish.tmp"
+    metadata_temp.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    metadata_temp.replace(metadata_path)
+
+    from app.core.database import get_task_store
+
+    store = get_task_store()
+    task = store.find_by_output_dir(archive_dir)
+    updated_task = None
+    if task:
+        updated_task = store.touch_sync_revision(
+            task.id,
+            result_updates={
+                "extra_polish_file": output_name,
+                "extra_polished_at": metadata["extra_polished_at"],
+            },
+        )
+
+    return {
+        "polished": polished,
+        "filename": output_name,
+        "path": str(output_path),
+        "sync_revision": updated_task.sync_revision if updated_task else None,
+    }
+
+
 @router.post("/summarize")
 async def summarize(req: AnalyzeRequest):
     """Generate summary."""
@@ -406,38 +734,40 @@ async def delete_archive(req: ArchiveDeleteRequest):
     if not archive_dir.is_dir():
         raise HTTPException(404, "Archive directory not found")
 
-    # Safety: only allow deleting within data_root
+    # Only direct, registered archive directories may be removed. Internal
+    # staging/synchronization trees and data_root itself are never archives.
     rt = get_runtime_settings()
     data_root = Path(rt.data_root).resolve()
+    resolved_archive = archive_dir.resolve()
     try:
-        archive_dir.resolve().relative_to(data_root)
+        relative_archive = resolved_archive.relative_to(data_root)
     except ValueError:
         raise HTTPException(403, "Cannot delete paths outside data directory")
+    internal_roots = {
+        "_staging",
+        "_remote_sync",
+        "_sync_downloads",
+        "_remote_sync_client",
+    }
+    if (
+        resolved_archive == data_root
+        or len(relative_archive.parts) != 1
+        or relative_archive.parts[0] in internal_roots
+        or relative_archive.parts[0].startswith(".")
+        or archive_dir.is_symlink()
+    ):
+        raise HTTPException(403, "Path is not a deletable archive directory")
 
-    # Try to find and delete the associated task record by matching output_dir
-    task_deleted = False
-    from uuid import UUID
-    from app.core.database import get_task_store, _get_conn
+    from app.core.database import get_task_store
+
     store = get_task_store()
-    conn = _get_conn()
-    archive_dir_str = str(archive_dir.resolve())
-    # Search for task whose result JSON contains this output_dir path
-    rows = conn.execute("SELECT id, status, result FROM tasks WHERE result IS NOT NULL").fetchall()
-    for row in rows:
-        try:
-            result = json.loads(row["result"]) if isinstance(row["result"], str) else row["result"]
-            if result and str(Path(result.get("output_dir", "")).resolve()) == archive_dir_str:
-                if str(row["status"]) in {"queued", "processing"}:
-                    raise HTTPException(409, "Archive directory is used by an active task")
-                store.delete(UUID(row["id"]))
-                task_deleted = True
-                break
-        except HTTPException:
-            raise
-        except (json.JSONDecodeError, TypeError, ValueError):
-            continue
+    task = store.find_by_output_dir(resolved_archive)
+    if task is None:
+        raise HTTPException(404, "Archive is not associated with a registered task")
+    if str(task.status) not in {"completed", "failed", "cancelled"}:
+        raise HTTPException(409, "Archive directory is used by an active task")
 
-    # Delete the archive directory (with Windows file-lock retry)
+    # Remove files first so a filesystem error leaves the task record intact.
     import time
 
     def _onerror_retry(func, path, exc_info):
@@ -456,7 +786,7 @@ async def delete_archive(req: ArchiveDeleteRequest):
     last_err = None
     for attempt in range(3):
         try:
-            shutil.rmtree(archive_dir, onerror=_onerror_retry)
+            shutil.rmtree(resolved_archive, onerror=_onerror_retry)
             break
         except Exception as e:
             last_err = e
@@ -464,19 +794,25 @@ async def delete_archive(req: ArchiveDeleteRequest):
                 time.sleep(0.5)
     else:
         # If folder still exists but is now empty, that's ok
-        if archive_dir.exists() and any(archive_dir.iterdir()):
+        if resolved_archive.exists() and any(resolved_archive.iterdir()):
             raise HTTPException(500, f"Failed to delete archive: {last_err}")
         # Empty dir or gone — try final rmdir
         try:
-            archive_dir.rmdir()
+            resolved_archive.rmdir()
         except Exception:
             pass
 
-    logger.info(f"Deleted archive: {archive_dir} (task={task_deleted})")
+    if resolved_archive.exists():
+        raise HTTPException(500, "Failed to delete archive directory")
+    task_deleted = store.delete(task.id)
+    if not task_deleted:
+        raise HTTPException(500, "Archive removed but task record could not be deleted")
+
+    logger.info(f"Deleted archive: {resolved_archive} (task={task_deleted})")
 
     return {
         "message": "Deleted",
-        "path": str(archive_dir),
+        "path": str(resolved_archive),
         "task_deleted": task_deleted,
     }
 
@@ -504,6 +840,14 @@ async def rename_archive(req: ArchiveRenameRequest):
     if not new_title:
         raise HTTPException(400, "Title cannot be empty")
 
+    proxied = await _proxy_remote_mirror_mutation(
+        archive_dir.resolve(),
+        "rename",
+        {"title": new_title},
+    )
+    if proxied is not None:
+        return proxied
+
     meta_path = archive_dir / "metadata.json"
     meta = {}
     if meta_path.exists():
@@ -515,7 +859,71 @@ async def rename_archive(req: ArchiveRenameRequest):
     meta["title"] = new_title
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    return {"success": True, "title": new_title}
+    from app.core.database import get_task_store
+
+    store = get_task_store()
+    task = store.find_by_output_dir(archive_dir)
+    updated_task = None
+    if task:
+        result_metadata = (
+            dict(task.result.get("metadata") or {})
+            if isinstance(task.result, dict)
+            and isinstance(task.result.get("metadata"), dict)
+            else {}
+        )
+        result_metadata["title"] = new_title
+        updated_task = store.touch_sync_revision(
+            task.id,
+            result_updates={"metadata": result_metadata},
+        )
+
+    return {
+        "success": True,
+        "title": new_title,
+        "sync_revision": updated_task.sync_revision if updated_task else None,
+    }
+
+
+@router.get("/archives/image")
+async def archive_image(
+    request: Request,
+    path: str,
+    max_edge: int = Query(default=1280, ge=256, le=4096),
+    quality: int = Query(default=84, ge=55, le=90),
+):
+    """Return a bounded JPEG rendition of one image stored in an archive."""
+    source = _resolve_archive_image(path)
+    try:
+        headers = _archive_image_response_headers(
+            source,
+            max_edge=max_edge,
+            quality=quality,
+        )
+    except OSError:
+        raise HTTPException(404, "Archive image not found")
+
+    if _etag_matches(request.headers.get("if-none-match"), headers["ETag"]):
+        return Response(status_code=304, headers=headers)
+
+    try:
+        payload = await asyncio.to_thread(
+            resize_archive_image_to_jpeg,
+            source,
+            max_edge=max_edge,
+            quality=quality,
+        )
+    except ArchiveImageTooLargeError as exc:
+        raise HTTPException(413, str(exc)) from exc
+    except ArchiveImageFormatError as exc:
+        raise HTTPException(415, str(exc)) from exc
+    except PillowUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+    return Response(
+        content=payload,
+        media_type="image/jpeg",
+        headers=headers,
+    )
 
 
 @router.get("/archives/thumbnail")
@@ -544,7 +952,7 @@ async def archive_thumbnail(path: str):
     for candidate in ["cover.jpg", "cover.png", "cover.webp"]:
         cover = archive_dir / candidate
         if cover.exists():
-            thumb = create_image_thumbnail(cover, archive_dir)
+            thumb = await asyncio.to_thread(create_image_thumbnail, cover, archive_dir)
             if thumb:
                 return FileResponse(thumb, media_type="image/jpeg")
             if _can_return_raw_image(cover):
@@ -553,7 +961,7 @@ async def archive_thumbnail(path: str):
 
     first_image = first_image_note_image(archive_dir)
     if first_image:
-        thumb = create_image_thumbnail(first_image, archive_dir)
+        thumb = await asyncio.to_thread(create_image_thumbnail, first_image, archive_dir)
         if thumb:
             return FileResponse(thumb, media_type="image/jpeg")
         if _can_return_raw_image(first_image):
@@ -562,7 +970,7 @@ async def archive_thumbnail(path: str):
     meta = _read_archive_metadata(archive_dir)
     remote_thumb = _first_thumbnail_url(meta)
     if remote_thumb:
-        thumb = _cache_remote_thumbnail(remote_thumb, archive_dir)
+        thumb = await asyncio.to_thread(_cache_remote_thumbnail, remote_thumb, archive_dir)
         if thumb:
             return FileResponse(thumb, media_type="image/jpeg")
 
@@ -587,26 +995,10 @@ async def archive_thumbnail(path: str):
     if not video_file:
         raise HTTPException(404, "No thumbnail or video found")
 
-    # Generate thumbnail via ffmpeg
-    thumb_path = archive_dir / "thumbnail.jpg"
-    try:
-        subprocess.run(
-            [
-                "ffmpeg", "-y", "-ss", "3", "-i", str(video_file),
-                "-vframes", "1", "-vf", "scale=480:-2",
-                "-q:v", "5", str(thumb_path),
-            ],
-            capture_output=True,
-            timeout=15,
-        )
-    except Exception as e:
-        logger.warning(f"ffmpeg thumbnail failed: {e}")
-        raise HTTPException(500, "Thumbnail generation failed")
-
-    if thumb_path.exists():
-        return FileResponse(thumb_path, media_type="image/jpeg")
-
-    raise HTTPException(500, "Thumbnail generation produced no output")
+    thumb = await asyncio.to_thread(_generate_video_thumbnail, video_file, archive_dir)
+    if thumb:
+        return FileResponse(thumb, media_type="image/jpeg")
+    raise HTTPException(500, "Thumbnail generation failed")
 
 
 @router.post("/cleanup/{task_id}")

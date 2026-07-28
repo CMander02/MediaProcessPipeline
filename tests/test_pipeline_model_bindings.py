@@ -69,7 +69,7 @@ def test_pipeline_binding_for_image_note_uses_vlm_when_images_are_present():
     assert binding.run_polish is False
     assert binding.run_analysis is True
     assert binding.run_vlm is True
-    assert binding.vlm.model == "Qwen/Qwen3.5-4B"
+    assert binding.vlm.model == "Qwen/Qwen3-VL-8B-Instruct"
 
 
 def test_pipeline_binding_for_image_note_uses_siliconflow_vlm_fallback():
@@ -88,7 +88,7 @@ def test_pipeline_binding_for_image_note_uses_siliconflow_vlm_fallback():
     )
 
     assert binding.run_vlm is True
-    assert binding.vlm.model == "Qwen/Qwen3.5-4B"
+    assert binding.vlm.model == "Qwen/Qwen3-VL-8B-Instruct"
     assert binding.vlm.api_base == "https://api.siliconflow.cn/v1"
 
 

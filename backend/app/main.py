@@ -1,6 +1,7 @@
 import logging
 import sys
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -9,13 +10,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 
-from app.api.routes import tasks, pipeline, filesystem, voiceprints
+from app.api.routes import tasks, pipeline, filesystem, voiceprints, sync
 from app.api.routes import settings as settings_router
 from app.api.routes import kb as kb_router
 from app.core.settings import get_runtime_settings, SETTINGS_FILE
 from app.core.config import get_settings
 from app.core.database import init_db, close_db
-from app.core.events import get_event_bus
 from app.core.logging_setup import setup_logging
 from app.core.pipeline import process_task
 from app.core.queue import get_task_queue
@@ -50,6 +50,10 @@ class NoStoreStaticFiles(StaticFiles):
 async def lifespan(app: FastAPI):
     # Startup
     rt = get_runtime_settings()
+    if _api_token_is_required() and not rt.api_token:
+        raise RuntimeError(
+            "MPP_REQUIRE_API_TOKEN is enabled, but api_token is empty or unavailable"
+        )
     logger.info(f"Loaded runtime settings from {SETTINGS_FILE}")
     logger.info(f"  LLM Provider: {rt.llm_provider}")
     if rt.llm_provider == "custom":
@@ -65,10 +69,28 @@ async def lifespan(app: FastAPI):
     # Initialize SQLite task store
     init_db()
 
+    try:
+        from app.core.archive_sync import sweep_stale_sync_storage
+
+        sync_cleanup = sweep_stale_sync_storage(Path(rt.data_root))
+        if sync_cleanup["removed"] or sync_cleanup["restored"]:
+            logger.info(
+                "Sync storage recovery: removed=%s restored=%s",
+                sync_cleanup["removed"],
+                sync_cleanup["restored"],
+            )
+    except Exception as e:
+        logger.warning("Sync storage recovery failed: %s", e)
+
     # Start task queue worker
     queue = get_task_queue()
     queue.set_pipeline(process_task)
     await queue.start()
+
+    from app.services.remote_sync import get_remote_sync_service
+
+    remote_sync = get_remote_sync_service()
+    await remote_sync.start()
 
     # Sweep stale upload staging dirs (>24h old, never confirmed by user)
     try:
@@ -86,17 +108,20 @@ async def lifespan(app: FastAPI):
         # closing the database. The desktop process job remains the hard-stop
         # fallback for interrupted Windows exits.
         try:
-            await queue.stop()
+            await remote_sync.stop()
         finally:
             try:
-                from app.services.recognition import release_asr_models
-                from app.services.analysis.local_llm_runtime import release_local_llm_runtime
+                await queue.stop()
+            finally:
+                try:
+                    from app.services.recognition import release_asr_models
+                    from app.services.analysis.local_llm_runtime import release_local_llm_runtime
 
-                await asyncio.to_thread(release_asr_models)
-                await asyncio.to_thread(release_local_llm_runtime)
-            except Exception as e:
-                logger.warning("Runtime cleanup during shutdown failed: %s", e)
-            close_db()
+                    await asyncio.to_thread(release_asr_models)
+                    await asyncio.to_thread(release_local_llm_runtime)
+                except Exception as e:
+                    logger.warning("Runtime cleanup during shutdown failed: %s", e)
+                close_db()
 
 app = FastAPI(
     title=config.api_title,
@@ -124,14 +149,29 @@ app.add_middleware(
 _AUTH_EXEMPT_PREFIXES = ("/health", "/assets", "/favicon")
 
 
+def _api_token_is_required() -> bool:
+    return os.environ.get("MPP_REQUIRE_API_TOKEN", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
     # Only gate /api/* endpoints
     if path.startswith("/api"):
-        # Bearer token auth (optional — only when api_token is configured)
+        # Bearer token auth. Production coordinators can force fail-closed
+        # behavior independently of the runtime settings file.
         rt = get_runtime_settings()
         token = rt.api_token
+        if _api_token_is_required() and not token:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "API authentication is required but unavailable"},
+            )
         if token:
             auth_header = request.headers.get("authorization", "")
             cookie_token = request.cookies.get("mpp_api_token", "")
@@ -161,6 +201,7 @@ app.include_router(settings_router.router, prefix="/api")
 app.include_router(filesystem.router, prefix="/api")
 app.include_router(voiceprints.router, prefix="/api")
 app.include_router(kb_router.router, prefix="/api")
+app.include_router(sync.router, prefix="/api")
 
 
 @app.get("/health")

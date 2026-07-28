@@ -11,6 +11,7 @@ import asyncio
 import ipaddress
 import json
 import logging
+import re
 from datetime import datetime
 from urllib.parse import urlparse
 from uuid import UUID
@@ -21,15 +22,18 @@ from fastapi.responses import StreamingResponse
 from app.core.database import get_task_store
 from app.core.events import get_event_bus
 from app.core.pipeline import (
-    PIPELINE_STEPS, PipelineStep, pipeline_steps_schema, _detect_source_type, _looks_like_local_path,
+    PIPELINE_STEPS, PipelineStep, pipeline_steps_schema, _looks_like_local_path,
     _clean_source_path, create_task_dir, write_metadata_json,
 )
 from app.core.queue import get_task_queue
+from app.core.settings import get_runtime_settings
 from app.core.source_resolver import resolve_source_flow
-from app.models import Task, TaskBatchCreate, TaskCreate, TaskStatus
+from app.models import Task, TaskBatchCreate, TaskCreate, TaskStatus, TaskType
+from app.models.task import PREFERRED_WORKER_OPTION
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 logger = logging.getLogger(__name__)
+_WORKER_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 def _validate_public_http_url(url: str) -> None:
@@ -64,14 +68,62 @@ async def create_task(task_create: TaskCreate):
     from app.services.ingestion.ytdlp import normalize_bilibili_source_url
 
     source = normalize_bilibili_source_url(_clean_source_path(task_create.source))
+    runtime = get_runtime_settings()
+    if runtime.remote_sync_enabled and task_create.task_type == TaskType.PIPELINE:
+        requested_executor = (
+            task_create.requested_executor
+            if "requested_executor" in task_create.model_fields_set
+            else runtime.default_task_executor
+        )
+        if (
+            source.startswith(("http://", "https://", "upload://"))
+            or _looks_like_local_path(source)
+        ):
+            from app.services.remote_sync import (
+                RemoteSyncConfigurationError,
+                RemoteSyncUnavailableError,
+                get_remote_sync_service,
+            )
+
+            forwarded = task_create.model_copy(
+                update={
+                    "source": source,
+                    "requested_executor": requested_executor,
+                }
+            )
+            try:
+                return await get_remote_sync_service().forward_task(forwarded)
+            except RemoteSyncConfigurationError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except RemoteSyncUnavailableError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    task_options = dict(task_create.options)
+    preferred_worker = str(task_options.get(PREFERRED_WORKER_OPTION) or "").strip()
+    if preferred_worker and not _WORKER_ID_PATTERN.fullmatch(preferred_worker):
+        raise HTTPException(status_code=400, detail="Invalid preferred EXE worker id")
+    if task_create.requested_executor != "exe":
+        preferred_worker = ""
+        task_options.pop(PREFERRED_WORKER_OPTION, None)
     task = Task(
         task_type=task_create.task_type,
         source=source,
-        options=task_create.options,
+        options=task_options,
         webhook_url=task_create.webhook_url,
         status=TaskStatus.QUEUED,
+        origin_client=task_create.origin_client,
+        requested_executor=task_create.requested_executor,
+        assigned_executor=(
+            "server"
+            if task_create.requested_executor == "server"
+            else preferred_worker or None
+        ),
         current_step=PipelineStep.DOWNLOAD,
-        message="等待处理...",
+        message=(
+            "等待处理..."
+            if task_create.requested_executor == "server"
+            else "等待 EXE 处理..."
+        ),
         steps=[s["id"] for s in PIPELINE_STEPS],
         completed_steps=[],
     )
@@ -134,20 +186,28 @@ async def create_tasks_batch(batch_create: TaskBatchCreate):
 
     tasks_created: list[Task] = []
     for source in normalized_sources:
-        tasks_created.append(await create_task(TaskCreate(
-            task_type=batch_create.task_type,
-            source=source,
-            options=batch_create.options,
-            webhook_url=batch_create.webhook_url,
-        )))
+        task_values = {
+            "task_type": batch_create.task_type,
+            "source": source,
+            "options": batch_create.options,
+            "webhook_url": batch_create.webhook_url,
+            "origin_client": batch_create.origin_client,
+        }
+        if "requested_executor" in batch_create.model_fields_set:
+            task_values["requested_executor"] = batch_create.requested_executor
+        tasks_created.append(await create_task(TaskCreate(**task_values)))
     return tasks_created
 
 
 @router.get("", response_model=list[Task])
-async def list_tasks(status: TaskStatus | None = None, limit: int = 50):
+async def list_tasks(
+    status: TaskStatus | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
     """List tasks with optional filtering."""
     store = get_task_store()
-    return store.list(status=status, limit=limit)
+    return store.list(status=status, limit=limit, offset=offset)
 
 
 @router.get("/stats")

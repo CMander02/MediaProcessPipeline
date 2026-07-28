@@ -27,6 +27,7 @@ from app.core.settings import get_runtime_settings
 from app.core.source_normalization import normalize_source_input
 from app.core.source_resolver import SourceFlow, flow_from_metadata, resolve_source_flow
 from app.models import MediaMetadata, Task, TaskStatus, TaskType
+from app.models.task import REMOTE_MIRROR_OPTION
 
 logger = logging.getLogger(__name__)
 
@@ -1167,7 +1168,7 @@ async def _run_subtitle_fast_path(
     Returns the text-related portion of the task result.
     """
     from app.services.recognition.subtitle_processor import process_subtitles
-    from app.services.analysis import polish_text, summarize_text, generate_mindmap, generate_detail, analyze_content
+    from app.services.analysis import analyze_content, generate_detail, generate_mindmap, summarize_text
 
     # -- SEPARATE: skip (no audio to separate) --
     await _raise_if_cancelled(task.id)
@@ -2536,13 +2537,15 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     is_staged = True
                 except ValueError:
                     is_staged = False
-                if is_staged:
+                if is_staged and not task.options.get(REMOTE_MIRROR_OPTION):
                     shutil.move(str(source_path), str(dest_source))
                     try:
                         source_path.parent.rmdir()
                     except OSError:
                         pass
                 else:
+                    # A coordinator task may be reclaimed after an interrupted
+                    # lease, so keep its preferred EXE staging source readable.
                     shutil.copy2(str(source_path), str(dest_source))
 
             title = dest_source.stem

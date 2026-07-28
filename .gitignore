@@ -40,10 +40,10 @@ htmlcov/
 .ruff_cache/
 
 # uv
-uv.lock
+# Track uv.lock for reproducible application, server, and release builds.
 
 # Data directories (processing files, media, outputs)
-data/
+/data/
 *.wav
 *.mp3
 *.mp4
@@ -65,6 +65,7 @@ nul
 # doc/
 
 .claude/
+.codex/
 
 # Experiment outputs (frames, crops, results)
 experiment/*/out/

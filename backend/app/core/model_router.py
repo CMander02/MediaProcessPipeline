@@ -19,8 +19,11 @@ _DEFAULT_QWEN3_ASR_MODEL = "Qwen/Qwen3-ASR-1.7B"
 _DEFAULT_QWEN3_GGUF_REPO = "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0"
 _DEFAULT_QWEN3_GGUF_ALIAS = "Qwen3-ASR-1.7B"
 _DEFAULT_DEEPSEEK_API_BASE = "https://api.deepseek.com"
-_DEFAULT_SILICONFLOW_VLM_MODEL = "Qwen/Qwen3.5-4B"
-_LEGACY_VLM_DEFAULT_MODELS = {"qwen2.5-vl-7b-instruct"}
+_DEFAULT_SILICONFLOW_VLM_MODEL = "Qwen/Qwen3-VL-8B-Instruct"
+_LEGACY_VLM_DEFAULT_MODELS = {
+    "qwen2.5-vl-7b-instruct",
+    "qwen/qwen3.5-4b",
+}
 
 _MODEL_TYPE_ENDPOINT_PATHS = {
     "llm": "/chat/completions",

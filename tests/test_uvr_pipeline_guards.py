@@ -1,7 +1,7 @@
 import logging
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -54,7 +54,12 @@ def test_uvr_separator_uses_configured_chunk_duration(tmp_path, monkeypatch):
         def load_model(self, model_name: str) -> None:
             self.model_name = model_name
 
-    monkeypatch.setattr("audio_separator.separator.Separator", FakeSeparator)
+    audio_separator_module = ModuleType("audio_separator")
+    separator_module = ModuleType("audio_separator.separator")
+    separator_module.Separator = FakeSeparator
+    audio_separator_module.separator = separator_module
+    monkeypatch.setitem(sys.modules, "audio_separator", audio_separator_module)
+    monkeypatch.setitem(sys.modules, "audio_separator.separator", separator_module)
     monkeypatch.setattr(
         uvr_mod,
         "get_runtime_settings",

@@ -14,7 +14,6 @@ directly into the GPU queue so they skip re-downloading.
 import asyncio
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 from uuid import UUID
@@ -26,7 +25,7 @@ from app.core.logging_setup import (
     set_task_context, set_worker_context, reset_context,
     task_id_var, worker_var,
 )
-from app.models.task import TaskStatus
+from app.models.task import REMOTE_MIRROR_OPTION, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +78,7 @@ class TaskQueue:
         self._active_download_ids: set[UUID] = set()
         self._active_gpu_id: UUID | None = None
         self._running_tasks: dict[UUID, asyncio.Task] = {}
+        self._remote_claims: dict[UUID, str] = {}
         self._running = False
 
         # Exposed so pipeline.py can acquire it around GPU-heavy steps.
@@ -112,7 +112,31 @@ class TaskQueue:
         """Enqueue a new task — it goes straight to the download queue."""
         store = get_task_store()
         bus = get_event_bus()
-        store.update_status(task_id, TaskStatus.QUEUED)
+        task = store.get(task_id)
+        if not task:
+            return
+        if task.options.get(REMOTE_MIRROR_OPTION) or task.requested_executor != "server":
+            store.update_status(
+                task_id,
+                TaskStatus.QUEUED,
+                message=(
+                    "等待远程处理..."
+                    if task.options.get(REMOTE_MIRROR_OPTION)
+                    else "等待 EXE 处理..."
+                ),
+                assigned_executor=task.assigned_executor,
+            )
+            await bus.publish(TaskEvent(
+                task_id,
+                "queued",
+                {"requested_executor": task.requested_executor},
+            ))
+            return
+        store.update_status(
+            task_id,
+            TaskStatus.QUEUED,
+            assigned_executor="server",
+        )
         await bus.publish(TaskEvent(task_id, "queued"))
         t_token = set_task_context(str(task_id))
         try:
@@ -126,16 +150,73 @@ class TaskQueue:
         finally:
             reset_context(t_token, task_id_var)
 
+    async def submit_remote_claim(self, task_id: UUID, worker_id: str) -> None:
+        """Authorize and enqueue one coordinator-leased task on this EXE."""
+        store = get_task_store()
+        task = store.get(task_id)
+        if (
+            not task
+            or not task.options.get(REMOTE_MIRROR_OPTION)
+            or task.requested_executor != "exe"
+            or task.assigned_executor != worker_id
+        ):
+            raise ValueError("Remote task is not assigned to this EXE worker")
+
+        self._remote_claims[task_id] = worker_id
+        store.update_status(
+            task_id,
+            TaskStatus.QUEUED,
+            message="已领取远程任务，等待本机处理...",
+            error=None,
+        )
+        await get_event_bus().publish(
+            TaskEvent(
+                task_id,
+                "queued",
+                {
+                    "requested_executor": "exe",
+                    "assigned_executor": worker_id,
+                    "remote_claim": True,
+                },
+            )
+        )
+        await self._download_queue.put(task_id)
+        log_event(
+            logger,
+            logging.INFO,
+            "queue.remote_claim.enqueued",
+            worker_id=worker_id,
+            depth=self._download_queue.qsize(),
+        )
+
+    def release_remote_claim(self, task_id: UUID, worker_id: str) -> bool:
+        """Remove an in-memory EXE execution grant after sync finalization."""
+        if self._remote_claims.get(task_id) != worker_id:
+            return False
+        self._remote_claims.pop(task_id, None)
+        return True
+
+    def _is_locally_runnable(self, task: Task) -> bool:
+        if task.options.get(REMOTE_MIRROR_OPTION):
+            worker_id = self._remote_claims.get(task.id)
+            return bool(
+                worker_id
+                and task.requested_executor == "exe"
+                and task.assigned_executor == worker_id
+            )
+        return task.requested_executor == "server"
+
     async def cancel(self, task_id: UUID) -> bool:
         store = get_task_store()
         task = store.get(task_id)
         if not task:
             return False
-        if task.status not in (TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.PROCESSING, TaskStatus.PAUSED):
+        cancelled = store.transition_task_control(task_id, TaskStatus.CANCELLED)
+        if not cancelled:
             return False
+        task = cancelled
         self._remove_from_queue(self._download_queue, task_id)
         self._remove_from_queue(self._gpu_queue, task_id)
-        store.update_status(task_id, TaskStatus.CANCELLED, completed_at=datetime.now())
         if task.result and task.result.get("output_dir"):
             try:
                 from pathlib import Path
@@ -162,8 +243,6 @@ class TaskQueue:
         task = store.get(task_id)
         if not task:
             return False
-        if task.status not in (TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.PROCESSING):
-            return False
 
         self._remove_from_queue(self._download_queue, task_id)
         self._remove_from_queue(self._gpu_queue, task_id)
@@ -172,13 +251,14 @@ class TaskQueue:
         if flow:
             flow = dict(flow)
             flow["status"] = "paused"
-        store.update_status(
+        paused = store.transition_task_control(
             task_id,
             TaskStatus.PAUSED,
-            message="已暂停",
             flow=flow,
-            completed_at=None,
         )
+        if not paused:
+            return False
+        task = paused
         if task.result and task.result.get("output_dir"):
             try:
                 from app.core.pipeline import update_metadata_status
@@ -461,8 +541,27 @@ class TaskQueue:
         from app.core.pipeline import PipelineStep
         stale = store.list_by_statuses([TS.QUEUED, TS.PROCESSING])
         for task in stale:
+            # EXE-targeted tasks are leased through the coordinator API. They
+            # remain visible in the canonical DB while the local GPU queue only
+            # restores tasks assigned to this server.
+            if (
+                task.options.get(REMOTE_MIRROR_OPTION)
+                or task.requested_executor != "server"
+            ):
+                continue
             if task.status == TS.PROCESSING:
-                store.update_status(task.id, TS.QUEUED, message="已重新排队")
+                store.update_status(
+                    task.id,
+                    TS.QUEUED,
+                    message="已重新排队",
+                    assigned_executor="server",
+                )
+            elif task.assigned_executor != "server":
+                store.update_status(
+                    task.id,
+                    TS.QUEUED,
+                    assigned_executor="server",
+                )
             # If download was already done, skip straight to GPU queue
             completed = set(task.completed_steps or [])
             if PipelineStep.DOWNLOAD in completed:
@@ -539,6 +638,7 @@ class TaskQueue:
                 pass
             self._gpu_worker_task = None
 
+        self._remote_claims.clear()
         log_event(logger, logging.INFO, "queue.stopped")
 
     # ------------------------------------------------------------------
@@ -575,7 +675,11 @@ class TaskQueue:
 
                 store = get_task_store()
                 task = store.get(task_id)
-                if not task or task.status == TaskStatus.CANCELLED:
+                if (
+                    not task
+                    or task.status == TaskStatus.CANCELLED
+                    or not self._is_locally_runnable(task)
+                ):
                     self._download_queue.task_done()
                     continue
 
@@ -615,7 +719,11 @@ class TaskQueue:
 
                 store = get_task_store()
                 task = store.get(task_id)
-                if not task or task.status == TaskStatus.CANCELLED:
+                if (
+                    not task
+                    or task.status == TaskStatus.CANCELLED
+                    or not self._is_locally_runnable(task)
+                ):
                     self._gpu_queue.task_done()
                     continue
 

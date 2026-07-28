@@ -41,7 +41,7 @@ def test_vlm_binding_uses_siliconflow_defaults_when_vlm_endpoint_is_empty():
     binding = resolve_vlm_binding(settings)
 
     assert binding.configured is True
-    assert binding.model == "Qwen/Qwen3.5-4B"
+    assert binding.model == "Qwen/Qwen3-VL-8B-Instruct"
     assert binding.api_base == "https://api.siliconflow.cn/v1"
     assert binding.api_key == "sf-key"
 

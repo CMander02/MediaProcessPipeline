@@ -2,10 +2,14 @@
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
+
+PREFERRED_WORKER_OPTION = "_mpp_preferred_worker_id"
+REMOTE_MIRROR_OPTION = "_mpp_remote_mirror"
+REMOTE_ARCHIVE_REVISION_OPTION = "_mpp_remote_archive_revision"
 
 
 class TaskStatus(StrEnum):
@@ -73,6 +77,8 @@ class TaskCreate(BaseModel):
     source: str
     options: dict[str, Any] = Field(default_factory=dict)
     webhook_url: str | None = None
+    origin_client: str = Field(default="api", min_length=1, max_length=64)
+    requested_executor: Literal["server", "exe"] = "server"
 
 
 class TaskBatchCreate(BaseModel):
@@ -80,6 +86,8 @@ class TaskBatchCreate(BaseModel):
     sources: list[str] = Field(min_length=1, max_length=100)
     options: dict[str, Any] = Field(default_factory=dict)
     webhook_url: str | None = None
+    origin_client: str = Field(default="api", min_length=1, max_length=64)
+    requested_executor: Literal["server", "exe"] = "server"
 
 
 class Task(BaseModel):
@@ -105,3 +113,9 @@ class Task(BaseModel):
     platform: str | None = None
     uploader_id: str | None = None
     content_subtype: str | None = None
+    # Coordinator metadata. The server owns the canonical task record while
+    # desktop workers lease tasks whose requested executor is ``exe``.
+    origin_client: str = "legacy"
+    requested_executor: Literal["server", "exe"] = "server"
+    assigned_executor: str | None = None
+    sync_revision: int = Field(default=0, ge=0)
