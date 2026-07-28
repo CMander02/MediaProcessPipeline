@@ -7,6 +7,7 @@
   "permissions": [
     "core:default",
     "allow-backend-get-status",
+    "allow-bootstrap-get-preflight",
     "allow-backend-get-logs",
     "allow-backend-start",
     "allow-backend-stop",

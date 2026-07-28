@@ -18,6 +18,9 @@ import {
   type BootstrapBridge,
   type BootstrapDiagnostics,
   type BootstrapPhase,
+  type BootstrapPreflight,
+  type BootstrapPreflightComponentStatus,
+  type BootstrapPreflightOverallStatus,
   type BootstrapStatus,
 } from "@/lib/tauri"
 import { cn } from "@/lib/utils"
@@ -76,6 +79,40 @@ const phaseCopy: Record<BootstrapPhase, { title: string; description: string; pr
 
 const stepLabels = ["检查环境", "启动服务", "健康检查", "进入应用"]
 
+const preflightStatusCopy: Record<BootstrapPreflightOverallStatus, string> = {
+  scanning: "正在检查运行环境",
+  ready: "运行环境检查通过",
+  needs_configuration: "需要完成运行配置",
+  needs_repair: "需要修复本地组件",
+  blocked: "运行环境阻止启动",
+}
+
+const preflightBadgeCopy: Record<BootstrapPreflightOverallStatus, string> = {
+  scanning: "检查中",
+  ready: "已通过",
+  needs_configuration: "待配置",
+  needs_repair: "待修复",
+  blocked: "已阻止",
+}
+
+const componentStatusCopy: Record<BootstrapPreflightComponentStatus, string> = {
+  scanning: "检查中",
+  ready: "已就绪",
+  warning: "需要留意",
+  missing: "组件缺失",
+  invalid: "配置无效",
+  blocked: "已阻止",
+}
+
+const componentStatusClassName: Record<BootstrapPreflightComponentStatus, string> = {
+  scanning: "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300",
+  ready: "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950/50 dark:text-sky-300",
+  warning: "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950/50 dark:text-blue-300",
+  missing: "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/50 dark:text-red-300",
+  invalid: "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/50 dark:text-red-300",
+  blocked: "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/50 dark:text-red-300",
+}
+
 function failureStatus(
   phase: "FAILED_RETRYABLE" | "FAILED_MANUAL",
   errorCode: string,
@@ -125,6 +162,9 @@ export function BootstrapPage() {
   const [diagnostics, setDiagnostics] = useState<BootstrapDiagnostics | null>(null)
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false)
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null)
+  const [preflight, setPreflight] = useState<BootstrapPreflight | null>(null)
+  const [preflightLoading, setPreflightLoading] = useState(true)
+  const [preflightError, setPreflightError] = useState<string | null>(null)
 
   const copy = phaseCopy[status.phase]
   const isFailure = status.phase === "FAILED_RETRYABLE" || status.phase === "FAILED_MANUAL"
@@ -135,6 +175,8 @@ export function BootstrapPage() {
     bridgeRef.current = bridge
 
     if (!bridge) {
+      setPreflightLoading(false)
+      setPreflightError("桌面环境检查仅在应用内提供。")
       setStatus(failureStatus(
         "FAILED_MANUAL",
         "DESKTOP_BRIDGE_UNAVAILABLE",
@@ -145,9 +187,28 @@ export function BootstrapPage() {
     }
 
     let active = true
+    let lastPreflightPhase: BootstrapPhase = "SCANNING"
+
+    const loadPreflight = async (showLoading: boolean) => {
+      if (showLoading && active) setPreflightLoading(true)
+      try {
+        const nextPreflight = await bridge.getPreflight()
+        if (!active) return
+        setPreflight(nextPreflight)
+        setPreflightError(null)
+      } catch {
+        if (active) setPreflightError("环境检查数据暂时不可用，请稍后重试。")
+      } finally {
+        if (active) setPreflightLoading(false)
+      }
+    }
+
+    void loadPreflight(true)
     void bridge.getStatus()
       .then((nextStatus) => {
-        if (active) setStatus(nextStatus)
+        if (!active) return
+        lastPreflightPhase = nextStatus.phase
+        setStatus(nextStatus)
       })
       .catch(() => {
         if (!active) return
@@ -160,7 +221,12 @@ export function BootstrapPage() {
       })
 
     const unsubscribe = bridge.onStatus((nextStatus) => {
-      if (active) setStatus(nextStatus)
+      if (!active) return
+      setStatus(nextStatus)
+      if (nextStatus.phase !== lastPreflightPhase) {
+        lastPreflightPhase = nextStatus.phase
+        void loadPreflight(false)
+      }
     })
 
     return () => {
@@ -177,6 +243,8 @@ export function BootstrapPage() {
     setActionError(null)
     setDiagnostics(null)
     setDiagnosticsError(null)
+    setPreflightLoading(true)
+    setPreflightError(null)
     setStatus((current) => ({
       ...current,
       state: "starting",
@@ -189,6 +257,11 @@ export function BootstrapPage() {
     }))
     try {
       setStatus(await bridge.retry())
+      try {
+        setPreflight(await bridge.getPreflight())
+      } catch {
+        setPreflightError("环境检查数据暂时不可用，请稍后重试。")
+      }
     } catch {
       setStatus(failureStatus(
         "FAILED_RETRYABLE",
@@ -198,6 +271,7 @@ export function BootstrapPage() {
       ))
     } finally {
       setBusy(false)
+      setPreflightLoading(false)
     }
   }
 
@@ -240,6 +314,8 @@ export function BootstrapPage() {
   const errorCode = status.error_code ?? "BOOTSTRAP_FAILED"
   const componentId = status.component_id ?? "desktop-bootstrap"
   const remediation = status.remediation ?? "请打开日志目录确认诊断信息，然后重新启动应用。"
+  const requiredComponents = preflight?.components.filter((component) => component.required) ?? []
+  const readyRequiredComponents = requiredComponents.filter((component) => component.status === "ready")
 
   return (
     <main className="min-h-screen supports-[min-height:100dvh]:min-h-dvh bg-slate-50 px-4 py-6 text-slate-950 dark:bg-slate-950 dark:text-slate-50 sm:px-6 sm:py-10">
@@ -337,6 +413,71 @@ export function BootstrapPage() {
               })}
             </ol>
 
+            <section
+              className="mt-6 rounded-lg border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-800 dark:bg-slate-950/30"
+              aria-labelledby="preflight-title"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <h2 id="preflight-title" className="text-sm font-semibold">环境检查</h2>
+                  {preflight ? (
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      {preflightStatusCopy[preflight.overall_status]} · {readyRequiredComponents.length}/{requiredComponents.length} 项必需组件就绪
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      正在读取本地组件状态
+                    </p>
+                  )}
+                </div>
+                {preflight && (
+                  <span className="rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                    {preflightBadgeCopy[preflight.overall_status]}
+                  </span>
+                )}
+              </div>
+
+              {preflightLoading && !preflight && (
+                <div className="mt-4 flex items-center gap-2 text-xs text-slate-500" role="status">
+                  <HugeiconsIcon icon={Loading03Icon} className="size-4 animate-spin" />
+                  正在检查本地环境
+                </div>
+              )}
+              {preflightError && (
+                <p className="mt-3 text-xs text-red-600 dark:text-red-400" role="status">
+                  {preflightError}
+                </p>
+              )}
+              {preflight && (
+                <ul className="mt-4 grid gap-2 sm:grid-cols-2" aria-label="环境组件状态">
+                  {preflight.components.map((component) => (
+                    <li
+                      key={component.component_id}
+                      className="min-w-0 rounded-md border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900"
+                    >
+                      <div className="flex min-w-0 items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-medium" title={component.label}>
+                            {component.label}
+                          </p>
+                          <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                            {component.required ? "必需组件" : "可选组件"}
+                            {component.version ? ` · ${component.version}` : ""}
+                          </p>
+                        </div>
+                        <span className={cn(
+                          "shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] font-medium",
+                          componentStatusClassName[component.status],
+                        )}>
+                          {componentStatusCopy[component.status]}
+                        </span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
             {isFailure && (
               <div className="mt-6 rounded-lg border border-red-200 bg-red-50/60 p-4 dark:border-red-950 dark:bg-red-950/20">
                 <h2 className="text-sm font-semibold text-red-800 dark:text-red-300">错误详情</h2>
@@ -432,6 +573,38 @@ export function BootstrapPage() {
                 <p className="mt-4 text-xs text-red-600 dark:text-red-400" role="alert">
                   {diagnosticsError}
                 </p>
+              )}
+              {preflight && (
+                <div className="mt-4 space-y-2" aria-label="环境检查详情">
+                  <h3 className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    组件详情
+                  </h3>
+                  {preflight.components.map((component) => (
+                    <dl
+                      key={component.component_id}
+                      className="grid min-w-0 gap-2 rounded-md border border-slate-200 bg-white p-3 text-[11px] dark:border-slate-800 dark:bg-slate-900 sm:grid-cols-[7rem_1fr]"
+                    >
+                      <dt className="text-slate-500 dark:text-slate-400">component_id</dt>
+                      <dd className="min-w-0 break-all font-mono">{component.component_id}</dd>
+                      <dt className="text-slate-500 dark:text-slate-400">label</dt>
+                      <dd className="min-w-0 break-words">{component.label}</dd>
+                      <dt className="text-slate-500 dark:text-slate-400">status</dt>
+                      <dd className="font-mono">{component.status}</dd>
+                      <dt className="text-slate-500 dark:text-slate-400">required</dt>
+                      <dd className="font-mono">{String(component.required)}</dd>
+                      <dt className="text-slate-500 dark:text-slate-400">version</dt>
+                      <dd className="min-w-0 break-all font-mono">{component.version ?? "—"}</dd>
+                      <dt className="text-slate-500 dark:text-slate-400">path</dt>
+                      <dd className="min-w-0 break-all font-mono">{component.path ?? "—"}</dd>
+                      <dt className="text-slate-500 dark:text-slate-400">error_code</dt>
+                      <dd className="min-w-0 break-all font-mono">{component.error_code ?? "—"}</dd>
+                      <dt className="text-slate-500 dark:text-slate-400">remediation</dt>
+                      <dd className="min-w-0 break-words">{component.remediation ?? "—"}</dd>
+                      <dt className="text-slate-500 dark:text-slate-400">detail</dt>
+                      <dd className="min-w-0 break-words">{component.detail ?? "—"}</dd>
+                    </dl>
+                  ))}
+                </div>
               )}
               {diagnostics && !diagnosticsLoading && (
                 <div className="mt-4 space-y-3">

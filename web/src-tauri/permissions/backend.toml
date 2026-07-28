@@ -4,6 +4,11 @@ description = "Allows reading the desktop-managed backend process status."
 commands.allow = ["backend_get_status"]
 
 [[permission]]
+identifier = "allow-bootstrap-get-preflight"
+description = "Allows reading the cached desktop bootstrap preflight report."
+commands.allow = ["bootstrap_get_preflight"]
+
+[[permission]]
 identifier = "allow-backend-get-logs"
 description = "Allows reading the desktop-managed backend process logs."
 commands.allow = ["backend_get_logs"]

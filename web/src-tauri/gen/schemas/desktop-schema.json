@@ -213,6 +213,12 @@
           "markdownDescription": "Allows stopping the desktop-managed backend process."
         },
         {
+          "description": "Allows reading the cached desktop bootstrap preflight report.",
+          "type": "string",
+          "const": "allow-bootstrap-get-preflight",
+          "markdownDescription": "Allows reading the cached desktop bootstrap preflight report."
+        },
+        {
           "description": "Allows opening http(s) source links in the system default browser.",
           "type": "string",
           "const": "allow-open-external-url",

@@ -58,8 +58,183 @@ export interface BootstrapDiagnostics {
   logs: BackendLogEntry[]
 }
 
+export type BootstrapPreflightOverallStatus =
+  | "scanning"
+  | "ready"
+  | "needs_configuration"
+  | "needs_repair"
+  | "blocked"
+
+export type BootstrapPreflightComponentStatus =
+  | "scanning"
+  | "ready"
+  | "warning"
+  | "missing"
+  | "invalid"
+  | "blocked"
+
+const BOOTSTRAP_PREFLIGHT_OVERALL_STATUSES = [
+  "scanning",
+  "ready",
+  "needs_configuration",
+  "needs_repair",
+  "blocked",
+] as const satisfies readonly BootstrapPreflightOverallStatus[]
+
+const BOOTSTRAP_PREFLIGHT_COMPONENT_STATUSES = [
+  "scanning",
+  "ready",
+  "warning",
+  "missing",
+  "invalid",
+  "blocked",
+] as const satisfies readonly BootstrapPreflightComponentStatus[]
+
+const BOOTSTRAP_PREFLIGHT_COMPONENT_IDS = [
+  "desktop-runtime",
+  "data-root",
+  "bundled-uv",
+  "python-environment",
+  "ffmpeg",
+  "ffprobe",
+  "desktop-proxy-port",
+  "backend-private-port",
+  "runtime-settings",
+  "webview2",
+] as const
+
+export interface BootstrapPreflightComponent {
+  component_id: string
+  label: string
+  status: BootstrapPreflightComponentStatus
+  required: boolean
+  version: string | null
+  path: string | null
+  error_code: string | null
+  remediation: string | null
+  detail: string | null
+}
+
+export interface BootstrapPreflight {
+  schema_version: 1
+  overall_status: BootstrapPreflightOverallStatus
+  components: BootstrapPreflightComponent[]
+}
+
+const PREFLIGHT_REPORT_FIELDS = [
+  "schema_version",
+  "overall_status",
+  "components",
+] as const
+
+const PREFLIGHT_COMPONENT_FIELDS = [
+  "component_id",
+  "label",
+  "status",
+  "required",
+  "version",
+  "path",
+  "error_code",
+  "remediation",
+  "detail",
+] as const
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function hasExactFields(
+  value: Record<string, unknown>,
+  expectedFields: readonly string[],
+) {
+  const actualFields = Object.keys(value).sort()
+  const sortedExpectedFields = [...expectedFields].sort()
+  return (
+    actualFields.length === sortedExpectedFields.length
+    && actualFields.every((field, index) => field === sortedExpectedFields[index])
+  )
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string"
+}
+
+function isBootstrapPreflightOverallStatus(
+  value: unknown,
+): value is BootstrapPreflightOverallStatus {
+  return (
+    typeof value === "string"
+    && BOOTSTRAP_PREFLIGHT_OVERALL_STATUSES.some((status) => status === value)
+  )
+}
+
+function isBootstrapPreflightComponentStatus(
+  value: unknown,
+): value is BootstrapPreflightComponentStatus {
+  return (
+    typeof value === "string"
+    && BOOTSTRAP_PREFLIGHT_COMPONENT_STATUSES.some((status) => status === value)
+  )
+}
+
+function invalidPreflightSchema(): never {
+  throw new Error("Desktop preflight response has an incompatible schema.")
+}
+
+export function normalizeBootstrapPreflight(value: unknown): BootstrapPreflight {
+  if (
+    !isRecord(value)
+    || !hasExactFields(value, PREFLIGHT_REPORT_FIELDS)
+    || value.schema_version !== 1
+    || !isBootstrapPreflightOverallStatus(value.overall_status)
+    || !Array.isArray(value.components)
+    || value.components.length !== BOOTSTRAP_PREFLIGHT_COMPONENT_IDS.length
+  ) {
+    return invalidPreflightSchema()
+  }
+
+  const components = value.components.map((component, index) => {
+    if (
+      !isRecord(component)
+      || !hasExactFields(component, PREFLIGHT_COMPONENT_FIELDS)
+      || typeof component.component_id !== "string"
+      || component.component_id !== BOOTSTRAP_PREFLIGHT_COMPONENT_IDS[index]
+      || typeof component.label !== "string"
+      || component.label.length === 0
+      || !isBootstrapPreflightComponentStatus(component.status)
+      || typeof component.required !== "boolean"
+      || !isNullableString(component.version)
+      || !isNullableString(component.path)
+      || !isNullableString(component.error_code)
+      || !isNullableString(component.remediation)
+      || !isNullableString(component.detail)
+    ) {
+      return invalidPreflightSchema()
+    }
+
+    return {
+      component_id: component.component_id,
+      label: component.label,
+      status: component.status,
+      required: component.required,
+      version: component.version,
+      path: component.path,
+      error_code: component.error_code,
+      remediation: component.remediation,
+      detail: component.detail,
+    }
+  })
+
+  return {
+    schema_version: 1,
+    overall_status: value.overall_status,
+    components,
+  }
+}
+
 export interface BootstrapBridge {
   getStatus(): Promise<BootstrapStatus>
+  getPreflight(): Promise<BootstrapPreflight>
   retry(): Promise<BootstrapStatus>
   openLogs(): Promise<void>
   getDiagnostics(): Promise<BootstrapDiagnostics>
@@ -245,6 +420,9 @@ export function getBootstrapBridge(): BootstrapBridge | undefined {
 
   tauriBootstrapBridge = {
     getStatus,
+    getPreflight: async () => normalizeBootstrapPreflight(
+      await tauriInvoke<unknown>("bootstrap_get_preflight"),
+    ),
     retry: async () => normalizeBootstrapStatus(await tauriInvoke<BackendStatus>("backend_retry")),
     openLogs: () => tauriInvoke<void>("open_logs"),
     async getDiagnostics() {

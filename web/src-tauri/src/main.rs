@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     error::Error,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs,
     io::{self, Read, Write},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream},
@@ -49,6 +49,15 @@ const BACKEND_COMMAND: &str = "uv run python -u -m app.cli serve --desktop-loopb
 const MAX_LOG_LINES: usize = 1200;
 const MAX_LOG_LINE_BYTES: usize = 16 * 1024;
 const PROCESS_FORCE_TIMEOUT: Duration = Duration::from_secs(3);
+const PREFLIGHT_PROCESS_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_PREFLIGHT_OUTPUT_BYTES: usize = 16 * 1024;
+const MAX_PREFLIGHT_DETAIL_BYTES: usize = 1024;
+const MAX_PREFLIGHT_PATH_BYTES: usize = 2048;
+const MAX_RUNTIME_SETTINGS_BYTES: u64 = 1024 * 1024;
+const MAX_PATH_SEARCH_ENTRIES: usize = 256;
+const PREFLIGHT_SCHEMA_VERSION: u32 = 1;
+const SETTINGS_PREFLIGHT_OK_TOKEN: &str = "MPP_SETTINGS_PREFLIGHT_V1_OK";
+const SETTINGS_PREFLIGHT_INVALID_TOKEN: &str = "MPP_SETTINGS_PREFLIGHT_V1_INVALID";
 const HEALTH_PRODUCT: &str = "com.mpp.backend";
 const HEALTH_PROTOCOL: u32 = 1;
 const HEALTH_SERVICE: &str = "Media Process Pipeline";
@@ -367,6 +376,73 @@ struct BackendLogEntry {
     line: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct BootstrapPreflightReport {
+    schema_version: u32,
+    overall_status: String,
+    components: Vec<BootstrapPreflightComponent>,
+}
+
+impl Default for BootstrapPreflightReport {
+    fn default() -> Self {
+        scanning_preflight_report()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct BootstrapPreflightComponent {
+    component_id: String,
+    label: String,
+    status: String,
+    required: bool,
+    version: Option<String>,
+    path: Option<String>,
+    error_code: Option<String>,
+    remediation: Option<String>,
+    detail: Option<String>,
+}
+
+#[derive(Debug)]
+struct ProbeCommandOutput {
+    success: bool,
+    output: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SettingsPreflightOutcome {
+    Valid,
+    Invalid,
+    Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PythonVersionOutcome {
+    Supported(String),
+    Unsupported(String),
+    Invalid,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProbeCommandFailureKind {
+    PermissionDenied,
+    Spawn,
+    Timeout,
+    Supervision,
+}
+
+#[derive(Debug)]
+struct ProbeCommandFailure {
+    kind: ProbeCommandFailureKind,
+    detail: String,
+}
+
+#[derive(Debug)]
+enum ProbeExecutableResolution {
+    Found(PathBuf),
+    Missing,
+    Invalid(PathBuf, String),
+}
+
 struct ProcessJob {
     handle: Option<usize>,
 }
@@ -433,43 +509,43 @@ impl Default for BackendProcess {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct BootstrapFailure {
     retryable: bool,
-    error_code: &'static str,
-    component_id: &'static str,
-    remediation: &'static str,
+    error_code: String,
+    component_id: String,
+    remediation: String,
     detail: String,
     local_path: Option<String>,
 }
 
 impl BootstrapFailure {
     fn retryable(
-        error_code: &'static str,
-        component_id: &'static str,
-        remediation: &'static str,
+        error_code: impl Into<String>,
+        component_id: impl Into<String>,
+        remediation: impl Into<String>,
         detail: impl Into<String>,
         local_path: Option<&Path>,
     ) -> Self {
         Self {
             retryable: true,
-            error_code,
-            component_id,
-            remediation,
+            error_code: error_code.into(),
+            component_id: component_id.into(),
+            remediation: remediation.into(),
             detail: detail.into(),
             local_path: local_path.map(|path| path.to_string_lossy().into_owned()),
         }
     }
 
     fn manual(
-        error_code: &'static str,
-        component_id: &'static str,
-        remediation: &'static str,
+        error_code: impl Into<String>,
+        component_id: impl Into<String>,
+        remediation: impl Into<String>,
         detail: impl Into<String>,
         local_path: Option<&Path>,
     ) -> Self {
         Self {
             retryable: false,
-            error_code,
-            component_id,
-            remediation,
+            error_code: error_code.into(),
+            component_id: component_id.into(),
+            remediation: remediation.into(),
             detail: detail.into(),
             local_path: local_path.map(|path| path.to_string_lossy().into_owned()),
         }
@@ -492,6 +568,7 @@ struct BootstrapRuntime {
     attempt_epoch: u64,
     bootstrap_complete: bool,
     shutdown_requested: bool,
+    preflight: BootstrapPreflightReport,
 }
 
 struct BootstrapController {
@@ -506,6 +583,217 @@ impl BootstrapController {
             fallback_log_dir,
         }
     }
+}
+
+const PREFLIGHT_COMPONENT_ORDER: [&str; 10] = [
+    "desktop-runtime",
+    "data-root",
+    "bundled-uv",
+    "python-environment",
+    "ffmpeg",
+    "ffprobe",
+    "desktop-proxy-port",
+    "backend-private-port",
+    "runtime-settings",
+    "webview2",
+];
+
+fn canonical_preflight_component_id(component_id: &str) -> &str {
+    match component_id {
+        "python-runtime" => "python-environment",
+        "backend-health" => "python-environment",
+        "desktop-proxy" => "desktop-proxy-port",
+        "backend-port" => "backend-private-port",
+        "desktop-webview" => "webview2",
+        "desktop-bootstrap" | "desktop-session" => "desktop-runtime",
+        value if PREFLIGHT_COMPONENT_ORDER.contains(&value) => value,
+        _ => "desktop-runtime",
+    }
+}
+
+fn preflight_component_label(component_id: &str) -> &str {
+    match component_id {
+        "desktop-runtime" => "Desktop Runtime",
+        "data-root" => "Local Data Root",
+        "bundled-uv" => "uv Runtime Manager",
+        "python-environment" => "Python Environment",
+        "ffmpeg" => "FFmpeg",
+        "ffprobe" => "FFprobe",
+        "desktop-proxy-port" => "Desktop Proxy Port",
+        "backend-private-port" => "Backend Private Port",
+        "runtime-settings" => "Runtime Settings",
+        "webview2" => "Microsoft Edge WebView2",
+        _ => "Desktop Bootstrap",
+    }
+}
+
+fn bounded_preflight_text(value: impl AsRef<str>, maximum_bytes: usize) -> String {
+    let value = value.as_ref();
+    if value.len() <= maximum_bytes {
+        return value.to_string();
+    }
+    let suffix = "...";
+    let content_limit = maximum_bytes.saturating_sub(suffix.len());
+    let mut boundary = content_limit.min(value.len());
+    while boundary > 0 && !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    format!("{}{}", &value[..boundary], suffix)
+}
+
+fn bounded_preflight_path(path: &Path) -> String {
+    bounded_preflight_text(path.to_string_lossy(), MAX_PREFLIGHT_PATH_BYTES)
+}
+
+fn preflight_component(
+    component_id: &str,
+    label: &str,
+    status: &str,
+    required: bool,
+    version: Option<String>,
+    path: Option<&Path>,
+    error_code: Option<&str>,
+    remediation: Option<&str>,
+    detail: Option<String>,
+) -> BootstrapPreflightComponent {
+    BootstrapPreflightComponent {
+        component_id: component_id.to_string(),
+        label: label.to_string(),
+        status: status.to_string(),
+        required,
+        version: version.map(|value| bounded_preflight_text(value, 128)),
+        path: path.map(bounded_preflight_path),
+        error_code: error_code.map(str::to_string),
+        remediation: remediation
+            .map(|value| bounded_preflight_text(value, MAX_PREFLIGHT_DETAIL_BYTES)),
+        detail: detail
+            .filter(|value| !value.is_empty())
+            .map(|value| bounded_preflight_text(value, MAX_PREFLIGHT_DETAIL_BYTES)),
+    }
+}
+
+fn scanning_preflight_report() -> BootstrapPreflightReport {
+    BootstrapPreflightReport {
+        schema_version: PREFLIGHT_SCHEMA_VERSION,
+        overall_status: "scanning".to_string(),
+        components: PREFLIGHT_COMPONENT_ORDER
+            .iter()
+            .map(|component_id| {
+                preflight_component(
+                    component_id,
+                    preflight_component_label(component_id),
+                    "scanning",
+                    true,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            })
+            .collect(),
+    }
+}
+
+fn preflight_component_rank(component_id: &str) -> (usize, &str) {
+    (
+        PREFLIGHT_COMPONENT_ORDER
+            .iter()
+            .position(|candidate| *candidate == component_id)
+            .unwrap_or(PREFLIGHT_COMPONENT_ORDER.len()),
+        component_id,
+    )
+}
+
+fn finalize_preflight_report(
+    mut components: Vec<BootstrapPreflightComponent>,
+) -> BootstrapPreflightReport {
+    components.sort_by(|left, right| {
+        preflight_component_rank(&left.component_id)
+            .cmp(&preflight_component_rank(&right.component_id))
+    });
+    let overall_status = if components
+        .iter()
+        .any(|component| component.required && component.status == "blocked")
+    {
+        "blocked"
+    } else if components.iter().any(|component| {
+        component.required && matches!(component.status.as_str(), "missing" | "invalid")
+    }) {
+        "needs_repair"
+    } else if components
+        .iter()
+        .any(|component| component.status != "ready")
+    {
+        "needs_configuration"
+    } else {
+        "ready"
+    };
+    BootstrapPreflightReport {
+        schema_version: PREFLIGHT_SCHEMA_VERSION,
+        overall_status: overall_status.to_string(),
+        components,
+    }
+}
+
+fn preflight_blocking_failure(report: &BootstrapPreflightReport) -> Option<BootstrapFailure> {
+    let component = report.components.iter().find(|component| {
+        component.required && matches!(component.status.as_str(), "missing" | "invalid" | "blocked")
+    })?;
+    let retryable = component.status == "blocked"
+        || matches!(
+            component.component_id.as_str(),
+            "data-root" | "desktop-proxy-port" | "backend-private-port"
+        );
+    Some(BootstrapFailure {
+        retryable,
+        error_code: component
+            .error_code
+            .clone()
+            .unwrap_or_else(|| "PREFLIGHT_REQUIRED_COMPONENT_FAILED".to_string()),
+        component_id: component.component_id.clone(),
+        remediation: component
+            .remediation
+            .clone()
+            .unwrap_or_else(|| "Repair the reported desktop component and retry.".to_string()),
+        detail: component
+            .detail
+            .clone()
+            .unwrap_or_else(|| format!("{} did not pass preflight.", component.label)),
+        local_path: component.path.clone(),
+    })
+}
+
+fn apply_failure_to_preflight(report: &mut BootstrapPreflightReport, failure: &BootstrapFailure) {
+    let component_id = canonical_preflight_component_id(&failure.component_id);
+    let failure_status = if failure.error_code.ends_with("_MISSING") {
+        "missing"
+    } else if failure.retryable {
+        "blocked"
+    } else {
+        "invalid"
+    };
+    if let Some(component) = report
+        .components
+        .iter_mut()
+        .find(|component| component.component_id == component_id)
+    {
+        component.status = failure_status.to_string();
+        component.required = true;
+        component.error_code = Some(failure.error_code.clone());
+        component.remediation = Some(bounded_preflight_text(
+            &failure.remediation,
+            MAX_PREFLIGHT_DETAIL_BYTES,
+        ));
+        component.detail = Some(bounded_preflight_text(
+            &failure.detail,
+            MAX_PREFLIGHT_DETAIL_BYTES,
+        ));
+        if let Some(path) = failure.local_path.as_deref() {
+            component.path = Some(bounded_preflight_text(path, MAX_PREFLIGHT_PATH_BYTES));
+        }
+    }
+    *report = finalize_preflight_report(std::mem::take(&mut report.components));
 }
 
 fn boxed_error(message: impl Into<String>) -> Box<dyn Error> {
@@ -1173,6 +1461,34 @@ fn runtime_layout_from_parts(
     }
 }
 
+fn runtime_resolution_failure(error: String, runtime_hint: Option<&Path>) -> BootstrapFailure {
+    let lower = error.to_ascii_lowercase();
+    let uv_related = lower.contains("bin/uv.exe")
+        || lower.contains("bundled uv")
+        || lower.contains("runtime uv metadata")
+        || lower.contains("uv pe ")
+        || lower.contains("uv dos ")
+        || lower.contains("/tools/uv/");
+    if uv_related {
+        let missing = lower.contains("missing") || lower.contains("absent");
+        let uv_path = runtime_hint.map(|path| path.join("bin").join("uv.exe"));
+        return BootstrapFailure::manual(
+            if missing { "UV_MISSING" } else { "UV_INVALID" },
+            "bundled-uv",
+            "Repair or reinstall the bundled uv runtime, then retry.",
+            error,
+            uv_path.as_deref(),
+        );
+    }
+    BootstrapFailure::manual(
+        "RUNTIME_INVALID",
+        "desktop-runtime",
+        "Repair or reinstall MediaProcessPipeline, then retry.",
+        error,
+        runtime_hint,
+    )
+}
+
 fn resolve_runtime_layout(app: &AppHandle) -> Result<RuntimeLayout, BootstrapFailure> {
     let policy = RuntimeResolutionPolicy::current_build();
     let explicit_root = env::var_os("MPP_PROJECT_ROOT")
@@ -1215,15 +1531,8 @@ fn resolve_runtime_layout(app: &AppHandle) -> Result<RuntimeLayout, BootstrapFai
         manifest_dir: Some(PathBuf::from(env!("CARGO_MANIFEST_DIR"))),
         allow_manifest_fallback: cfg!(debug_assertions),
     };
-    let (mode, runtime_root) = resolve_runtime_candidate(&candidates, policy).map_err(|error| {
-        BootstrapFailure::manual(
-            "RUNTIME_INVALID",
-            "desktop-runtime",
-            "Repair or reinstall MediaProcessPipeline, then retry.",
-            error,
-            runtime_hint.as_deref(),
-        )
-    })?;
+    let (mode, runtime_root) = resolve_runtime_candidate(&candidates, policy)
+        .map_err(|error| runtime_resolution_failure(error, runtime_hint.as_deref()))?;
     let user = resolve_user_paths(explicit_user_root, local_data_dir).map_err(|error| {
         BootstrapFailure::retryable(
             "DATA_ROOT_UNWRITABLE",
@@ -1590,9 +1899,9 @@ fn set_bootstrap_failure(
         &failure.detail,
         None,
         failure.phase(),
-        Some(failure.error_code),
-        Some(failure.component_id),
-        Some(failure.remediation),
+        Some(failure.error_code.as_str()),
+        Some(failure.component_id.as_str()),
+        Some(failure.remediation.as_str()),
         failure.local_path.clone(),
     )
 }
@@ -3180,6 +3489,20 @@ fn configure_backend_process_creation(command: &mut Command) {
 fn configure_backend_process_creation(_command: &mut Command) {}
 
 #[cfg(windows)]
+fn configure_probe_process_creation(command: &mut Command) {
+    configure_backend_process_creation(command);
+}
+
+#[cfg(unix)]
+fn configure_probe_process_creation(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+}
+
+#[cfg(all(not(windows), not(unix)))]
+fn configure_probe_process_creation(_command: &mut Command) {}
+
+#[cfg(windows)]
 fn resume_suspended_process(child: &Child) -> Result<(), String> {
     use std::mem::size_of;
     use windows_sys::Win32::{
@@ -3316,6 +3639,188 @@ fn close_job_handle(handle: usize) {
 
 #[cfg(not(windows))]
 fn close_job_handle(_handle: usize) {}
+
+#[cfg(unix)]
+fn terminate_probe_process_group(process_id: u32) -> bool {
+    const SIGKILL: i32 = 9;
+    unsafe extern "C" {
+        fn kill(process_id: i32, signal: i32) -> i32;
+    }
+    let Ok(process_id) = i32::try_from(process_id) else {
+        return false;
+    };
+    unsafe { kill(-process_id, SIGKILL) == 0 }
+}
+
+#[cfg(not(unix))]
+fn terminate_probe_process_group(_process_id: u32) -> bool {
+    false
+}
+
+fn terminate_probe_process_tree(job: &mut ProcessJob, child: &mut Child) {
+    if job.terminate_tree() || terminate_probe_process_group(child.id()) {
+        return;
+    }
+    let _ = child.kill();
+}
+
+fn read_bounded_probe_stream<R: Read>(mut reader: R) -> io::Result<(Vec<u8>, bool)> {
+    let mut retained = Vec::with_capacity(MAX_PREFLIGHT_OUTPUT_BYTES);
+    let mut chunk = [0_u8; 4096];
+    let mut truncated = false;
+    loop {
+        let count = reader.read(&mut chunk)?;
+        if count == 0 {
+            break;
+        }
+        let available = MAX_PREFLIGHT_OUTPUT_BYTES.saturating_sub(retained.len());
+        let copied = available.min(count);
+        retained.extend_from_slice(&chunk[..copied]);
+        truncated |= copied < count;
+    }
+    Ok((retained, truncated))
+}
+
+fn collect_probe_reader(
+    reader: thread::JoinHandle<io::Result<(Vec<u8>, bool)>>,
+    source: &str,
+) -> Result<(Vec<u8>, bool), ProbeCommandFailure> {
+    reader
+        .join()
+        .map_err(|_| ProbeCommandFailure {
+            kind: ProbeCommandFailureKind::Supervision,
+            detail: format!("{source} reader panicked"),
+        })?
+        .map_err(|error| ProbeCommandFailure {
+            kind: ProbeCommandFailureKind::Supervision,
+            detail: format!("failed to read probe {source}: {error}"),
+        })
+}
+
+fn run_bounded_probe_command(
+    program: &Path,
+    arguments: &[&str],
+    timeout: Duration,
+) -> Result<ProbeCommandOutput, ProbeCommandFailure> {
+    let mut command = Command::new(program);
+    command
+        .env_clear()
+        .envs(safe_inherited_environment(env::vars_os()))
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_probe_process_creation(&mut command);
+
+    let mut child = command.spawn().map_err(|error| ProbeCommandFailure {
+        kind: if error.kind() == io::ErrorKind::PermissionDenied {
+            ProbeCommandFailureKind::PermissionDenied
+        } else {
+            ProbeCommandFailureKind::Spawn
+        },
+        detail: format!(
+            "failed to start {}: {error}",
+            bounded_preflight_path(program)
+        ),
+    })?;
+    let mut job = match attach_kill_on_close_job(&child) {
+        Ok(job) => job,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = wait_for_child_exit_until(&mut child, Instant::now() + PROCESS_FORCE_TIMEOUT);
+            return Err(ProbeCommandFailure {
+                kind: ProbeCommandFailureKind::Supervision,
+                detail: bounded_preflight_text(error, MAX_PREFLIGHT_DETAIL_BYTES),
+            });
+        }
+    };
+    if let Err(error) = resume_suspended_process(&child) {
+        terminate_probe_process_tree(&mut job, &mut child);
+        let _ = wait_for_child_exit_until(&mut child, Instant::now() + PROCESS_FORCE_TIMEOUT);
+        return Err(ProbeCommandFailure {
+            kind: ProbeCommandFailureKind::Supervision,
+            detail: bounded_preflight_text(error, MAX_PREFLIGHT_DETAIL_BYTES),
+        });
+    }
+
+    let stdout = child
+        .stdout
+        .take()
+        .expect("probe stdout was configured as piped");
+    let stderr = child
+        .stderr
+        .take()
+        .expect("probe stderr was configured as piped");
+    let stdout_reader = thread::spawn(move || read_bounded_probe_stream(stdout));
+    let stderr_reader = thread::spawn(move || read_bounded_probe_stream(stderr));
+    let deadline = Instant::now() + timeout;
+    let mut exit_status = None;
+    let mut wait_failure = None;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                exit_status = Some(status);
+                break;
+            }
+            Ok(None) if Instant::now() >= deadline => break,
+            Ok(None) => thread::sleep(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(20)),
+            ),
+            Err(error) => {
+                wait_failure = Some(error);
+                break;
+            }
+        }
+    }
+
+    let timed_out = exit_status.is_none() && wait_failure.is_none();
+    terminate_probe_process_tree(&mut job, &mut child);
+    if exit_status.is_none() {
+        let _ = wait_for_child_exit_until(&mut child, Instant::now() + PROCESS_FORCE_TIMEOUT);
+    }
+    let (stdout, stdout_truncated) = collect_probe_reader(stdout_reader, "stdout")?;
+    let (stderr, stderr_truncated) = collect_probe_reader(stderr_reader, "stderr")?;
+
+    if let Some(error) = wait_failure {
+        return Err(ProbeCommandFailure {
+            kind: ProbeCommandFailureKind::Supervision,
+            detail: format!("failed to inspect probe process: {error}"),
+        });
+    }
+    if timed_out {
+        return Err(ProbeCommandFailure {
+            kind: ProbeCommandFailureKind::Timeout,
+            detail: format!(
+                "{} exceeded its {} ms probe timeout and was terminated",
+                bounded_preflight_path(program),
+                timeout.as_millis()
+            ),
+        });
+    }
+
+    let mut combined = stdout;
+    if !combined.is_empty() && !stderr.is_empty() {
+        combined.push(b'\n');
+    }
+    let remaining = MAX_PREFLIGHT_OUTPUT_BYTES.saturating_sub(combined.len());
+    combined.extend_from_slice(&stderr[..remaining.min(stderr.len())]);
+    let output_was_truncated = stdout_truncated || stderr_truncated || stderr.len() > remaining;
+    let mut output = String::from_utf8_lossy(&combined).trim().to_string();
+    if output_was_truncated {
+        output = format!(
+            "{}...",
+            bounded_preflight_text(output, MAX_PREFLIGHT_OUTPUT_BYTES.saturating_sub(3))
+        );
+    }
+    Ok(ProbeCommandOutput {
+        success: exit_status
+            .expect("completed probe must have an exit status")
+            .success(),
+        output: bounded_preflight_text(output, MAX_PREFLIGHT_OUTPUT_BYTES),
+    })
+}
 
 fn wait_for_child_exit_until(
     child: &mut Child,
@@ -4059,6 +4564,16 @@ fn backend_get_status(app: AppHandle) -> Result<BackendStatus, String> {
 }
 
 #[tauri::command]
+fn bootstrap_get_preflight(app: AppHandle) -> Result<BootstrapPreflightReport, String> {
+    let controller = app.state::<BootstrapController>();
+    controller
+        .runtime
+        .lock()
+        .map(|runtime| runtime.preflight.clone())
+        .map_err(|_| "bootstrap runtime lock poisoned".to_string())
+}
+
+#[tauri::command]
 fn backend_get_logs(app: AppHandle) -> Result<Vec<BackendLogEntry>, String> {
     let backend = app.state::<BackendProcess>();
     backend
@@ -4134,6 +4649,1101 @@ fn backend_restart(app: AppHandle) -> Result<BackendStatus, String> {
         });
     }
     Ok(status)
+}
+
+fn inspect_real_file(path: &Path, label: &str) -> Result<(), String> {
+    validate_existing_path_chain(path, label)?;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
+    if metadata_is_link_or_reparse(&metadata) || !metadata.is_file() {
+        return Err(format!("{label} must be a real file: {}", path.display()));
+    }
+    Ok(())
+}
+
+fn inspect_probe_executable(path: &Path) -> Result<(), String> {
+    inspect_real_file(path, "preflight executable")
+}
+
+fn executable_candidate_names(name: &OsStr) -> Vec<OsString> {
+    let path = Path::new(name);
+    if path.extension().is_some() {
+        return vec![name.to_os_string()];
+    }
+    #[cfg(windows)]
+    {
+        let mut executable = name.to_os_string();
+        executable.push(".exe");
+        vec![executable, name.to_os_string()]
+    }
+    #[cfg(not(windows))]
+    {
+        vec![name.to_os_string()]
+    }
+}
+
+fn resolve_probe_executable(
+    configured: &OsStr,
+    preferred_directories: &[PathBuf],
+) -> ProbeExecutableResolution {
+    let configured_path = Path::new(configured);
+    if configured_path.is_absolute() || configured_path.components().count() > 1 {
+        if !configured_path.is_absolute() {
+            return ProbeExecutableResolution::Invalid(
+                configured_path.to_path_buf(),
+                "configured probe executable path must be absolute".to_string(),
+            );
+        }
+        match fs::symlink_metadata(configured_path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return ProbeExecutableResolution::Missing;
+            }
+            Err(error) => {
+                return ProbeExecutableResolution::Invalid(
+                    configured_path.to_path_buf(),
+                    format!("cannot inspect {}: {error}", configured_path.display()),
+                );
+            }
+            Ok(_) => {}
+        }
+        return match inspect_probe_executable(configured_path) {
+            Ok(()) => ProbeExecutableResolution::Found(configured_path.to_path_buf()),
+            Err(error) => ProbeExecutableResolution::Invalid(configured_path.to_path_buf(), error),
+        };
+    }
+
+    let candidate_names = executable_candidate_names(configured);
+    for directory in preferred_directories {
+        if !directory.is_absolute() {
+            continue;
+        }
+        for name in &candidate_names {
+            let candidate = directory.join(name);
+            match fs::symlink_metadata(&candidate) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return ProbeExecutableResolution::Invalid(
+                        candidate.clone(),
+                        format!("cannot inspect {}: {error}", candidate.display()),
+                    );
+                }
+                Ok(_) => {}
+            }
+            return match inspect_probe_executable(&candidate) {
+                Ok(()) => ProbeExecutableResolution::Found(candidate),
+                Err(error) => ProbeExecutableResolution::Invalid(candidate, error),
+            };
+        }
+    }
+
+    let Some(search_path) = env::var_os("PATH") else {
+        return ProbeExecutableResolution::Missing;
+    };
+    for directory in env::split_paths(&search_path).take(MAX_PATH_SEARCH_ENTRIES) {
+        if !directory.is_absolute() {
+            continue;
+        }
+        for name in &candidate_names {
+            let candidate = directory.join(name);
+            match fs::symlink_metadata(&candidate) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return ProbeExecutableResolution::Invalid(
+                        candidate.clone(),
+                        format!("cannot inspect {}: {error}", candidate.display()),
+                    );
+                }
+                Ok(_) => {}
+            }
+            return match inspect_probe_executable(&candidate) {
+                Ok(()) => ProbeExecutableResolution::Found(candidate),
+                Err(error) => ProbeExecutableResolution::Invalid(candidate, error),
+            };
+        }
+    }
+    ProbeExecutableResolution::Missing
+}
+
+fn first_probe_output_line(output: &str) -> Option<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| bounded_preflight_text(line, 256))
+}
+
+fn classify_python_version_output(output: &ProbeCommandOutput) -> PythonVersionOutcome {
+    if !output.success {
+        return PythonVersionOutcome::Invalid;
+    }
+    let Some(line) = first_probe_output_line(&output.output) else {
+        return PythonVersionOutcome::Invalid;
+    };
+    let mut fields = line.split_whitespace();
+    if fields.next() != Some("Python") {
+        return PythonVersionOutcome::Invalid;
+    }
+    let Some(version) = fields.next() else {
+        return PythonVersionOutcome::Invalid;
+    };
+    if fields.next().is_some() {
+        return PythonVersionOutcome::Invalid;
+    }
+    let parts = version.split('.').collect::<Vec<_>>();
+    if parts.len() != 3 || parts.iter().any(|part| part.parse::<u32>().is_err()) {
+        return PythonVersionOutcome::Invalid;
+    }
+    let parsed = parts
+        .iter()
+        .map(|part| part.parse::<u32>().expect("numeric Python version part"))
+        .collect::<Vec<_>>();
+    if parsed[0] == 3 && matches!(parsed[1], 11 | 12) {
+        PythonVersionOutcome::Supported(version.to_string())
+    } else {
+        PythonVersionOutcome::Unsupported(version.to_string())
+    }
+}
+
+fn validated_media_tool_version_line(tool: &str, output: &ProbeCommandOutput) -> Option<String> {
+    if !output.success {
+        return None;
+    }
+    let line = first_probe_output_line(&output.output)?;
+    let prefix = format!("{tool} version ");
+    let version = line.strip_prefix(&prefix)?.split_whitespace().next()?;
+    if version.is_empty() {
+        return None;
+    }
+    Some(line)
+}
+
+fn trusted_uv_version() -> Result<String, String> {
+    let contract: serde_json::Value = serde_json::from_str(TRUSTED_TOOL_CONTRACT_JSON)
+        .map_err(|error| format!("compiled desktop tool contract is invalid: {error}"))?;
+    json_string(&contract, "/tools/uv/version").map(str::to_string)
+}
+
+fn probe_uv_component(layout: &RuntimeLayout) -> BootstrapPreflightComponent {
+    let required = layout.mode == RuntimeMode::Installed;
+    let resolution = resolve_probe_executable(&layout.uv_executable, &[]);
+    let executable = match resolution {
+        ProbeExecutableResolution::Found(path) => path,
+        ProbeExecutableResolution::Missing => {
+            return preflight_component(
+                "bundled-uv",
+                "uv Runtime Manager",
+                "missing",
+                required,
+                None,
+                None,
+                Some("UV_MISSING"),
+                Some("Repair the desktop runtime or configure an available uv executable."),
+                Some("The uv executable could not be resolved.".to_string()),
+            );
+        }
+        ProbeExecutableResolution::Invalid(path, detail) => {
+            return preflight_component(
+                "bundled-uv",
+                "uv Runtime Manager",
+                "invalid",
+                required,
+                None,
+                Some(&path),
+                Some("UV_INVALID"),
+                Some("Repair the uv executable and retry."),
+                Some(detail),
+            );
+        }
+    };
+
+    let output =
+        match run_bounded_probe_command(&executable, &["--version"], PREFLIGHT_PROCESS_TIMEOUT) {
+            Ok(output) => output,
+            Err(failure) => {
+                let (status, error_code, remediation) = match failure.kind {
+                    ProbeCommandFailureKind::Timeout => (
+                        "blocked",
+                        "UV_PROBE_TIMEOUT",
+                        "Close stalled uv processes, repair the runtime if needed, and retry.",
+                    ),
+                    ProbeCommandFailureKind::PermissionDenied => (
+                        "blocked",
+                        "UV_EXECUTION_BLOCKED",
+                        "Restore permission to run the uv executable and retry.",
+                    ),
+                    ProbeCommandFailureKind::Supervision => (
+                        "blocked",
+                        "UV_PROBE_BLOCKED",
+                        "Restart the application and retry the supervised uv check.",
+                    ),
+                    ProbeCommandFailureKind::Spawn => (
+                        "invalid",
+                        "UV_INVALID",
+                        "Repair the uv executable and retry.",
+                    ),
+                };
+                return preflight_component(
+                    "bundled-uv",
+                    "uv Runtime Manager",
+                    status,
+                    required,
+                    None,
+                    Some(&executable),
+                    Some(error_code),
+                    Some(remediation),
+                    Some(failure.detail),
+                );
+            }
+        };
+    let Some(line) = first_probe_output_line(&output.output) else {
+        return preflight_component(
+            "bundled-uv",
+            "uv Runtime Manager",
+            "invalid",
+            required,
+            None,
+            Some(&executable),
+            Some("UV_INVALID"),
+            Some("Repair the uv executable and retry."),
+            Some("uv --version returned no version output.".to_string()),
+        );
+    };
+    let actual_version = line
+        .strip_prefix("uv ")
+        .and_then(|value| value.split_whitespace().next())
+        .map(str::to_string);
+    if !output.success || actual_version.is_none() {
+        return preflight_component(
+            "bundled-uv",
+            "uv Runtime Manager",
+            "invalid",
+            required,
+            actual_version,
+            Some(&executable),
+            Some("UV_INVALID"),
+            Some("Repair the uv executable and retry."),
+            Some(format!("uv version probe failed: {line}")),
+        );
+    }
+    let actual_version = actual_version.expect("uv version was checked");
+    let expected_version = match trusted_uv_version() {
+        Ok(version) => version,
+        Err(error) => {
+            return preflight_component(
+                "bundled-uv",
+                "uv Runtime Manager",
+                "invalid",
+                required,
+                Some(actual_version),
+                Some(&executable),
+                Some("UV_CONTRACT_INVALID"),
+                Some("Repair or reinstall the desktop application."),
+                Some(error),
+            );
+        }
+    };
+    if actual_version != expected_version {
+        return preflight_component(
+            "bundled-uv",
+            "uv Runtime Manager",
+            if required { "invalid" } else { "warning" },
+            required,
+            Some(actual_version.clone()),
+            Some(&executable),
+            Some("UV_VERSION_MISMATCH"),
+            Some("Install the desktop-supported uv version or repair the bundled runtime."),
+            Some(format!(
+                "uv version {actual_version} does not match required version {expected_version}."
+            )),
+        );
+    }
+    preflight_component(
+        "bundled-uv",
+        "uv Runtime Manager",
+        "ready",
+        required,
+        Some(actual_version),
+        Some(&executable),
+        None,
+        None,
+        Some("The uv executable and version passed the bounded process probe.".to_string()),
+    )
+}
+
+fn tool_probe_failure_mapping(
+    tool: &str,
+    failure_kind: ProbeCommandFailureKind,
+) -> (&'static str, &'static str, &'static str) {
+    match (tool, failure_kind) {
+        ("ffmpeg", ProbeCommandFailureKind::Timeout) => (
+            "blocked",
+            "FFMPEG_PROBE_TIMEOUT",
+            "Close stalled FFmpeg processes and retry.",
+        ),
+        ("ffmpeg", ProbeCommandFailureKind::PermissionDenied) => (
+            "blocked",
+            "FFMPEG_EXECUTION_BLOCKED",
+            "Restore permission to run FFmpeg and retry.",
+        ),
+        ("ffmpeg", ProbeCommandFailureKind::Supervision) => (
+            "blocked",
+            "FFMPEG_PROBE_BLOCKED",
+            "Restart the application and retry the supervised FFmpeg check.",
+        ),
+        ("ffprobe", ProbeCommandFailureKind::Timeout) => (
+            "blocked",
+            "FFPROBE_PROBE_TIMEOUT",
+            "Close stalled FFprobe processes and retry.",
+        ),
+        ("ffprobe", ProbeCommandFailureKind::PermissionDenied) => (
+            "blocked",
+            "FFPROBE_EXECUTION_BLOCKED",
+            "Restore permission to run FFprobe and retry.",
+        ),
+        ("ffprobe", ProbeCommandFailureKind::Supervision) => (
+            "blocked",
+            "FFPROBE_PROBE_BLOCKED",
+            "Restart the application and retry the supervised FFprobe check.",
+        ),
+        ("ffprobe", ProbeCommandFailureKind::Spawn) => (
+            "invalid",
+            "FFPROBE_INVALID",
+            "Repair the FFprobe executable and retry.",
+        ),
+        _ => (
+            "invalid",
+            "FFMPEG_INVALID",
+            "Repair the FFmpeg executable and retry.",
+        ),
+    }
+}
+
+fn python_probe_failure_mapping(
+    failure_kind: ProbeCommandFailureKind,
+) -> (&'static str, &'static str, &'static str) {
+    match failure_kind {
+        ProbeCommandFailureKind::Timeout => (
+            "blocked",
+            "PYTHON_PROBE_TIMEOUT",
+            "Close stalled Python processes and retry.",
+        ),
+        ProbeCommandFailureKind::PermissionDenied => (
+            "blocked",
+            "PYTHON_EXECUTION_BLOCKED",
+            "Restore permission to run the desktop Python environment and retry.",
+        ),
+        ProbeCommandFailureKind::Supervision => (
+            "blocked",
+            "PYTHON_PROBE_BLOCKED",
+            "Restart the application and retry the supervised Python check.",
+        ),
+        ProbeCommandFailureKind::Spawn => (
+            "invalid",
+            "PYTHON_ENVIRONMENT_INVALID",
+            "Repair or provision the desktop Python environment and retry.",
+        ),
+    }
+}
+
+fn probe_media_tool_component(
+    layout: &RuntimeLayout,
+    tool: &'static str,
+    label: &'static str,
+) -> BootstrapPreflightComponent {
+    let required = layout.mode == RuntimeMode::Installed;
+    let preferred = [layout.runtime_root.join("bin")];
+    let resolution = resolve_probe_executable(OsStr::new(tool), &preferred);
+    let (missing_code, invalid_code) = if tool == "ffprobe" {
+        ("FFPROBE_MISSING", "FFPROBE_INVALID")
+    } else {
+        ("FFMPEG_MISSING", "FFMPEG_INVALID")
+    };
+    let executable = match resolution {
+        ProbeExecutableResolution::Found(path) => path,
+        ProbeExecutableResolution::Missing => {
+            return preflight_component(
+                tool,
+                label,
+                "missing",
+                required,
+                None,
+                None,
+                Some(missing_code),
+                Some("Install FFmpeg with both ffmpeg and ffprobe available, then retry."),
+                Some(format!(
+                    "{label} could not be resolved from the runtime or PATH."
+                )),
+            );
+        }
+        ProbeExecutableResolution::Invalid(path, detail) => {
+            return preflight_component(
+                tool,
+                label,
+                "invalid",
+                required,
+                None,
+                Some(&path),
+                Some(invalid_code),
+                Some("Repair the FFmpeg installation and retry."),
+                Some(detail),
+            );
+        }
+    };
+    let output =
+        match run_bounded_probe_command(&executable, &["-version"], PREFLIGHT_PROCESS_TIMEOUT) {
+            Ok(output) => output,
+            Err(failure) => {
+                let (status, error_code, remediation) =
+                    tool_probe_failure_mapping(tool, failure.kind);
+                return preflight_component(
+                    tool,
+                    label,
+                    status,
+                    required,
+                    None,
+                    Some(&executable),
+                    Some(error_code),
+                    Some(remediation),
+                    Some(failure.detail),
+                );
+            }
+        };
+    let version_line = validated_media_tool_version_line(tool, &output);
+    if version_line.is_none() {
+        return preflight_component(
+            tool,
+            label,
+            "invalid",
+            required,
+            None,
+            Some(&executable),
+            Some(invalid_code),
+            Some("Repair the FFmpeg installation and retry."),
+            Some(format!(
+                "{label} version probe did not return the expected fixed version signature."
+            )),
+        );
+    }
+    preflight_component(
+        tool,
+        label,
+        "ready",
+        required,
+        version_line,
+        Some(&executable),
+        None,
+        None,
+        Some(format!("{label} passed the bounded process probe.")),
+    )
+}
+
+fn inspect_real_directory(path: &Path, label: &str) -> Result<(), String> {
+    validate_existing_path_chain(path, label)?;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
+    if metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() {
+        return Err(format!(
+            "{label} must be a real directory: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn probe_directory_writable(path: &Path, index: usize) -> Result<(), String> {
+    let probe_path = path.join(format!(
+        ".preflight-write-{}-{}-{index}",
+        std::process::id(),
+        Utc::now().timestamp_micros()
+    ));
+    let probe_result = (|| -> io::Result<()> {
+        let mut probe = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe_path)?;
+        probe.write_all(b"mpp-preflight")?;
+        probe.sync_all()
+    })();
+    if let Err(error) = probe_result {
+        let _ = fs::remove_file(&probe_path);
+        return Err(format!(
+            "desktop data directory is not writable at {}: {error}",
+            path.display()
+        ));
+    }
+    fs::remove_file(&probe_path).map_err(|error| {
+        format!(
+            "desktop data write probe could not be removed from {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn read_runtime_version(runtime_root: &Path) -> Result<String, String> {
+    let path = runtime_root.join("VERSION");
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|error| format!("cannot inspect runtime VERSION: {error}"))?;
+    if metadata_is_link_or_reparse(&metadata) || !metadata.is_file() || metadata.len() > 4096 {
+        return Err("runtime VERSION must be a small regular file".to_string());
+    }
+    let mut bytes = Vec::with_capacity((metadata.len() as usize).saturating_add(1));
+    fs::File::open(&path)
+        .map_err(|error| format!("cannot open runtime VERSION: {error}"))?
+        .take(4097)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read runtime VERSION: {error}"))?;
+    if bytes.len() > 4096 {
+        return Err("runtime VERSION changed beyond the 4096 byte limit".to_string());
+    }
+    let version = std::str::from_utf8(&bytes)
+        .map_err(|error| format!("runtime VERSION is not UTF-8: {error}"))?;
+    let version = version.trim();
+    if version.is_empty() {
+        return Err("runtime VERSION is empty".to_string());
+    }
+    Ok(bounded_preflight_text(version, 128))
+}
+
+fn probe_desktop_runtime_component(layout: &RuntimeLayout) -> BootstrapPreflightComponent {
+    let required = layout.mode == RuntimeMode::Installed;
+    let inspection = if required {
+        validate_installed_runtime_manifest(&layout.runtime_root)
+            .map_err(|error| format!("installed runtime validation failed: {error}"))
+    } else {
+        validate_runtime_root(&layout.runtime_root, false)
+    }
+    .and_then(|_| inspect_real_directory(&layout.runtime_root, "desktop runtime"))
+    .and_then(|_| inspect_real_directory(&layout.backend_dir, "backend runtime"))
+    .and_then(|_| inspect_real_directory(&layout.web_dist_dir, "web runtime"))
+    .and_then(|_| read_runtime_version(&layout.runtime_root));
+    match inspection {
+        Ok(version) => preflight_component(
+            "desktop-runtime",
+            "Desktop Runtime",
+            "ready",
+            required,
+            Some(version),
+            Some(&layout.runtime_root),
+            None,
+            None,
+            Some("The resolved runtime layout is complete.".to_string()),
+        ),
+        Err(detail) => preflight_component(
+            "desktop-runtime",
+            "Desktop Runtime",
+            if required { "invalid" } else { "warning" },
+            required,
+            None,
+            Some(&layout.runtime_root),
+            Some("RUNTIME_INVALID"),
+            Some("Repair or reinstall MediaProcessPipeline, then retry."),
+            Some(detail),
+        ),
+    }
+}
+
+fn probe_data_root_component(layout: &RuntimeLayout) -> BootstrapPreflightComponent {
+    let required = layout.mode == RuntimeMode::Installed;
+    let inspection =
+        inspect_real_directory(&layout.user.root, "desktop data root").and_then(|_| {
+            for (index, directory) in std::iter::once(layout.user.root.as_path())
+                .chain(layout.user.required_directories())
+                .enumerate()
+            {
+                inspect_real_directory(directory, "desktop data directory")?;
+                probe_directory_writable(directory, index)?;
+            }
+            Ok(())
+        });
+    match inspection {
+        Ok(()) => preflight_component(
+            "data-root",
+            "Local Data Root",
+            "ready",
+            required,
+            None,
+            Some(&layout.user.root),
+            None,
+            None,
+            Some("The local application directories are available.".to_string()),
+        ),
+        Err(detail) => preflight_component(
+            "data-root",
+            "Local Data Root",
+            if required { "blocked" } else { "warning" },
+            required,
+            None,
+            Some(&layout.user.root),
+            Some("DATA_ROOT_UNWRITABLE"),
+            Some("Restore access to the local application data directory and retry."),
+            Some(detail),
+        ),
+    }
+}
+
+fn python_venv_executable(venv_dir: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        venv_dir.join("Scripts").join("python.exe")
+    }
+    #[cfg(not(windows))]
+    {
+        venv_dir.join("bin").join("python")
+    }
+}
+
+fn probe_python_environment_component(layout: &RuntimeLayout) -> BootstrapPreflightComponent {
+    let required = layout.mode == RuntimeMode::Installed;
+    let python = python_venv_executable(&layout.user.venv_dir);
+    if !layout.user.venv_dir.exists() || !python.exists() {
+        return preflight_component(
+            "python-environment",
+            "Python Environment",
+            if required { "missing" } else { "warning" },
+            required,
+            None,
+            Some(&layout.user.venv_dir),
+            Some("PYTHON_ENVIRONMENT_MISSING"),
+            Some("Provision the desktop Python environment and retry."),
+            Some(
+                "The configured user virtual environment is absent; preflight does not create or synchronize it."
+                    .to_string(),
+            ),
+        );
+    }
+    let inspection = inspect_real_directory(&layout.user.venv_dir, "Python virtual environment")
+        .and_then(|_| {
+            inspect_real_file(
+                &layout.user.venv_dir.join("pyvenv.cfg"),
+                "Python virtual environment marker",
+            )
+        })
+        .and_then(|_| inspect_probe_executable(&python));
+    if let Err(detail) = inspection {
+        return preflight_component(
+            "python-environment",
+            "Python Environment",
+            if required { "invalid" } else { "warning" },
+            required,
+            None,
+            Some(&layout.user.venv_dir),
+            Some("PYTHON_ENVIRONMENT_INVALID"),
+            Some("Remove the damaged virtual environment and provision it again."),
+            Some(detail),
+        );
+    }
+
+    let output = match run_bounded_probe_command(
+        &python,
+        &["-I", "-E", "-s", "--version"],
+        PREFLIGHT_PROCESS_TIMEOUT,
+    ) {
+        Ok(output) => output,
+        Err(failure) => {
+            let (status, error_code, remediation) = python_probe_failure_mapping(failure.kind);
+            return preflight_component(
+                "python-environment",
+                "Python Environment",
+                status,
+                required,
+                None,
+                Some(&layout.user.venv_dir),
+                Some(error_code),
+                Some(remediation),
+                Some(failure.detail),
+            );
+        }
+    };
+
+    match classify_python_version_output(&output) {
+        PythonVersionOutcome::Supported(version) => preflight_component(
+            "python-environment",
+            "Python Environment",
+            "ready",
+            required,
+            Some(version),
+            Some(&layout.user.venv_dir),
+            None,
+            None,
+            Some("Python 3.11 or 3.12 passed the bounded process probe.".to_string()),
+        ),
+        PythonVersionOutcome::Unsupported(version) => preflight_component(
+            "python-environment",
+            "Python Environment",
+            if required { "invalid" } else { "warning" },
+            required,
+            Some(version),
+            Some(&layout.user.venv_dir),
+            Some("PYTHON_VERSION_UNSUPPORTED"),
+            Some("Provision a Python 3.11 or 3.12 desktop environment and retry."),
+            Some(
+                "The desktop Python version is outside the supported 3.11-3.12 range.".to_string(),
+            ),
+        ),
+        PythonVersionOutcome::Invalid => preflight_component(
+            "python-environment",
+            "Python Environment",
+            if required { "invalid" } else { "warning" },
+            required,
+            None,
+            Some(&layout.user.venv_dir),
+            Some("PYTHON_ENVIRONMENT_INVALID"),
+            Some("Repair or provision the desktop Python environment and retry."),
+            Some("Python did not return the expected fixed version signature.".to_string()),
+        ),
+    }
+}
+
+fn classify_settings_preflight_output(output: &ProbeCommandOutput) -> SettingsPreflightOutcome {
+    match (output.success, output.output.as_str()) {
+        (true, SETTINGS_PREFLIGHT_OK_TOKEN) => SettingsPreflightOutcome::Valid,
+        (false, SETTINGS_PREFLIGHT_INVALID_TOKEN) => SettingsPreflightOutcome::Invalid,
+        _ => SettingsPreflightOutcome::Error,
+    }
+}
+
+fn probe_runtime_settings_component(layout: &RuntimeLayout) -> BootstrapPreflightComponent {
+    let required = layout.mode == RuntimeMode::Installed;
+    let path = &layout.user.config_file;
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return preflight_component(
+                "runtime-settings",
+                "Runtime Settings",
+                "ready",
+                required,
+                None,
+                Some(path),
+                None,
+                None,
+                Some("No settings file exists; runtime defaults will be used.".to_string()),
+            );
+        }
+        Err(error) => {
+            return preflight_component(
+                "runtime-settings",
+                "Runtime Settings",
+                "invalid",
+                required,
+                None,
+                Some(path),
+                Some("CONFIG_INVALID"),
+                Some("Correct or remove the damaged runtime settings file, then retry."),
+                Some(format!("cannot inspect runtime settings: {error}")),
+            );
+        }
+        Ok(_) => {}
+    }
+    let inspection = (|| -> Result<(), String> {
+        validate_existing_path_chain(path, "runtime settings")?;
+        let metadata = fs::symlink_metadata(path)
+            .map_err(|error| format!("cannot inspect runtime settings: {error}"))?;
+        if metadata_is_link_or_reparse(&metadata) || !metadata.is_file() {
+            return Err("runtime settings must be a regular file".to_string());
+        }
+        if metadata.len() > MAX_RUNTIME_SETTINGS_BYTES {
+            return Err(format!(
+                "runtime settings exceed the {} byte limit",
+                MAX_RUNTIME_SETTINGS_BYTES
+            ));
+        }
+        let mut bytes = Vec::with_capacity((metadata.len() as usize).saturating_add(1));
+        fs::File::open(path)
+            .map_err(|error| format!("cannot open runtime settings: {error}"))?
+            .take(MAX_RUNTIME_SETTINGS_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("cannot read runtime settings: {error}"))?;
+        if bytes.len() as u64 > MAX_RUNTIME_SETTINGS_BYTES {
+            return Err(format!(
+                "runtime settings changed beyond the {} byte limit",
+                MAX_RUNTIME_SETTINGS_BYTES
+            ));
+        }
+        let value: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("runtime settings JSON is invalid: {error}"))?;
+        if !value.is_object() {
+            return Err("runtime settings JSON root must be an object".to_string());
+        }
+        Ok(())
+    })();
+    if let Err(detail) = inspection {
+        return preflight_component(
+            "runtime-settings",
+            "Runtime Settings",
+            "invalid",
+            required,
+            None,
+            Some(path),
+            Some("CONFIG_INVALID"),
+            Some("Correct or remove the damaged runtime settings file, then retry."),
+            Some(detail),
+        );
+    }
+
+    if !required {
+        return preflight_component(
+            "runtime-settings",
+            "Runtime Settings",
+            "ready",
+            false,
+            None,
+            Some(path),
+            None,
+            None,
+            Some("The runtime settings JSON structure is valid.".to_string()),
+        );
+    }
+
+    let python = python_venv_executable(&layout.user.venv_dir);
+    let helper = layout
+        .backend_dir
+        .join("app")
+        .join("services")
+        .join("settings_preflight.py");
+    if inspect_probe_executable(&python).is_err()
+        || inspect_real_file(&helper, "settings preflight helper").is_err()
+    {
+        return preflight_component(
+            "runtime-settings",
+            "Runtime Settings",
+            "blocked",
+            true,
+            None,
+            Some(path),
+            Some("CONFIG_PREFLIGHT_UNAVAILABLE"),
+            Some("Repair the desktop Python environment or application runtime, then retry."),
+            Some(
+                "RuntimeSettings semantic validation is unavailable in the installed runtime."
+                    .to_string(),
+            ),
+        );
+    }
+
+    let helper_argument = helper.to_string_lossy().into_owned();
+    let config_argument = path.to_string_lossy().into_owned();
+    let arguments = ["-I", helper_argument.as_str(), config_argument.as_str()];
+    let output = match run_bounded_probe_command(&python, &arguments, PREFLIGHT_PROCESS_TIMEOUT) {
+        Ok(output) => output,
+        Err(failure) => {
+            let (error_code, remediation, detail) = match failure.kind {
+                ProbeCommandFailureKind::Timeout => (
+                    "CONFIG_PREFLIGHT_TIMEOUT",
+                    "Close stalled Python processes and retry.",
+                    "RuntimeSettings semantic validation exceeded its time limit.",
+                ),
+                ProbeCommandFailureKind::PermissionDenied => (
+                    "CONFIG_PREFLIGHT_EXECUTION_BLOCKED",
+                    "Restore permission to run the desktop Python environment and retry.",
+                    "The desktop Python environment could not execute settings validation.",
+                ),
+                ProbeCommandFailureKind::Spawn | ProbeCommandFailureKind::Supervision => (
+                    "CONFIG_PREFLIGHT_ERROR",
+                    "Repair the desktop Python environment or application runtime, then retry.",
+                    "RuntimeSettings semantic validation could not run safely.",
+                ),
+            };
+            return preflight_component(
+                "runtime-settings",
+                "Runtime Settings",
+                "blocked",
+                true,
+                None,
+                Some(path),
+                Some(error_code),
+                Some(remediation),
+                Some(detail.to_string()),
+            );
+        }
+    };
+
+    match classify_settings_preflight_output(&output) {
+        SettingsPreflightOutcome::Valid => preflight_component(
+            "runtime-settings",
+            "Runtime Settings",
+            "ready",
+            true,
+            None,
+            Some(path),
+            None,
+            None,
+            Some(
+                "The settings file passed structural and RuntimeSettings semantic validation."
+                    .to_string(),
+            ),
+        ),
+        SettingsPreflightOutcome::Invalid => preflight_component(
+            "runtime-settings",
+            "Runtime Settings",
+            "invalid",
+            true,
+            None,
+            Some(path),
+            Some("CONFIG_INVALID"),
+            Some("Correct or remove the damaged runtime settings file, then retry."),
+            Some("Runtime settings failed semantic validation.".to_string()),
+        ),
+        SettingsPreflightOutcome::Error => preflight_component(
+            "runtime-settings",
+            "Runtime Settings",
+            "blocked",
+            true,
+            None,
+            Some(path),
+            Some("CONFIG_PREFLIGHT_ERROR"),
+            Some("Repair the desktop Python environment or application runtime, then retry."),
+            Some(
+                "RuntimeSettings semantic validation returned an invalid fixed contract."
+                    .to_string(),
+            ),
+        ),
+    }
+}
+
+fn probe_port_component(
+    component_id: &str,
+    label: &str,
+    port: u16,
+    already_owned: bool,
+) -> BootstrapPreflightComponent {
+    if already_owned {
+        return preflight_component(
+            component_id,
+            label,
+            "ready",
+            true,
+            None,
+            None,
+            None,
+            None,
+            Some(format!(
+                "localhost port {port} is owned by this desktop session."
+            )),
+        );
+    }
+    match bind_desktop_proxy_at(port) {
+        Ok(listeners) => {
+            drop(listeners);
+            preflight_component(
+                component_id,
+                label,
+                "ready",
+                true,
+                None,
+                None,
+                None,
+                None,
+                Some(format!("localhost port {port} is available.")),
+            )
+        }
+        Err(detail) => {
+            let (error_code, remediation) = if component_id == "desktop-proxy-port" {
+                (
+                    "PORT_IN_USE",
+                    "Close the process using localhost port 18000 and retry.",
+                )
+            } else {
+                (
+                    "PRIVATE_PORT_IN_USE",
+                    "Close the process using the private backend port and retry.",
+                )
+            };
+            preflight_component(
+                component_id,
+                label,
+                "blocked",
+                true,
+                None,
+                None,
+                Some(error_code),
+                Some(remediation),
+                Some(detail),
+            )
+        }
+    }
+}
+
+fn build_bootstrap_preflight(
+    app: &AppHandle,
+    layout: &RuntimeLayout,
+    proxy_started: bool,
+) -> BootstrapPreflightReport {
+    let webview = if app.get_webview_window("main").is_some() {
+        preflight_component(
+            "webview2",
+            "Microsoft Edge WebView2",
+            "ready",
+            true,
+            None,
+            None,
+            None,
+            None,
+            Some("The desktop WebView is available.".to_string()),
+        )
+    } else {
+        preflight_component(
+            "webview2",
+            "Microsoft Edge WebView2",
+            "blocked",
+            true,
+            None,
+            None,
+            Some("WEBVIEW2_MISSING"),
+            Some(
+                "Install or repair Microsoft Edge WebView2 Runtime, then restart the application.",
+            ),
+            Some("The main desktop WebView is unavailable.".to_string()),
+        )
+    };
+    finalize_preflight_report(vec![
+        probe_desktop_runtime_component(layout),
+        probe_data_root_component(layout),
+        probe_uv_component(layout),
+        probe_python_environment_component(layout),
+        probe_media_tool_component(layout, "ffmpeg", "FFmpeg"),
+        probe_media_tool_component(layout, "ffprobe", "FFprobe"),
+        probe_port_component(
+            "desktop-proxy-port",
+            "Desktop Proxy Port",
+            BACKEND_PORT,
+            proxy_started,
+        ),
+        probe_port_component(
+            "backend-private-port",
+            "Backend Private Port",
+            layout.backend_port,
+            false,
+        ),
+        probe_runtime_settings_component(layout),
+        webview,
+    ])
+}
+
+fn preflight_report_from_failure(failure: &BootstrapFailure) -> BootstrapPreflightReport {
+    let mut report = finalize_preflight_report(
+        PREFLIGHT_COMPONENT_ORDER
+            .iter()
+            .map(|component_id| {
+                preflight_component(
+                    component_id,
+                    preflight_component_label(component_id),
+                    "blocked",
+                    true,
+                    None,
+                    None,
+                    Some("PREFLIGHT_SCAN_BLOCKED"),
+                    Some(
+                        "Resolve the reported bootstrap failure, then retry the environment scan.",
+                    ),
+                    Some(format!(
+                        "{} could not be evaluated because bootstrap initialization stopped early.",
+                        preflight_component_label(component_id)
+                    )),
+                )
+            })
+            .collect(),
+    );
+    apply_failure_to_preflight(&mut report, failure);
+    report
 }
 
 fn bootstrap_internal_failure(error: impl Into<String>) -> BootstrapFailure {
@@ -4321,6 +5931,35 @@ fn bootstrap_attempt_is_current_for_app(
     Ok(bootstrap_attempt_is_current(&runtime, attempt_epoch))
 }
 
+fn bootstrap_proxy_state_for_attempt(
+    app: &AppHandle,
+    attempt_epoch: u64,
+) -> Result<Option<bool>, BootstrapFailure> {
+    let controller = app.state::<BootstrapController>();
+    let runtime = controller
+        .runtime
+        .lock()
+        .map_err(|_| bootstrap_internal_failure("bootstrap runtime lock poisoned"))?;
+    Ok(bootstrap_attempt_is_current(&runtime, attempt_epoch).then_some(runtime.proxy_started))
+}
+
+fn cache_preflight_for_attempt(
+    app: &AppHandle,
+    attempt_epoch: u64,
+    report: BootstrapPreflightReport,
+) -> Result<bool, BootstrapFailure> {
+    let controller = app.state::<BootstrapController>();
+    let mut runtime = controller
+        .runtime
+        .lock()
+        .map_err(|_| bootstrap_internal_failure("bootstrap runtime lock poisoned"))?;
+    if !bootstrap_attempt_is_current(&runtime, attempt_epoch) {
+        return Ok(false);
+    }
+    runtime.preflight = report;
+    Ok(true)
+}
+
 fn set_bootstrap_phase_for_attempt(
     app: &AppHandle,
     attempt_epoch: u64,
@@ -4346,13 +5985,15 @@ fn publish_bootstrap_failure_for_attempt(
     failure: &BootstrapFailure,
 ) -> Result<bool, String> {
     let controller = app.state::<BootstrapController>();
-    let runtime = controller
+    let mut runtime = controller
         .runtime
         .lock()
         .map_err(|_| "bootstrap runtime lock poisoned".to_string())?;
     if !bootstrap_attempt_is_current(&runtime, attempt_epoch) {
         return Ok(false);
     }
+    apply_failure_to_preflight(&mut runtime.preflight, failure);
+    drop(runtime);
     set_bootstrap_failure(app, failure)?;
     Ok(true)
 }
@@ -4364,7 +6005,24 @@ fn run_bootstrap_attempt(
     if !bootstrap_attempt_is_current_for_app(app, attempt_epoch)? {
         return Ok(BootstrapAttemptOutcome::Cancelled);
     }
-    let layout = prepare_bootstrap_runtime(app)?;
+    let layout = match prepare_bootstrap_runtime(app) {
+        Ok(layout) => layout,
+        Err(failure) => {
+            let report = preflight_report_from_failure(&failure);
+            let _ = cache_preflight_for_attempt(app, attempt_epoch, report);
+            return Err(failure);
+        }
+    };
+    let Some(proxy_started) = bootstrap_proxy_state_for_attempt(app, attempt_epoch)? else {
+        return Ok(BootstrapAttemptOutcome::Cancelled);
+    };
+    let preflight = build_bootstrap_preflight(app, &layout, proxy_started);
+    if !cache_preflight_for_attempt(app, attempt_epoch, preflight.clone())? {
+        return Ok(BootstrapAttemptOutcome::Cancelled);
+    }
+    if let Some(failure) = preflight_blocking_failure(&preflight) {
+        return Err(failure);
+    }
     if !ensure_bootstrap_proxy(app, &layout, attempt_epoch)? {
         return Ok(BootstrapAttemptOutcome::Cancelled);
     }
@@ -4461,6 +6119,7 @@ fn begin_bootstrap_attempt(runtime: &mut BootstrapRuntime) -> Option<u64> {
     }
     runtime.attempt_epoch = next_bootstrap_epoch(runtime.attempt_epoch);
     runtime.attempt_running = true;
+    runtime.preflight = BootstrapPreflightReport::default();
     Some(runtime.attempt_epoch)
 }
 
@@ -4877,6 +6536,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             backend_get_status,
+            bootstrap_get_preflight,
             backend_get_logs,
             backend_start,
             backend_stop,
@@ -5838,6 +7498,515 @@ mod tests {
         assert!(!generation_is_current(7, Some(8), 7));
         assert!(!generation_is_current(7, None, 7));
         assert_eq!(next_lifecycle_generation(u64::MAX), 1);
+    }
+
+    #[test]
+    fn preflight_report_is_ordered_and_uses_stable_overall_precedence() {
+        let report = finalize_preflight_report(vec![
+            preflight_component(
+                "webview2", "WebView2", "ready", true, None, None, None, None, None,
+            ),
+            preflight_component(
+                "runtime-settings",
+                "Runtime Settings",
+                "invalid",
+                true,
+                None,
+                None,
+                Some("CONFIG_INVALID"),
+                Some("Correct the settings file."),
+                Some("invalid JSON".to_string()),
+            ),
+            preflight_component(
+                "desktop-runtime",
+                "Desktop Runtime",
+                "ready",
+                true,
+                Some("0.4.1".to_string()),
+                None,
+                None,
+                None,
+                None,
+            ),
+        ]);
+
+        assert_eq!(report.schema_version, 1);
+        assert_eq!(report.overall_status, "needs_repair");
+        assert_eq!(
+            report
+                .components
+                .iter()
+                .map(|component| component.component_id.as_str())
+                .collect::<Vec<_>>(),
+            ["desktop-runtime", "runtime-settings", "webview2"]
+        );
+        let serialized = serde_json::to_value(&report).expect("preflight should serialize");
+        assert!(serialized["components"][0]["path"].is_null());
+        assert!(serialized["components"][0]["error_code"].is_null());
+
+        let blocked = finalize_preflight_report(vec![preflight_component(
+            "backend-private-port",
+            "Backend Private Port",
+            "blocked",
+            true,
+            None,
+            None,
+            Some("PRIVATE_PORT_IN_USE"),
+            None,
+            None,
+        )]);
+        assert_eq!(blocked.overall_status, "blocked");
+    }
+
+    #[test]
+    fn default_preflight_matches_the_shared_scanning_contract() {
+        let report = BootstrapPreflightReport::default();
+        assert_eq!(report.overall_status, "scanning");
+        assert_eq!(
+            report
+                .components
+                .iter()
+                .map(|component| component.component_id.as_str())
+                .collect::<Vec<_>>(),
+            PREFLIGHT_COMPONENT_ORDER
+        );
+        assert!(report
+            .components
+            .iter()
+            .all(|component| component.status == "scanning"));
+
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../src/lib/fixtures/bootstrap-preflight-scanning-v1.json"
+        ))
+        .expect("shared scanning fixture should be valid JSON");
+        let actual = serde_json::to_value(report).expect("default preflight should serialize");
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn preflight_fields_are_utf8_safe_and_bounded() {
+        let long_detail = "界".repeat(MAX_PREFLIGHT_DETAIL_BYTES);
+        let long_path = PathBuf::from(format!("C:/{}", "路".repeat(MAX_PREFLIGHT_PATH_BYTES)));
+        let component = preflight_component(
+            "runtime-settings",
+            "Runtime Settings",
+            "invalid",
+            true,
+            Some("v".repeat(512)),
+            Some(&long_path),
+            Some("CONFIG_INVALID"),
+            Some(&long_detail),
+            Some(long_detail.clone()),
+        );
+
+        assert!(component.version.expect("version should exist").len() <= 128);
+        assert!(component.path.expect("path should exist").len() <= MAX_PREFLIGHT_PATH_BYTES);
+        assert!(
+            component
+                .remediation
+                .expect("remediation should exist")
+                .len()
+                <= MAX_PREFLIGHT_DETAIL_BYTES
+        );
+        assert!(component.detail.expect("detail should exist").len() <= MAX_PREFLIGHT_DETAIL_BYTES);
+
+        let (retained, truncated) =
+            read_bounded_probe_stream(io::Cursor::new(vec![b'x'; MAX_PREFLIGHT_OUTPUT_BYTES * 4]))
+                .expect("bounded probe output should be readable");
+        assert_eq!(retained.len(), MAX_PREFLIGHT_OUTPUT_BYTES);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn invalid_settings_have_a_stable_config_error_without_mutation() {
+        let temporary = TestDirectory::new("preflight-invalid-settings");
+        let user = UserPaths::new(temporary.path.join("user"));
+        fs::create_dir_all(&user.config_dir).expect("config directory should be created");
+        write_file(&user.config_file, "{ invalid");
+        let mut layout = proxy_test_layout(43122);
+        layout.mode = RuntimeMode::Installed;
+        layout.user = user;
+
+        let before = fs::read(&layout.user.config_file).expect("fixture should be readable");
+        let component = probe_runtime_settings_component(&layout);
+        let after = fs::read(&layout.user.config_file).expect("fixture should remain readable");
+
+        assert_eq!(component.status, "invalid");
+        assert!(component.required);
+        assert_eq!(component.error_code.as_deref(), Some("CONFIG_INVALID"));
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn python_environment_probe_is_read_only_and_missing_is_stable() {
+        let temporary = TestDirectory::new("preflight-python-environment");
+        let mut layout = proxy_test_layout(43122);
+        layout.mode = RuntimeMode::Installed;
+        layout.user = UserPaths::new(temporary.path.join("user"));
+
+        assert!(!layout.user.venv_dir.exists());
+        let component = probe_python_environment_component(&layout);
+        assert!(!layout.user.venv_dir.exists());
+        assert_eq!(component.status, "missing");
+        assert_eq!(
+            component.error_code.as_deref(),
+            Some("PYTHON_ENVIRONMENT_MISSING")
+        );
+    }
+
+    #[test]
+    fn preflight_error_classification_maps_required_failures_to_bootstrap() {
+        let report = finalize_preflight_report(vec![preflight_component(
+            "ffmpeg",
+            "FFmpeg",
+            "missing",
+            true,
+            None,
+            None,
+            Some("FFMPEG_MISSING"),
+            Some("Install FFmpeg."),
+            Some("ffmpeg.exe was not found".to_string()),
+        )]);
+        let failure =
+            preflight_blocking_failure(&report).expect("required missing tool should block");
+        assert_eq!(failure.error_code, "FFMPEG_MISSING");
+        assert_eq!(failure.component_id, "ffmpeg");
+        assert!(!failure.retryable);
+
+        assert_eq!(
+            tool_probe_failure_mapping("ffprobe", ProbeCommandFailureKind::Timeout).1,
+            "FFPROBE_PROBE_TIMEOUT"
+        );
+        assert_eq!(
+            tool_probe_failure_mapping("ffmpeg", ProbeCommandFailureKind::PermissionDenied).1,
+            "FFMPEG_EXECUTION_BLOCKED"
+        );
+
+        let uv_failure = runtime_resolution_failure(
+            "manifest-declared runtime files are missing: bin/uv.exe".to_string(),
+            Some(Path::new("C:/Program Files/MPP/runtime")),
+        );
+        assert_eq!(uv_failure.error_code, "UV_MISSING");
+        assert_eq!(uv_failure.component_id, "bundled-uv");
+        assert_eq!(
+            runtime_resolution_failure(
+                "runtime root is incomplete: missing uv.lock".to_string(),
+                None,
+            )
+            .error_code,
+            "RUNTIME_INVALID"
+        );
+
+        let early_report = preflight_report_from_failure(&uv_failure);
+        assert_eq!(
+            early_report.components.len(),
+            PREFLIGHT_COMPONENT_ORDER.len()
+        );
+        assert_eq!(
+            early_report
+                .components
+                .iter()
+                .map(|component| component.component_id.as_str())
+                .collect::<Vec<_>>(),
+            PREFLIGHT_COMPONENT_ORDER
+        );
+        assert_eq!(
+            early_report
+                .components
+                .iter()
+                .find(|component| component.component_id == "bundled-uv")
+                .and_then(|component| component.error_code.as_deref()),
+            Some("UV_MISSING")
+        );
+
+        let mut raced_port_report = finalize_preflight_report(vec![preflight_component(
+            "desktop-proxy-port",
+            "Desktop Proxy Port",
+            "ready",
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )]);
+        let raced_port_failure = BootstrapFailure::retryable(
+            "PORT_IN_USE",
+            "desktop-proxy",
+            "Close the conflicting process and retry.",
+            "localhost port 18000 was claimed after preflight",
+            None,
+        );
+        apply_failure_to_preflight(&mut raced_port_report, &raced_port_failure);
+        assert_eq!(raced_port_report.overall_status, "blocked");
+        assert_eq!(
+            raced_port_report.components[0].error_code.as_deref(),
+            Some("PORT_IN_USE")
+        );
+    }
+
+    #[test]
+    fn non_contract_failure_components_stay_within_the_fixed_preflight_set() {
+        let cases = [
+            (
+                BootstrapFailure::manual(
+                    "BACKEND_HEALTH_INVALID",
+                    "backend-health",
+                    "Repair the runtime.",
+                    "health contract mismatch",
+                    None,
+                ),
+                "python-environment",
+            ),
+            (
+                bootstrap_internal_failure("bootstrap runtime lock poisoned"),
+                "desktop-runtime",
+            ),
+            (
+                BootstrapFailure::retryable(
+                    "DESKTOP_SESSION_INIT_FAILED",
+                    "desktop-session",
+                    "Restart the application.",
+                    "session entropy source unavailable",
+                    None,
+                ),
+                "desktop-runtime",
+            ),
+        ];
+
+        for (failure, expected_component_id) in cases {
+            let report = preflight_report_from_failure(&failure);
+            assert_eq!(report.components.len(), PREFLIGHT_COMPONENT_ORDER.len());
+            assert_eq!(
+                report
+                    .components
+                    .iter()
+                    .map(|component| component.component_id.as_str())
+                    .collect::<Vec<_>>(),
+                PREFLIGHT_COMPONENT_ORDER
+            );
+            assert_eq!(
+                report
+                    .components
+                    .iter()
+                    .find(|component| component.component_id == expected_component_id)
+                    .and_then(|component| component.error_code.as_deref()),
+                Some(failure.error_code.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn python_version_probe_accepts_only_supported_fixed_signatures() {
+        for version in ["3.11.0", "3.11.10", "3.12.9"] {
+            assert_eq!(
+                classify_python_version_output(&ProbeCommandOutput {
+                    success: true,
+                    output: format!("Python {version}"),
+                }),
+                PythonVersionOutcome::Supported(version.to_string())
+            );
+        }
+        for version in ["2.7.18", "3.10.14", "3.13.0"] {
+            assert_eq!(
+                classify_python_version_output(&ProbeCommandOutput {
+                    success: true,
+                    output: format!("Python {version}"),
+                }),
+                PythonVersionOutcome::Unsupported(version.to_string())
+            );
+        }
+        for output in [
+            ProbeCommandOutput {
+                success: false,
+                output: "Python 3.11.10".to_string(),
+            },
+            ProbeCommandOutput {
+                success: true,
+                output: "Python 3.11".to_string(),
+            },
+            ProbeCommandOutput {
+                success: true,
+                output: "Python 3.11.0rc1".to_string(),
+            },
+            ProbeCommandOutput {
+                success: true,
+                output: "python 3.11.10".to_string(),
+            },
+            ProbeCommandOutput {
+                success: true,
+                output: "Python 3.11.10 extra".to_string(),
+            },
+            ProbeCommandOutput {
+                success: true,
+                output: "arbitrary executable output".to_string(),
+            },
+        ] {
+            assert_eq!(
+                classify_python_version_output(&output),
+                PythonVersionOutcome::Invalid
+            );
+        }
+
+        assert_eq!(
+            python_probe_failure_mapping(ProbeCommandFailureKind::Timeout).1,
+            "PYTHON_PROBE_TIMEOUT"
+        );
+        assert_eq!(
+            python_probe_failure_mapping(ProbeCommandFailureKind::PermissionDenied).1,
+            "PYTHON_EXECUTION_BLOCKED"
+        );
+        assert_eq!(
+            python_probe_failure_mapping(ProbeCommandFailureKind::Supervision).1,
+            "PYTHON_PROBE_BLOCKED"
+        );
+        assert_eq!(
+            python_probe_failure_mapping(ProbeCommandFailureKind::Spawn).1,
+            "PYTHON_ENVIRONMENT_INVALID"
+        );
+    }
+
+    #[test]
+    fn media_tool_probe_requires_the_matching_fixed_version_signature() {
+        let ffmpeg = ProbeCommandOutput {
+            success: true,
+            output: "ffmpeg version 7.1.1-full_build Copyright FFmpeg".to_string(),
+        };
+        let ffprobe = ProbeCommandOutput {
+            success: true,
+            output: "ffprobe version 7.1.1-full_build Copyright FFmpeg".to_string(),
+        };
+        assert_eq!(
+            validated_media_tool_version_line("ffmpeg", &ffmpeg).as_deref(),
+            Some("ffmpeg version 7.1.1-full_build Copyright FFmpeg")
+        );
+        assert_eq!(
+            validated_media_tool_version_line("ffprobe", &ffprobe).as_deref(),
+            Some("ffprobe version 7.1.1-full_build Copyright FFmpeg")
+        );
+
+        for (tool, output) in [
+            ("ffmpeg", "ffprobe version 7.1.1"),
+            ("ffprobe", "ffmpeg version 7.1.1"),
+            ("ffmpeg", "arbitrary executable output"),
+            ("ffprobe", "ffprobe version "),
+        ] {
+            assert!(validated_media_tool_version_line(
+                tool,
+                &ProbeCommandOutput {
+                    success: true,
+                    output: output.to_string(),
+                }
+            )
+            .is_none());
+        }
+        assert!(validated_media_tool_version_line(
+            "ffmpeg",
+            &ProbeCommandOutput {
+                success: false,
+                output: "ffmpeg version 7.1.1".to_string(),
+            }
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn settings_preflight_accepts_only_the_fixed_credential_safe_contract() {
+        assert_eq!(
+            classify_settings_preflight_output(&ProbeCommandOutput {
+                success: true,
+                output: SETTINGS_PREFLIGHT_OK_TOKEN.to_string(),
+            }),
+            SettingsPreflightOutcome::Valid
+        );
+        assert_eq!(
+            classify_settings_preflight_output(&ProbeCommandOutput {
+                success: false,
+                output: SETTINGS_PREFLIGHT_INVALID_TOKEN.to_string(),
+            }),
+            SettingsPreflightOutcome::Invalid
+        );
+        for output in [
+            ProbeCommandOutput {
+                success: true,
+                output: SETTINGS_PREFLIGHT_INVALID_TOKEN.to_string(),
+            },
+            ProbeCommandOutput {
+                success: false,
+                output: SETTINGS_PREFLIGHT_OK_TOKEN.to_string(),
+            },
+            ProbeCommandOutput {
+                success: false,
+                output: "secret-bearing validation error".to_string(),
+            },
+        ] {
+            assert_eq!(
+                classify_settings_preflight_output(&output),
+                SettingsPreflightOutcome::Error
+            );
+        }
+    }
+
+    #[test]
+    fn data_root_preflight_rechecks_writability_and_cleans_probes() {
+        let temporary = TestDirectory::new("preflight-data-root");
+        let mut layout = proxy_test_layout(43122);
+        layout.mode = RuntimeMode::Installed;
+        layout.user = UserPaths::new(temporary.path.join("user"));
+        for directory in
+            std::iter::once(layout.user.root.as_path()).chain(layout.user.required_directories())
+        {
+            fs::create_dir_all(directory).expect("data directory should be created");
+        }
+
+        let component = probe_data_root_component(&layout);
+        assert_eq!(component.status, "ready");
+        for directory in
+            std::iter::once(layout.user.root.as_path()).chain(layout.user.required_directories())
+        {
+            assert!(
+                fs::read_dir(directory)
+                    .expect("data directory should be readable")
+                    .all(|entry| !entry
+                        .expect("directory entry should be readable")
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".preflight-write-")),
+                "write probes must be removed"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn preflight_process_probe_has_a_hard_timeout_and_reclaims_the_tree() {
+        let system_root = env::var_os("SystemRoot").expect("Windows test requires SystemRoot");
+        let command = PathBuf::from(system_root).join("System32").join("cmd.exe");
+        let started = Instant::now();
+        let failure = run_bounded_probe_command(
+            &command,
+            &["/D", "/C", "ping -n 30 127.0.0.1 >NUL"],
+            Duration::from_millis(150),
+        )
+        .expect_err("long-running probe should time out");
+
+        assert_eq!(failure.kind, ProbeCommandFailureKind::Timeout);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preflight_process_probe_has_a_hard_timeout_and_reclaims_the_tree() {
+        let started = Instant::now();
+        let failure = run_bounded_probe_command(
+            Path::new("/bin/sh"),
+            &["-c", "sleep 30 & wait"],
+            Duration::from_millis(150),
+        )
+        .expect_err("long-running probe should time out");
+
+        assert_eq!(failure.kind, ProbeCommandFailureKind::Timeout);
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[cfg(windows)]

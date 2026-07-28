@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "overall_status": "scanning",
+  "components": [
+    {
+      "component_id": "desktop-runtime",
+      "label": "Desktop Runtime",
+      "status": "scanning",
+      "required": true,
+      "version": null,
+      "path": null,
+      "error_code": null,
+      "remediation": null,
+      "detail": null
+    },
+    {
+      "component_id": "data-root",
+      "label": "Local Data Root",
+      "status": "scanning",
+      "required": true,
+      "version": null,
+      "path": null,
+      "error_code": null,
+      "remediation": null,
+      "detail": null
+    },
+    {
+      "component_id": "bundled-uv",
+      "label": "uv Runtime Manager",
+      "status": "scanning",
+      "required": true,
+      "version": null,
+      "path": null,
+      "error_code": null,
+      "remediation": null,
+      "detail": null
+    },
+    {
+      "component_id": "python-environment",
+      "label": "Python Environment",
+      "status": "scanning",
+      "required": true,
+      "version": null,
+      "path": null,
+      "error_code": null,
+      "remediation": null,
+      "detail": null
+    },
+    {
+      "component_id": "ffmpeg",
+      "label": "FFmpeg",
+      "status": "scanning",
+      "required": true,
+      "version": null,
+      "path": null,
+      "error_code": null,
+      "remediation": null,
+      "detail": null
+    },
+    {
+      "component_id": "ffprobe",
+      "label": "FFprobe",
+      "status": "scanning",
+      "required": true,
+      "version": null,
+      "path": null,
+      "error_code": null,
+      "remediation": null,
+      "detail": null
+    },
+    {
+      "component_id": "desktop-proxy-port",
+      "label": "Desktop Proxy Port",
+      "status": "scanning",
+      "required": true,
+      "version": null,
+      "path": null,
+      "error_code": null,
+      "remediation": null,
+      "detail": null
+    },
+    {
+      "component_id": "backend-private-port",
+      "label": "Backend Private Port",
+      "status": "scanning",
+      "required": true,
+      "version": null,
+      "path": null,
+      "error_code": null,
+      "remediation": null,
+      "detail": null
+    },
+    {
+      "component_id": "runtime-settings",
+      "label": "Runtime Settings",
+      "status": "scanning",
+      "required": true,
+      "version": null,
+      "path": null,
+      "error_code": null,
+      "remediation": null,
+      "detail": null
+    },
+    {
+      "component_id": "webview2",
+      "label": "Microsoft Edge WebView2",
+      "status": "scanning",
+      "required": true,
+      "version": null,
+      "path": null,
+      "error_code": null,
+      "remediation": null,
+      "detail": null
+    }
+  ]
+}
