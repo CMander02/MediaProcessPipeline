@@ -15,7 +15,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  UV_FROZEN: "1"
   UV_NO_PROGRESS: "1"
 
 jobs:
@@ -37,14 +36,14 @@ jobs:
           version: "0.9.21"
 
       - name: Validate version identity
-        run: uv run --extra dev python scripts/check-version.py
+        run: uv run --frozen --extra dev python scripts/check-version.py
 
       - name: Validate locked release dependencies
         run: |
           uv lock --check
           git ls-files --error-unmatch uv.lock
-          uv run --extra dev python scripts/check-release-dependencies.py
-          uv run --extra dev python -c "from PIL import Image, ImageOps; print(Image.__version__); print(ImageOps.__name__)"
+          uv run --frozen --extra dev python scripts/check-release-dependencies.py
+          uv run --frozen --extra dev python -c "from PIL import Image, ImageOps; print(Image.__version__); print(ImageOps.__name__)"
 
   secret-scan:
     name: Secret scan
@@ -131,15 +130,15 @@ jobs:
         run: uv sync --frozen --extra dev
 
       - name: Run backend tests
-        run: uv run pytest
+        run: uv run --frozen pytest
 
       - name: Compile Python sources
         run: |
-          uv run python -m compileall -q backend tests
-          uv run python -m py_compile scripts/check-release-dependencies.py scripts/check-version.py scripts/set-version.py
+          uv run --frozen python -m compileall -q backend tests
+          uv run --frozen python -m py_compile scripts/check-release-dependencies.py scripts/check-version.py scripts/set-version.py
 
       - name: Run Ruff
-        run: uv run ruff check backend tests scripts/check-release-dependencies.py scripts/check-version.py scripts/set-version.py
+        run: uv run --frozen ruff check backend tests scripts/check-release-dependencies.py scripts/check-version.py scripts/set-version.py
 
   web-test:
     name: Web tests and production build
