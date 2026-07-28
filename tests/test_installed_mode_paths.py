@@ -319,7 +319,7 @@ def test_settings_save_is_atomic_and_updates_memory_after_replace(
 
     updated = core_settings.patch_runtime_settings({"kb_enabled": False})
 
-    assert fsync_calls == 1
+    assert fsync_calls == (1 if os.name == "nt" else 2)
     assert updated.kb_enabled is False
     assert core_settings._runtime_settings is updated
     persisted = json.loads(settings_file.read_text(encoding="utf-8"))
