@@ -1,0 +1,151 @@
+{
+  "schema": 1,
+  "profiles": [
+    {
+      "id": "remote-api",
+      "displayName": "Remote API processing",
+      "targets": [
+        {"os": "linux", "arch": "aarch64", "gpu": "none"},
+        {"os": "linux", "arch": "x86_64", "gpu": "none"},
+        {"os": "linux", "arch": "x86_64", "gpu": "nvidia"},
+        {"os": "macos", "arch": "aarch64", "gpu": "none"},
+        {"os": "windows", "arch": "x86_64", "gpu": "none"},
+        {"os": "windows", "arch": "x86_64", "gpu": "nvidia"}
+      ],
+      "uvExtras": [],
+      "components": ["remote-api"],
+      "verificationPending": false,
+      "mutuallyExclusive": [],
+      "estimatedDownloadBytes": 0,
+      "estimatedInstalledBytes": 0,
+      "requiredBinaries": ["ffmpeg", "ffprobe", "uv"],
+      "requiredModels": [],
+      "probes": ["python", "configuration", "pillow", "fastapi", "openai", "ffmpeg", "ffprobe", "uv", "writable-paths", "disk"]
+    },
+    {
+      "id": "onnx-vad-cpu",
+      "displayName": "ONNX VAD (CPU)",
+      "targets": [
+        {"os": "linux", "arch": "aarch64", "gpu": "none"},
+        {"os": "linux", "arch": "x86_64", "gpu": "none"},
+        {"os": "linux", "arch": "x86_64", "gpu": "nvidia"},
+        {"os": "windows", "arch": "x86_64", "gpu": "none"},
+        {"os": "windows", "arch": "x86_64", "gpu": "nvidia"}
+      ],
+      "uvExtras": ["asr-api-vad"],
+      "components": [],
+      "verificationPending": true,
+      "mutuallyExclusive": ["full-local-nvidia", "uvr-nvidia"],
+      "estimatedDownloadBytes": 18000000,
+      "estimatedInstalledBytes": 60000000,
+      "requiredBinaries": ["ffmpeg", "ffprobe", "uv"],
+      "requiredModels": [],
+      "probes": ["python", "configuration", "ffmpeg", "ffprobe", "uv", "onnx-cpu-provider", "writable-paths", "disk"]
+    },
+    {
+      "id": "qwen-asr-local",
+      "displayName": "Qwen ASR (local NVIDIA)",
+      "targets": [
+        {"os": "linux", "arch": "x86_64", "gpu": "nvidia"},
+        {"os": "windows", "arch": "x86_64", "gpu": "nvidia"}
+      ],
+      "uvExtras": ["local-asr"],
+      "components": [],
+      "verificationPending": true,
+      "mutuallyExclusive": [],
+      "estimatedDownloadBytes": 8500000000,
+      "estimatedInstalledBytes": 14500000000,
+      "requiredBinaries": ["ffmpeg", "ffprobe", "uv"],
+      "requiredModels": ["Qwen/Qwen3-ASR-1.7B"],
+      "probes": ["python", "configuration", "ffmpeg", "ffprobe", "uv", "cuda", "qwen-asr", "torchaudio", "pyannote", "writable-paths", "disk"]
+    },
+    {
+      "id": "uvr-nvidia",
+      "displayName": "UVR separation (NVIDIA)",
+      "targets": [
+        {"os": "linux", "arch": "x86_64", "gpu": "nvidia"},
+        {"os": "windows", "arch": "x86_64", "gpu": "nvidia"}
+      ],
+      "uvExtras": ["uvr"],
+      "components": [],
+      "verificationPending": true,
+      "mutuallyExclusive": ["onnx-vad-cpu"],
+      "estimatedDownloadBytes": 4500000000,
+      "estimatedInstalledBytes": 8500000000,
+      "requiredBinaries": ["ffmpeg", "ffprobe", "uv"],
+      "requiredModels": [],
+      "probes": ["python", "configuration", "ffmpeg", "ffprobe", "uv", "cuda", "onnx-cuda-provider", "audio-separator", "torchaudio", "writable-paths", "disk"]
+    },
+    {
+      "id": "transformers-local",
+      "displayName": "Transformers inference (local NVIDIA)",
+      "targets": [
+        {"os": "linux", "arch": "x86_64", "gpu": "nvidia"},
+        {"os": "windows", "arch": "x86_64", "gpu": "nvidia"}
+      ],
+      "uvExtras": ["hf-local-inference"],
+      "components": [],
+      "verificationPending": true,
+      "mutuallyExclusive": [],
+      "estimatedDownloadBytes": 4000000000,
+      "estimatedInstalledBytes": 8000000000,
+      "requiredBinaries": ["uv"],
+      "requiredModels": [],
+      "probes": ["python", "configuration", "uv", "cuda", "transformers", "accelerate", "safetensors", "writable-paths", "disk"]
+    },
+    {
+      "id": "local-llm",
+      "displayName": "Local LLM inference (NVIDIA)",
+      "targets": [
+        {"os": "linux", "arch": "x86_64", "gpu": "nvidia"},
+        {"os": "windows", "arch": "x86_64", "gpu": "nvidia"}
+      ],
+      "uvExtras": ["local-llm"],
+      "components": [],
+      "verificationPending": true,
+      "mutuallyExclusive": [],
+      "estimatedDownloadBytes": 4000000000,
+      "estimatedInstalledBytes": 8000000000,
+      "requiredBinaries": ["uv"],
+      "requiredModels": [],
+      "probes": ["python", "configuration", "uv", "cuda", "transformers", "accelerate", "safetensors", "writable-paths", "disk"]
+    },
+    {
+      "id": "full-local-nvidia",
+      "displayName": "Full local processing (NVIDIA)",
+      "targets": [
+        {"os": "linux", "arch": "x86_64", "gpu": "nvidia"},
+        {"os": "windows", "arch": "x86_64", "gpu": "nvidia"}
+      ],
+      "uvExtras": ["local-models"],
+      "components": [],
+      "verificationPending": true,
+      "mutuallyExclusive": ["onnx-vad-cpu"],
+      "estimatedDownloadBytes": 12500000000,
+      "estimatedInstalledBytes": 22000000000,
+      "requiredBinaries": ["ffmpeg", "ffprobe", "uv"],
+      "requiredModels": ["Qwen/Qwen3-ASR-1.7B"],
+      "probes": ["python", "configuration", "pillow", "ffmpeg", "ffprobe", "uv", "cuda", "onnx-cuda-provider", "qwen-asr", "audio-separator", "torchaudio", "pyannote", "transformers", "accelerate", "safetensors", "writable-paths", "disk"]
+    },
+    {
+      "id": "browser-extraction",
+      "displayName": "Browser extraction (Chromium)",
+      "targets": [
+        {"os": "linux", "arch": "x86_64", "gpu": "none"},
+        {"os": "linux", "arch": "x86_64", "gpu": "nvidia"},
+        {"os": "macos", "arch": "aarch64", "gpu": "none"},
+        {"os": "windows", "arch": "x86_64", "gpu": "none"},
+        {"os": "windows", "arch": "x86_64", "gpu": "nvidia"}
+      ],
+      "uvExtras": [],
+      "components": ["playwright-chromium"],
+      "verificationPending": true,
+      "mutuallyExclusive": [],
+      "estimatedDownloadBytes": 170000000,
+      "estimatedInstalledBytes": 420000000,
+      "requiredBinaries": ["uv"],
+      "requiredModels": [],
+      "probes": ["python", "configuration", "uv", "playwright", "chromium", "writable-paths", "disk"]
+    }
+  ]
+}

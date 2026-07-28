@@ -45,6 +45,9 @@ jobs:
           uv run --frozen --extra dev python scripts/check-release-dependencies.py
           uv run --frozen --extra dev python -c "from PIL import Image, ImageOps; print(Image.__version__); print(ImageOps.__name__)"
 
+      - name: Validate runtime profile catalog
+        run: uv run --frozen --extra dev python scripts/check-runtime-profiles.py
+
   secret-scan:
     name: Secret scan
     runs-on: ubuntu-24.04
@@ -135,10 +138,10 @@ jobs:
       - name: Compile Python sources
         run: |
           uv run --frozen python -m compileall -q backend tests
-          uv run --frozen python -m py_compile scripts/check-desktop-runtime.py scripts/check-release-dependencies.py scripts/check-version.py scripts/set-version.py scripts/smoke-installed-runtime.py
+          uv run --frozen python -m py_compile scripts/check-desktop-runtime.py scripts/check-release-dependencies.py scripts/check-runtime-profiles.py scripts/check-version.py scripts/set-version.py scripts/smoke-installed-runtime.py
 
       - name: Run Ruff
-        run: uv run --frozen ruff check backend tests scripts/check-desktop-runtime.py scripts/check-release-dependencies.py scripts/check-version.py scripts/set-version.py scripts/smoke-installed-runtime.py
+        run: uv run --frozen ruff check backend tests scripts/check-desktop-runtime.py scripts/check-release-dependencies.py scripts/check-runtime-profiles.py scripts/check-version.py scripts/set-version.py scripts/smoke-installed-runtime.py
 
   web-test:
     name: Web tests and production build
