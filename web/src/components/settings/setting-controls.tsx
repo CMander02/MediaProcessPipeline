@@ -52,6 +52,13 @@ function proxyMode(value: string): ProxyMode {
 }
 
 export function ProxySetting({
+  value,
+  ...props
+}: SettingRowProps) {
+  return <ProxySettingEditor key={value} value={value} {...props} />
+}
+
+function ProxySettingEditor({
   label,
   settingKey,
   value,
@@ -61,13 +68,9 @@ export function ProxySetting({
 }: SettingRowProps) {
   const persistedMode = proxyMode(value)
   const [mode, setMode] = useState<ProxyMode>(persistedMode)
-  const [customValue, setCustomValue] = useState(persistedMode === "custom" ? value : "")
-
-  useEffect(() => {
-    const nextMode = proxyMode(value)
-    setMode(nextMode)
-    if (nextMode === "custom") setCustomValue(value)
-  }, [value])
+  const [customValue, setCustomValue] = useState(
+    persistedMode === "custom" ? value : "",
+  )
 
   const saveMode = (nextMode: ProxyMode) => {
     setMode(nextMode)

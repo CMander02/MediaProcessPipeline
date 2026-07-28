@@ -330,7 +330,7 @@ function getPaginationItems(currentPage: number, totalPages: number, rangeSize: 
 
   const half = Math.floor(rangeSize / 2)
   let start = Math.max(1, currentPage - half)
-  let end = Math.min(totalPages, start + rangeSize - 1)
+  const end = Math.min(totalPages, start + rangeSize - 1)
   start = Math.max(1, end - rangeSize + 1)
 
   const pages = new Set<number>([1, totalPages])

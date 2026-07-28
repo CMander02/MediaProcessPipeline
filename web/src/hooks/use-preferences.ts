@@ -18,7 +18,9 @@ function load(): Preferences {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) return { ...defaults(), ...JSON.parse(raw) }
-  } catch {}
+  } catch {
+    // Ignore malformed or unavailable browser storage and use defaults.
+  }
   return defaults()
 }
 

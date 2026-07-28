@@ -232,7 +232,13 @@ function NoteMarkdown({ content, archivePath, sep }: { content: string; archiveP
 
 type ArticleMarkdownSegment =
   | { kind: "markdown"; content: string }
-  | { kind: "figure"; alt: string; src: string; caption: string | null }
+  | {
+      kind: "figure"
+      alt: string
+      src: string
+      caption: string | null
+      figureIndex: number
+    }
 
 function markdownHasInlineImages(content: string | null): boolean {
   if (!content) return false
@@ -251,6 +257,7 @@ function parseArticleMarkdownSegments(content: string): ArticleMarkdownSegment[]
   const lines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n")
   const segments: ArticleMarkdownSegment[] = []
   const pending: string[] = []
+  let figureIndex = 0
 
   const flushPending = () => {
     const markdown = pending.join("\n").trim()
@@ -289,7 +296,9 @@ function parseArticleMarkdownSegments(content: string): ArticleMarkdownSegment[]
       alt,
       src,
       caption: shouldConsumeCaption ? caption : null,
+      figureIndex,
     })
+    figureIndex += 1
     i = shouldConsumeCaption ? cursor : i + 1
 
     if (!shouldConsumeCaption && captionStart > i) {
@@ -329,50 +338,45 @@ function ArticleNoteMarkdown({ content, archivePath, sep }: { content: string; a
 
   return (
     <div className="prose prose-sm max-w-none dark:prose-invert">
-      {(() => {
-        let figureIndex = 0
-        return segments.map((segment, index) => {
-          if (segment.kind === "markdown") {
-            return (
-              <MarkdownRenderer key={`markdown-${index}`} components={markdownComponents}>
-                {segment.content}
-              </MarkdownRenderer>
-            )
-          }
-          const currentFigureIndex = figureIndex
-          figureIndex += 1
+      {segments.map((segment, index) => {
+        if (segment.kind === "markdown") {
           return (
-            <figure key={`figure-${index}`} className="my-5">
-              <button
-                type="button"
-                className="block w-full"
-                onClick={() => setLightboxIndex(currentFigureIndex)}
-                title="查看大图"
-              >
-                <img
-                  src={resolveNoteMediaSrc(segment.src, archivePath, sep)}
-                  alt={segment.alt}
-                  className="mx-auto max-h-[640px] w-full rounded-md object-contain"
-                  loading="lazy"
-                />
-              </button>
-              {segment.caption ? (
-                <figcaption className="mx-auto mt-2 max-w-2xl text-center text-xs leading-6 text-muted-foreground [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_p]:m-0">
-                  <MarkdownRenderer
-                    components={{
-                      a: ({ href, children }) => (
-                        <a href={href} target="_blank" rel="noreferrer">{children}</a>
-                      ),
-                    }}
-                  >
-                    {segment.caption}
-                  </MarkdownRenderer>
-                </figcaption>
-              ) : null}
-            </figure>
+            <MarkdownRenderer key={`markdown-${index}`} components={markdownComponents}>
+              {segment.content}
+            </MarkdownRenderer>
           )
-        })
-      })()}
+        }
+        return (
+          <figure key={`figure-${index}`} className="my-5">
+            <button
+              type="button"
+              className="block w-full"
+              onClick={() => setLightboxIndex(segment.figureIndex)}
+              title="查看大图"
+            >
+              <img
+                src={resolveNoteMediaSrc(segment.src, archivePath, sep)}
+                alt={segment.alt}
+                className="mx-auto max-h-[640px] w-full rounded-md object-contain"
+                loading="lazy"
+              />
+            </button>
+            {segment.caption ? (
+              <figcaption className="mx-auto mt-2 max-w-2xl text-center text-xs leading-6 text-muted-foreground [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_p]:m-0">
+                <MarkdownRenderer
+                  components={{
+                    a: ({ href, children }) => (
+                      <a href={href} target="_blank" rel="noreferrer">{children}</a>
+                    ),
+                  }}
+                >
+                  {segment.caption}
+                </MarkdownRenderer>
+              </figcaption>
+            ) : null}
+          </figure>
+        )
+      })}
       <ImageLightbox
         images={figureImages}
         index={lightboxIndex ?? 0}
@@ -500,7 +504,6 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   // Pipeline progress state
   const [taskStatus, setTaskStatus] = useState<string | null>(null)
   const [completedSteps, setCompletedSteps] = useState<string[]>([])
-  const [currentStep, setCurrentStep] = useState<string | null>(null)
   const [taskError, setTaskError] = useState<string | null>(null)
   const [taskFlow, setTaskFlow] = useState<TaskFlowSnapshot | null>(null)
   const [timelineEvents, setTimelineEvents] = useState<TaskTimelineEvent[]>([])
@@ -531,7 +534,6 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     setActiveImageIdx(0)
     setTaskStatus(null)
     setCompletedSteps([])
-    setCurrentStep(null)
     setTaskError(null)
     setTaskFlow(null)
     setTimelineEvents([])
@@ -580,7 +582,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         console.warn("Failed to save SRT after speaker rename:", err)
       }
     },
-    [subtitles, archivePath, sep],
+    [subtitles, archivePath, sep, isPolished],
   )
 
   const handleRenameSpeaker = async (oldName: string, newName: string) => {
@@ -653,7 +655,6 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
 
   const applyTaskSnapshot = useCallback((task: Task) => {
     setTaskStatus(task.status)
-    setCurrentStep(task.current_step)
     setCompletedSteps(task.completed_steps ?? [])
     setTaskError(task.error)
     setTaskFlow(task.flow ?? null)
@@ -844,7 +845,9 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         if (descs && descs.length > 0) {
           resultDescriptions.push(...descs)
         }
-      } catch {}
+      } catch {
+        // Continue with descriptions discovered from the archive directory.
+      }
     }
     const resultByIndex = new Map(resultDescriptions.map((item) => [item.index, item]))
     const descs: ImageDescription[] = []
@@ -858,7 +861,11 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         const stem = item.name.replace(/\.[^.]+$/, "")
         const descPath = archivePath + sep + "descriptions" + sep + `${stem}.md`
         let text = ""
-        try { text = (await api.filesystem.read(descPath)).content ?? "" } catch {}
+        try {
+          text = (await api.filesystem.read(descPath)).content ?? ""
+        } catch {
+          // Description text is optional for an archived image.
+        }
         const index = Number.parseInt(stem, 10)
         const fromResult = Number.isFinite(index) ? resultByIndex.get(index) : undefined
         descs.push({
@@ -869,7 +876,9 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
           text: (fromResult?.text || text || ""),
         })
       }
-    } catch {}
+    } catch {
+      // Fall back to probing the legacy numbered image layout below.
+    }
     for (let i = descs.length > 0 ? 30 : 0; i < 30; i++) {
       const imgPath = archivePath + sep + "images" + sep + `${String(i).padStart(2, "0")}.jpg`
       const descPath = archivePath + sep + "descriptions" + sep + `${String(i).padStart(2, "0")}.md`
@@ -877,7 +886,11 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         const check = await api.filesystem.read(imgPath)
         if (!check || !check.success) break
         let text = ""
-        try { text = (await api.filesystem.read(descPath)).content ?? "" } catch {}
+        try {
+          text = (await api.filesystem.read(descPath)).content ?? ""
+        } catch {
+          // Description text is optional for a legacy archived image.
+        }
         const fromResult = resultByIndex.get(i)
         descs.push({
           ...(fromResult ?? {}),
@@ -912,14 +925,12 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     // when the user navigates back to the result page mid-processing.
     onSnapshot(data) {
       setTaskStatus(data.status)
-      setCurrentStep(data.current_step)
       setCompletedSteps(data.completed_steps ?? [])
       if (data.flow) setTaskFlow(data.flow)
       if (data.error) setTaskError(data.error)
     },
     onStep(data: StepEvent) {
       setTaskStatus("processing")
-      setCurrentStep(data.step)
       if (data.completed && !completedSteps.includes(data.step)) {
         setCompletedSteps((prev) =>
           prev.includes(data.step) ? prev : [...prev, data.step],
@@ -1302,7 +1313,6 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
       ) : isImageNote ? (
         <div className="h-full">
           <ImageNoteViewer
-            archivePath={archivePath}
             descriptions={imageDescriptions}
             activeIndex={activeImageIdx}
             onImageIndexChange={setActiveImageIdx}
@@ -1346,7 +1356,14 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
       "h-full min-h-0 flex flex-col",
       isPortraitLayout ? "p-0" : "p-4",
     )}>
-      <Tabs value={activeTab} onValueChange={(v: any) => { setActiveTab(String(v)); updateActiveTab(String(v)) }} className="flex flex-col flex-1 min-h-0">
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => {
+          setActiveTab(value)
+          updateActiveTab(value)
+        }}
+        className="flex flex-col flex-1 min-h-0"
+      >
         <div className="shrink-0 flex min-w-0 items-center gap-1.5">
           <div className="min-w-0 flex-1 overflow-x-auto pb-1">
           <TabsList className="w-max">
@@ -1791,7 +1808,6 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
               ) : isImageNote ? (
                 <div className="h-full">
                   <ImageNoteViewer
-                    archivePath={archivePath}
                     descriptions={imageDescriptions}
                     activeIndex={activeImageIdx}
                     onImageIndexChange={setActiveImageIdx}
@@ -1835,7 +1851,14 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
           {/* Right panel — tabbed content */}
           <ResizablePanel defaultSize="50%" minSize="25%">
             <div className="h-full flex flex-col p-4">
-              <Tabs value={activeTab} onValueChange={(v: any) => { setActiveTab(String(v)); updateActiveTab(String(v)) }} className="flex flex-col flex-1 min-h-0">
+              <Tabs
+                value={activeTab}
+                onValueChange={(value) => {
+                  setActiveTab(value)
+                  updateActiveTab(value)
+                }}
+                className="flex flex-col flex-1 min-h-0"
+              >
                 <div className="shrink-0 flex min-w-0 items-center gap-1.5">
                   <div className="min-w-0 flex-1 overflow-x-auto pb-1">
                   <TabsList className="w-max">

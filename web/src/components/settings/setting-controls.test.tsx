@@ -96,4 +96,32 @@ describe("ProxySetting", () => {
       expect(onSave).toHaveBeenLastCalledWith("network_proxy", "http://localhost:7897"),
     )
   })
+
+  it("starts a fresh draft whenever the persisted value changes", () => {
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    const renderSetting = (value: string) => (
+      <ProxySetting
+        label="代理"
+        settingKey="network_proxy"
+        value={value}
+        onSave={onSave}
+        saving={{}}
+        saved={{}}
+      />
+    )
+    const { rerender } = render(renderSetting("http://proxy-a:7897"))
+
+    fireEvent.change(screen.getByRole("textbox", { name: "代理地址" }), {
+      target: { value: "http://unsaved-b:7897" },
+    })
+    rerender(renderSetting("http://proxy-c:7897"))
+    expect(screen.getByRole("textbox", { name: "代理地址" })).toHaveValue(
+      "http://proxy-c:7897",
+    )
+
+    rerender(renderSetting("http://proxy-a:7897"))
+    expect(screen.getByRole("textbox", { name: "代理地址" })).toHaveValue(
+      "http://proxy-a:7897",
+    )
+  })
 })

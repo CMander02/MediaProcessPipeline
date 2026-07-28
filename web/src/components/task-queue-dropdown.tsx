@@ -130,7 +130,9 @@ export function TaskQueueDropdown() {
         api.tasks.list("paused", 200),
       ])
       setActiveTasks([...processing, ...queued, ...paused])
-    } catch {}
+    } catch {
+      // Keep the last successful task snapshot during transient refresh failures.
+    }
   }, [])
 
   const scheduleRefresh = useCallback(() => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type { Subtitle } from "@/lib/srt"
 import { findSubtitleIndexAtTime } from "@/lib/srt"
 
@@ -15,29 +15,23 @@ export function useMediaSync({ subtitles, initialTime, onTimeUpdate }: UseMediaS
   const [currentTime, setCurrentTime] = useState(0) // seconds
   const [duration, setDuration] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
-  const [currentSegmentIndex, setCurrentSegmentIndex] = useState(-1)
   const [autoScroll, setAutoScroll] = useState(true)
   const autoScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const initialTimeApplied = useRef(false)
 
-  // Update current segment on time change
-  useEffect(() => {
-    if (subtitles.length === 0) return
+  const currentSegmentIndex = useMemo(() => {
+    if (subtitles.length === 0) return -1
     const timeMs = currentTime * 1000
     const idx = findSubtitleIndexAtTime(subtitles, timeMs)
-    // Only set if the subtitle actually contains currentTime
-    if (idx >= 0 && timeMs <= subtitles[idx].endTime) {
-      setCurrentSegmentIndex(idx)
-    } else {
-      setCurrentSegmentIndex(-1)
-    }
+    return idx >= 0 && timeMs <= subtitles[idx].endTime ? idx : -1
   }, [currentTime, subtitles])
 
   // Stable refs for callbacks so bindMedia doesn't re-create on every render
   const onTimeUpdateCbRef = useRef(onTimeUpdate)
-  onTimeUpdateCbRef.current = onTimeUpdate
-  const initialTimeRef = useRef(initialTime)
-  initialTimeRef.current = initialTime
+
+  useLayoutEffect(() => {
+    onTimeUpdateCbRef.current = onTimeUpdate
+  }, [onTimeUpdate])
 
   // Bind media element events
   const bindMedia = useCallback((el: HTMLMediaElement | null) => {
@@ -51,9 +45,9 @@ export function useMediaSync({ subtitles, initialTime, onTimeUpdate }: UseMediaS
     const handleDurationChange = () => {
       setDuration(el.duration || 0)
       // Apply initial time once media is ready
-      if (!initialTimeApplied.current && initialTimeRef.current && initialTimeRef.current > 0 && el.duration > 0) {
+      if (!initialTimeApplied.current && initialTime && initialTime > 0 && el.duration > 0) {
         initialTimeApplied.current = true
-        el.currentTime = Math.min(initialTimeRef.current, el.duration - 1)
+        el.currentTime = Math.min(initialTime, el.duration - 1)
       }
     }
     const onPlay = () => setIsPlaying(true)
@@ -69,9 +63,9 @@ export function useMediaSync({ subtitles, initialTime, onTimeUpdate }: UseMediaS
     // Initialize
     if (el.duration) {
       setDuration(el.duration)
-      if (!initialTimeApplied.current && initialTimeRef.current && initialTimeRef.current > 0) {
+      if (!initialTimeApplied.current && initialTime && initialTime > 0) {
         initialTimeApplied.current = true
-        el.currentTime = Math.min(initialTimeRef.current, el.duration - 1)
+        el.currentTime = Math.min(initialTime, el.duration - 1)
       }
     }
 
@@ -81,8 +75,12 @@ export function useMediaSync({ subtitles, initialTime, onTimeUpdate }: UseMediaS
       el.removeEventListener("play", onPlay)
       el.removeEventListener("pause", onPause)
       el.removeEventListener("ended", onEnded)
+      if (mediaRef.current === el) {
+        mediaRef.current = null
+        initialTimeApplied.current = false
+      }
     }
-  }, [])
+  }, [initialTime])
 
   const seekTo = useCallback((timeMs: number) => {
     if (mediaRef.current) {

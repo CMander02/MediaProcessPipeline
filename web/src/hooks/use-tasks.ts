@@ -66,12 +66,27 @@ export function useTask(taskId: string | null) {
     if (!taskId) return
     try {
       setTask(await api.tasks.get(taskId))
-    } catch {}
+    } catch {
+      // The detail view keeps its last successful snapshot during transient failures.
+    }
   }, [taskId])
 
   useEffect(() => {
-    refresh()
-  }, [refresh])
+    if (!taskId) return
+    let active = true
+
+    api.tasks.get(taskId)
+      .then((nextTask) => {
+        if (active) setTask(nextTask)
+      })
+      .catch(() => {
+        // Keep the last successful task snapshot during transient failures.
+      })
+
+    return () => {
+      active = false
+    }
+  }, [taskId])
 
   return { task, refresh }
 }

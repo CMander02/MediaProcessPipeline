@@ -1,7 +1,7 @@
 /**
  * Hook for subscribing to task SSE events with typed handlers.
  */
-import { useEffect, useRef } from "react"
+import { useEffect, useLayoutEffect, useRef } from "react"
 import { subscribeTaskEvents, type TaskFlowSnapshot, type TaskTimelineEvent } from "@/lib/api"
 
 export interface FileReadyEvent {
@@ -53,7 +53,10 @@ export function useTaskSSE(
   handlers: TaskSSEHandlers,
 ) {
   const handlersRef = useRef(handlers)
-  handlersRef.current = handlers
+
+  useLayoutEffect(() => {
+    handlersRef.current = handlers
+  }, [handlers])
 
   useEffect(() => {
     if (!taskId) return

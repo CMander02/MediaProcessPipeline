@@ -100,7 +100,9 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
         if (t.status === "completed" || t.status === "failed" || t.status === "cancelled" || t.status === "paused") {
           clearInterval(interval)
         }
-      } catch {}
+      } catch {
+        // Keep the latest SSE snapshot when the fallback request is unavailable.
+      }
     }, 10000)
 
     return () => {
@@ -130,6 +132,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
     try {
       await api.tasks.cancel(taskId)
     } catch {
+      // The SSE stream will reconcile the task state after a transient failure.
     } finally {
       setActionBusy(null)
     }
@@ -143,6 +146,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
       setTask(next)
       setFlow(next.flow ?? null)
     } catch {
+      // The SSE stream will reconcile the task state after a transient failure.
     } finally {
       setActionBusy(null)
     }
@@ -156,6 +160,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
       setTask(next)
       setFlow(next.flow ?? null)
     } catch {
+      // The SSE stream will reconcile the task state after a transient failure.
     } finally {
       setActionBusy(null)
     }
@@ -168,6 +173,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
       setDeleteOpen(false)
       navigate("#/files")
     } catch {
+      // Stay on the live task when deletion fails.
     } finally {
       setActionBusy(null)
     }

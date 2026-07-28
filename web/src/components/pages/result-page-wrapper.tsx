@@ -4,7 +4,6 @@
  */
 import { useEffect, useState } from "react"
 import { useRoute } from "@/lib/router"
-import { navigate } from "@/lib/router"
 import { api } from "@/lib/api"
 import { ResultPageLive } from "./result-page-live"
 import { ResultPageComplete } from "./result-page-complete"

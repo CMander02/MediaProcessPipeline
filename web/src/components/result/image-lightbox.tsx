@@ -30,11 +30,33 @@ export function ImageLightbox({
   onIndexChange,
   onOpenChange,
 }: ImageLightboxProps) {
+  const current = images[index]
+
+  if (!open || !current) return null
+
+  return (
+    <ImageLightboxContent
+      key={`${index}:${current.src}`}
+      images={images}
+      index={index}
+      current={current}
+      onIndexChange={onIndexChange}
+      onOpenChange={onOpenChange}
+    />
+  )
+}
+
+function ImageLightboxContent({
+  images,
+  index,
+  current,
+  onIndexChange,
+  onOpenChange,
+}: Omit<ImageLightboxProps, "open"> & { current: LightboxImage }) {
   const [scale, setScale] = useState(1)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
   const dragRef = useRef({ x: 0, y: 0, offsetX: 0, offsetY: 0 })
-  const current = images[index]
 
   const resetView = useCallback(() => {
     setScale(1)
@@ -50,7 +72,6 @@ export function ImageLightbox({
   }, [images.length, index, onIndexChange, resetView])
 
   useEffect(() => {
-    if (!open) return
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onOpenChange(false)
       if (event.key === "ArrowLeft") go(-1)
@@ -58,13 +79,7 @@ export function ImageLightbox({
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [go, onOpenChange, open])
-
-  useEffect(() => {
-    if (open) resetView()
-  }, [index, open, resetView])
-
-  if (!open || !current) return null
+  }, [go, onOpenChange])
 
   return (
     <div

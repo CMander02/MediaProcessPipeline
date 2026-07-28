@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState, useRef, useEffect, type KeyboardEvent } from "react"
+import { Fragment, useMemo, useState, useRef, type KeyboardEvent } from "react"
 import type { Subtitle } from "@/lib/srt"
 import { getSpeakerColor, extractSpeakers, formatSpeakerLabel } from "@/lib/srt"
 import { formatDuration } from "@/lib/format"
@@ -25,15 +25,14 @@ export function SpeakerPanel({ subtitles, duration, currentTime, onSeek, onRenam
   const [editValue, setEditValue] = useState("")
   const inputRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => {
-    if (editingSpeaker) {
-      setEditValue(editingSpeaker)
-      setTimeout(() => {
-        inputRef.current?.focus()
-        inputRef.current?.select()
-      }, 30)
-    }
-  }, [editingSpeaker])
+  const startEditing = (speaker: string) => {
+    setEditValue(speaker)
+    setEditingSpeaker(speaker)
+    setTimeout(() => {
+      inputRef.current?.focus()
+      inputRef.current?.select()
+    }, 30)
+  }
 
   const speakers = useMemo(() => {
     const names = extractSpeakers(subtitles)
@@ -109,7 +108,7 @@ export function SpeakerPanel({ subtitles, duration, currentTime, onSeek, onRenam
               <button
                 className="text-xs font-medium hover:underline cursor-pointer text-left truncate max-w-[10rem]"
                 style={{ color: s.color }}
-                onClick={() => setEditingSpeaker(s.name)}
+                onClick={() => startEditing(s.name)}
                 title="点击编辑说话人名称"
               >
                 {formatSpeakerLabel(s.name)}

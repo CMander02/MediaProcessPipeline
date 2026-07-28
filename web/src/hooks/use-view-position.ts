@@ -18,7 +18,9 @@ function loadAll(): Record<string, ViewPosition> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) return JSON.parse(raw)
-  } catch {}
+  } catch {
+    // Ignore malformed or unavailable browser storage and start fresh.
+  }
   return {}
 }
 

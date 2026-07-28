@@ -177,9 +177,12 @@ export function TranscriptTab({
 
   useEffect(() => {
     if (pendingScrollIndex === null || searchQuery) return
-    if (scrollToSegment(pendingScrollIndex)) {
-      setPendingScrollIndex(null)
-    }
+    const frame = requestAnimationFrame(() => {
+      if (scrollToSegment(pendingScrollIndex)) {
+        setPendingScrollIndex(null)
+      }
+    })
+    return () => cancelAnimationFrame(frame)
   }, [filteredIndices.length, pendingScrollIndex, scrollToSegment, searchQuery])
 
   const handleScroll = useCallback(() => {
