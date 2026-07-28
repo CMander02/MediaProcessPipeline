@@ -45,7 +45,7 @@ const PROXY_CLIENT_BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const PROXY_BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const PROXY_BACKEND_HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
 const BACKEND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(8);
-const BACKEND_COMMAND: &str = "uv run python -u -m app.cli serve --desktop-loopback";
+const BACKEND_COMMAND: &str = "python -u -m app.cli serve --desktop-loopback";
 const MAX_LOG_LINES: usize = 1200;
 const MAX_LOG_LINE_BYTES: usize = 16 * 1024;
 const PROCESS_FORCE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -1643,18 +1643,22 @@ where
 }
 
 fn build_backend_launch_spec(layout: &RuntimeLayout) -> BackendLaunchSpec {
-    let mut args = vec![OsString::from("run")];
-    if layout.mode == RuntimeMode::Installed {
-        args.push(OsString::from("--frozen"));
-    }
-    args.extend([
-        OsString::from("--project"),
-        layout.runtime_root.as_os_str().to_os_string(),
-        OsString::from("python"),
-    ]);
-    if layout.mode == RuntimeMode::Installed {
-        args.extend([OsString::from("-E"), OsString::from("-s")]);
-    }
+    let installed = layout.mode == RuntimeMode::Installed;
+    let program = if installed {
+        python_venv_executable(&layout.user.venv_dir).into_os_string()
+    } else {
+        layout.uv_executable.clone()
+    };
+    let mut args = if installed {
+        vec![OsString::from("-E"), OsString::from("-s")]
+    } else {
+        vec![
+            OsString::from("run"),
+            OsString::from("--project"),
+            layout.runtime_root.as_os_str().to_os_string(),
+            OsString::from("python"),
+        ]
+    };
     args.extend([
         OsString::from("-u"),
         OsString::from("-m"),
@@ -1665,7 +1669,7 @@ fn build_backend_launch_spec(layout: &RuntimeLayout) -> BackendLaunchSpec {
         OsString::from(layout.backend_port.to_string()),
     ]);
 
-    let mut command_env = if layout.mode == RuntimeMode::Installed {
+    let mut command_env = if installed {
         safe_inherited_environment(env::vars_os())
     } else {
         BTreeMap::new()
@@ -1686,7 +1690,7 @@ fn build_backend_launch_spec(layout: &RuntimeLayout) -> BackendLaunchSpec {
         ("MPP_SKIP_VERSION_CHECK".to_string(), OsString::from("1")),
     ]);
 
-    if layout.mode == RuntimeMode::Installed {
+    if installed {
         command_env.extend([
             (
                 "MPP_CONFIG_FILE".to_string(),
@@ -1702,19 +1706,6 @@ fn build_backend_launch_spec(layout: &RuntimeLayout) -> BackendLaunchSpec {
                 path_env(&layout.web_dist_dir),
             ),
             ("MPP_DATA_ROOT".to_string(), path_env(&layout.user.data_dir)),
-            (
-                "UV_PROJECT_ENVIRONMENT".to_string(),
-                path_env(&layout.user.venv_dir),
-            ),
-            (
-                "UV_CACHE_DIR".to_string(),
-                path_env(&layout.user.cache_dir.join("uv")),
-            ),
-            (
-                "UV_PYTHON_INSTALL_DIR".to_string(),
-                path_env(&layout.user.python_dir),
-            ),
-            ("UV_MANAGED_PYTHON".to_string(), OsString::from("1")),
             (
                 "HF_HOME".to_string(),
                 path_env(&layout.user.cache_dir.join("huggingface")),
@@ -1732,17 +1723,15 @@ fn build_backend_launch_spec(layout: &RuntimeLayout) -> BackendLaunchSpec {
             ("PYTHONSAFEPATH".to_string(), OsString::from("1")),
             ("TEMP".to_string(), path_env(&layout.user.temp_dir)),
             ("TMP".to_string(), path_env(&layout.user.temp_dir)),
-            ("UV_LINK_MODE".to_string(), OsString::from("copy")),
-            ("UV_NO_CONFIG".to_string(), OsString::from("1")),
         ]);
     }
 
     BackendLaunchSpec {
-        program: layout.uv_executable.clone(),
+        program,
         cwd: layout.backend_dir.clone(),
         args,
         env: command_env,
-        clear_environment: layout.mode == RuntimeMode::Installed,
+        clear_environment: installed,
     }
 }
 
@@ -7155,7 +7144,7 @@ mod tests {
     }
 
     #[test]
-    fn installed_launch_uses_bundled_uv_frozen_project_and_user_env() {
+    fn installed_launch_uses_user_venv_python_and_isolated_environment() {
         let temporary = TestDirectory::new("installed-command");
         let runtime_root = temporary.path.join("Program Files/MPP/resources/runtime");
         let user_root = temporary.path.join("Local AppData/MediaProcessPipeline");
@@ -7176,26 +7165,14 @@ mod tests {
         assert!(spec.clear_environment);
         assert_eq!(
             PathBuf::from(&spec.program),
-            runtime_root.join("bin/uv.exe")
+            user_root
+                .join("runtime")
+                .join(".venv")
+                .join("Scripts")
+                .join("python.exe")
         );
         assert_eq!(spec.cwd, runtime_root.join("backend"));
-        assert_eq!(
-            &args[..4],
-            &[
-                "run",
-                "--frozen",
-                "--project",
-                runtime_root.to_string_lossy().as_ref()
-            ]
-        );
-        let python_index = args
-            .iter()
-            .position(|argument| argument == "python")
-            .expect("launch should invoke Python");
-        assert_eq!(
-            &args[python_index..python_index + 4],
-            &["python", "-E", "-s", "-u"]
-        );
+        assert_eq!(&args[..3], &["-E", "-s", "-u"]);
         assert!(args.iter().any(|argument| argument == "--desktop-loopback"));
         assert_eq!(
             spec.env.get("MPP_CONFIG_FILE"),
@@ -7217,22 +7194,10 @@ mod tests {
             spec.env.get("MPP_DATA_ROOT"),
             Some(&path_env(&user_root.join("data")))
         );
-        assert_eq!(
-            spec.env.get("UV_PROJECT_ENVIRONMENT"),
-            Some(&path_env(&user_root.join("runtime").join(".venv")))
-        );
-        assert_eq!(
-            spec.env.get("UV_CACHE_DIR"),
-            Some(&path_env(&user_root.join("cache").join("uv")))
-        );
-        assert_eq!(
-            spec.env.get("UV_PYTHON_INSTALL_DIR"),
-            Some(&path_env(&user_root.join("runtime").join("python")))
-        );
-        assert_eq!(
-            spec.env.get("UV_MANAGED_PYTHON"),
-            Some(&OsString::from("1"))
-        );
+        assert!(!spec.env.contains_key("UV_PROJECT_ENVIRONMENT"));
+        assert!(!spec.env.contains_key("UV_CACHE_DIR"));
+        assert!(!spec.env.contains_key("UV_PYTHON_INSTALL_DIR"));
+        assert!(!spec.env.contains_key("UV_MANAGED_PYTHON"));
         assert_eq!(
             spec.env.get("HF_HOME"),
             Some(&path_env(&user_root.join("cache").join("huggingface")))
@@ -7263,7 +7228,7 @@ mod tests {
             spec.env.get("TMP"),
             Some(&path_env(&user_root.join("runtime").join("tmp")))
         );
-        assert_eq!(spec.env.get("UV_NO_CONFIG"), Some(&OsString::from("1")));
+        assert!(!spec.env.contains_key("UV_NO_CONFIG"));
     }
 
     #[test]
