@@ -1,7 +1,7 @@
 from app.core.settings import RuntimeSettings
 from app.services.analysis.llm import (
-    mindmap_markdown_without_timestamps,
     mindmap_markdown_to_timed_tree,
+    mindmap_markdown_without_timestamps,
 )
 
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
@@ -71,7 +70,9 @@ def test_inspect_bilibili_ugc_season_collection(monkeypatch):
 
 
 def test_inspect_non_bilibili_url_skips_api(monkeypatch):
-    view = lambda _bvid: (_ for _ in ()).throw(AssertionError("view should not run"))
+    def view(_bvid):
+        raise AssertionError("view should not run")
+
     monkeypatch.setattr(collection, "view", view)
 
     result = collection.inspect_bilibili_collection("https://example.com/video/1")

@@ -1,0 +1,220 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_FROZEN: "1"
+  UV_NO_PROGRESS: "1"
+
+jobs:
+  version-and-dependency-check:
+    name: Version and dependency gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+          version: "0.9.21"
+
+      - name: Validate version identity
+        run: uv run --extra dev python scripts/check-version.py
+
+      - name: Validate locked release dependencies
+        run: |
+          uv lock --check
+          git ls-files --error-unmatch uv.lock
+          uv run --extra dev python scripts/check-release-dependencies.py
+          uv run --extra dev python -c "from PIL import Image, ImageOps; print(Image.__version__); print(ImageOps.__name__)"
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Scan commits for secrets
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+
+  release-profile-check:
+    name: Release profiles (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-2025
+        python-version:
+          - "3.11"
+          - "3.12"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+          version: "0.9.21"
+
+      - name: Validate every locked optional profile for this platform
+        shell: pwsh
+        run: |
+          $profiles = @(
+            "dev",
+            "asr-api-vad",
+            "uvr",
+            "local-asr",
+            "local-llm",
+            "hf-local-inference",
+            "local-models"
+          )
+          foreach ($profile in $profiles) {
+            Write-Host "Validating release profile: $profile"
+            uv sync --frozen --dry-run --extra $profile
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+          }
+
+  backend-test:
+    name: Backend tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.12"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+          version: "0.9.21"
+
+      - name: Synchronize frozen environment
+        run: uv sync --frozen --extra dev
+
+      - name: Run backend tests
+        run: uv run pytest
+
+      - name: Compile Python sources
+        run: |
+          uv run python -m compileall -q backend tests
+          uv run python -m py_compile scripts/check-release-dependencies.py scripts/check-version.py scripts/set-version.py
+
+      - name: Run Ruff
+        run: uv run ruff check backend tests scripts/check-release-dependencies.py scripts/check-version.py scripts/set-version.py
+
+  web-test:
+    name: Web tests and production build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run Vitest
+        run: npm test
+
+      - name: Build production web assets
+        run: npm run build
+
+  android-test:
+    name: Android tests, lint, and debug APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Java
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Configure Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        with:
+          cache-provider: basic
+
+      - name: Run Android verification
+        run: bash ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
+
+  tauri-check:
+    name: Tauri Rust checks
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: "1.91.1"
+          components: rustfmt
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path web/src-tauri/Cargo.toml -- --check
+
+      - name: Check Tauri compilation
+        run: cargo check --locked --manifest-path web/src-tauri/Cargo.toml
+
+      - name: Run Rust tests
+        run: cargo test --locked --manifest-path web/src-tauri/Cargo.toml

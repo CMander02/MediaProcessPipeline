@@ -1,6 +1,5 @@
 """Transcript polishing prompts."""
 
-from typing import Any
 
 
 def get_polish_prompt(

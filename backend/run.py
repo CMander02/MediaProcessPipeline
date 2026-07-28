@@ -2,6 +2,7 @@
 
 import signal
 import sys
+
 import uvicorn
 
 # Force UTF-8 encoding for stdout/stderr on Windows

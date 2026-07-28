@@ -8,6 +8,7 @@ import socket
 import sys
 import threading
 import time
+
 import uvicorn
 
 
@@ -136,7 +137,7 @@ def run_server(host: str = "127.0.0.1", port: int = 18000, reload: bool = False)
     # Check if port is already in use
     if _port_in_use(host, port):
         console.print(f"[red bold]端口 {port} 已被占用[/red bold]")
-        console.print(f"可能已有 daemon 在运行。检查: [cyan]mpp status[/cyan]")
+        console.print("可能已有 daemon 在运行。检查: [cyan]mpp status[/cyan]")
         console.print(f"或手动关闭: [cyan]taskkill /F /PID $(netstat -ano | findstr :{port})[/cyan]")
         raise SystemExit(1)
 

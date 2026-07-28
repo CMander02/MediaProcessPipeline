@@ -11,7 +11,6 @@ from app.core.pipeline import (  # noqa: E402
 )
 from app.models import MediaMetadata  # noqa: E402
 
-
 ARTICLE_TEXT = """### 网页正文
 The concept of **recursive self-improvement (RSI)** dates back to I. J. Good and modern harness systems around model deployment.
 

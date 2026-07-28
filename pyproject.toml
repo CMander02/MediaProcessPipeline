@@ -84,6 +84,7 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
+ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -94,6 +95,9 @@ testpaths = ["tests"]
 # 4090 + CUDA 13.0 驱动向下兼容 CUDA 12.8
 # torch~=2.8.0 满足 qwen-asr 和 pyannote-audio 要求
 # ============================================================================
+
+[tool.uv]
+required-version = "==0.9.21"
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }

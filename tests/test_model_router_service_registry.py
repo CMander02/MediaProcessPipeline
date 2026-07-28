@@ -4,7 +4,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.core.model_router import resolve_provider_model_binding, resolve_service_model_binding  # noqa: E402
+from app.core.model_router import (  # noqa: E402
+    resolve_provider_model_binding,
+    resolve_service_model_binding,
+)
 from app.core.settings import RuntimeSettings  # noqa: E402
 
 

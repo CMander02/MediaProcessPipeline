@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from app.services.voiceprint.extractor import ExtractedVoiceprint
-from app.services.voiceprint.store import VoiceprintStore, MatchResult
+from app.services.voiceprint.store import MatchResult, VoiceprintStore
 
 logger = logging.getLogger(__name__)
 

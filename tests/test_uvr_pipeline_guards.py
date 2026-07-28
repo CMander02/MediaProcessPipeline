@@ -1,5 +1,6 @@
 import logging
 import sys
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -20,6 +21,18 @@ class EmptySeparator:
 
     def separate(self, audio_path: str) -> list[str]:
         return []
+
+
+def _torch_for_test(monkeypatch):
+    try:
+        import torch
+    except ModuleNotFoundError:
+        torch = ModuleType("torch")
+        torch.__spec__ = ModuleSpec("torch", loader=None)
+        torch.cuda = SimpleNamespace(is_available=lambda: False)
+        torch.device = lambda device_type: SimpleNamespace(type=device_type)
+        monkeypatch.setitem(sys.modules, "torch", torch)
+    return torch
 
 
 def test_require_audio_file_rejects_missing_path():
@@ -70,6 +83,7 @@ def test_uvr_separator_uses_configured_chunk_duration(tmp_path, monkeypatch):
             uvr_chunk_duration_sec=300.0,
         ),
     )
+    _torch_for_test(monkeypatch)
 
     service = UVRService()
     service._ensure_init()
@@ -93,7 +107,7 @@ def test_uvr_device_setting_is_validated():
 
 
 def test_uvr_cuda_requires_onnx_cuda_provider(monkeypatch):
-    import torch
+    torch = _torch_for_test(monkeypatch)
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(uvr_mod, "_available_onnx_providers", lambda: ["CPUExecutionProvider"])
@@ -107,7 +121,7 @@ def test_uvr_cuda_requires_onnx_cuda_provider(monkeypatch):
 
 
 def test_uvr_device_configuration_selects_requested_provider(monkeypatch):
-    import torch
+    torch = _torch_for_test(monkeypatch)
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(

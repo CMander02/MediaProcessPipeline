@@ -18,8 +18,8 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from app.core.archive_sync import (
-    MAX_UPLOAD_BYTES,
     MAX_PORTABLE_RESULT_JSON_BYTES,
+    MAX_UPLOAD_BYTES,
     archive_file_manifest,
     build_archive_zip,
     publish_archive,

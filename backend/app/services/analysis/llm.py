@@ -15,13 +15,13 @@ from app.core.logging_setup import log_event
 from app.core.settings import get_runtime_settings
 from app.services.analysis.prompts import (
     get_analyze_prompt,
+    get_detail_prompt,
+    get_mindmap_map_prompt,
+    get_mindmap_prompt,
+    get_mindmap_reduce_prompt,
     get_polish_prompt,
     get_simple_polish_prompt,
     get_summarize_prompt,
-    get_detail_prompt,
-    get_mindmap_prompt,
-    get_mindmap_map_prompt,
-    get_mindmap_reduce_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -190,9 +190,10 @@ def _load_local_llm(model_path: str, device: str = "cuda", dtype: str = "bfloat1
     right AutoModel class from the config's architectures field.
     """
     try:
-        import torch
         from transformers import AutoConfig, AutoTokenizer
         from transformers.utils import logging as hf_logging
+
+        torch_dtype = _resolve_dtype(dtype)
     except ImportError as e:
         raise RuntimeError(
             "transformers/torch not installed. Sync the project environment first: "
@@ -204,7 +205,6 @@ def _load_local_llm(model_path: str, device: str = "cuda", dtype: str = "bfloat1
     hf_logging.disable_progress_bar()
 
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-    torch_dtype = _resolve_dtype(dtype)
 
     # Decide model class. VL / image-text-to-text architectures expose
     # `*ForConditionalGeneration`; plain text uses `*ForCausalLM`.
@@ -1595,18 +1595,25 @@ class LLMService:
     @staticmethod
     def _filter_mindmap_lines(resp: str) -> str:
         """Filter response to plain text list lines, strip any markdown formatting."""
-        lines = [l for l in resp.strip().split("\n") if l.strip().startswith("-") or l.strip().startswith("*")]
+        lines = [
+            line
+            for line in resp.strip().split("\n")
+            if line.strip().startswith("-") or line.strip().startswith("*")
+        ]
         # Normalize * to -
-        lines = [l.replace("* ", "- ", 1) if l.lstrip().startswith("* ") else l for l in lines]
+        lines = [
+            line.replace("* ", "- ", 1) if line.lstrip().startswith("* ") else line
+            for line in lines
+        ]
         # Strip markdown formatting: bold, italic, code, links
         cleaned = []
-        for l in lines:
-            l = l.replace("**", "").replace("__", "")  # bold
-            l = l.replace("*", "").replace("_", "")  # italic (careful: only standalone)
-            l = re.sub(r'`([^`]*)`', r'\1', l)  # inline code
-            l = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', l)  # links
-            l = re.sub(r'^(\s*- )#+\s*', r'\1', l)  # heading markers after bullet
-            cleaned.append(l)
+        for line in lines:
+            line = line.replace("**", "").replace("__", "")  # bold
+            line = line.replace("*", "").replace("_", "")  # italic (careful: only standalone)
+            line = re.sub(r"`([^`]*)`", r"\1", line)  # inline code
+            line = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", line)  # links
+            line = re.sub(r"^(\s*- )#+\s*", r"\1", line)  # heading markers after bullet
+            cleaned.append(line)
         return "\n".join(cleaned) if cleaned else resp
 
 

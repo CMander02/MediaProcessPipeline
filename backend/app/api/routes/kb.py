@@ -28,9 +28,9 @@ async def search_kb(
     if not rt.kb_embedding_api_base:
         raise HTTPException(503, "Embedding API not configured (kb_embedding_api_base is empty)")
 
+    from app.core.database import get_task_store
     from app.services.kb.embedding import get_embedding_service
     from app.services.kb.store import get_kb_store
-    from app.core.database import get_task_store
 
     emb_service = get_embedding_service()
     try:

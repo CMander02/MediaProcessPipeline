@@ -10,7 +10,6 @@ this module processes them through LLM to add:
 Output is compatible with the ASR path (segments + SRT format).
 """
 
-import asyncio
 import json
 import logging
 import re
@@ -447,7 +446,6 @@ async def process_subtitles(
 
         prompt = _build_transcript_prompt(context_header, chunk, known_speakers or None)
 
-        t0 = time.time()
         try:
             response = await llm_service._call(prompt)
             result = _parse_transcript_output(response)
@@ -470,7 +468,6 @@ async def process_subtitles(
                         if p_start >= non_overlap_start_s - 5:
                             all_paragraphs.append(p)
 
-                dt = time.time() - t0
                 log_event(
                     logger,
                     logging.INFO,

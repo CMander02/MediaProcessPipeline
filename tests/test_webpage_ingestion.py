@@ -4,9 +4,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.services.ingestion import ytdlp  # noqa: E402
-from app.services.ingestion.platform.webpage import api as webpage_api  # noqa: E402
-from app.core.source_resolver import resolve_source_flow  # noqa: E402
 from app.core.pipeline import (  # noqa: E402
     _detect_source_type,
     _download_resolves_url_title,
@@ -14,7 +11,10 @@ from app.core.pipeline import (  # noqa: E402
     _rename_task_dir_to_title,
     _rewrite_ingest_paths_after_task_dir_move,
 )
+from app.core.source_resolver import resolve_source_flow  # noqa: E402
 from app.models import MediaMetadata  # noqa: E402
+from app.services.ingestion import ytdlp  # noqa: E402
+from app.services.ingestion.platform.webpage import api as webpage_api  # noqa: E402
 
 
 def test_fetch_metadata_prefers_defuddle(monkeypatch):

@@ -7,13 +7,13 @@ from pydantic import ValidationError
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.core.settings import RuntimeSettings
-from app.services.ingestion.ytdlp import (
+from app.core.settings import RuntimeSettings  # noqa: E402
+from app.services.ingestion.platform.bilibili import api as bilibili_api  # noqa: E402
+from app.services.ingestion.ytdlp import (  # noqa: E402
     YtdlpService,
     _empty_subtitle_result,
     _filter_and_sort_subtitle_tracks,
 )
-from app.services.ingestion.platform.bilibili import api as bilibili_api
 
 
 def test_bilibili_subtitle_tracks_prefer_configured_language_then_cc():

@@ -644,7 +644,8 @@ def _bili_json_to_srt(body: list[dict]) -> str:
     def _fmt(t: float) -> str:
         if t < 0:
             t = 0
-        h = int(t // 3600); m = int((t % 3600) // 60)
+        h = int(t // 3600)
+        m = int((t % 3600) // 60)
         s = t - h * 3600 - m * 60
         return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
     out: list[str] = []
@@ -997,7 +998,9 @@ class YtdlpService:
 
     def _download_bilibili_note(self, url: str, output_dir: Path) -> dict[str, Any]:
         """Fetch Bilibili opus/dynamic metadata; images are downloaded by the note branch."""
-        from app.services.ingestion.platform.bilibili.note import fetch_metadata as fetch_bilibili_note
+        from app.services.ingestion.platform.bilibili.note import (
+            fetch_metadata as fetch_bilibili_note,
+        )
 
         output_dir.mkdir(parents=True, exist_ok=True)
         info = fetch_bilibili_note(url)
@@ -1011,8 +1014,8 @@ class YtdlpService:
 
     def _download_bilibili(self, url: str, output_dir: Path) -> dict[str, Any]:
         """Download Bilibili video using native DASH API (replaces BBDown)."""
-        from app.services.ingestion.platform.bilibili.dash import download_video, extract_audio
         from app.services.ingestion.platform.bilibili.auth import is_logged_in
+        from app.services.ingestion.platform.bilibili.dash import download_video, extract_audio
 
         url = _normalize_bilibili_video_url(url)
 
@@ -1049,6 +1052,8 @@ class YtdlpService:
         """Download a Xiaoyuzhou podcast episode via page metadata + audio URL."""
         from app.services.ingestion.platform.xiaoyuzhou.api import (
             download_audio,
+        )
+        from app.services.ingestion.platform.xiaoyuzhou.api import (
             fetch_metadata as fetch_xiaoyuzhou_metadata,
         )
 
@@ -1068,6 +1073,8 @@ class YtdlpService:
         """Download an Apple Podcasts episode by resolving RSS enclosure URL."""
         from app.services.ingestion.platform.apple_podcast.api import (
             download_audio,
+        )
+        from app.services.ingestion.platform.apple_podcast.api import (
             fetch_metadata as fetch_apple_metadata,
         )
 
@@ -1088,6 +1095,8 @@ class YtdlpService:
         image notes return metadata only (images are fetched later by the pipeline)."""
         from app.services.ingestion.platform.xiaohongshu.api import (
             download_video,
+        )
+        from app.services.ingestion.platform.xiaohongshu.api import (
             fetch_metadata as fetch_xiaohongshu_metadata,
         )
 
@@ -1467,8 +1476,12 @@ class YtdlpService:
         try:
             from app.services.ingestion.platform.bilibili.api import (
                 player_v2 as bili_player_v2,
-                view as bili_view,
+            )
+            from app.services.ingestion.platform.bilibili.api import (
                 subtitle_url_matches_video,
+            )
+            from app.services.ingestion.platform.bilibili.api import (
+                view as bili_view,
             )
         except ImportError as e:
             log_event(logger, logging.WARNING, "bilibili.api.import_failed", error=e)
@@ -2211,7 +2224,7 @@ class YtdlpService:
         manual_langs = _filter(manual_subs, preferred_langs)
         auto_langs = _filter(auto_subs, preferred_langs)
         # Skip auto-captions for languages where a manual track exists
-        auto_langs = [l for l in auto_langs if l not in manual_langs]
+        auto_langs = [lang for lang in auto_langs if lang not in manual_langs]
 
         tracks: list[dict[str, Any]] = []
 

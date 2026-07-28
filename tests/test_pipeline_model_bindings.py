@@ -4,8 +4,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.core.pipeline import _is_transcript_too_short_for_uvr_fallback  # noqa: E402
 from app.core.model_router import resolve_pipeline_model_bindings  # noqa: E402
+from app.core.pipeline import _is_transcript_too_short_for_uvr_fallback  # noqa: E402
 from app.core.settings import RuntimeSettings  # noqa: E402
 
 

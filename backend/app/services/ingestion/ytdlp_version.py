@@ -42,7 +42,8 @@ class YtdlpVersionInfo:
 def _installed_version() -> str | None:
     # yt_dlp doesn't expose __version__ at module level; use dist metadata.
     try:
-        from importlib.metadata import version as _ver, PackageNotFoundError
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version as _ver
         try:
             return _ver("yt-dlp")
         except PackageNotFoundError:

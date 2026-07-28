@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -156,8 +155,7 @@ def index_task(task_id: str, archive_path: str | Path) -> None:
 def reindex_all() -> int:
     """Reindex all completed tasks with archive directories. Returns chunk count."""
     from app.core.database import get_task_store
-    from app.core.settings import get_runtime_settings
-    rt = get_runtime_settings()
+
     store = get_task_store()
     tasks = store.list_by_statuses(["completed"])
     indexed = 0

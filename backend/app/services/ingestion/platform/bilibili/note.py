@@ -732,7 +732,9 @@ def _clean_article_markdown(value: str) -> str:
 
 def _fetch_article_webpage_markdown(article_url: str, fallback: str) -> str:
     try:
-        from app.services.ingestion.platform.webpage.api import fetch_metadata as fetch_webpage_metadata
+        from app.services.ingestion.platform.webpage.api import (
+            fetch_metadata as fetch_webpage_metadata,
+        )
 
         info = fetch_webpage_metadata(article_url)
         markdown = _clean_text(info.get("description"))

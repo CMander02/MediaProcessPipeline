@@ -8,16 +8,20 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.core import database, pipeline as pipeline_core, queue as queue_module, settings as settings_module  # noqa: E402
-from app.core.source_resolver import resolve_source_flow  # noqa: E402
-from app.core.settings import RuntimeSettings  # noqa: E402
-from app.models import MediaMetadata, MediaType, Task, TaskStatus, TaskType  # noqa: E402
+from app.core import database  # noqa: E402
+from app.core import pipeline as pipeline_core  # noqa: E402
+from app.core import queue as queue_module  # noqa: E402
+from app.core import settings as settings_module  # noqa: E402
 from app.core.pipeline import (  # noqa: E402
     _clean_source_path,
     _detect_source_type,
     _fallback_note_mindmap,
     _fallback_note_summary,
 )
+from app.core.settings import RuntimeSettings  # noqa: E402
+from app.core.source_resolver import resolve_source_flow  # noqa: E402
+from app.models import MediaMetadata, MediaType, Task, TaskStatus, TaskType  # noqa: E402
+from app.services.ingestion import ytdlp  # noqa: E402
 from app.services.ingestion.platform.xiaohongshu import api as xhs_api  # noqa: E402
 from app.services.ingestion.platform.xiaohongshu.api import (  # noqa: E402
     _extract_initial_state,
@@ -26,7 +30,6 @@ from app.services.ingestion.platform.xiaohongshu.api import (  # noqa: E402
     extract_post_info,
     is_xiaohongshu_url,
 )
-from app.services.ingestion import ytdlp  # noqa: E402
 from app.services.ingestion.ytdlp import YtdlpService  # noqa: E402
 
 
@@ -402,9 +405,9 @@ async def test_image_note_vlm_records_each_image_status(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline_core, "get_runtime_settings", lambda: settings)
     monkeypatch.setattr(pipeline_core, "_schedule_kb_index", lambda *_args, **_kwargs: None)
 
-    from app.core.model_router import EndpointBinding
     import app.core.model_router as model_router
     import app.services.analysis.vlm as vlm_module
+    from app.core.model_router import EndpointBinding
 
     def fake_resolve_vlm_binding(_rt):
         return EndpointBinding(
@@ -492,9 +495,9 @@ async def test_image_note_resume_reuses_successful_vlm_captions(tmp_path, monkey
     monkeypatch.setattr(pipeline_core, "get_runtime_settings", lambda: settings)
     monkeypatch.setattr(pipeline_core, "_schedule_kb_index", lambda *_args, **_kwargs: None)
 
-    from app.core.model_router import EndpointBinding
     import app.core.model_router as model_router
     import app.services.analysis.vlm as vlm_module
+    from app.core.model_router import EndpointBinding
 
     def fake_resolve_vlm_binding(_rt):
         return EndpointBinding(

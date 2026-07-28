@@ -22,8 +22,13 @@ from fastapi.responses import StreamingResponse
 from app.core.database import get_task_store
 from app.core.events import get_event_bus
 from app.core.pipeline import (
-    PIPELINE_STEPS, PipelineStep, pipeline_steps_schema, _looks_like_local_path,
-    _clean_source_path, create_task_dir, write_metadata_json,
+    PIPELINE_STEPS,
+    PipelineStep,
+    _clean_source_path,
+    _looks_like_local_path,
+    create_task_dir,
+    pipeline_steps_schema,
+    write_metadata_json,
 )
 from app.core.queue import get_task_queue
 from app.core.settings import get_runtime_settings
@@ -65,6 +70,7 @@ def _validate_public_http_url(url: str) -> None:
 async def create_task(task_create: TaskCreate):
     """Create a new processing task and submit it to the queue."""
     from pathlib import Path
+
     from app.services.ingestion.ytdlp import normalize_bilibili_source_url
 
     source = normalize_bilibili_source_url(_clean_source_path(task_create.source))

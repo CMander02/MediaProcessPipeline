@@ -30,8 +30,10 @@ def _sample_segments_from_srt(srt: str, samples_per_region: int = 5) -> list[str
     texts: list[str] = []
     for block in blocks:
         lines = block.split("\n")
-        text_lines = [l for l in lines if "-->" not in l and not l.strip().isdigit()]
-        t = " ".join(l.strip() for l in text_lines if l.strip())
+        text_lines = [
+            line for line in lines if "-->" not in line and not line.strip().isdigit()
+        ]
+        t = " ".join(line.strip() for line in text_lines if line.strip())
         if t:
             texts.append(t)
     if not texts:

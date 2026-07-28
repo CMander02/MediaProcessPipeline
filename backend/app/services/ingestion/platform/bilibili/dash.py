@@ -14,7 +14,6 @@ Quality codes (qn):
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import subprocess
@@ -163,8 +162,9 @@ def download_video(
             download/mux step fails.
     """
     # Lazy imports so module-level import doesn't crash if .api doesn't exist yet
-    from .api import view as bili_view, playurl as bili_playurl  # noqa: PLC0415
-    from .auth import is_logged_in, get_cookie  # noqa: PLC0415
+    from .api import playurl as bili_playurl
+    from .api import view as bili_view  # noqa: PLC0415
+    from .auth import get_cookie, is_logged_in  # noqa: PLC0415
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

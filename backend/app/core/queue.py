@@ -22,8 +22,11 @@ from app.core.database import get_task_store
 from app.core.events import TaskEvent, get_event_bus
 from app.core.logging_setup import (
     log_event,
-    set_task_context, set_worker_context, reset_context,
-    task_id_var, worker_var,
+    reset_context,
+    set_task_context,
+    set_worker_context,
+    task_id_var,
+    worker_var,
 )
 from app.models.task import REMOTE_MIRROR_OPTION, Task, TaskStatus
 
@@ -220,6 +223,7 @@ class TaskQueue:
         if task.result and task.result.get("output_dir"):
             try:
                 from pathlib import Path
+
                 from app.core.pipeline import update_metadata_status
                 update_metadata_status(Path(task.result["output_dir"]), "cancelled")
             except Exception:
@@ -537,8 +541,8 @@ class TaskQueue:
 
         # Restore stale tasks from DB
         store = get_task_store()
-        from app.models.task import TaskStatus as TS
         from app.core.pipeline import PipelineStep
+        from app.models.task import TaskStatus as TS
         stale = store.list_by_statuses([TS.QUEUED, TS.PROCESSING])
         for task in stale:
             # EXE-targeted tasks are leased through the coordinator API. They

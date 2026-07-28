@@ -9,7 +9,7 @@ from email.utils import formatdate
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Query, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -236,7 +236,8 @@ def _ensure_browser_playable(file_path: Path) -> tuple[Path, str]:
         return mp3_path, "audio/mpeg"
 
     # Transcode once, cache the result
-    import subprocess, logging
+    import logging
+    import subprocess
     logger = logging.getLogger(__name__)
     logger.info(f"Transcoding for browser playback: {file_path.name} → .browser.mp3")
     try:

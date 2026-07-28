@@ -22,8 +22,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from app.core.network import httpx_client_kwargs, urllib_urlopen
 from app.core.logging_setup import log_event
+from app.core.network import httpx_client_kwargs, urllib_urlopen
 from app.core.settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)

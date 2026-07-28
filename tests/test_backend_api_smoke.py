@@ -15,8 +15,12 @@ from fastapi.testclient import TestClient
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.api.routes import pipeline, settings as settings_route, tasks  # noqa: E402
-from app.core import database, pipeline as pipeline_core, queue as queue_module, settings as settings_module  # noqa: E402
+from app.api.routes import pipeline, tasks  # noqa: E402
+from app.api.routes import settings as settings_route  # noqa: E402
+from app.core import database  # noqa: E402
+from app.core import pipeline as pipeline_core  # noqa: E402
+from app.core import queue as queue_module  # noqa: E402
+from app.core import settings as settings_module  # noqa: E402
 from app.core.events import EventBus  # noqa: E402
 from app.core.settings import RuntimeSettings  # noqa: E402
 from app.models import Task, TaskStatus, TaskType  # noqa: E402
@@ -673,6 +677,10 @@ def test_main_app_lifespan_auth_and_task_submission_smoke(tmp_path, monkeypatch)
     with TestClient(app_main.app) as client:
         assert queue.started is True
         assert queue.pipeline_fn is app_main.process_task
+
+        health = client.get("/health")
+        assert health.status_code == 200
+        assert health.json()["version"] == app_main.APP_VERSION
 
         blocked = client.post(
             "/api/tasks",

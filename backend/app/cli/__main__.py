@@ -3,9 +3,9 @@
 This module is the entry point. It runs the Windows encoding bootstrap
 BEFORE importing anything that touches Rich or sys.stdout.
 """
-import sys
 import io
 import os
+import sys
 
 
 def _fix_windows_encoding() -> None:

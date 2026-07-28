@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import sys
-import ipaddress
 import urllib.parse
 import urllib.request
 from typing import Any
-
 
 _DISABLED_PROXY_VALUES = {"direct", "none", "off", "false", "0"}
 

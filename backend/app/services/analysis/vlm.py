@@ -11,8 +11,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from app.core.model_router import EndpointBinding, resolve_vlm_binding
 from app.core.logging_setup import log_event
+from app.core.model_router import EndpointBinding, resolve_vlm_binding
 
 logger = logging.getLogger(__name__)
 

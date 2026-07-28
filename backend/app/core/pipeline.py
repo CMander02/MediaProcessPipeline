@@ -573,7 +573,10 @@ async def _select_polish_track(
 
     Returns (selected_track, detected_lang). detected_lang may be "unknown".
     """
-    from app.services.analysis.language_detect import detect_transcript_language, match_track_by_language
+    from app.services.analysis.language_detect import (
+        detect_transcript_language,
+        match_track_by_language,
+    )
 
     if not tracks:
         raise ValueError("no tracks to select from")
@@ -1121,7 +1124,7 @@ async def _run_voiceprint_step(
 
     from app.services.voiceprint import get_voiceprint_store
     from app.services.voiceprint.extractor import extract_voiceprints
-    from app.services.voiceprint.matcher import resolve_speakers, apply_to_segments
+    from app.services.voiceprint.matcher import apply_to_segments, resolve_speakers
 
     store = get_voiceprint_store()
     clips_dir = store.clips_dir
@@ -1167,8 +1170,13 @@ async def _run_subtitle_fast_path(
 
     Returns the text-related portion of the task result.
     """
+    from app.services.analysis import (
+        analyze_content,
+        generate_detail,
+        generate_mindmap,
+        summarize_text,
+    )
     from app.services.recognition.subtitle_processor import process_subtitles
-    from app.services.analysis import analyze_content, generate_detail, generate_mindmap, summarize_text
 
     # -- SEPARATE: skip (no audio to separate) --
     await _raise_if_cancelled(task.id)
@@ -1597,7 +1605,9 @@ def _run_note_image_downloader(
     task_dir: Path,
     task_id: UUID,
 ) -> list[Path]:
-    should_cancel = lambda: _task_download_cancelled(task_id)
+    def should_cancel() -> bool:
+        return _task_download_cancelled(task_id)
+
     if should_cancel():
         raise RuntimeError("note image download cancelled")
     if _downloader_accepts_cancel(downloader):
@@ -1739,7 +1749,13 @@ async def _process_image_note(
 ) -> None:
     """Process a note-style source: download images when present, summarize, archive."""
     import asyncio as _aio
-    from app.services.analysis import summarize_text, generate_mindmap, generate_detail, analyze_content
+
+    from app.services.analysis import (
+        analyze_content,
+        generate_detail,
+        generate_mindmap,
+        summarize_text,
+    )
     from app.services.archiving import archive_result
 
     # Mark all audio steps as skipped immediately
@@ -1851,7 +1867,11 @@ async def _process_image_note(
     rt = get_runtime_settings()
     descriptions: list[dict] = []
     restored_descriptions = _restored_note_image_descriptions(task, task_dir)
-    from app.core.model_router import resolve_deepseek_llm_binding, resolve_llm_binding, resolve_vlm_binding
+    from app.core.model_router import (
+        resolve_deepseek_llm_binding,
+        resolve_llm_binding,
+        resolve_vlm_binding,
+    )
 
     vlm_binding = resolve_vlm_binding(rt)
     if image_paths and vlm_binding.configured:
@@ -2246,22 +2266,30 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     """
     import yt_dlp
 
+    from app.core.queue import get_task_queue
+    from app.services.analysis import (
+        analyze_content,
+        generate_detail,
+        generate_mindmap,
+        polish_text,
+        summarize_text,
+    )
+    from app.services.archiving import archive_result
     from app.services.ingestion import download_media
+    from app.services.ingestion.local import find_local_subtitle, parse_nfo
     from app.services.ingestion.ytdlp import (
         YoutubeNetworkError,
         download_subtitles,
-        fetch_metadata as fetch_ytdlp_metadata,
         normalize_bilibili_source_url,
         ytdlp_auth_opts,
         ytdlp_base_opts,
     )
-    from app.services.ingestion.local import find_local_subtitle, parse_nfo
+    from app.services.ingestion.ytdlp import (
+        fetch_metadata as fetch_ytdlp_metadata,
+    )
     from app.services.preprocessing import separate_vocals
     from app.services.recognition import transcribe_audio
     from app.services.recognition.subtitle_processor import process_subtitles
-    from app.services.analysis import polish_text, summarize_text, generate_mindmap, generate_detail, analyze_content
-    from app.services.archiving import archive_result
-    from app.core.queue import get_task_queue
 
     rt = get_runtime_settings()
     source = normalize_bilibili_source_url(_clean_source_path(task.source))
@@ -3326,7 +3354,9 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     # Detect transcript language (non-fatal, populates metadata for UI)
                     if srt:
                         try:
-                            from app.services.analysis.language_detect import detect_transcript_language
+                            from app.services.analysis.language_detect import (
+                                detect_transcript_language,
+                            )
                             detected_lang = await detect_transcript_language(srt=srt)
                             metadata.extra["detected_language"] = detected_lang
                             metadata.extra["subtitle_tracks"] = [{
@@ -3543,10 +3573,10 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
                          DOWNLOAD already in completed_steps, skips it,
                          runs SEPARATE → TRANSCRIBE → POLISH → ANALYZE → ARCHIVE
     """
+    from app.services.analysis import generate_mindmap, polish_text, summarize_text
     from app.services.ingestion import download_media
     from app.services.preprocessing import separate_vocals
     from app.services.recognition import transcribe_audio
-    from app.services.analysis import polish_text, summarize_text, generate_mindmap
 
     store = get_task_store()
     bus = get_event_bus()

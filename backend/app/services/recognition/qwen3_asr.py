@@ -1,12 +1,12 @@
 """Qwen3-ASR transcription service."""
 
+import hashlib
 import logging
 import os
 import sys
-import hashlib
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from app.core.network import runtime_proxy_url
 from app.core.settings import get_runtime_settings
@@ -320,10 +320,10 @@ class Qwen3ASRService:
         Returns a wrapper that accepts audio format (numpy array).
         Optimized for long audio files (2+ hours) with reduced batch sizes.
         """
+        import numpy as np
+        import pandas as pd
         import torch
         from pyannote.audio import Pipeline
-        import pandas as pd
-        import numpy as np
 
         rt = get_runtime_settings()
         self._configure_huggingface_proxy(rt)
@@ -723,7 +723,7 @@ class Qwen3ASRService:
         """
         rt = get_runtime_settings()
 
-        logger.info(f"Starting Qwen3-ASR transcribe with ForcedAligner...")
+        logger.info("Starting Qwen3-ASR transcribe with ForcedAligner...")
         results = self._model.transcribe(
             audio=str(audio_path),
             language=language,
@@ -827,8 +827,6 @@ class Qwen3ASRService:
 
         # Chinese sentence-ending punctuation
         sentence_end_punct = set("。！？；")
-        # Chinese clause punctuation (can break but not required)
-        clause_punct = set("，、：")
 
         merged = []
         current = {

@@ -105,15 +105,17 @@ fn uv_command() -> String {
 }
 
 fn backend_cwd(project_root: &Path) -> String {
-    project_root
-        .join("backend")
-        .to_string_lossy()
-        .into_owned()
+    project_root.join("backend").to_string_lossy().into_owned()
 }
 
 fn append_log(app: &AppHandle, source: &str, text: impl AsRef<str>) {
     let backend = app.state::<BackendProcess>();
-    for raw_line in text.as_ref().replace("\r\n", "\n").replace('\r', "\n").split('\n') {
+    for raw_line in text
+        .as_ref()
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .split('\n')
+    {
         let line = raw_line.trim_end();
         if line.is_empty() {
             continue;
@@ -234,7 +236,10 @@ fn attach_kill_on_close_job(child: &Child) -> Result<usize, String> {
     unsafe {
         let job = CreateJobObjectW(ptr::null(), ptr::null());
         if job.is_null() {
-            return Err(format!("CreateJobObjectW failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "CreateJobObjectW failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
 
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
@@ -294,7 +299,11 @@ fn take_and_close_job(backend: &BackendProcess) -> bool {
 
 fn spawn_backend(app: &AppHandle, project_root: &Path) -> Result<(Child, Option<usize>), String> {
     let backend_dir = project_root.join("backend");
-    append_log(app, "system", format!("Starting backend: {BACKEND_COMMAND}"));
+    append_log(
+        app,
+        "system",
+        format!("Starting backend: {BACKEND_COMMAND}"),
+    );
     append_log(
         app,
         "system",
@@ -320,6 +329,7 @@ fn spawn_backend(app: &AppHandle, project_root: &Path) -> Result<(Child, Option<
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUNBUFFERED", "1")
         .env("NO_COLOR", "1")
+        .env("MPP_APP_VERSION", env!("CARGO_PKG_VERSION"))
         .env("MPP_SKIP_VERSION_CHECK", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -345,13 +355,19 @@ fn spawn_backend(app: &AppHandle, project_root: &Path) -> Result<(Child, Option<
 
     let job_handle = match attach_kill_on_close_job(&child) {
         Ok(handle) => {
-            append_log(app, "system", "Attached backend to a kill-on-close Windows process job.");
+            append_log(
+                app,
+                "system",
+                "Attached backend to a kill-on-close Windows process job.",
+            );
             Some(handle)
         }
         Err(error) => {
-            append_log(app, "warning", format!(
-                "Process job setup failed; task-tree shutdown remains active: {error}"
-            ));
+            append_log(
+                app,
+                "warning",
+                format!("Process job setup failed; task-tree shutdown remains active: {error}"),
+            );
             None
         }
     };
@@ -540,7 +556,11 @@ fn stop_backend(app: &AppHandle) -> Result<BackendStatus, String> {
     if !owns_backend {
         let status = current_status(app)?;
         if status.state == "external" {
-            append_log(app, "system", "External backend detected; stop request left it running.");
+            append_log(
+                app,
+                "system",
+                "External backend detected; stop request left it running.",
+            );
             return set_status(
                 app,
                 "external",
@@ -569,7 +589,11 @@ fn stop_backend(app: &AppHandle) -> Result<BackendStatus, String> {
         let _ = child.wait();
     } else {
         take_and_close_job(&backend);
-        append_log(app, "system", "Stop requested while backend was not managed.");
+        append_log(
+            app,
+            "system",
+            "Stop requested while backend was not managed.",
+        );
     }
 
     if let Ok(mut owns_backend) = backend.owns_backend.lock() {

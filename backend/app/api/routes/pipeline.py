@@ -1028,8 +1028,9 @@ async def disk_usage():
 async def bilibili_login_status():
     """Check Bilibili login status using auth.py (settings or BBDown.data fallback)."""
     try:
-        from app.services.ingestion.platform.bilibili.auth import is_logged_in, get_cookie
         from datetime import datetime, timezone
+
+        from app.services.ingestion.platform.bilibili.auth import get_cookie, is_logged_in
 
         cookie = get_cookie()
         if not cookie:
@@ -1118,9 +1119,10 @@ async def twitter_auth_login(request: XiaohongshuLoginRequest):
 @router.get("/platforms")
 async def get_platform_configs():
     """Get per-platform download strategy configs + auth status."""
-    from app.services.ingestion.platform.bilibili.auth import is_logged_in as bili_logged_in
-    from app.core.settings import get_runtime_settings
     import json
+
+    from app.core.settings import get_runtime_settings
+    from app.services.ingestion.platform.bilibili.auth import is_logged_in as bili_logged_in
     rt = get_runtime_settings()
     try:
         stored = json.loads(rt.platform_configs or "{}")

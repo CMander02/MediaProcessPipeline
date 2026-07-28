@@ -4,7 +4,6 @@ from datetime import datetime
 from uuid import uuid4
 
 import pytest
-
 from app.core.database import get_task_store, reset_db_path
 from app.core.pipeline import _write_detail_file, _write_mindmap_files, _write_text_artifact
 from app.models.task import Task, TaskStatus, TaskType

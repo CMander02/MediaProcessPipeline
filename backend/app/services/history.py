@@ -4,9 +4,9 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any
 from uuid import UUID
-from threading import Lock
 
 from pydantic import BaseModel, Field
 

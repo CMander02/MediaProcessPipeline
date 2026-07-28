@@ -88,8 +88,8 @@ def _global_options(
 def _maybe_prompt_ytdlp_upgrade() -> None:
     """Check yt-dlp version; if stale, ask user if they want to upgrade now."""
     try:
-        from app.services.ingestion.ytdlp_version import check_version, upgrade
         from app.cli.display import console
+        from app.services.ingestion.ytdlp_version import check_version, upgrade
         info = check_version()
     except Exception:
         return  # network down or import error — silent
@@ -622,6 +622,7 @@ def _do_attach(task_id: str, client=None, quiet: bool = False) -> None:
     # Rich progress display — uv-style: each completed step prints a line,
     # current step shows a live spinner+bar.
     from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+
     from app.cli.display import STEP_LABELS
 
     src = current.get("source", task_id)
@@ -766,7 +767,8 @@ def _maybe_stop_daemon(console) -> None:
         return
 
     if answer in ("y", "yes", "是"):
-        import os, signal as _sig
+        import os
+        import signal as _sig
         console.print("[dim]正在关闭后台服务…[/dim]")
         os.kill(os.getpid(), _sig.SIGINT)  # triggers uvicorn graceful shutdown in the bg thread
 
@@ -865,10 +867,10 @@ def tasks(
 
 def _tasks_watch(status_filter: str | None = None, limit: int = 20) -> None:
     """Live-refresh task list using Rich Live + global SSE stream."""
-    from app.cli.display import console
     from rich.live import Live
     from rich.table import Table
-    from app.cli.display import styled_status, time_ago
+
+    from app.cli.display import console, styled_status, time_ago
 
     client = _require_daemon()
 
@@ -1198,8 +1200,9 @@ def config_list(
 
 
 def _config_list_impl(group: str | None) -> None:
-    from app.cli.display import console
     from rich.table import Table
+
+    from app.cli.display import console
 
     settings = _read_settings()
     valid_keys = _all_valid_keys()
@@ -1370,8 +1373,9 @@ def config_preset(
 @app.command()
 def doctor():
     """检查运行环境（ffmpeg、CUDA、模型文件、API key 等）。"""
-    import shutil
     import pathlib
+    import shutil
+
     from app.cli.display import console
 
     ok  = "[green]+" if _plain_mode else "[green]✓"

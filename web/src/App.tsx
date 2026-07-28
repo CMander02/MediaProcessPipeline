@@ -20,6 +20,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react"
 import { ComputerTerminal01Icon, FolderOpenIcon, PlusSignIcon, Settings01Icon, Search01Icon } from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
+import { APP_VERSION } from "@/generated/app-version"
 
 const SOURCE_ICON_PLATFORMS = new Set([
   "apple_podcast",
@@ -84,6 +85,9 @@ export default function App() {
           <div className="flex shrink-0 items-center gap-2">
             <img src="/favicon.svg" className="h-5 w-5" alt="" aria-hidden="true" />
             <span className="text-sm font-semibold">MPP</span>
+            <span className="hidden text-[11px] text-muted-foreground sm:inline">
+              v{APP_VERSION}
+            </span>
           </div>
 
           {/* Nav links */}

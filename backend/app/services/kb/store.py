@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
 import struct
 import threading
 from pathlib import Path
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +87,7 @@ class KBStore:
                     conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", rowids)
                 except Exception as e:
                     logger.warning(f"vec_chunks delete failed: {e}")
-                conn.execute(f"DELETE FROM kb_chunks WHERE task_id = ?", (task_id,))
+                conn.execute("DELETE FROM kb_chunks WHERE task_id = ?", (task_id,))
 
             for c in chunks:
                 cur = conn.execute(
@@ -142,7 +140,7 @@ class KBStore:
         conn = self._get_conn()
         try:
             vec_results = conn.execute(
-                f"SELECT rowid, distance FROM vec_chunks WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
+                "SELECT rowid, distance FROM vec_chunks WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
                 (_serialize_vec(query_vec), top_k * 5),  # over-fetch for filter headroom
             ).fetchall()
         except Exception as e:

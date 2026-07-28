@@ -7,9 +7,9 @@ def _entry() -> None:
     Runs the Windows encoding bootstrap before launching the Typer app,
     so that Rich output works correctly in all Windows terminal environments.
     """
-    import sys
     import io
     import os
+    import sys
 
     if sys.platform == "win32":
         for stream_name in ("stdout", "stderr"):
