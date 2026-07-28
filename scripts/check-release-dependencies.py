@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -499,10 +500,17 @@ def _validate_pillow_wheels(
 
 
 def _run_command(command: list[str], *, cwd: Path) -> tuple[int, str]:
+    environment = os.environ.copy()
+    # The gate supplies an explicit lock policy for every nested uv command.
+    # Drop inherited aliases so CI-level UV_FROZEN/UV_LOCKED settings cannot
+    # conflict with `uv lock --check` or `uv export --locked`.
+    environment.pop("UV_FROZEN", None)
+    environment.pop("UV_LOCKED", None)
     try:
         completed = subprocess.run(
             command,
             cwd=cwd,
+            env=environment,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,

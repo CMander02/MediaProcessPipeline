@@ -175,6 +175,26 @@ def test_dependency_gate_accepts_editable_project_root(tmp_path):
     assert report.ok is True
 
 
+def test_nested_uv_commands_ignore_inherited_lock_aliases(tmp_path, monkeypatch):
+    monkeypatch.setenv("UV_FROZEN", "1")
+    monkeypatch.setenv("UV_LOCKED", "1")
+
+    returncode, _ = release_dependencies._run_command(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os, sys; "
+                "sys.exit(1 if os.environ.get('UV_FROZEN') "
+                "or os.environ.get('UV_LOCKED') else 0)"
+            ),
+        ],
+        cwd=tmp_path,
+    )
+
+    assert returncode == 0
+
+
 def test_dependency_gate_reports_missing_core_declaration(tmp_path):
     _write_dependency_fixture(tmp_path, omit_declaration="pillow")
 
