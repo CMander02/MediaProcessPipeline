@@ -1,7 +1,8 @@
 import asyncio
+import hashlib
+import hmac
 import logging
 import os
-import secrets
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,6 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 from app.api.routes import filesystem, pipeline, sync, tasks, voiceprints
 from app.api.routes import kb as kb_router
@@ -41,8 +43,44 @@ config = get_settings()
 _NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 DESKTOP_HEALTH_PRODUCT = "com.mpp.backend"
 DESKTOP_HEALTH_PROTOCOL = 1
+DESKTOP_HEALTH_SERVICE = "Media Process Pipeline"
 _DESKTOP_SESSION_ENV = "MPP_DESKTOP_SESSION_TOKEN"
+_DESKTOP_NONCE_HEADER = "x-mpp-desktop-nonce"
 _DESKTOP_SESSION_HEADER = "x-mpp-desktop-session"
+_DESKTOP_SHUTDOWN_PATH = "/api/desktop/shutdown"
+_DESKTOP_SESSION_SECRET = os.environ.pop(_DESKTOP_SESSION_ENV, "")
+
+
+def _desktop_session_secret() -> str:
+    secret = _DESKTOP_SESSION_SECRET
+    if secret and (
+        len(secret) != 64
+        or any(character not in "0123456789abcdef" for character in secret)
+    ):
+        raise RuntimeError(
+            f"{_DESKTOP_SESSION_ENV} must contain 32 random bytes as lowercase hex"
+        )
+    return secret
+
+
+def _desktop_health_message(nonce: str) -> bytes:
+    return "\0".join(
+        (
+            nonce,
+            DESKTOP_HEALTH_PRODUCT,
+            str(DESKTOP_HEALTH_PROTOCOL),
+            DESKTOP_HEALTH_SERVICE,
+            APP_VERSION,
+        )
+    ).encode("utf-8")
+
+
+def _desktop_health_proof(secret: str, nonce: str) -> str:
+    return hmac.new(
+        secret.encode("ascii"),
+        _desktop_health_message(nonce),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 class NoStoreStaticFiles(StaticFiles):
@@ -57,6 +95,7 @@ class NoStoreStaticFiles(StaticFiles):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+    _desktop_session_secret()
     rt = get_runtime_settings()
     if _api_token_is_required() and not rt.api_token:
         raise RuntimeError(
@@ -138,10 +177,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_cors_origins = list(config.cors_origins)
+if _DESKTOP_SESSION_SECRET:
+    _cors_origins.extend(
+        [
+            "tauri://localhost",
+            "http://tauri.localhost",
+        ]
+    )
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config.cors_origins,
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -170,15 +218,25 @@ def _api_token_is_required() -> bool:
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
     if path == "/health":
-        expected_session = os.environ.get(_DESKTOP_SESSION_ENV, "")
-        if expected_session:
-            supplied_session = request.headers.get(_DESKTOP_SESSION_HEADER, "")
-            if not secrets.compare_digest(supplied_session, expected_session):
+        try:
+            expected_session = _desktop_session_secret()
+        except RuntimeError:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Desktop health proof is unavailable"},
+                headers=_NO_STORE_HEADERS,
+            )
+        if expected_session and _DESKTOP_NONCE_HEADER in request.headers:
+            nonce = request.headers[_DESKTOP_NONCE_HEADER]
+            if len(nonce) != 64 or any(
+                character not in "0123456789abcdef" for character in nonce
+            ):
                 return JSONResponse(
                     status_code=401,
-                    content={"detail": "Unauthorized desktop health probe"},
+                    content={"detail": "Invalid desktop health challenge"},
                     headers=_NO_STORE_HEADERS,
                 )
+            request.state.desktop_health_nonce = nonce
 
     # Only gate /api/* endpoints
     if path.startswith("/api"):
@@ -186,15 +244,34 @@ async def auth_middleware(request: Request, call_next):
         # behavior independently of the runtime settings file.
         rt = get_runtime_settings()
         token = rt.api_token
+        try:
+            desktop_secret = _desktop_session_secret()
+        except RuntimeError:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Desktop session authentication is unavailable"},
+            )
+        supplied_desktop_session = request.headers.get(_DESKTOP_SESSION_HEADER, "")
+        desktop_session_matches = bool(desktop_secret) and hmac.compare_digest(
+            supplied_desktop_session,
+            desktop_secret,
+        )
+        if path == _DESKTOP_SHUTDOWN_PATH and not desktop_session_matches:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized desktop shutdown request"},
+            )
         if _api_token_is_required() and not token:
             return JSONResponse(
                 status_code=503,
                 content={"detail": "API authentication is required but unavailable"},
             )
-        if token:
+        if token and not desktop_session_matches:
             auth_header = request.headers.get("authorization", "")
             cookie_token = request.cookies.get("mpp_api_token", "")
-            if auth_header != f"Bearer {token}" and cookie_token != token:
+            bearer_matches = hmac.compare_digest(auth_header, f"Bearer {token}")
+            cookie_matches = hmac.compare_digest(cookie_token, token)
+            if not bearer_matches and not cookie_matches:
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Unauthorized — invalid or missing Bearer token"},
@@ -226,15 +303,35 @@ app.include_router(kb_router.router, prefix="/api")
 app.include_router(sync.router, prefix="/api")
 
 
+@app.post(_DESKTOP_SHUTDOWN_PATH)
+async def desktop_shutdown(request: Request):
+    callback = getattr(request.app.state, "request_desktop_shutdown", None)
+    if not callable(callback):
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Desktop shutdown controller is unavailable"},
+        )
+    return JSONResponse(
+        content={"status": "shutting_down"},
+        headers=_NO_STORE_HEADERS,
+        background=BackgroundTask(callback),
+    )
+
+
 @app.get("/health")
-async def health_check():
-    return {
+async def health_check(request: Request):
+    payload = {
         "status": "healthy",
-        "service": config.api_title,
+        "service": DESKTOP_HEALTH_SERVICE,
         "version": APP_VERSION,
         "product": DESKTOP_HEALTH_PRODUCT,
         "protocol": DESKTOP_HEALTH_PROTOCOL,
     }
+    secret = _desktop_session_secret()
+    nonce = getattr(request.state, "desktop_health_nonce", "")
+    if secret and nonce:
+        payload["desktopProof"] = _desktop_health_proof(secret, nonce)
+    return payload
 
 
 # Serve frontend static files (built Vite output)

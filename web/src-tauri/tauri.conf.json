@@ -10,10 +10,10 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "windows": [],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' http://api.tauri.localhost:18000; img-src 'self' data: blob: https: http://api.tauri.localhost:18000; media-src 'self' data: blob: https: http://api.tauri.localhost:18000"
     }
   },
   "bundle": {

@@ -22,6 +22,7 @@ const scriptDir = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(scriptDir, "..", "..")
 const runtimeRoot = resolve(projectRoot, "web", "src-tauri", "resources", "runtime")
 const runtimeParent = dirname(runtimeRoot)
+const stageLockPath = join(runtimeParent, ".runtime-stage.lock")
 const toolContractSource = join(projectRoot, "packaging", "desktop-tools.json")
 const toolContractRuntimePath = "packaging/desktop-tools.json"
 
@@ -35,29 +36,53 @@ if (
 const forbiddenParts = new Set([
   ".env",
   ".envrc",
+  ".git",
   ".git-credentials",
+  ".hg",
   ".netrc",
   ".npmrc",
   ".pypirc",
+  ".svn",
   ".ssh",
   ".aws",
   "__pycache__",
   "auth.json",
+  "client-secret.json",
+  "client-secret.yaml",
+  "client-secret.yml",
   "config.json",
   "cookies.json",
   "cookies.txt",
+  "credential.json",
+  "credential.yaml",
+  "credential.yml",
   "credentials.json",
+  "credentials.yaml",
+  "credentials.yml",
   "client_secret.json",
+  "client_secret.yaml",
+  "client_secret.yml",
   "id_dsa",
   "id_ed25519",
   "id_ecdsa",
   "id_rsa",
   "secrets.json",
+  "secrets.yaml",
+  "secrets.yml",
   "service-account.json",
+  "service-account.yaml",
+  "service-account.yml",
+  "service_account.json",
+  "service_account.yaml",
+  "service_account.yml",
   "settings.json",
   "storage_state.json",
   "token.json",
+  "token.yaml",
+  "token.yml",
   "tokens.json",
+  "tokens.yaml",
+  "tokens.yml",
 ])
 const forbiddenSuffixes = [
   ".crt",
@@ -88,8 +113,24 @@ function isPathInside(root, candidate) {
   )
 }
 
+function sameCanonicalPath(left, right) {
+  const normalize = (value) =>
+    process.platform === "win32" ? resolve(value).toLowerCase() : resolve(value)
+  return normalize(left) === normalize(right)
+}
+
 function toPosix(pathValue) {
   return pathValue.split(sep).join("/")
+}
+
+function compareText(left, right) {
+  if (left < right) {
+    return -1
+  }
+  if (left > right) {
+    return 1
+  }
+  return 0
 }
 
 function assertSafeRelativePath(pathValue) {
@@ -131,6 +172,18 @@ function run(command, args, options = {}) {
   return (result.stdout || "").trim()
 }
 
+async function buildWebAssets() {
+  const npmCliValue = process.env.npm_execpath?.trim()
+  if (!npmCliValue) {
+    throw new Error(
+      "npm_execpath is unavailable; run desktop staging through npm run prepare:desktop-runtime",
+    )
+  }
+  const npmCli = resolve(npmCliValue)
+  await assertRegularSource(npmCli)
+  run(process.execPath, [npmCli, "--prefix", "web", "run", "build"])
+}
+
 async function assertRegularSource(source, allowedRealRoot = null) {
   const sourceInfo = await lstat(source)
   if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink()) {
@@ -164,7 +217,7 @@ async function copyDirectory(sourceRoot, destinationRoot, stageRoot, allowedReal
   }
 
   const entries = await readdir(sourceRoot, { withFileTypes: true })
-  entries.sort((left, right) => left.name.localeCompare(right.name))
+  entries.sort((left, right) => compareText(left.name, right.name))
   for (const entry of entries) {
     const source = join(sourceRoot, entry.name)
     const target = join(destinationRoot, entry.name)
@@ -183,11 +236,15 @@ async function copyDirectory(sourceRoot, destinationRoot, stageRoot, allowedReal
 }
 
 function trackedBackendFiles() {
-  const result = spawnSync("git", ["ls-files", "-z", "--", "backend/app"], {
-    cwd: projectRoot,
-    encoding: "buffer",
-    windowsHide: true,
-  })
+  const result = spawnSync(
+    "git",
+    ["ls-files", "-z", "--", "backend/app", "backend/resources"],
+    {
+      cwd: projectRoot,
+      encoding: "buffer",
+      windowsHide: true,
+    },
+  )
   if (result.error) {
     throw result.error
   }
@@ -280,7 +337,7 @@ async function loadToolContract() {
 async function walkFiles(root, current = root) {
   const files = []
   const entries = await readdir(current, { withFileTypes: true })
-  entries.sort((left, right) => left.name.localeCompare(right.name))
+  entries.sort((left, right) => compareText(left.name, right.name))
   for (const entry of entries) {
     const absolute = join(current, entry.name)
     if (entry.isSymbolicLink()) {
@@ -295,6 +352,46 @@ async function walkFiles(root, current = root) {
     }
   }
   return files
+}
+
+async function assertSafeRuntimeDestination() {
+  const parentInfo = await lstat(runtimeParent).catch(() => null)
+  if (!parentInfo?.isDirectory() || parentInfo.isSymbolicLink()) {
+    throw new Error(
+      `Desktop runtime parent must be a real tracked directory: ${runtimeParent}`,
+    )
+  }
+  const runtimeInfo = await lstat(runtimeRoot).catch(() => null)
+  if (!runtimeInfo?.isDirectory() || runtimeInfo.isSymbolicLink()) {
+    throw new Error(
+      `Desktop runtime destination must be a real tracked directory: ${runtimeRoot}`,
+    )
+  }
+
+  const canonicalProjectRoot = await realpath(projectRoot)
+  const canonicalRuntimeParent = await realpath(runtimeParent)
+  const expectedRuntimeParent = join(
+    canonicalProjectRoot,
+    "web",
+    "src-tauri",
+    "resources",
+  )
+  if (!sameCanonicalPath(canonicalRuntimeParent, expectedRuntimeParent)) {
+    throw new Error(
+      `Desktop runtime parent resolves outside its tracked repository location: ${runtimeParent}`,
+    )
+  }
+  const canonicalRuntimeRoot = await realpath(runtimeRoot)
+  const expectedRuntimeRoot = join(canonicalRuntimeParent, "runtime")
+  if (!sameCanonicalPath(canonicalRuntimeRoot, expectedRuntimeRoot)) {
+    throw new Error(
+      `Desktop runtime destination is a symlink, junction, or reparse escape: ${runtimeRoot}`,
+    )
+  }
+
+  // Recursive cleanup is only allowed after the existing destination tree has
+  // been proven free of links and special filesystem entries.
+  await walkFiles(runtimeRoot)
 }
 
 async function sha256(pathValue) {
@@ -329,13 +426,6 @@ async function peMachine(pathValue) {
 
 async function validateUv(uvSource, expected) {
   await assertRegularSource(uvSource)
-  const uvOutput = run(uvSource, ["--version"])
-  const actualVersion = uvOutput.match(/\buv\s+([0-9][^\s]*)/)?.[1]
-  if (actualVersion !== expected.version) {
-    throw new Error(
-      `Bundled uv version mismatch: expected ${expected.version}, received ${uvOutput}`,
-    )
-  }
   const fileInfo = await stat(uvSource)
   if (fileInfo.size !== expected.binary.size) {
     throw new Error(
@@ -354,6 +444,13 @@ async function validateUv(uvSource, expected) {
       `Bundled uv PE machine mismatch: expected ${expected.binary.peMachine}, received ${actualMachine}`,
     )
   }
+  const uvOutput = run(uvSource, ["--version"])
+  const actualVersion = uvOutput.match(/\buv\s+([0-9][^\s]*)/)?.[1]
+  if (actualVersion !== expected.version) {
+    throw new Error(
+      `Bundled uv version mismatch: expected ${expected.version}, received ${uvOutput}`,
+    )
+  }
 }
 
 async function promoteStage(stageRoot) {
@@ -370,7 +467,14 @@ async function promoteStage(stageRoot) {
     await rename(stageRoot, runtimeRoot)
   } catch (error) {
     if (movedExisting && !(await lstat(runtimeRoot).catch(() => null))) {
-      await rename(backupRoot, runtimeRoot).catch(() => {})
+      try {
+        await rename(backupRoot, runtimeRoot)
+      } catch (recoveryError) {
+        throw new AggregateError(
+          [error, recoveryError],
+          `Desktop runtime promotion failed and recovery also failed; preserved backup: ${backupRoot}`,
+        )
+      }
     }
     throw error
   }
@@ -379,13 +483,55 @@ async function promoteStage(stageRoot) {
   }
 }
 
-async function main() {
-  if (process.platform !== "win32" || process.arch !== "x64") {
-    throw new Error(
-      `Desktop runtime staging supports only Windows x64; received ${process.platform}/${process.arch}`,
-    )
+async function acquireStageLock() {
+  let handle
+  try {
+    handle = await open(stageLockPath, "wx", 0o600)
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      throw new Error(
+        `Desktop runtime staging is already locked: ${stageLockPath}. ` +
+          "After confirming no staging process is active, remove this stale lock and retry.",
+      )
+    }
+    throw error
   }
+  try {
+    await handle.writeFile(
+      `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`,
+      "utf8",
+    )
+    await handle.sync()
+    return handle
+  } catch (error) {
+    await handle.close().catch(() => {})
+    await rm(stageLockPath, { force: true }).catch(() => {})
+    throw error
+  }
+}
 
+async function releaseStageLock(handle) {
+  const errors = []
+  try {
+    await handle.close()
+  } catch (error) {
+    errors.push(error)
+  }
+  try {
+    await rm(stageLockPath)
+  } catch (error) {
+    errors.push(error)
+  }
+  if (errors.length) {
+    throw new AggregateError(errors, `Could not release staging lock: ${stageLockPath}`)
+  }
+}
+
+async function stageRuntime() {
+  const sourceCommit = run("git", ["rev-parse", "HEAD"])
+  if (!/^[0-9a-f]{40}$/.test(sourceCommit)) {
+    throw new Error(`Git returned an invalid source commit: ${sourceCommit}`)
+  }
   const dirtyStatus = run("git", [
     "status",
     "--porcelain=v1",
@@ -398,6 +544,10 @@ async function main() {
         "MPP_ALLOW_DIRTY_RUNTIME_STAGE=1 for an explicitly marked development runtime.",
     )
   }
+
+  // A staged desktop runtime always owns its production Web build. This keeps
+  // ignored/stale dist output from being silently attributed to the Git SHA.
+  await buildWebAssets()
 
   const pyprojectText = await readFile(join(projectRoot, "pyproject.toml"), "utf8")
   const expectedUvVersion = requiredUvVersion(pyprojectText)
@@ -426,12 +576,20 @@ async function main() {
     throw new Error("web/dist/index.html is missing; run the production Web build first")
   }
 
-  await mkdir(runtimeParent, { recursive: true })
   const stageRoot = await mkdtemp(join(runtimeParent, ".runtime-stage-"))
   let promoted = false
   try {
+    await copyRegularFile(
+      join(runtimeRoot, ".gitkeep"),
+      join(stageRoot, ".gitkeep"),
+      canonicalProjectRoot,
+    )
     for (const filename of ["VERSION", "pyproject.toml", "uv.lock"]) {
-      await copyRegularFile(join(projectRoot, filename), join(stageRoot, filename))
+      await copyRegularFile(
+        join(projectRoot, filename),
+        join(stageRoot, filename),
+        canonicalProjectRoot,
+      )
     }
 
     const trackedFiles = trackedBackendFiles()
@@ -440,7 +598,11 @@ async function main() {
     }
     for (const trackedFile of trackedFiles) {
       const safeTarget = assertSafeRelativePath(trackedFile)
-      await copyRegularFile(join(projectRoot, trackedFile), join(stageRoot, safeTarget))
+      await copyRegularFile(
+        join(projectRoot, trackedFile),
+        join(stageRoot, safeTarget),
+        canonicalProjectRoot,
+      )
     }
 
     await copyDirectory(
@@ -452,9 +614,10 @@ async function main() {
     await copyRegularFile(
       toolContractSource,
       join(stageRoot, toolContractRuntimePath),
+      canonicalProjectRoot,
     )
     const licenseSource = join(projectRoot, uvContract.license.sourcePath)
-    await assertRegularSource(licenseSource)
+    await assertRegularSource(licenseSource, canonicalProjectRoot)
     const licenseText = (await readFile(licenseSource, "utf8"))
       .replace(/\r\n/g, "\n")
       .replace(/\r/g, "\n")
@@ -489,15 +652,22 @@ async function main() {
         sha256: await sha256(absolute),
       })
     }
-    files.sort((left, right) => left.path.localeCompare(right.path))
+    files.sort((left, right) => compareText(left.path, right.path))
 
     const version = (await readFile(join(projectRoot, "VERSION"), "utf8")).trim()
     if (!version) {
       throw new Error("VERSION must be non-empty")
     }
-    const sourceCommit = run("git", ["rev-parse", "HEAD"])
-    if (!/^[0-9a-f]{40}$/.test(sourceCommit)) {
-      throw new Error(`Git returned an invalid source commit: ${sourceCommit}`)
+    const finalCommit = run("git", ["rev-parse", "HEAD"])
+    const finalDirtyStatus = run("git", [
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=normal",
+    ])
+    if (finalCommit !== sourceCommit || finalDirtyStatus !== dirtyStatus) {
+      throw new Error(
+        "Repository state changed while the desktop runtime was being staged; retry from a stable worktree.",
+      )
     }
     const uvRecord = files.find(
       (file) => file.path === uvContract.binary.runtimePath,
@@ -553,6 +723,41 @@ async function main() {
     if (!promoted) {
       await rm(stageRoot, { recursive: true, force: true })
     }
+  }
+}
+
+async function main() {
+  if (process.platform !== "win32" || process.arch !== "x64") {
+    throw new Error(
+      `Desktop runtime staging supports only Windows x64; received ${process.platform}/${process.arch}`,
+    )
+  }
+  await assertSafeRuntimeDestination()
+  const lockHandle = await acquireStageLock()
+  let stagingError = null
+  try {
+    await stageRuntime()
+  } catch (error) {
+    stagingError = error
+  }
+
+  let releaseError = null
+  try {
+    await releaseStageLock(lockHandle)
+  } catch (error) {
+    releaseError = error
+  }
+  if (stagingError && releaseError) {
+    throw new AggregateError(
+      [stagingError, releaseError],
+      "Desktop runtime staging failed and its lock could not be released",
+    )
+  }
+  if (stagingError) {
+    throw stagingError
+  }
+  if (releaseError) {
+    throw releaseError
   }
 }
 

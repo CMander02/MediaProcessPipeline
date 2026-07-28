@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -73,11 +74,27 @@ def _wait_for_health(
     base_url: str,
     process: subprocess.Popen[bytes],
     *,
-    session_token: str,
+    session_secret: str,
+    expected_version: str,
     timeout: float,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     last_error = "backend did not answer"
+    nonce = secrets.token_hex(32)
+    proof_message = "\0".join(
+        (
+            nonce,
+            "com.mpp.backend",
+            "1",
+            "Media Process Pipeline",
+            expected_version,
+        )
+    ).encode("utf-8")
+    expected_proof = hmac.new(
+        session_secret.encode("ascii"),
+        proof_message,
+        hashlib.sha256,
+    ).hexdigest()
     while time.monotonic() < deadline:
         returncode = process.poll()
         if returncode is not None:
@@ -85,14 +102,20 @@ def _wait_for_health(
         try:
             status, body = _request(
                 f"{base_url}/health",
-                headers={"X-MPP-Desktop-Session": session_token},
+                headers={"X-MPP-Desktop-Nonce": nonce},
                 timeout=1.0,
             )
             if status == 200:
                 payload = json.loads(body)
-                if isinstance(payload, dict):
+                if (
+                    isinstance(payload, dict)
+                    and hmac.compare_digest(
+                        str(payload.get("desktopProof") or ""),
+                        expected_proof,
+                    )
+                ):
                     return payload
-                last_error = "health response was not an object"
+                last_error = "health response did not prove the desktop session"
         except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
             last_error = str(exc)
         time.sleep(0.2)
@@ -205,8 +228,8 @@ def smoke_runtime(
     output_file = user_root / "logs" / "installed-smoke-process.log"
     environment = _runtime_environment(runtime_root, user_root)
     environment["MPP_APP_VERSION"] = version
-    session_token = secrets.token_urlsafe(32)
-    environment["MPP_DESKTOP_SESSION_TOKEN"] = session_token
+    session_secret = secrets.token_hex(32)
+    environment["MPP_DESKTOP_SESSION_TOKEN"] = session_secret
     selected_python = python_executable
     launcher = "host-python"
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -267,7 +290,8 @@ def smoke_runtime(
             health = _wait_for_health(
                 base_url,
                 process,
-                session_token=session_token,
+                session_secret=session_secret,
+                expected_version=version,
                 timeout=timeout,
             )
             if health.get("version") != version:

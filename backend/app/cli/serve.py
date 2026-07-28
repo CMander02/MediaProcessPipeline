@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import errno
 import signal
 import socket
 import sys
@@ -121,7 +122,72 @@ def _port_in_use(host: str, port: int) -> bool:
             return True
 
 
-def run_server(host: str = "127.0.0.1", port: int = 18000, reload: bool = False) -> None:
+def _bind_desktop_loopback_sockets(port: int) -> list[socket.socket]:
+    """Atomically reserve both localhost address families for the desktop UI."""
+
+    listeners: list[socket.socket] = []
+    endpoints = (
+        (socket.AF_INET, "127.0.0.1"),
+        (socket.AF_INET6, "::1"),
+    )
+    effective_port = port
+    try:
+        for family, host in endpoints:
+            try:
+                listener = socket.socket(family, socket.SOCK_STREAM)
+            except OSError as exc:
+                if family == socket.AF_INET6 and _ipv6_is_unavailable(exc):
+                    continue
+                raise
+            try:
+                if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                    listener.setsockopt(
+                        socket.SOL_SOCKET,
+                        socket.SO_EXCLUSIVEADDRUSE,
+                        1,
+                    )
+                if family == socket.AF_INET6:
+                    listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                listener.bind((host, effective_port))
+                if not effective_port:
+                    effective_port = int(listener.getsockname()[1])
+                listener.listen(socket.SOMAXCONN)
+            except OSError as exc:
+                listener.close()
+                if family == socket.AF_INET6 and _ipv6_is_unavailable(exc):
+                    continue
+                raise
+            except Exception:
+                listener.close()
+                raise
+            listeners.append(listener)
+    except Exception:
+        for listener in listeners:
+            listener.close()
+        raise
+    return listeners
+
+
+def _ipv6_is_unavailable(exc: OSError) -> bool:
+    """Identify hosts where the IPv6 loopback family is disabled."""
+
+    return exc.errno in {
+        errno.EAFNOSUPPORT,
+        errno.EADDRNOTAVAIL,
+        errno.EPROTONOSUPPORT,
+    } or getattr(exc, "winerror", None) in {
+        10047,  # WSAEAFNOSUPPORT
+        10049,  # WSAEADDRNOTAVAIL
+    }
+
+
+def run_server(
+    host: str = "127.0.0.1",
+    port: int = 18000,
+    reload: bool = False,
+    *,
+    desktop_loopback: bool = False,
+) -> None:
     """Start the FastAPI daemon."""
     # Force UTF-8 on Windows
     if sys.platform == "win32":
@@ -134,16 +200,30 @@ def run_server(host: str = "127.0.0.1", port: int = 18000, reload: bool = False)
     from rich.console import Console
     console = Console()
 
-    # Check if port is already in use
-    if _port_in_use(host, port):
-        console.print(f"[red bold]端口 {port} 已被占用[/red bold]")
-        console.print("可能已有 daemon 在运行。检查: [cyan]mpp status[/cyan]")
-        console.print(f"或手动关闭: [cyan]taskkill /F /PID $(netstat -ano | findstr :{port})[/cyan]")
-        raise SystemExit(1)
+    listeners: list[socket.socket] | None = None
+    if desktop_loopback:
+        if reload:
+            raise ValueError("desktop loopback mode does not support reload")
+        try:
+            listeners = _bind_desktop_loopback_sockets(port)
+        except OSError as exc:
+            console.print(f"[red bold]localhost 端口 {port} 无法独占[/red bold]")
+            console.print(f"[red]{exc}[/red]")
+            raise SystemExit(1) from exc
+        display_host = "localhost"
+    else:
+        if _port_in_use(host, port):
+            console.print(f"[red bold]端口 {port} 已被占用[/red bold]")
+            console.print("可能已有 daemon 在运行。检查: [cyan]mpp status[/cyan]")
+            console.print(
+                f"或手动关闭: [cyan]taskkill /F /PID $(netstat -ano | findstr :{port})[/cyan]"
+            )
+            raise SystemExit(1)
+        display_host = host
 
     console.print(f"\n[bold]MediaProcessPipeline[/bold]  :{port}")
-    console.print(f"  API   http://{host}:{port}/docs")
-    console.print(f"  SSE   http://{host}:{port}/api/tasks/events")
+    console.print(f"  API   http://{display_host}:{port}/docs")
+    console.print(f"  SSE   http://{display_host}:{port}/api/tasks/events")
     console.print()
 
     # On Windows, Ctrl+C can leave child threads hanging. Force immediate exit
@@ -164,12 +244,31 @@ def run_server(host: str = "127.0.0.1", port: int = 18000, reload: bool = False)
         signal.signal(signal.SIGINT, _force_exit)
         signal.signal(signal.SIGBREAK, _force_exit)
 
-    uvicorn.run(
-        "app.main:app",
-        host=host,
+    if listeners is None:
+        uvicorn.run(
+            "app.main:app",
+            host=host,
+            port=port,
+            reload=reload,
+        )
+        return
+
+    from app.main import app
+
+    config = uvicorn.Config(
+        app,
+        host="localhost",
         port=port,
-        reload=reload,
+        reload=False,
     )
+    server = uvicorn.Server(config)
+    app.state.request_desktop_shutdown = lambda: setattr(server, "should_exit", True)
+    try:
+        server.run(sockets=listeners)
+    finally:
+        del app.state.request_desktop_shutdown
+        for listener in listeners:
+            listener.close()
 
 
 # ---------------------------------------------------------------------------

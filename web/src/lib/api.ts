@@ -5,6 +5,7 @@
 
 import { createSettingsPatch, type SettingsPatchInput } from "./settings-patch"
 import type { ProviderConfig, ProviderModelRecord, RuntimeSettings } from "./settings-schema"
+import { getBackendBridge, isTauriRuntime } from "./tauri"
 
 export interface Task {
   id: string
@@ -233,6 +234,15 @@ export interface PipelineStep {
 // ---- Fetch helpers ----
 
 export const API_TOKEN_STORAGE_KEY = "mpp_api_token"
+export const DESKTOP_BACKEND_ORIGIN = "http://api.tauri.localhost:18000"
+
+export function backendUrl(path: string): string {
+  if (!isTauriRuntime()) return path
+  if (!path.startsWith("/") || path.startsWith("//")) {
+    throw new Error(`Backend path must be root-relative: ${path}`)
+  }
+  return `${DESKTOP_BACKEND_ORIGIN}${path}`
+}
 
 export function getApiToken(): string {
   if (typeof localStorage === "undefined") return ""
@@ -254,7 +264,7 @@ export function persistApiToken(token: string) {
 function headers(json = false): HeadersInit {
   const h: Record<string, string> = {}
   if (json) h["Content-Type"] = "application/json"
-  const token = getApiToken()
+  const token = isTauriRuntime() ? "" : getApiToken()
   if (token) h.Authorization = `Bearer ${token}`
   return h
 }
@@ -298,14 +308,18 @@ async function readJson<T>(res: Response): Promise<T> {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(path, { headers: headers() })
+  const res = await fetch(backendUrl(path), {
+    credentials: "include",
+    headers: headers(),
+  })
   if (!res.ok) throw await parseError(res)
   return readJson<T>(res)
 }
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(backendUrl(path), {
     method: "POST",
+    credentials: "include",
     headers: requestedJsonHeaders(),
     body: body ? JSON.stringify(body) : undefined,
   })
@@ -314,8 +328,9 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
 }
 
 async function patch<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(backendUrl(path), {
     method: "PATCH",
+    credentials: "include",
     headers: requestedJsonHeaders(),
     body: JSON.stringify(body),
   })
@@ -324,8 +339,9 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function put<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(backendUrl(path), {
     method: "PUT",
+    credentials: "include",
     headers: requestedJsonHeaders(),
     body: JSON.stringify(body),
   })
@@ -334,8 +350,9 @@ async function put<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function httpDelete<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(backendUrl(path), {
     method: "DELETE",
+    credentials: "include",
     headers: requestedJsonHeaders(),
     body: body ? JSON.stringify(body) : undefined,
   })
@@ -346,7 +363,17 @@ async function httpDelete<T>(path: string, body?: unknown): Promise<T> {
 // ---- Tasks ----
 
 export const api = {
-  health: () => get<{ status: string }>("/health"),
+  health: async () => {
+    const desktopBackend = getBackendBridge()
+    if (desktopBackend) {
+      const status = await desktopBackend.getStatus()
+      if (status.state !== "running") {
+        throw new Error(status.message || `Backend is ${status.state}`)
+      }
+      return { status: "healthy" }
+    }
+    return get<{ status: string }>("/health")
+  },
 
   tasks: {
     create: (
@@ -431,7 +458,8 @@ export const api = {
         ...(text === undefined ? {} : { text }),
         ...(sourceFilename ? { source_filename: sourceFilename } : {}),
       }),
-    thumbnailUrl: (path: string) => `/api/pipeline/archives/thumbnail?path=${encodeURIComponent(path)}`,
+    thumbnailUrl: (path: string) =>
+      backendUrl(`/api/pipeline/archives/thumbnail?path=${encodeURIComponent(path)}`),
   },
 
   filesystem: {
@@ -441,7 +469,8 @@ export const api = {
       ),
     write: (path: string, content: string) =>
       post<{ success: boolean; error?: string }>("/api/filesystem/write", { path, content }),
-    mediaUrl: (path: string) => `/api/filesystem/media?path=${encodeURIComponent(path)}`,
+    mediaUrl: (path: string) =>
+      backendUrl(`/api/filesystem/media?path=${encodeURIComponent(path)}`),
     drives: () =>
       get<{ success: boolean; drives: Array<{ name: string; path: string; is_dir: boolean; size?: number | null }> }>(
         "/api/filesystem/drives",
@@ -466,8 +495,9 @@ export const api = {
     stage: async (file: File, signal?: AbortSignal) => {
       const form = new FormData()
       form.append("file", file)
-      const res = await fetch("/api/pipeline/stage", {
+      const res = await fetch(backendUrl("/api/pipeline/stage"), {
         method: "POST",
+        credentials: "include",
         headers: requestedHeaders(),
         body: form,
         signal,
@@ -511,7 +541,8 @@ export const api = {
         `/api/voiceprints/persons/${dstId}/merge`,
         { src_person_id: srcId },
       ),
-    sampleClipUrl: (sampleId: string) => `/api/voiceprints/samples/${sampleId}/clip`,
+    sampleClipUrl: (sampleId: string) =>
+      backendUrl(`/api/voiceprints/samples/${sampleId}/clip`),
     renameTaskSpeaker: (
       taskId: string,
       oldName: string,
@@ -591,7 +622,9 @@ export function subscribeTaskEvents(
   taskId: string,
   onEvent: (event: { task_id: string; type: string; data: Record<string, unknown>; timestamp: string }) => void,
 ): () => void {
-  const es = new EventSource(`/api/tasks/${taskId}/events`)
+  const es = new EventSource(backendUrl(`/api/tasks/${taskId}/events`), {
+    withCredentials: isTauriRuntime(),
+  })
   es.onmessage = (e) => {
     try {
       onEvent(JSON.parse(e.data))
@@ -605,7 +638,9 @@ export function subscribeTaskEvents(
 export function subscribeAllEvents(
   onEvent: (event: { task_id: string; type: string; data: Record<string, unknown>; timestamp: string }) => void,
 ): () => void {
-  const es = new EventSource("/api/tasks/events")
+  const es = new EventSource(backendUrl("/api/tasks/events"), {
+    withCredentials: isTauriRuntime(),
+  })
   es.onmessage = (e) => {
     try {
       onEvent(JSON.parse(e.data))

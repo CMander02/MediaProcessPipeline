@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import json
 import re
@@ -128,48 +127,141 @@ def test_app_version_restores_pep440_normalized_prerelease_metadata(
     )
 
 
-def test_health_endpoint_reports_canonical_version() -> None:
+def test_health_endpoint_reports_canonical_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app import main as app_main
 
-    payload = asyncio.run(app_main.health_check())
+    monkeypatch.setattr(app_main, "_DESKTOP_SESSION_SECRET", "")
+    client = TestClient(app_main.app)
+    try:
+        response = client.get("/health")
+    finally:
+        client.close()
+    payload = response.json()
 
+    assert response.status_code == 200
     assert payload["version"] == APP_VERSION
     assert payload["product"] == "com.mpp.backend"
     assert payload["protocol"] == 1
     assert app_main.app.version == APP_VERSION
 
 
-def test_health_endpoint_requires_desktop_session_header(
+def test_health_endpoint_offers_desktop_hmac_challenge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app import main as app_main
 
-    monkeypatch.setenv("MPP_DESKTOP_SESSION_TOKEN", "desktop-session-secret")
+    secret = "ab" * 32
+    nonce = "cd" * 32
+    monkeypatch.setattr(app_main, "_DESKTOP_SESSION_SECRET", secret)
     client = TestClient(app_main.app)
     try:
         missing = client.get("/health")
-        wrong = client.get(
+        leaked_secret_header = client.get(
             "/health",
-            headers={"X-MPP-Desktop-Session": "wrong-session"},
+            headers={"X-MPP-Desktop-Session": secret},
+        )
+        malformed_nonce = client.get(
+            "/health",
+            headers={"X-MPP-Desktop-Nonce": "not-a-valid-nonce"},
         )
         accepted = client.get(
             "/health",
-            headers={"X-MPP-Desktop-Session": "desktop-session-secret"},
+            headers={"X-MPP-Desktop-Nonce": nonce},
         )
     finally:
         client.close()
 
-    assert missing.status_code == 401
-    assert wrong.status_code == 401
+    assert missing.status_code == 200
+    assert missing.json().get("desktopProof") is None
+    assert leaked_secret_header.status_code == 200
+    assert leaked_secret_header.json().get("desktopProof") is None
+    assert malformed_nonce.status_code == 401
     assert accepted.status_code == 200
     assert accepted.headers["cache-control"] == "no-store"
     assert accepted.json() == {
         "status": "healthy",
-        "service": app_main.config.api_title,
+        "service": app_main.DESKTOP_HEALTH_SERVICE,
         "version": APP_VERSION,
         "product": "com.mpp.backend",
         "protocol": 1,
+        "desktopProof": app_main._desktop_health_proof(secret, nonce),
     }
+
+
+def test_desktop_health_hmac_golden_vector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import main as app_main
+
+    monkeypatch.setattr(app_main, "APP_VERSION", "0.4.1")
+
+    assert app_main._desktop_health_proof("ab" * 32, "cd" * 32) == (
+        "290970beb86e5dc6846601100b0fd0a5419b0e612582912686e9570605b24e25"
+    )
+
+
+def test_desktop_session_authenticates_private_api_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import main as app_main
+
+    class _Settings:
+        api_token = "configured-api-token"
+
+    desktop_secret = "ef" * 32
+    monkeypatch.setattr(app_main, "_DESKTOP_SESSION_SECRET", desktop_secret)
+    monkeypatch.setattr(app_main, "get_runtime_settings", lambda: _Settings())
+    monkeypatch.delenv("MPP_REQUIRE_API_TOKEN", raising=False)
+    shutdown_calls: list[bool] = []
+    app_main.app.state.request_desktop_shutdown = lambda: shutdown_calls.append(True)
+
+    client = TestClient(app_main.app)
+    try:
+        missing = client.get("/api/desktop-auth-contract")
+        wrong = client.get(
+            "/api/desktop-auth-contract",
+            headers={"X-MPP-Desktop-Session": "00" * 32},
+        )
+        accepted = client.get(
+            "/api/desktop-auth-contract",
+            headers={"X-MPP-Desktop-Session": desktop_secret},
+        )
+        csrf_blocked = client.post(
+            "/api/desktop-auth-contract",
+            headers={"X-MPP-Desktop-Session": desktop_secret},
+        )
+        mutating_accepted = client.post(
+            "/api/desktop-auth-contract",
+            headers={
+                "X-MPP-Desktop-Session": desktop_secret,
+                "X-Requested-With": "fetch",
+            },
+        )
+        shutdown_missing_session = client.post(
+            app_main._DESKTOP_SHUTDOWN_PATH,
+            headers={"X-Requested-With": "fetch"},
+        )
+        shutdown_accepted = client.post(
+            app_main._DESKTOP_SHUTDOWN_PATH,
+            headers={
+                "X-MPP-Desktop-Session": desktop_secret,
+                "X-Requested-With": "fetch",
+            },
+        )
+    finally:
+        client.close()
+        del app_main.app.state.request_desktop_shutdown
+
+    assert missing.status_code == 401
+    assert wrong.status_code == 401
+    assert accepted.status_code == 404
+    assert csrf_blocked.status_code == 403
+    assert mutating_accepted.status_code == 405
+    assert shutdown_missing_session.status_code == 401
+    assert shutdown_accepted.status_code == 200
+    assert shutdown_calls == [True]
 
 
 def test_set_and_check_version_scripts_keep_android_code_explicit(tmp_path: Path) -> None:

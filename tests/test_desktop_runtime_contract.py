@@ -5,6 +5,8 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -119,6 +121,7 @@ def _write_runtime(
     }
     contract_content = json.dumps(contract, indent=2).encode()
     files = {
+        ".gitkeep": b"",
         "VERSION": b"0.4.1\n",
         "pyproject.toml": (
             b"[project]\nname='MediaProcessPipeline'\n"
@@ -172,6 +175,85 @@ def _write_runtime(
     return contract
 
 
+def _write_trusted_sources(source_root: Path, runtime_root: Path) -> None:
+    source_paths = {
+        ".gitkeep": "web/src-tauri/resources/runtime/.gitkeep",
+        "VERSION": "VERSION",
+        "pyproject.toml": "pyproject.toml",
+        "uv.lock": "uv.lock",
+        "backend/app/__init__.py": "backend/app/__init__.py",
+        "web/dist/index.html": "web/dist/index.html",
+        "web/dist/assets/app.css": "web/dist/assets/app.css",
+        "web/dist/assets/app.js": "web/dist/assets/app.js",
+        "packaging/desktop-tools.json": "packaging/desktop-tools.json",
+        "third-party-licenses/uv-LICENSE-MIT.txt": (
+            "packaging/third-party-licenses/uv-LICENSE-MIT.txt"
+        ),
+    }
+    for staged_path, source_path in source_paths.items():
+        destination = source_root / source_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(runtime_root / staged_path, destination)
+    subprocess.run(
+        ["git", "init", "--quiet"],
+        cwd=source_root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "add", "--", "backend/app"],
+        cwd=source_root,
+        check=True,
+        capture_output=True,
+    )
+
+
+def _initialize_git_repository(
+    root: Path,
+    relative_path: str = "source.txt",
+) -> tuple[Path, str]:
+    subprocess.run(
+        ["git", "init", "--quiet"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "core.autocrlf", "false"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    source = root / relative_path
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("trusted\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", relative_path],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=MPP Tests",
+            "-c",
+            "user.email=mpp-tests@example.invalid",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "--quiet",
+            "-m",
+            "fixture",
+        ],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    return source, desktop_runtime._repo_head(root)
+
+
 def _validate(root: Path, contract: dict, **kwargs) -> list[str]:
     return desktop_runtime.validate_runtime(
         root,
@@ -187,6 +269,20 @@ def test_runtime_contract_accepts_complete_manifest(tmp_path):
     assert _validate(tmp_path, contract) == []
 
 
+def test_runtime_contract_rejects_dirty_manifest_by_default(tmp_path):
+    contract = _write_runtime(tmp_path)
+    manifest_path = tmp_path / "runtime-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["sourceDirty"] = True
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert (
+        "manifest sourceDirty must be false for production verification"
+        in _validate(tmp_path, contract)
+    )
+    assert _validate(tmp_path, contract, allow_dirty=True) == []
+
+
 def test_runtime_contract_rejects_modified_file(tmp_path):
     contract = _write_runtime(tmp_path)
     (tmp_path / "web" / "dist" / "assets" / "app.js").write_text(
@@ -198,6 +294,38 @@ def test_runtime_contract_rejects_modified_file(tmp_path):
 
     assert "size mismatch: web/dist/assets/app.js" in errors
     assert "SHA-256 mismatch: web/dist/assets/app.js" in errors
+
+
+def test_runtime_contract_binds_manifest_records_to_build_sources(tmp_path):
+    runtime_root = tmp_path / "runtime"
+    source_root = tmp_path / "source"
+    contract = _write_runtime(runtime_root)
+    _write_trusted_sources(source_root, runtime_root)
+    changed = b"# attacker replaced the backend and regenerated the manifest\n"
+    (runtime_root / "backend" / "app" / "__init__.py").write_bytes(changed)
+    manifest_path = runtime_root / "runtime-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    record = next(
+        item
+        for item in manifest["files"]
+        if item["path"] == "backend/app/__init__.py"
+    )
+    record["size"] = len(changed)
+    record["sha256"] = _sha256(changed)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert _validate(runtime_root, contract) == []
+    errors = desktop_runtime.validate_runtime(
+        runtime_root,
+        expected_source_commit=SOURCE_COMMIT,
+        trusted_tool_contract=contract,
+        trusted_source_root=source_root,
+    )
+
+    assert (
+        "staged file differs from trusted runtime source: backend/app/__init__.py"
+        in errors
+    )
 
 
 def test_runtime_contract_rejects_unlisted_secret_file(tmp_path):
@@ -229,6 +357,32 @@ def test_runtime_contract_binds_expected_source_commit(tmp_path):
     errors = _validate(tmp_path, contract)
 
     assert "manifest sourceCommit differs from the expected Git SHA" in errors
+
+
+def test_runtime_contract_binds_self_consistent_version_to_desktop_build(tmp_path):
+    contract = _write_runtime(tmp_path)
+    version_content = b"9.9.9\n"
+    (tmp_path / "VERSION").write_bytes(version_content)
+    manifest_path = tmp_path / "runtime-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["appVersion"] = "9.9.9"
+    version_record = next(
+        item for item in manifest["files"] if item["path"] == "VERSION"
+    )
+    version_record["size"] = len(version_content)
+    version_record["sha256"] = _sha256(version_content)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    errors = desktop_runtime.validate_runtime(
+        tmp_path,
+        expected_source_commit=SOURCE_COMMIT,
+        expected_app_version="0.4.1",
+        trusted_tool_contract=contract,
+    )
+
+    assert (
+        "manifest appVersion differs from the expected application version" in errors
+    )
 
 
 def test_runtime_contract_binds_uv_to_pyproject(tmp_path):
@@ -288,3 +442,254 @@ def test_runtime_contract_reports_directory_symlink_without_traversing(
 
     assert "symlink or reparse point is not allowed: linked-directory" in errors
     assert not any("linked-directory/secret.txt" in error for error in errors)
+
+
+def test_release_repository_attestation_rejects_dirty_worktree(tmp_path):
+    source, source_commit = _initialize_git_repository(tmp_path)
+
+    assert (
+        desktop_runtime.validate_repository_identity(
+            tmp_path,
+            expected_source_commit=source_commit,
+            require_clean=True,
+        )
+        == []
+    )
+
+    source.write_text("changed\n", encoding="utf-8")
+    errors = desktop_runtime.validate_repository_identity(
+        tmp_path,
+        expected_source_commit=source_commit,
+        require_clean=True,
+    )
+
+    assert any("release source worktree must be clean" in error for error in errors)
+
+
+def test_release_repository_attestation_rejects_mismatched_commit(tmp_path):
+    _, source_commit = _initialize_git_repository(tmp_path)
+    wrong_commit = "f" * 40
+    assert source_commit != wrong_commit
+
+    errors = desktop_runtime.validate_repository_identity(
+        tmp_path,
+        expected_source_commit=wrong_commit,
+        require_clean=True,
+    )
+
+    assert any(
+        "repository HEAD differs from the expected source commit" in error
+        for error in errors
+    )
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected_error"),
+    [
+        ("--assume-unchanged", "assume-unchanged is forbidden"),
+        ("--skip-worktree", "skip-worktree is forbidden"),
+    ],
+)
+def test_release_repository_attestation_rejects_hidden_index_flags(
+    tmp_path,
+    flag,
+    expected_error,
+):
+    _, source_commit = _initialize_git_repository(tmp_path)
+    subprocess.run(
+        ["git", "update-index", flag, "--", "source.txt"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    errors = desktop_runtime.validate_repository_identity(
+        tmp_path,
+        expected_source_commit=source_commit,
+        require_clean=True,
+    )
+
+    assert any(expected_error in error for error in errors)
+
+
+@pytest.mark.parametrize("environment_name", ["GIT_DIR", "GIT_CONFIG_COUNT"])
+def test_release_repository_attestation_rejects_git_environment_override(
+    tmp_path,
+    monkeypatch,
+    environment_name,
+):
+    _, source_commit = _initialize_git_repository(tmp_path)
+    monkeypatch.setenv(environment_name, str(tmp_path / "redirected.git"))
+
+    errors = desktop_runtime.validate_repository_identity(
+        tmp_path,
+        expected_source_commit=source_commit,
+        require_clean=True,
+    )
+
+    assert any(
+        "Git repository override variables are forbidden" in error
+        and environment_name in error
+        for error in errors
+    )
+    assert not any("could not attest repository HEAD" in error for error in errors)
+
+
+def test_release_blob_attestation_detects_mid_build_mutation(tmp_path):
+    source, source_commit = _initialize_git_repository(
+        tmp_path,
+        "web/src/main.tsx",
+    )
+    initial_digest, initial_tree = desktop_runtime.compute_build_input_digest(
+        tmp_path
+    )
+
+    assert (
+        desktop_runtime.validate_repository_identity(
+            tmp_path,
+            expected_source_commit=source_commit,
+            require_clean=True,
+        )
+        == []
+    )
+    assert desktop_runtime.validate_release_input_blobs(tmp_path) == []
+
+    source.write_text("mutated during build\n", encoding="utf-8")
+    final_digest, final_tree = desktop_runtime.compute_build_input_digest(tmp_path)
+    errors = desktop_runtime.validate_release_input_blobs(tmp_path)
+
+    assert (final_digest, final_tree) == (initial_digest, initial_tree)
+    assert any(
+        "release input differs byte-for-byte from HEAD blob: web/src/main.tsx"
+        in error
+        for error in errors
+    )
+
+
+def test_release_blob_attestation_rejects_git_filter_attribute(tmp_path):
+    _initialize_git_repository(tmp_path, "web/src/main.tsx")
+    attributes = tmp_path / ".gitattributes"
+    attributes.write_text("*.tsx filter=release-rewrite\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", ".gitattributes"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=MPP Tests",
+            "-c",
+            "user.email=mpp-tests@example.invalid",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "--quiet",
+            "-m",
+            "attribute fixture",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    errors = desktop_runtime.validate_release_input_blobs(tmp_path)
+
+    assert any(
+        "Git attribute filter='release-rewrite' is forbidden for release input: "
+        "web/src/main.tsx" in error
+        for error in errors
+    )
+
+
+def test_runtime_contract_rejects_crlf_rewritten_uv_license(tmp_path):
+    contract = _write_runtime(tmp_path)
+    license_path = tmp_path / "third-party-licenses" / "uv-LICENSE-MIT.txt"
+    license_path.write_bytes(license_path.read_bytes().replace(b"\n", b"\r\n"))
+
+    errors = _validate(tmp_path, contract)
+
+    assert "SHA-256 mismatch: third-party-licenses/uv-LICENSE-MIT.txt" in errors
+    assert "bundled uv license differs from the desktop tool contract" in errors
+
+
+def test_release_text_inputs_are_fixed_to_lf():
+    required_lf_paths = [
+        "VERSION",
+        "uv.lock",
+        "pyproject.toml",
+        "packaging/desktop-tools.json",
+        "packaging/desktop-build-tools.json",
+        "packaging/third-party-licenses/uv-LICENSE-MIT.txt",
+        "scripts/build-desktop.ps1",
+        "scripts/check-desktop-runtime.py",
+        "web/package-lock.json",
+        "web/src-tauri/Cargo.lock",
+        "web/src-tauri/build.rs",
+    ]
+    result = subprocess.run(
+        ["git", "check-attr", "-z", "eol", "--", *required_lf_paths],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+    fields = result.stdout.split(b"\0")
+    assert fields[-1] == b""
+    attributes = {
+        fields[index].decode(): fields[index + 2].decode()
+        for index in range(0, len(fields) - 1, 3)
+    }
+
+    assert attributes == {path: "lf" for path in required_lf_paths}
+
+
+def test_release_entry_enforces_formal_offline_build_contract():
+    script = (ROOT / "scripts" / "build-desktop.ps1").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"--no-install"' in script
+    assert '@("--", "--locked", "--offline")' in script
+    assert '$env:CARGO_NET_OFFLINE = "true"' in script
+    assert '$env:npm_config_offline = "true"' in script
+    assert '[ValidateSet("All", "Prepare", "Build")]' in script
+    assert "Get-ReleaseSourceIdentity" in script
+    assert "Runtime manifest changed during desktop compilation" in script
+    assert "Test-FileContainsAscii" in script
+    assert "scripts/build-desktop.ps1 -Phase Prepare -NoBundle -Ci" in workflow
+    assert "scripts/build-desktop.ps1 -Phase Build -NoBundle -Ci" in workflow
+
+
+def test_packaged_web_payload_is_bound_to_built_web_source(tmp_path):
+    runtime_root = tmp_path / "runtime"
+    source_root = tmp_path / "source"
+    contract = _write_runtime(runtime_root)
+    _write_trusted_sources(source_root, runtime_root)
+    changed = b"console.log('self-consistent replacement')"
+    staged_web = runtime_root / "web" / "dist" / "assets" / "app.js"
+    staged_web.write_bytes(changed)
+    manifest_path = runtime_root / "runtime-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    record = next(
+        item
+        for item in manifest["files"]
+        if item["path"] == "web/dist/assets/app.js"
+    )
+    record["size"] = len(changed)
+    record["sha256"] = _sha256(changed)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    errors = desktop_runtime.validate_runtime(
+        runtime_root,
+        expected_source_commit=SOURCE_COMMIT,
+        trusted_tool_contract=contract,
+        trusted_source_root=source_root,
+    )
+
+    assert (
+        "staged file differs from trusted runtime source: web/dist/assets/app.js"
+        in errors
+    )

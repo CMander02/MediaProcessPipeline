@@ -135,10 +135,10 @@ jobs:
       - name: Compile Python sources
         run: |
           uv run --frozen python -m compileall -q backend tests
-          uv run --frozen python -m py_compile scripts/check-release-dependencies.py scripts/check-version.py scripts/set-version.py
+          uv run --frozen python -m py_compile scripts/check-desktop-runtime.py scripts/check-release-dependencies.py scripts/check-version.py scripts/set-version.py scripts/smoke-installed-runtime.py
 
       - name: Run Ruff
-        run: uv run --frozen ruff check backend tests scripts/check-release-dependencies.py scripts/check-version.py scripts/set-version.py
+        run: uv run --frozen ruff check backend tests scripts/check-desktop-runtime.py scripts/check-release-dependencies.py scripts/check-version.py scripts/set-version.py scripts/smoke-installed-runtime.py
 
   web-test:
     name: Web tests and production build
@@ -220,10 +220,7 @@ jobs:
       - name: Install Web dependencies
         run: npm --prefix web ci
 
-      - name: Build production Web assets
-        run: npm --prefix web run build
-
-      - name: Stage pinned desktop runtime
+      - name: Build and stage pinned desktop runtime
         shell: pwsh
         run: |
           $env:MPP_BUNDLED_UV = (Get-Command uv -ErrorAction Stop).Source
@@ -274,6 +271,23 @@ jobs:
 
       - name: Check Rust formatting
         run: cargo fmt --manifest-path web/src-tauri/Cargo.toml -- --check
+
+      - name: Prepare formal desktop release dependencies
+        shell: pwsh
+        run: |
+          & scripts/build-desktop.ps1 -Phase Prepare -NoBundle -Ci
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Run formal offline release no-bundle gate
+        shell: pwsh
+        run: |
+          # B5 TODO: extend this formal entry with signed MSI/NSIS bundle and install tests.
+          & scripts/build-desktop.ps1 -Phase Build -NoBundle -Ci
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Check Tauri compilation
         run: cargo check --locked --manifest-path web/src-tauri/Cargo.toml

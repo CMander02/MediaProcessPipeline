@@ -259,10 +259,21 @@ def serve(
     host: str = typer.Option("127.0.0.1", help="Bind address"),
     port: int = typer.Option(18000, help="Port"),
     reload: bool = typer.Option(False, help="Enable auto-reload"),
+    desktop_loopback: bool = typer.Option(
+        False,
+        "--desktop-loopback",
+        hidden=True,
+        help="Reserve both IPv4 and IPv6 localhost listeners for the desktop shell",
+    ),
 ):
     """启动 daemon 服务（前台运行）。"""
     from app.cli.serve import run_server
-    run_server(host=host, port=port, reload=reload)
+    run_server(
+        host=host,
+        port=port,
+        reload=reload,
+        desktop_loopback=desktop_loopback,
+    )
 
 
 # ---------------------------------------------------------------------------

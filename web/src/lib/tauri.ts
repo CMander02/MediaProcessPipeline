@@ -42,7 +42,7 @@ type TauriWindow = Window & {
   isTauri?: boolean
 }
 
-function isTauriRuntime() {
+export function isTauriRuntime() {
   const tauriWindow = window as TauriWindow
   if (
     tauriWindow.isTauri ||
@@ -83,6 +83,7 @@ function getTauriBackendBridge(): MppBackendBridge | undefined {
     onStatus(callback) {
       let disposed = false
       let lastStatus = ""
+      let timer: number | null = null
 
       const tick = async () => {
         try {
@@ -94,14 +95,19 @@ function getTauriBackendBridge(): MppBackendBridge | undefined {
           }
         } catch {
           // The backend page keeps the static browser-mode fallback when Tauri IPC is unavailable.
+        } finally {
+          if (!disposed) {
+            timer = window.setTimeout(() => void tick(), 1000)
+          }
         }
       }
 
       void tick()
-      const interval = window.setInterval(tick, 1000)
       return () => {
         disposed = true
-        window.clearInterval(interval)
+        if (timer !== null) {
+          window.clearTimeout(timer)
+        }
       }
     },
     onLog(callback) {
@@ -186,12 +192,8 @@ export async function openExternalUrl(url: string): Promise<void> {
   if (!/^https?:\/\//i.test(url)) return
 
   if (isTauriRuntime()) {
-    try {
-      await tauriInvoke<void>("open_external_url", { url })
-      return
-    } catch (error) {
-      console.warn("Tauri open_external_url failed, falling back to window.open:", error)
-    }
+    await tauriInvoke<void>("open_external_url", { url })
+    return
   }
 
   window.open(url, "_blank", "noopener,noreferrer")

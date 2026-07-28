@@ -9,7 +9,7 @@
     "build": "tsc -b && vite build",
     "prepare:desktop-runtime": "node scripts/prepare-desktop-runtime.mjs",
     "verify:desktop-runtime": "uv run --frozen python ../scripts/check-desktop-runtime.py src-tauri/resources/runtime --verify-tools",
-    "build:desktop": "npm run build && npm run prepare:desktop-runtime && npm run verify:desktop-runtime",
+    "build:desktop": "npm run prepare:desktop-runtime && npm run verify:desktop-runtime",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",

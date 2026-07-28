@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "nodeMajor": 24,
+  "npmMajor": 11,
+  "rust": "1.91.1",
+  "uv": "0.9.21",
+  "tauriCli": "2.11.4"
+}

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, useRef } from "react"
 import React from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -51,6 +51,8 @@ export function SettingsPanel() {
   const [ytdlpStatus, setYtdlpStatus] = useState<YtdlpStatus | null>(null)
   const [ytdlpUpdating, setYtdlpUpdating] = useState(false)
   const [ytdlpMessage, setYtdlpMessage] = useState<string | null>(null)
+  const restartPollTimer = useRef<number | null>(null)
+  const restartPollGeneration = useRef(0)
 
   // Bilibili auth status (needed for sidebar dot indicator)
   const [biliLoggedIn, setBiliLoggedIn] = useState<boolean | null>(null)
@@ -83,6 +85,17 @@ export function SettingsPanel() {
       .then((s) => setBiliLoggedIn(s.logged_in))
       .catch(() => setBiliLoggedIn(false))
   }, [loadSettings, loadYtdlpStatus])
+
+  useEffect(
+    () => () => {
+      restartPollGeneration.current += 1
+      if (restartPollTimer.current !== null) {
+        window.clearTimeout(restartPollTimer.current)
+        restartPollTimer.current = null
+      }
+    },
+    [],
+  )
 
   const unlockSettings = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -186,20 +199,33 @@ export function SettingsPanel() {
   }
 
   const reloadAfterBackendRestart = () => {
-    window.setTimeout(() => {
-      let attempts = 0
-      const timer = window.setInterval(() => {
-        attempts += 1
-        fetch("/health", { cache: "no-store" })
-          .then((response) => {
-            if (!response.ok) return
-            window.clearInterval(timer)
-            window.location.reload()
-          })
-          .catch(() => {})
-        if (attempts >= 30) window.clearInterval(timer)
-      }, 1000)
-    }, 2500)
+    const generation = restartPollGeneration.current + 1
+    restartPollGeneration.current = generation
+    if (restartPollTimer.current !== null) {
+      window.clearTimeout(restartPollTimer.current)
+    }
+
+    let attempts = 0
+    const poll = async () => {
+      if (restartPollGeneration.current !== generation) return
+      attempts += 1
+      try {
+        await api.health()
+        if (restartPollGeneration.current === generation) {
+          window.location.reload()
+        }
+        return
+      } catch {
+        if (
+          restartPollGeneration.current === generation
+          && attempts < 30
+        ) {
+          restartPollTimer.current = window.setTimeout(() => void poll(), 1000)
+        }
+      }
+    }
+
+    restartPollTimer.current = window.setTimeout(() => void poll(), 2500)
   }
 
   const upgradeYtdlp = async () => {

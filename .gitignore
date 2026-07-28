@@ -85,9 +85,13 @@ tmp-electron-run/
 # Electron build outputs
 release/
 MPP.exe
+MPP.exe.attestation.json
 
 # Generated desktop runtime staging (assembled from a strict release whitelist)
-/web/src-tauri/resources/runtime/
+/web/src-tauri/resources/runtime/*
+!/web/src-tauri/resources/runtime/.gitkeep
+/web/src-tauri/resources/.runtime-stage.lock
+/web/src-tauri/resources/.release-build.lock
 /web/src-tauri/resources/.runtime-stage-*/
 /web/src-tauri/resources/.runtime-previous-*/
 
