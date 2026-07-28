@@ -851,17 +851,13 @@ fn validate_existing_path_chain(path: &Path, label: &str) -> Result<(), String> 
     if !path.is_absolute() {
         return Err(format!("{label} must be absolute: {}", path.display()));
     }
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        current.push(component.as_os_str());
-        if !current.is_absolute() {
-            continue;
-        }
-        match fs::symlink_metadata(&current) {
+    let ancestors = path.ancestors().collect::<Vec<_>>();
+    for ancestor in ancestors.into_iter().rev() {
+        match fs::symlink_metadata(ancestor) {
             Ok(metadata) if metadata_is_link_or_reparse(&metadata) => {
                 return Err(format!(
                     "{label} contains a symlink, junction, or reparse point at {}",
-                    current.display()
+                    ancestor.display()
                 ));
             }
             Ok(_) => {}
@@ -869,7 +865,7 @@ fn validate_existing_path_chain(path: &Path, label: &str) -> Result<(), String> 
             Err(error) => {
                 return Err(format!(
                     "cannot inspect {label} ancestor {}: {error}",
-                    current.display()
+                    ancestor.display()
                 ));
             }
         }
@@ -7089,6 +7085,27 @@ mod tests {
         let error = ensure_user_directories(&paths)
             .expect_err("a regular file cannot serve as the user data root");
         assert!(error.contains("failed to create") || error.contains("real directory"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn existing_path_chain_accepts_a_windows_verbatim_disk_path() {
+        let temporary = TestDirectory::new("verbatim-path-chain");
+        let verbatim_root =
+            fs::canonicalize(&temporary.path).expect("temporary path should canonicalize");
+        assert!(
+            matches!(
+                verbatim_root.components().next(),
+                Some(std::path::Component::Prefix(prefix))
+                    if matches!(prefix.kind(), std::path::Prefix::VerbatimDisk(_))
+            ),
+            "fixture should use a verbatim disk path: {}",
+            verbatim_root.display()
+        );
+
+        let future_path = verbatim_root.join("runtime").join("future");
+        validate_existing_path_chain(&future_path, "verbatim runtime path")
+            .expect("verbatim path ancestors should be inspectable");
     }
 
     #[cfg(windows)]

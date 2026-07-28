@@ -14,7 +14,11 @@ $RuntimeRoot = Join-Path $TauriRoot "resources\runtime"
 $Profile = if ($Debug) { "debug" } else { "release" }
 $SourceExe = Join-Path $TauriRoot "target\$Profile\mpp-desktop.exe"
 $DestinationExe = Join-Path $ProjectRoot "MPP.exe"
+$DestinationRuntime = Join-Path $ProjectRoot "runtime"
 $TemporaryExe = Join-Path $ProjectRoot "MPP.exe.next"
+$TemporaryRuntime = Join-Path $ProjectRoot "runtime.next"
+$PreviousExe = Join-Path $ProjectRoot "MPP.exe.previous"
+$PreviousRuntime = Join-Path $ProjectRoot "runtime.previous"
 $AttestationFile = Join-Path $ProjectRoot "MPP.exe.attestation.json"
 $ReleaseLockPath = Join-Path $TauriRoot "resources\.release-build.lock"
 $PrepareStampPath = Join-Path $WebRoot "node_modules\.mpp-release-prepare.json"
@@ -263,7 +267,8 @@ function Invoke-RuntimeVerification {
         [Parameter(Mandatory = $true)][string]$PythonPath,
         [Parameter(Mandatory = $true)][string]$SourceCommit,
         [Parameter(Mandatory = $true)][string]$Version,
-        [Parameter(Mandatory = $true)][string]$BuildInputDigest
+        [Parameter(Mandatory = $true)][string]$BuildInputDigest,
+        [string]$RuntimePath = $RuntimeRoot
     )
 
     [void](Invoke-NativeText -Command $PythonPath -Arguments @(
@@ -271,7 +276,7 @@ function Invoke-RuntimeVerification {
         "-S",
         "-B",
         $VerifierPath,
-        $RuntimeRoot,
+        $RuntimePath,
         "--verify-tools",
         "--expected-source-commit",
         $SourceCommit,
@@ -354,11 +359,50 @@ function Assert-PrepareStamp {
     }
 }
 
-function Install-RootExecutable {
+function Install-RootArtifacts {
+    param(
+        [Parameter(Mandatory = $true)][string]$PythonPath,
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][string]$BuildInputDigest,
+        [Parameter(Mandatory = $true)][string]$ManifestHash
+    )
+
     if (-not (Test-Path -LiteralPath $SourceExe -PathType Leaf)) {
         throw "Built executable was not found: $SourceExe"
     }
+    if (-not (Test-Path -LiteralPath $RuntimeRoot -PathType Container)) {
+        throw "Built runtime was not found: $RuntimeRoot"
+    }
+    foreach ($BackupPath in @($PreviousExe, $PreviousRuntime)) {
+        if (Test-Path -LiteralPath $BackupPath) {
+            throw (
+                "A previous desktop handoff backup requires inspection before rebuilding: " +
+                $BackupPath
+            )
+        }
+    }
+    foreach ($StagingPath in @($TemporaryExe, $TemporaryRuntime)) {
+        if (Test-Path -LiteralPath $StagingPath) {
+            Remove-Item -LiteralPath $StagingPath -Recurse -Force
+        }
+    }
+
     Copy-Item -LiteralPath $SourceExe -Destination $TemporaryExe -Force
+    Copy-Item -LiteralPath $RuntimeRoot -Destination $TemporaryRuntime -Recurse
+    Invoke-RuntimeVerification -PythonPath $PythonPath `
+        -SourceCommit $SourceCommit `
+        -Version $Version `
+        -BuildInputDigest $BuildInputDigest `
+        -RuntimePath $TemporaryRuntime
+    $StagedManifestHash = (
+        Get-FileHash -LiteralPath (
+            Join-Path $TemporaryRuntime "runtime-manifest.json"
+        ) -Algorithm SHA256
+    ).Hash.ToLowerInvariant()
+    if ($StagedManifestHash -ne $ManifestHash) {
+        throw "Root runtime staging changed the attested runtime manifest"
+    }
 
     $DestinationFullPath = [System.IO.Path]::GetFullPath($DestinationExe)
     $RunningLaunchers = Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue |
@@ -372,10 +416,52 @@ function Install-RootExecutable {
         Wait-Process -Id $Launcher.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
     }
 
-    if (Test-Path -LiteralPath $DestinationExe) {
-        Remove-Item -LiteralPath $DestinationExe -Force
+    $InstalledRuntime = $false
+    $InstalledExe = $false
+    try {
+        if (Test-Path -LiteralPath $DestinationExe) {
+            Move-Item -LiteralPath $DestinationExe -Destination $PreviousExe
+        }
+        if (Test-Path -LiteralPath $DestinationRuntime) {
+            Move-Item -LiteralPath $DestinationRuntime -Destination $PreviousRuntime
+        }
+        Move-Item -LiteralPath $TemporaryRuntime -Destination $DestinationRuntime
+        $InstalledRuntime = $true
+        Move-Item -LiteralPath $TemporaryExe -Destination $DestinationExe
+        $InstalledExe = $true
+    } catch {
+        $InstallError = $_
+        try {
+            if ($InstalledExe -and (Test-Path -LiteralPath $DestinationExe)) {
+                Remove-Item -LiteralPath $DestinationExe -Force
+            }
+            if (
+                $InstalledRuntime -and
+                (Test-Path -LiteralPath $DestinationRuntime)
+            ) {
+                Remove-Item -LiteralPath $DestinationRuntime -Recurse -Force
+            }
+            if (Test-Path -LiteralPath $PreviousRuntime) {
+                Move-Item -LiteralPath $PreviousRuntime -Destination $DestinationRuntime
+            }
+            if (Test-Path -LiteralPath $PreviousExe) {
+                Move-Item -LiteralPath $PreviousExe -Destination $DestinationExe
+            }
+        } catch {
+            throw (
+                "Desktop artifact handoff failed and rollback also failed. " +
+                "Handoff error: $($InstallError.Exception.Message) " +
+                "Rollback error: $($_.Exception.Message)"
+            )
+        }
+        throw $InstallError
     }
-    Move-Item -LiteralPath $TemporaryExe -Destination $DestinationExe
+
+    foreach ($BackupPath in @($PreviousExe, $PreviousRuntime)) {
+        if (Test-Path -LiteralPath $BackupPath) {
+            Remove-Item -LiteralPath $BackupPath -Recurse -Force
+        }
+    }
 }
 
 $ReleaseLock = $null
@@ -504,7 +590,11 @@ try {
         throw "Built executable does not contain the attested runtime manifest identity"
     }
 
-    Install-RootExecutable
+    Install-RootArtifacts -PythonPath $PythonPath `
+        -SourceCommit $SourceCommit `
+        -Version $Version `
+        -BuildInputDigest $BuildInputDigest `
+        -ManifestHash $FinalManifestHash
     $Artifact = Get-Item -LiteralPath $DestinationExe
     $ArtifactHash = (
         Get-FileHash -LiteralPath $DestinationExe -Algorithm SHA256
@@ -521,6 +611,10 @@ try {
         buildInputDigest = $BuildInputDigest
         runtimeManifestSha256 = $FinalManifestHash
         webIndexSha256 = $WebIndexHash
+        runtime = [ordered]@{
+            path = "runtime"
+            manifest = "runtime/runtime-manifest.json"
+        }
         artifact = [ordered]@{
             path = "MPP.exe"
             size = $Artifact.Length
@@ -544,7 +638,7 @@ try {
         throw "Release source identity changed during artifact handoff"
     }
 
-    Write-Host "[OK] Root executable updated: $($Artifact.FullName)"
+    Write-Host "[OK] Root desktop artifacts updated: $($Artifact.FullName) + $DestinationRuntime"
     Write-Host "[OK] Size: $($Artifact.Length) bytes"
     Write-Host "[OK] SHA-256: $ArtifactHash"
     Write-Host "[OK] Attestation: $AttestationFile"
@@ -560,5 +654,8 @@ try {
     }
     if (Test-Path -LiteralPath $TemporaryExe) {
         Remove-Item -LiteralPath $TemporaryExe -Force
+    }
+    if (Test-Path -LiteralPath $TemporaryRuntime) {
+        Remove-Item -LiteralPath $TemporaryRuntime -Recurse -Force
     }
 }

@@ -116,7 +116,8 @@ cd web && npm install && npm run dev
 cd web && npm run tauri:build
 ```
 
-构建成功后会将最新桌面程序复制到项目根目录的 `MPP.exe`，后续构建直接替换该文件。
+构建成功后会将同一次构建产生的 `MPP.exe` 与 `runtime/` 复制到项目根目录。
+两者共同组成便携版桌面程序；使用 `start-tauri.bat` 启动时会先检查运行时清单。
 
 **方式 2: 后端 + 浏览器**
 
