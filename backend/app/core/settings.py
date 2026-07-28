@@ -6,20 +6,22 @@ This module is imported by all services; the API route layer is a thin wrapper.
 
 import json
 import logging
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.logging_setup import log_event
+from app.core.paths import default_data_root, resolve_data_root, resolve_runtime_paths
 
 logger = logging.getLogger(__name__)
 
-# Settings file path - stored in project root
-# __file__ = backend/app/core/settings.py
-# parent x4 = project root
-SETTINGS_FILE = Path(__file__).parent.parent.parent.parent / "config.json"
+# Kept as a public constant for CLI/API compatibility. The desktop launcher
+# supplies MPP_CONFIG_FILE before importing the backend in installed mode.
+SETTINGS_FILE = resolve_runtime_paths().config_file
 
 
 class CustomLLMProfile(BaseModel):
@@ -352,7 +354,7 @@ class RuntimeSettings(BaseModel):
     default_task_executor: str = "server"  # server | exe
 
     # Paths
-    data_root: str = "D:/Video/MediaProcessPipeline"
+    data_root: str = Field(default_factory=default_data_root)
 
     @field_validator("asr_provider")
     @classmethod
@@ -468,9 +470,20 @@ class RuntimeSettings(BaseModel):
             raise ValueError("default_task_executor must be one of: server, exe")
         return executor
 
+    @field_validator("data_root", mode="before")
+    @classmethod
+    def _resolve_data_root(cls, value: Any) -> str:
+        if value is None or not str(value).strip():
+            return default_data_root()
+        return str(resolve_data_root(str(value)))
+
 
 # Global runtime settings storage
 _runtime_settings: RuntimeSettings | None = None
+
+
+class SettingsLoadError(RuntimeError):
+    """Raised when an explicitly configured settings file cannot be loaded."""
 
 
 def _load_settings_from_file() -> RuntimeSettings:
@@ -484,20 +497,67 @@ def _load_settings_from_file() -> RuntimeSettings:
             return RuntimeSettings(**data)
         except Exception as e:
             log_event(logger, logging.WARNING, "settings.load_failed", path=SETTINGS_FILE, error=e)
+            if os.environ.get("MPP_CONFIG_FILE", "").strip():
+                raise SettingsLoadError(
+                    f"Failed to load explicit settings file: {SETTINGS_FILE}"
+                ) from e
     return RuntimeSettings()
 
 
+def _fsync_parent_directory(path: Path) -> None:
+    """Persist a POSIX rename by syncing its parent directory entry."""
+
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path.parent, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _save_settings_to_file(settings: RuntimeSettings) -> None:
-    """Save settings to JSON file."""
+    """Atomically persist settings beside the configured user file."""
+
+    temporary_path: Path | None = None
+    primary_error: Exception | None = None
     try:
         SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SETTINGS_FILE.write_text(
-            json.dumps(settings.model_dump(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
+        payload = json.dumps(settings.model_dump(), indent=2, ensure_ascii=False)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{SETTINGS_FILE.name}.",
+            suffix=".tmp",
+            dir=SETTINGS_FILE.parent,
         )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, SETTINGS_FILE)
+        temporary_path = None
+        _fsync_parent_directory(SETTINGS_FILE)
         log_event(logger, logging.INFO, "settings.saved", path=SETTINGS_FILE)
     except Exception as e:
+        primary_error = e
         log_event(logger, logging.WARNING, "settings.save_failed", path=SETTINGS_FILE, error=e)
+        raise
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                if primary_error is None:
+                    raise
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "settings.temp_cleanup_failed",
+                    path=temporary_path,
+                    error=cleanup_error,
+                )
 
 
 def get_runtime_settings() -> RuntimeSettings:
@@ -2031,8 +2091,8 @@ def update_runtime_settings(new_settings: RuntimeSettings) -> RuntimeSettings:
     _normalize_settings_document_state(data)
     candidate = RuntimeSettings(**data)
     _validate_data_root(candidate.data_root)
+    _save_settings_to_file(candidate)
     _runtime_settings = candidate
-    _save_settings_to_file(_runtime_settings)
     return _runtime_settings
 
 
@@ -2052,8 +2112,8 @@ def patch_runtime_settings(updates: dict[str, Any]) -> RuntimeSettings:
     _normalize_settings_document_state(current, sync_flat_keys=sync_flat_keys)
     candidate = RuntimeSettings(**current)
     _validate_data_root(candidate.data_root)
+    _save_settings_to_file(candidate)
     _runtime_settings = candidate
-    _save_settings_to_file(_runtime_settings)
     return _runtime_settings
 
 

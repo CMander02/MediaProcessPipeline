@@ -1,9 +1,10 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.paths import default_data_root, resolve_runtime_paths
 from app.version import APP_VERSION
 
 
@@ -18,7 +19,7 @@ class LLMProviderConfig(BaseModel):
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=None,
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -32,7 +33,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
     # Data paths - simplified flat structure
-    data_root: Path = Path("D:/Video/MediaProcessPipeline")  # All task outputs go here
+    data_root: Path = Field(default_factory=lambda: Path(default_data_root()))
 
     # =========================================================================
     # LLM Configuration (使用 LiteLLM 统一处理)
@@ -115,4 +116,5 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    env_file = resolve_runtime_paths().project_root / ".env"
+    return Settings(_env_file=env_file)

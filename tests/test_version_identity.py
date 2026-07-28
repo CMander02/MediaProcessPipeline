@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
@@ -133,7 +134,42 @@ def test_health_endpoint_reports_canonical_version() -> None:
     payload = asyncio.run(app_main.health_check())
 
     assert payload["version"] == APP_VERSION
+    assert payload["product"] == "com.mpp.backend"
+    assert payload["protocol"] == 1
     assert app_main.app.version == APP_VERSION
+
+
+def test_health_endpoint_requires_desktop_session_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import main as app_main
+
+    monkeypatch.setenv("MPP_DESKTOP_SESSION_TOKEN", "desktop-session-secret")
+    client = TestClient(app_main.app)
+    try:
+        missing = client.get("/health")
+        wrong = client.get(
+            "/health",
+            headers={"X-MPP-Desktop-Session": "wrong-session"},
+        )
+        accepted = client.get(
+            "/health",
+            headers={"X-MPP-Desktop-Session": "desktop-session-secret"},
+        )
+    finally:
+        client.close()
+
+    assert missing.status_code == 401
+    assert wrong.status_code == 401
+    assert accepted.status_code == 200
+    assert accepted.headers["cache-control"] == "no-store"
+    assert accepted.json() == {
+        "status": "healthy",
+        "service": app_main.config.api_title,
+        "version": APP_VERSION,
+        "product": "com.mpp.backend",
+        "protocol": 1,
+    }
 
 
 def test_set_and_check_version_scripts_keep_android_code_explicit(tmp_path: Path) -> None:

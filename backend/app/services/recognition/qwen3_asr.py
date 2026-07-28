@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from app.core.network import runtime_proxy_url
+from app.core.paths import runtime_cache_dir
 from app.core.settings import get_runtime_settings
 from app.models import TranscriptSegment
 
@@ -303,7 +304,9 @@ class Qwen3ASRService:
         digest = hashlib.sha1(
             (str(config_file.resolve()) + "\n" + rendered).encode("utf-8")
         ).hexdigest()[:12]
-        cache_dir = Path(str(getattr(rt, "data_root", "data"))) / ".cache" / "pyannote"
+        cache_dir = runtime_cache_dir(
+            data_root=str(getattr(rt, "data_root", "data"))
+        ) / "pyannote"
         cache_dir.mkdir(parents=True, exist_ok=True)
         resolved_config = cache_dir / f"{config_file.stem}-{digest}.yaml"
         resolved_config.write_text(rendered, encoding="utf-8")

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import secrets
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,6 +17,7 @@ from app.api.routes import settings as settings_router
 from app.core.config import get_settings
 from app.core.database import close_db, init_db
 from app.core.logging_setup import setup_logging
+from app.core.paths import resolve_runtime_paths, validate_web_dist
 from app.core.pipeline import process_task
 from app.core.queue import get_task_queue
 from app.core.settings import SETTINGS_FILE, get_runtime_settings
@@ -26,7 +28,8 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-_log_dir = Path(__file__).resolve().parent.parent.parent / "logs"
+_runtime_paths = resolve_runtime_paths()
+_log_dir = _runtime_paths.log_dir
 _log_file = setup_logging(_log_dir)
 
 logger = logging.getLogger(__name__)
@@ -36,6 +39,10 @@ if _log_file:
 config = get_settings()
 
 _NO_STORE_HEADERS = {"Cache-Control": "no-store"}
+DESKTOP_HEALTH_PRODUCT = "com.mpp.backend"
+DESKTOP_HEALTH_PROTOCOL = 1
+_DESKTOP_SESSION_ENV = "MPP_DESKTOP_SESSION_TOKEN"
+_DESKTOP_SESSION_HEADER = "x-mpp-desktop-session"
 
 
 class NoStoreStaticFiles(StaticFiles):
@@ -162,6 +169,17 @@ def _api_token_is_required() -> bool:
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
+    if path == "/health":
+        expected_session = os.environ.get(_DESKTOP_SESSION_ENV, "")
+        if expected_session:
+            supplied_session = request.headers.get(_DESKTOP_SESSION_HEADER, "")
+            if not secrets.compare_digest(supplied_session, expected_session):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Unauthorized desktop health probe"},
+                    headers=_NO_STORE_HEADERS,
+                )
+
     # Only gate /api/* endpoints
     if path.startswith("/api"):
         # Bearer token auth. Production coordinators can force fail-closed
@@ -192,7 +210,10 @@ async def auth_middleware(request: Request, call_next):
                     content={"detail": "Missing X-Requested-With header"},
                 )
 
-    return await call_next(request)
+    response = await call_next(request)
+    if path == "/health":
+        response.headers.update(_NO_STORE_HEADERS)
+    return response
 
 
 # Include routers
@@ -207,12 +228,22 @@ app.include_router(sync.router, prefix="/api")
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "service": config.api_title, "version": APP_VERSION}
+    return {
+        "status": "healthy",
+        "service": config.api_title,
+        "version": APP_VERSION,
+        "product": DESKTOP_HEALTH_PRODUCT,
+        "protocol": DESKTOP_HEALTH_PROTOCOL,
+    }
 
 
 # Serve frontend static files (built Vite output)
-_web_dist = Path(__file__).resolve().parent.parent.parent / "web" / "dist"
-if _web_dist.is_dir():
+_web_dist = validate_web_dist(
+    _runtime_paths.web_dist_dir,
+    required=_runtime_paths.installed_mode
+    or bool(os.environ.get("MPP_WEB_DIST_DIR", "").strip()),
+)
+if _web_dist is not None:
     app.mount("/assets", NoStoreStaticFiles(directory=str(_web_dist / "assets")), name="static")
 
     # Serve static files in root (favicon, etc.)
