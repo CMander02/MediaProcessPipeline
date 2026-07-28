@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
-from app.api.routes import filesystem, pipeline, sync, tasks, voiceprints
+from app.api.routes import filesystem, pipeline, sync, system, tasks, voiceprints
 from app.api.routes import kb as kb_router
 from app.api.routes import settings as settings_router
 from app.core.config import get_settings
@@ -301,6 +301,7 @@ app.include_router(filesystem.router, prefix="/api")
 app.include_router(voiceprints.router, prefix="/api")
 app.include_router(kb_router.router, prefix="/api")
 app.include_router(sync.router, prefix="/api")
+app.include_router(system.router, prefix="/api")
 
 
 @app.post(_DESKTOP_SHUTDOWN_PATH)

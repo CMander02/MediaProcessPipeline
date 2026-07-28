@@ -1382,8 +1382,48 @@ def config_preset(
 # ---------------------------------------------------------------------------
 
 @app.command()
-def doctor():
+def doctor(
+    json_out: bool = typer.Option(
+        False,
+        "--json",
+        help="输出与 /api/system/diagnostics 相同的机器可读报告",
+    ),
+):
     """检查运行环境（ffmpeg、CUDA、模型文件、API key 等）。"""
+    if json_out or _json_mode:
+        from app.services.system_diagnostics import (
+            SYSTEM_DIAGNOSTICS_SCHEMA,
+            SYSTEM_DIAGNOSTICS_SCHEMA_VERSION,
+            get_system_diagnostics,
+        )
+
+        try:
+            payload = get_system_diagnostics()
+        except Exception:
+            payload = {
+                "error": "runtime-diagnostics-unavailable",
+                "schema": SYSTEM_DIAGNOSTICS_SCHEMA,
+                "schemaVersion": SYSTEM_DIAGNOSTICS_SCHEMA_VERSION,
+            }
+            typer.echo(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+            raise typer.Exit(code=1) from None
+        typer.echo(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+        return
+
     import pathlib
     import shutil
 
