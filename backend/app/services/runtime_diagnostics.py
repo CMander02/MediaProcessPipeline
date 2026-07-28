@@ -1733,7 +1733,10 @@ def _validate_helper_payload(value: Any) -> dict[str, Any] | None:
 
 
 def _probe_helper(context: _ProbeContext, probe_id: str) -> DiagnosticResult:
-    executable = Path(sys.executable).resolve()
+    # Preserve the active virtual-environment launcher. On POSIX, resolving the
+    # venv's python symlink selects the base interpreter and drops the locked
+    # environment's site-packages from isolated (-I) probes.
+    executable = Path(sys.executable)
     arguments = [str(executable), "-I", "-c", _HELPER_PROGRAM, probe_id]
     if probe_id == "chromium":
         registry = context.trusted_components

@@ -288,6 +288,42 @@ def test_pillow_helper_checks_jpeg_png_webp_and_version(tmp_path: Path) -> None:
     assert calls[0][0][-1] == "pillow"
 
 
+def test_helper_preserves_virtual_environment_launcher(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    launcher = tmp_path / "venv" / "bin" / "python"
+    base_interpreter = tmp_path / "base" / "bin" / "python"
+    original_resolve = Path.resolve
+    calls: list[tuple[list[str], dict]] = []
+
+    def resolve(path: Path, *args, **kwargs) -> Path:
+        if path == launcher:
+            return base_interpreter
+        return original_resolve(path, *args, **kwargs)
+
+    def runner(arguments, **kwargs):
+        calls.append((arguments, kwargs))
+        return _helper_result(
+            arguments,
+            {"status": "available", "version": "1.0.0"},
+        )
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    monkeypatch.setattr(sys, "executable", str(launcher))
+
+    report = run_runtime_diagnostics(
+        ["fastapi"],
+        paths=paths,
+        command_runner=runner,
+    )
+
+    assert report.results[0].status is DiagnosticStatus.AVAILABLE
+    assert calls[0][0][0] == str(launcher)
+    assert calls[0][1]["cwd"] == launcher.parent
+
+
 @pytest.mark.parametrize(
     "probe_id",
     [
