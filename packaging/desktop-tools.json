@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "tools": {
+    "uv": {
+      "version": "0.9.21",
+      "platform": {
+        "os": "windows",
+        "arch": "x64",
+        "target": "x86_64-pc-windows-msvc"
+      },
+      "source": {
+        "url": "https://github.com/astral-sh/uv/releases/download/0.9.21/uv-x86_64-pc-windows-msvc.zip",
+        "archiveSha256": "d27952e73183ef8f6ee8c2a50cf8b3f2e08e01b6a9279a00a85cb261ea8d8337"
+      },
+      "binary": {
+        "runtimePath": "bin/uv.exe",
+        "sha256": "c526c46af4e584f0a3fc9dde57f548a50489e17a673349486530cd8c36a8e16b",
+        "size": 62778880,
+        "peMachine": "0x8664"
+      },
+      "license": {
+        "spdx": "MIT",
+        "sourcePath": "packaging/third-party-licenses/uv-LICENSE-MIT.txt",
+        "runtimePath": "third-party-licenses/uv-LICENSE-MIT.txt",
+        "sha256": "860e3d7a86b84e6a7012c7a635fc64df475cebc6cce34dfeb73a5982ec58176c"
+      }
+    }
+  }
+}

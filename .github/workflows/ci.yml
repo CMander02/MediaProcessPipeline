@@ -196,12 +196,75 @@ jobs:
         run: bash ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
 
   tauri-check:
-    name: Tauri Rust checks
+    name: Desktop runtime and Tauri Rust checks
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+          version: "0.9.21"
+
+      - name: Install Web dependencies
+        run: npm --prefix web ci
+
+      - name: Build production Web assets
+        run: npm --prefix web run build
+
+      - name: Stage pinned desktop runtime
+        shell: pwsh
+        run: |
+          $env:MPP_BUNDLED_UV = (Get-Command uv -ErrorAction Stop).Source
+          npm --prefix web run prepare:desktop-runtime
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Verify desktop runtime manifest
+        shell: pwsh
+        run: |
+          $python = (& uv python find 3.11).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $python) {
+            throw "Python 3.11 could not be resolved through uv"
+          }
+          & $python scripts/check-desktop-runtime.py web/src-tauri/resources/runtime `
+            --verify-tools `
+            --expected-source-commit $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Synchronize isolated smoke environment
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}\mpp-desktop-runtime-venv
+        run: uv sync --frozen --extra dev
+
+      - name: Run installed runtime smoke with bundled uv
+        shell: pwsh
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}\mpp-desktop-runtime-venv
+        run: |
+          $runtimeRoot = (Resolve-Path web/src-tauri/resources/runtime).Path
+          $bundledUv = Join-Path $runtimeRoot "bin\uv.exe"
+          & $bundledUv run --frozen --no-sync --project $runtimeRoot python `
+            scripts/smoke-installed-runtime.py `
+            --runtime-root $runtimeRoot `
+            --timeout 90
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4

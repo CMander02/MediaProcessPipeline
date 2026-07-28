@@ -86,6 +86,11 @@ tmp-electron-run/
 release/
 MPP.exe
 
+# Generated desktop runtime staging (assembled from a strict release whitelist)
+/web/src-tauri/resources/runtime/
+/web/src-tauri/resources/.runtime-stage-*/
+/web/src-tauri/resources/.runtime-previous-*/
+
 # Local browser automation and extraction artifacts
 .playwright-cli/
 web/.playwright-cli/

@@ -5,7 +5,7 @@
   "identifier": "com.mpp.desktop",
   "build": {
     "beforeDevCommand": "",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build:desktop",
     "devUrl": "http://localhost:18000",
     "frontendDist": "../dist"
   },
@@ -19,6 +19,9 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "icon": ["icons/icon.ico"]
+    "icon": ["icons/icon.ico"],
+    "resources": {
+      "resources/runtime/": "runtime"
+    }
   }
 }
