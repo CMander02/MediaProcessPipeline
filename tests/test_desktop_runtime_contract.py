@@ -656,6 +656,7 @@ def test_release_entry_enforces_formal_offline_build_contract():
     assert '$env:CARGO_NET_OFFLINE = "true"' in script
     assert '$env:npm_config_offline = "true"' in script
     assert '[ValidateSet("All", "Prepare", "Build")]' in script
+    assert "ConvertFrom-Json -AsHashtable" in script
     assert "Get-ReleaseSourceIdentity" in script
     assert "Runtime manifest changed during desktop compilation" in script
     assert "Test-FileContainsAscii" in script

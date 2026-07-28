@@ -148,8 +148,8 @@ function Assert-DesktopBuildTools {
     }
 
     $PackageLock = Get-Content -LiteralPath (Join-Path $WebRoot "package-lock.json") -Raw |
-        ConvertFrom-Json
-    $LockedTauriVersion = $PackageLock.packages.'node_modules/@tauri-apps/cli'.version
+        ConvertFrom-Json -AsHashtable
+    $LockedTauriVersion = $PackageLock["packages"]["node_modules/@tauri-apps/cli"]["version"]
     if ($LockedTauriVersion -ne [string]$Contract.tauriCli) {
         throw (
             "package-lock.json must pin @tauri-apps/cli $($Contract.tauriCli); " +
