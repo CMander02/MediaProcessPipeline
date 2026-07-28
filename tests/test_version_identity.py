@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from fastapi import Response
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -217,6 +219,15 @@ def test_desktop_session_authenticates_private_api_requests(
     shutdown_calls: list[bool] = []
     app_main.app.state.request_desktop_shutdown = lambda: shutdown_calls.append(True)
 
+    async def desktop_auth_contract() -> Response:
+        return Response(status_code=204)
+
+    contract_route = APIRoute(
+        "/api/desktop-auth-contract",
+        desktop_auth_contract,
+        methods=["GET", "POST"],
+    )
+    app_main.app.router.routes.insert(0, contract_route)
     client = TestClient(app_main.app)
     try:
         missing = client.get("/api/desktop-auth-contract")
@@ -252,13 +263,14 @@ def test_desktop_session_authenticates_private_api_requests(
         )
     finally:
         client.close()
+        app_main.app.router.routes.remove(contract_route)
         del app_main.app.state.request_desktop_shutdown
 
     assert missing.status_code == 401
     assert wrong.status_code == 401
-    assert accepted.status_code == 404
+    assert accepted.status_code == 204
     assert csrf_blocked.status_code == 403
-    assert mutating_accepted.status_code == 405
+    assert mutating_accepted.status_code == 204
     assert shutdown_missing_session.status_code == 401
     assert shutdown_accepted.status_code == 200
     assert shutdown_calls == [True]
