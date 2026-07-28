@@ -1650,7 +1650,11 @@ fn build_backend_launch_spec(layout: &RuntimeLayout) -> BackendLaunchSpec {
         layout.uv_executable.clone()
     };
     let mut args = if installed {
-        vec![OsString::from("-E"), OsString::from("-s")]
+        vec![
+            OsString::from("-E"),
+            OsString::from("-s"),
+            OsString::from("-B"),
+        ]
     } else {
         vec![
             OsString::from("run"),
@@ -7172,7 +7176,7 @@ mod tests {
                 .join("python.exe")
         );
         assert_eq!(spec.cwd, runtime_root.join("backend"));
-        assert_eq!(&args[..3], &["-E", "-s", "-u"]);
+        assert_eq!(&args[..4], &["-E", "-s", "-B", "-u"]);
         assert!(args.iter().any(|argument| argument == "--desktop-loopback"));
         assert_eq!(
             spec.env.get("MPP_CONFIG_FILE"),
