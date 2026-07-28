@@ -620,6 +620,7 @@ def test_release_text_inputs_are_fixed_to_lf():
         "VERSION",
         "uv.lock",
         "pyproject.toml",
+        "web/src-tauri/resources/runtime/.gitkeep",
         "packaging/desktop-tools.json",
         "packaging/desktop-build-tools.json",
         "packaging/third-party-licenses/uv-LICENSE-MIT.txt",
@@ -658,6 +659,9 @@ def test_release_entry_enforces_formal_offline_build_contract():
     assert '[ValidateSet("All", "Prepare", "Build")]' in script
     assert "ConvertFrom-Json -AsHashtable" in script
     assert "Get-ReleaseSourceIdentity" in script
+    assert "[switch]$SafeOutputOnFailure" in script
+    assert ") -SafeOutputOnFailure" in script
+    assert "$MaximumDiagnosticLength = 4096" in script
     assert "Runtime manifest changed during desktop compilation" in script
     assert "Test-FileContainsAscii" in script
     assert "scripts/build-desktop.ps1 -Phase Prepare -NoBundle -Ci" in workflow

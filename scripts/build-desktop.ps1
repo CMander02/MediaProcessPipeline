@@ -27,19 +27,37 @@ function Invoke-NativeText {
     param(
         [Parameter(Mandatory = $true)][string]$Command,
         [Parameter(Mandatory = $true)][string[]]$Arguments,
-        [string]$WorkingDirectory = $ProjectRoot
+        [string]$WorkingDirectory = $ProjectRoot,
+        [switch]$SafeOutputOnFailure
     )
 
     Push-Location $WorkingDirectory
     try {
         $Output = & $Command @Arguments
-        if ($LASTEXITCODE -ne 0) {
-            throw "$Command $($Arguments -join ' ') failed with exit code $LASTEXITCODE"
+        $ExitCode = $LASTEXITCODE
+        $OutputText = (($Output | ForEach-Object { "$_" }) -join "`n").Trim()
+        if ($ExitCode -ne 0) {
+            $FailureMessage = (
+                "$Command $($Arguments -join ' ') failed with exit code $ExitCode"
+            )
+            if ($SafeOutputOnFailure -and $OutputText) {
+                $MaximumDiagnosticLength = 4096
+                if ($OutputText.Length -gt $MaximumDiagnosticLength) {
+                    $OutputText = (
+                        "[output truncated to final $MaximumDiagnosticLength characters]`n" +
+                        $OutputText.Substring(
+                            $OutputText.Length - $MaximumDiagnosticLength
+                        )
+                    )
+                }
+                $FailureMessage += "`n$OutputText"
+            }
+            throw $FailureMessage
         }
     } finally {
         Pop-Location
     }
-    return (($Output | ForEach-Object { "$_" }) -join "`n").Trim()
+    return $OutputText
 }
 
 function Invoke-GitText {
@@ -223,7 +241,7 @@ function Get-ReleaseSourceIdentity {
         "--expected-source-commit",
         $SourceCommit,
         "--json"
-    )
+    ) -SafeOutputOnFailure
     $Identity = $Output | ConvertFrom-Json
     if (-not $Identity.ok) {
         throw (
