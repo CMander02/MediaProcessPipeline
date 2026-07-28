@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.mpp.remote.data.ArchiveContent
 import com.mpp.remote.data.ArchiveItem
+import com.mpp.remote.data.ProcessingTarget
 import com.mpp.remote.data.RecentTaskStore
 import com.mpp.remote.data.RemoteTask
 import com.mpp.remote.data.SecureConfigStore
@@ -35,9 +36,12 @@ data class MainUiState(
     val isLoadingArchive: Boolean = false,
     val libraryError: String = "",
     val archiveError: String = "",
+    val isPolishing: Boolean = false,
+    val polishError: String = "",
     val notice: String = "",
     val noticeIsError: Boolean = false,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val processingTarget: ProcessingTarget = ProcessingTarget.SERVER,
 ) {
     val isConfigured: Boolean
         get() = baseUrl.isNotBlank()
@@ -54,6 +58,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             apiToken = savedConfig.apiToken,
             recentTasks = recentTaskStore.load(),
             themeMode = configStore.loadThemeMode(),
+            processingTarget = configStore.loadProcessingTarget(),
         ),
     )
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
@@ -80,6 +85,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun updateThemeMode(value: ThemeMode) {
         configStore.saveThemeMode(value)
         _uiState.update { it.copy(themeMode = value) }
+    }
+
+    fun updateProcessingTarget(value: ProcessingTarget) {
+        configStore.saveProcessingTarget(value)
+        _uiState.update { it.copy(processingTarget = value) }
     }
 
     fun receiveSharedText(value: String) {
@@ -155,7 +165,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val result = runCatching {
                 withContext(Dispatchers.IO) {
-                    MppApiClient(config).createTask(source)
+                    MppApiClient(config).createTask(
+                        source = source,
+                        requestedExecutor = state.processingTarget,
+                    )
                 }
             }
             val task = result.getOrNull()
@@ -226,6 +239,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 archiveContent = null,
                 isLoadingArchive = true,
                 archiveError = "",
+                isPolishing = false,
+                polishError = "",
             )
         }
         viewModelScope.launch {
@@ -258,6 +273,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 archiveContent = null,
                 isLoadingArchive = false,
                 archiveError = "",
+                isPolishing = false,
+                polishError = "",
             )
         }
     }
@@ -303,6 +320,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 MppApiClient(config).loadThumbnail(path)
             }
         }.getOrNull()
+    }
+
+    suspend fun loadArchiveImage(path: String, maxEdge: Int): ByteArray? {
+        val config = currentConfigOrNull() ?: return null
+        return runCatching {
+            withContext(Dispatchers.IO) {
+                MppApiClient(config).loadArchiveImage(path, maxEdge)
+            }
+        }.getOrNull()
+    }
+
+    fun polishTranscript() {
+        val state = _uiState.value
+        val content = state.archiveContent ?: return
+        val input = content.transcriptSrt.ifBlank { content.transcript }
+        if (input.isBlank()) {
+            _uiState.update { it.copy(polishError = "当前内容没有可润色的字幕。") }
+            return
+        }
+        if (state.isPolishing) return
+        val config = currentConfigOrNull() ?: return
+        val archivePath = content.archive.path
+        _uiState.update { it.copy(isPolishing = true, polishError = "") }
+
+        viewModelScope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    MppApiClient(config).polishArchive(archivePath, input).also {
+                        require(it.isNotBlank()) { "服务器未返回润色内容" }
+                    }
+                }
+            }
+            _uiState.update { current ->
+                if (current.archiveContent?.archive?.path != archivePath) {
+                    current.copy(isPolishing = false)
+                } else if (result.isSuccess) {
+                    current.copy(
+                        archiveContent = current.archiveContent.copy(
+                            extraPolish = result.getOrThrow(),
+                        ),
+                        isPolishing = false,
+                        polishError = "",
+                    )
+                } else {
+                    current.copy(
+                        isPolishing = false,
+                        polishError = result.exceptionOrNull().toUserMessage(),
+                    )
+                }
+            }
+        }
     }
 
     private fun validatedConfig(): ServerConfig? {

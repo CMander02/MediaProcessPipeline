@@ -2,10 +2,15 @@ package com.mpp.remote.ui
 
 import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -59,17 +64,27 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.*
@@ -77,10 +92,20 @@ import androidx.compose.material.icons.outlined.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mpp.remote.data.ArchiveContent
 import com.mpp.remote.data.ArchiveDocument
+import com.mpp.remote.data.ArchiveImage
 import com.mpp.remote.data.ArchiveItem
+import com.mpp.remote.data.ProcessingTarget
 import com.mpp.remote.data.RemoteTask
+import com.mpp.remote.data.SubtitleCue
 import com.mpp.remote.data.ThemeMode
+import com.mpp.remote.network.formatSubtitleTime
+import com.mpp.remote.network.parseSrt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 
 private enum class AppDestination(
     val label: String,
@@ -100,6 +125,43 @@ private enum class LibraryFilter(
     VIDEO("视频", Icons.Outlined.VideoLibrary),
     ARTICLE("网页", Icons.AutoMirrored.Outlined.Article),
     AUDIO("音频", Icons.Outlined.AudioFile),
+}
+
+internal enum class ArchiveGridLayout {
+    COMPACT_TWO_COLUMNS,
+    ADAPTIVE,
+}
+
+internal fun archiveGridLayoutForWidth(widthDp: Float): ArchiveGridLayout =
+    if (widthDp < 600f) {
+        ArchiveGridLayout.COMPACT_TWO_COLUMNS
+    } else {
+        ArchiveGridLayout.ADAPTIVE
+    }
+
+internal data class ThumbnailRequestKey(
+    val path: String,
+    val processing: Boolean,
+    val hasImage: Boolean,
+    val hasVideo: Boolean,
+    val hasAudio: Boolean,
+    val retryAttempt: Int,
+)
+
+internal fun ArchiveItem.thumbnailRequestKey(retryAttempt: Int): ThumbnailRequestKey =
+    ThumbnailRequestKey(
+        path = path,
+        processing = processing,
+        hasImage = hasImage,
+        hasVideo = hasVideo,
+        hasAudio = hasAudio,
+        retryAttempt = retryAttempt,
+    )
+
+private sealed interface ArchiveThumbnailState {
+    data object Loading : ArchiveThumbnailState
+    data class Ready(val bitmap: ImageBitmap) : ArchiveThumbnailState
+    data object Error : ArchiveThumbnailState
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -127,6 +189,8 @@ fun MppRemoteApp(viewModel: MainViewModel) {
             onBack = viewModel::closeArchive,
             onRetry = { state.openingArchive?.let(viewModel::openArchive) },
             loadThumbnail = viewModel::loadThumbnail,
+            loadArchiveImage = viewModel::loadArchiveImage,
+            onPolish = viewModel::polishTranscript,
         )
         return
     }
@@ -203,6 +267,7 @@ fun MppRemoteApp(viewModel: MainViewModel) {
                 state = state,
                 modifier = Modifier.padding(contentPadding),
                 onTextChange = viewModel::updateSharedText,
+                onProcessingTargetChange = viewModel::updateProcessingTarget,
                 onSubmit = viewModel::submit,
             )
 
@@ -339,19 +404,37 @@ private fun LibraryScreen(
             }
 
             else -> {
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 270.dp),
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
-                    items(filtered, key = { it.path }) { archive ->
-                        ArchiveCard(
-                            archive = archive,
-                            onClick = { onOpenArchive(archive) },
-                            loadThumbnail = loadThumbnail,
-                        )
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val gridLayout = archiveGridLayoutForWidth(maxWidth.value)
+                    val columns = when (gridLayout) {
+                        ArchiveGridLayout.COMPACT_TWO_COLUMNS -> GridCells.Fixed(2)
+                        ArchiveGridLayout.ADAPTIVE -> GridCells.Adaptive(minSize = 270.dp)
+                    }
+                    val gridPadding = if (gridLayout == ArchiveGridLayout.COMPACT_TWO_COLUMNS) {
+                        12.dp
+                    } else {
+                        16.dp
+                    }
+                    val gridSpacing = if (gridLayout == ArchiveGridLayout.COMPACT_TWO_COLUMNS) {
+                        10.dp
+                    } else {
+                        14.dp
+                    }
+
+                    LazyVerticalGrid(
+                        columns = columns,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(gridPadding),
+                        horizontalArrangement = Arrangement.spacedBy(gridSpacing),
+                        verticalArrangement = Arrangement.spacedBy(gridSpacing),
+                    ) {
+                        items(filtered, key = { it.path }) { archive ->
+                            ArchiveCard(
+                                archive = archive,
+                                onClick = { onOpenArchive(archive) },
+                                loadThumbnail = loadThumbnail,
+                            )
+                        }
                     }
                 }
             }
@@ -438,17 +521,21 @@ private fun ArchiveThumbnail(
     modifier: Modifier,
     loadThumbnail: suspend (String) -> ByteArray?,
 ) {
-    var imageBytes by remember(archive.path) { mutableStateOf<ByteArray?>(null) }
-    var loaded by remember(archive.path) { mutableStateOf(false) }
-
-    LaunchedEffect(archive.path) {
-        imageBytes = loadThumbnail(archive.path)
-        loaded = true
+    var retryAttempt by remember(archive.path) { mutableStateOf(0) }
+    var thumbnailState by remember(archive.path) {
+        mutableStateOf<ArchiveThumbnailState>(ArchiveThumbnailState.Loading)
     }
+    val requestKey = archive.thumbnailRequestKey(retryAttempt)
 
-    val bitmap = remember(imageBytes) {
-        imageBytes?.let { bytes ->
+    LaunchedEffect(requestKey) {
+        thumbnailState = ArchiveThumbnailState.Loading
+        val bitmap = loadThumbnail(archive.path)?.let { bytes ->
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        }
+        thumbnailState = if (bitmap != null) {
+            ArchiveThumbnailState.Ready(bitmap)
+        } else {
+            ArchiveThumbnailState.Error
         }
     }
 
@@ -456,44 +543,76 @@ private fun ArchiveThumbnail(
         modifier = modifier,
         contentAlignment = Alignment.Center,
     ) {
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap,
-                contentDescription = archive.title,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
-        } else {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = MaterialTheme.colorScheme.primaryContainer,
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    if (!loaded) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            strokeWidth = 2.dp,
-                        )
-                    } else {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(
-                                imageVector = when {
-                                    archive.hasVideo -> Icons.Outlined.VideoLibrary
-                                    archive.hasAudio -> Icons.Outlined.AudioFile
-                                    else -> Icons.AutoMirrored.Outlined.Article
-                                },
-                                contentDescription = null,
-                                modifier = Modifier.size(38.dp),
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                            )
-                            Text(
-                                platformLabel(archive),
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            )
+        when (val state = thumbnailState) {
+            is ArchiveThumbnailState.Ready -> {
+                Image(
+                    bitmap = state.bitmap,
+                    contentDescription = archive.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            }
+
+            ArchiveThumbnailState.Loading,
+            ArchiveThumbnailState.Error -> {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        if (state == ArchiveThumbnailState.Loading) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(24.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                                Text(
+                                    "加载封面",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                )
+                            }
+                        } else {
+                            Column(
+                                modifier = Modifier
+                                    .clickable { retryAttempt += 1 }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(3.dp),
+                            ) {
+                                Icon(
+                                    imageVector = when {
+                                        archive.hasVideo -> Icons.Outlined.VideoLibrary
+                                        archive.hasAudio -> Icons.Outlined.AudioFile
+                                        else -> Icons.AutoMirrored.Outlined.Article
+                                    },
+                                    contentDescription = null,
+                                    modifier = Modifier.size(30.dp),
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                )
+                                Text(
+                                    if (archive.processing) "封面准备中" else "封面加载失败",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Outlined.Refresh,
+                                        contentDescription = "重新加载封面",
+                                        modifier = Modifier.size(14.dp),
+                                    )
+                                    Text(
+                                        "点按重试",
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -509,15 +628,49 @@ private fun ArchiveReader(
     onBack: () -> Unit,
     onRetry: () -> Unit,
     loadThumbnail: suspend (String) -> ByteArray?,
+    loadArchiveImage: suspend (String, Int) -> ByteArray?,
+    onPolish: () -> Unit,
 ) {
     val seed = state.openingArchive ?: return
     val content = state.archiveContent
     var selectedDocument by rememberSaveable(seed.path) {
         mutableStateOf<ArchiveDocument?>(null)
     }
+    var previewImage by remember { mutableStateOf<ArchiveImage?>(null) }
+    var actionMessage by rememberSaveable(seed.path) { mutableStateOf("") }
+    var pendingExport by remember { mutableStateOf<ArchiveExportDocument?>(null) }
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("*/*"),
+    ) { uri ->
+        val export = pendingExport
+        if (uri != null && export != null) {
+            actionMessage = runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { output ->
+                    output.write(export.content.toByteArray(Charsets.UTF_8))
+                } ?: error("无法创建文件")
+            }.fold(
+                onSuccess = { "已下载 ${export.fileName}" },
+                onFailure = { "下载失败：${it.message.orEmpty()}" },
+            )
+        }
+        pendingExport = null
+    }
 
     LaunchedEffect(content?.archive?.path) {
         if (content != null) selectedDocument = content.initialDocument
+    }
+    LaunchedEffect(content?.extraPolish) {
+        if (!content?.extraPolish.isNullOrBlank()) {
+            selectedDocument = ArchiveDocument.EXTRA_POLISH
+        }
+    }
+    LaunchedEffect(actionMessage) {
+        if (actionMessage.isNotBlank()) {
+            delay(3_000)
+            actionMessage = ""
+        }
     }
     BackHandler(onBack = onBack)
 
@@ -577,6 +730,7 @@ private fun ArchiveReader(
                 val activeDocument = selectedDocument?.takeIf(documents::contains)
                     ?: content.initialDocument
                 val activeContent = content.contentFor(activeDocument)
+                val export = archiveExportDocument(content, activeDocument)
                 val uriHandler = LocalUriHandler.current
 
                 Column(
@@ -653,6 +807,15 @@ private fun ArchiveReader(
                                 }
                             }
                         }
+                        if (content.images.isNotEmpty()) {
+                            item {
+                                ArchiveImageGallery(
+                                    images = content.images,
+                                    loadArchiveImage = loadArchiveImage,
+                                    onPreview = { previewImage = it },
+                                )
+                            }
+                        }
                         item { HorizontalDivider() }
                         item {
                             LazyRow(
@@ -675,9 +838,445 @@ private fun ArchiveReader(
                                 }
                             }
                         }
-                        markdownItems(activeContent)
+                        item {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                item {
+                                    OutlinedButton(
+                                        onClick = {
+                                            clipboard.setText(AnnotatedString(export.content))
+                                            actionMessage = "已复制${activeDocument.label}全部内容"
+                                        },
+                                        enabled = export.content.isNotBlank(),
+                                    ) {
+                                        Icon(
+                                            Icons.Outlined.ContentCopy,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("复制全部")
+                                    }
+                                }
+                                item {
+                                    OutlinedButton(
+                                        onClick = {
+                                            pendingExport = export
+                                            exportLauncher.launch(export.fileName)
+                                        },
+                                        enabled = export.content.isNotBlank(),
+                                    ) {
+                                        Icon(
+                                            Icons.Outlined.Download,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("下载")
+                                    }
+                                }
+                                if (
+                                    activeDocument == ArchiveDocument.TRANSCRIPT ||
+                                    activeDocument == ArchiveDocument.EXTRA_POLISH
+                                ) {
+                                    item {
+                                        Button(
+                                            onClick = onPolish,
+                                            enabled = !state.isPolishing,
+                                        ) {
+                                            if (state.isPolishing) {
+                                                CircularProgressIndicator(
+                                                    modifier = Modifier.size(18.dp),
+                                                    strokeWidth = 2.dp,
+                                                )
+                                            } else {
+                                                Icon(
+                                                    Icons.Outlined.AutoFixHigh,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(18.dp),
+                                                )
+                                            }
+                                            Spacer(Modifier.width(6.dp))
+                                            Text(
+                                                if (state.isPolishing) {
+                                                    "润色中…"
+                                                } else {
+                                                    "额外润色"
+                                                },
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (actionMessage.isNotBlank() || state.polishError.isNotBlank()) {
+                            item {
+                                Text(
+                                    text = state.polishError.ifBlank { actionMessage },
+                                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (state.polishError.isNotBlank()) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    },
+                                )
+                            }
+                        }
+                        when (activeDocument) {
+                            ArchiveDocument.TRANSCRIPT -> {
+                                val cues = content.subtitleCues.ifEmpty { parseSrt(activeContent) }
+                                if (cues.isNotEmpty()) {
+                                    subtitleItems(cues)
+                                } else {
+                                    markdownItems(activeContent)
+                                }
+                            }
+
+                            ArchiveDocument.EXTRA_POLISH -> {
+                                val cues = parseSrt(activeContent)
+                                if (cues.isNotEmpty()) {
+                                    subtitleItems(cues)
+                                } else {
+                                    markdownItems(activeContent)
+                                }
+                            }
+
+                            ArchiveDocument.MINDMAP -> item {
+                                MindmapViewer(
+                                    markdown = activeContent,
+                                    title = content.archive.title,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(560.dp)
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                )
+                            }
+
+                            else -> markdownItems(activeContent)
+                        }
                     }
                 }
+            }
+        }
+    }
+
+    previewImage?.let { image ->
+        ArchiveImagePreview(
+            image = image,
+            loadArchiveImage = loadArchiveImage,
+            onDismiss = { previewImage = null },
+        )
+    }
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.subtitleItems(
+    cues: List<SubtitleCue>,
+) {
+    items(cues, key = { "${it.index}-${it.startTimeMs}-${it.endTimeMs}" }) { cue ->
+        Surface(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp),
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            shape = MaterialTheme.shapes.medium,
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "${formatSubtitleTime(cue.startTimeMs)} → " +
+                            formatSubtitleTime(cue.endTimeMs),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                    if (cue.speaker.isNotBlank()) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            shape = MaterialTheme.shapes.small,
+                        ) {
+                            Text(
+                                cue.speaker,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                    }
+                }
+                SelectionContainer {
+                    Text(
+                        cue.text,
+                        style = MaterialTheme.typography.bodyLarge,
+                        lineHeight = MaterialTheme.typography.bodyLarge.lineHeight * 1.25,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private sealed interface RemoteArchiveImageState {
+    data object Loading : RemoteArchiveImageState
+    data class Ready(val bitmap: ImageBitmap) : RemoteArchiveImageState
+    data object Error : RemoteArchiveImageState
+}
+
+@Composable
+private fun ArchiveImageGallery(
+    images: List<ArchiveImage>,
+    loadArchiveImage: suspend (String, Int) -> ByteArray?,
+    onPreview: (ArchiveImage) -> Unit,
+) {
+    Column(
+        modifier = Modifier.padding(vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            "内容图片",
+            modifier = Modifier.padding(horizontal = 18.dp),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            items(images, key = ArchiveImage::path) { image ->
+                Card(
+                    modifier = Modifier.width(176.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                    ),
+                ) {
+                    RemoteArchiveImage(
+                        image = image,
+                        loadArchiveImage = loadArchiveImage,
+                        maxDimension = ARCHIVE_GALLERY_IMAGE_MAX_EDGE,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(112.dp),
+                        contentScale = ContentScale.Crop,
+                        onClick = { onPreview(image) },
+                    )
+                    Text(
+                        image.label.ifBlank { "图片" },
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RemoteArchiveImage(
+    image: ArchiveImage,
+    loadArchiveImage: suspend (String, Int) -> ByteArray?,
+    maxDimension: Int,
+    modifier: Modifier,
+    contentScale: ContentScale,
+    onClick: (() -> Unit)? = null,
+    zoomable: Boolean = false,
+) {
+    var retryAttempt by remember(image.path, maxDimension) { mutableStateOf(0) }
+    var imageState by remember(image.path, maxDimension, retryAttempt) {
+        mutableStateOf<RemoteArchiveImageState>(RemoteArchiveImageState.Loading)
+    }
+    LaunchedEffect(image.path, maxDimension, retryAttempt) {
+        imageState = RemoteArchiveImageState.Loading
+        val bitmap = loadArchiveImage(image.path, maxDimension)?.let { bytes ->
+            withContext(Dispatchers.Default) {
+                decodeSampledImage(bytes, maxDimension)
+            }
+        }
+        imageState = if (bitmap != null) {
+            RemoteArchiveImageState.Ready(bitmap)
+        } else {
+            RemoteArchiveImageState.Error
+        }
+    }
+
+    val clickModifier = if (onClick != null && imageState is RemoteArchiveImageState.Ready) {
+        Modifier.clickable(onClick = onClick)
+    } else {
+        Modifier
+    }
+    Box(
+        modifier = modifier
+            .then(clickModifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        when (val current = imageState) {
+            is RemoteArchiveImageState.Ready -> {
+                if (zoomable) {
+                    ZoomableArchiveImage(
+                        bitmap = current.bitmap,
+                        contentDescription = image.label.ifBlank { "内容图片" },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    Image(
+                        bitmap = current.bitmap,
+                        contentDescription = image.label.ifBlank { "内容图片" },
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = contentScale,
+                    )
+                }
+            }
+
+            RemoteArchiveImageState.Loading -> {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(28.dp),
+                    strokeWidth = 2.dp,
+                )
+            }
+
+            RemoteArchiveImageState.Error -> {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(
+                        Icons.Outlined.BrokenImage,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(onClick = { retryAttempt += 1 }) {
+                        Text("重新加载")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ZoomableArchiveImage(
+    bitmap: ImageBitmap,
+    contentDescription: String,
+    modifier: Modifier = Modifier,
+) {
+    var scale by remember(bitmap) { mutableStateOf(MIN_ARCHIVE_IMAGE_SCALE) }
+    var pan by remember(bitmap) { mutableStateOf(Offset.Zero) }
+    var viewport by remember(bitmap) { mutableStateOf(IntSize.Zero) }
+
+    fun clampedPan(candidate: Offset, targetScale: Float): Offset {
+        val bounds = archiveImagePanBounds(
+            viewportWidth = viewport.width,
+            viewportHeight = viewport.height,
+            imageWidth = bitmap.width,
+            imageHeight = bitmap.height,
+            scale = targetScale,
+        )
+        val clamped = clampArchiveImagePan(candidate.x, candidate.y, bounds)
+        return Offset(clamped.x, clamped.y)
+    }
+
+    Box(
+        modifier = modifier
+            .clipToBounds()
+            .onSizeChanged { newSize ->
+                viewport = newSize
+                pan = clampedPan(pan, scale)
+            }
+            .pointerInput(bitmap, viewport) {
+                detectTransformGestures { _, gesturePan, zoomChange, _ ->
+                    val nextScale = updatedArchiveImageScale(scale, zoomChange)
+                    pan = if (nextScale == MIN_ARCHIVE_IMAGE_SCALE) {
+                        Offset.Zero
+                    } else {
+                        clampedPan(pan + gesturePan, nextScale)
+                    }
+                    scale = nextScale
+                }
+            }
+            .pointerInput(bitmap) {
+                detectTapGestures(
+                    onDoubleTap = {
+                        val nextScale = doubleTapArchiveImageScale(scale)
+                        scale = nextScale
+                        pan = Offset.Zero
+                    },
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Image(
+            bitmap = bitmap,
+            contentDescription = contentDescription,
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = pan.x
+                    translationY = pan.y
+                },
+            contentScale = ContentScale.Fit,
+        )
+    }
+}
+
+@Composable
+private fun ArchiveImagePreview(
+    image: ArchiveImage,
+    loadArchiveImage: suspend (String, Int) -> ByteArray?,
+    onDismiss: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
+        ),
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.scrim,
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        image.label.ifBlank { "图片预览" },
+                        modifier = Modifier.weight(1f),
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            Icons.Outlined.Close,
+                            contentDescription = "关闭图片预览",
+                            tint = Color.White,
+                        )
+                    }
+                }
+                RemoteArchiveImage(
+                    image = image,
+                    loadArchiveImage = loadArchiveImage,
+                    maxDimension = ARCHIVE_PREVIEW_IMAGE_MAX_EDGE,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentScale = ContentScale.Fit,
+                    zoomable = true,
+                )
             }
         }
     }
@@ -771,6 +1370,7 @@ private fun SubmitScreen(
     state: MainUiState,
     modifier: Modifier,
     onTextChange: (String) -> Unit,
+    onProcessingTargetChange: (ProcessingTarget) -> Unit,
     onSubmit: () -> Unit,
 ) {
     LazyColumn(
@@ -809,6 +1409,42 @@ private fun SubmitScreen(
                         },
                         minLines = 5,
                         maxLines = 12,
+                    )
+                    Text(
+                        "默认处理端",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        ProcessingTarget.entries.forEach { target ->
+                            FilterChip(
+                                selected = state.processingTarget == target,
+                                onClick = { onProcessingTargetChange(target) },
+                                label = { Text(target.label) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = if (target == ProcessingTarget.SERVER) {
+                                            Icons.Outlined.CloudQueue
+                                        } else {
+                                            Icons.Outlined.Computer
+                                        },
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                },
+                            )
+                        }
+                    }
+                    Text(
+                        if (state.processingTarget == ProcessingTarget.SERVER) {
+                            "服务器持续在线，适合随时发起处理。"
+                        } else {
+                            "任务由服务器接收，EXE 启动后领取并处理。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                     Button(
                         onClick = onSubmit,
@@ -1135,6 +1771,7 @@ private fun documentIcon(document: ArchiveDocument): ImageVector =
         ArchiveDocument.SUMMARY -> Icons.Outlined.Description
         ArchiveDocument.SOURCE -> Icons.Outlined.Language
         ArchiveDocument.TRANSCRIPT -> Icons.Outlined.Subtitles
+        ArchiveDocument.EXTRA_POLISH -> Icons.Outlined.AutoFixHigh
         ArchiveDocument.MINDMAP -> Icons.Outlined.AccountTree
         ArchiveDocument.DETAIL -> Icons.Outlined.Info
     }
@@ -1167,6 +1804,7 @@ private fun NoticeCard(message: String, isError: Boolean) {
 
 @Composable
 private fun TaskCard(task: RemoteTask) {
+    val executor = task.assignedExecutor.ifBlank { task.requestedExecutor }
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -1183,6 +1821,29 @@ private fun TaskCard(task: RemoteTask) {
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            if (task.originClient.isNotBlank() || executor.isNotBlank()) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (task.originClient.isNotBlank()) {
+                        TaskRouteBadge(
+                            icon = Icons.Outlined.PhoneAndroid,
+                            label = "发起 ${clientLabel(task.originClient)}",
+                        )
+                    }
+                    if (executor.isNotBlank()) {
+                        TaskRouteBadge(
+                            icon = if (executor.equals("exe", ignoreCase = true)) {
+                                Icons.Outlined.Computer
+                            } else {
+                                Icons.Outlined.CloudQueue
+                            },
+                            label = "处理 ${clientLabel(executor)}",
+                        )
+                    }
+                }
             }
             Text(
                 task.source,
@@ -1210,6 +1871,26 @@ private fun TaskCard(task: RemoteTask) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun TaskRouteBadge(
+    icon: ImageVector,
+    label: String,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        shape = MaterialTheme.shapes.small,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(14.dp))
+            Text(label, style = MaterialTheme.typography.labelSmall)
         }
     }
 }
@@ -1260,6 +1941,14 @@ private fun platformLabel(archive: ArchiveItem): String = when {
     archive.hasAudio -> "音频"
     archive.hasVideo -> "视频"
     else -> "内容"
+}
+
+internal fun clientLabel(value: String): String = when (value.lowercase()) {
+    "android", "apk" -> "Android"
+    "exe", "desktop", "windows" -> "EXE"
+    "server", "remote" -> "Server"
+    "web" -> "Web"
+    else -> value
 }
 
 private fun formatDate(value: String): String =
