@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, type FormEvent, type KeyboardEvent } from "react"
 import { useDropZone } from "@/hooks/use-drop-zone"
+import { useSubmitHistory } from "@/hooks/use-submit-history"
 import { navigate } from "@/lib/router"
 import { api, type BilibiliCollectionItem } from "@/lib/api"
 import { Input } from "@/components/ui/input"
@@ -9,7 +10,7 @@ import { FolderQueueDialog } from "@/components/folder-queue-dialog"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
   Upload01Icon, Link01Icon, Loading03Icon, PlayIcon, ArrowDown01Icon, ArrowUp01Icon,
-  FileVideoIcon, FileAudioIcon, FolderOpenIcon, Folder01Icon, Cancel01Icon, CheckmarkCircle02Icon,
+  FileVideoIcon, FileAudioIcon, FolderOpenIcon, Folder01Icon, Cancel01Icon, CheckmarkCircle02Icon, Clock01Icon,
 } from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
 import { formatDuration } from "@/lib/format"
@@ -60,6 +61,7 @@ function looksLikeBilibiliVideo(value: string) {
 type SubtitleStrategy = "auto" | "force_asr"
 
 export function SubmitPage() {
+  const submitHistory = useSubmitHistory()
   const [source, setSource] = useState("")
   const [queuedFiles, setQueuedFiles] = useState<QueuedFile[]>([])
   const [strategy, setStrategy] = useState<SubtitleStrategy>("auto")
@@ -85,9 +87,6 @@ export function SubmitPage() {
     if (hotwordTags.length > 0) opts.hotwords = hotwordTags
     return opts
   }
-  const buildOptionsRef = useRef(buildOptions)
-  buildOptionsRef.current = buildOptions
-
   const uploadAndQueue = useCallback(async (file: File) => {
     const id = `${file.name}-${Date.now()}-${Math.random()}`
     const controller = new AbortController()
@@ -106,7 +105,7 @@ export function SubmitPage() {
           ? { ...f, duration, stagingId: staged.staging_id, stagingPath: staged.path, uploading: false }
           : f
       ))
-    } catch (err) {
+    } catch {
       if (controller.signal.aborted) {
         setQueuedFiles((prev) => prev.filter((f) => f.id !== id))
       } else {
@@ -215,9 +214,10 @@ export function SubmitPage() {
         setSubmitting(false)
         return
       }
-      await api.tasks.createBatch(sources, opts)
-
-      navigate("#/files")
+      const tasks = await api.tasks.createBatch(sources, opts)
+      submitHistory.add(urlSource)
+      const firstTask = tasks[0]
+      navigate(firstTask ? `#/result/task/${firstTask.id}` : "#/files")
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交失败")
       setCheckingCollection(false)
@@ -263,26 +263,26 @@ export function SubmitPage() {
   const activeOptions = [forceAsr, !!numSpeakers, hotwordTags.length > 0].filter(Boolean).length
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex h-full flex-col overflow-y-auto md:flex-row md:overflow-hidden">
       <FolderQueueDialog
         open={showFolderDialog}
         onOpenChange={setShowFolderDialog}
         options={buildOptions()}
-        onSubmitted={() => navigate("#/files")}
+        onSubmitted={(taskId) => navigate(taskId ? `#/result/task/${taskId}` : "#/files")}
       />
 
       {/* ── Left panel: controls ── */}
       <div className={cn(
-        "flex flex-col gap-4 p-6 overflow-y-auto shrink-0 transition-[width,border-color] duration-200",
-        hasRightPanel ? "w-72 border-r" : "w-full items-center justify-center",
+        "flex w-full flex-col gap-4 px-4 py-5 transition-[width,border-color] duration-200 sm:px-6 md:shrink-0 md:overflow-y-auto",
+        hasRightPanel ? "md:w-80 md:border-r" : "md:w-full md:items-center md:justify-center",
       )}>
-        <div className={cn("flex flex-col gap-4", !hasRightPanel && "w-full max-w-md")}>
+        <div className={cn("flex w-full flex-col gap-4", !hasRightPanel && "md:max-w-xl")}>
 
           {/* Drop zone */}
           <div
             {...dropZoneProps}
             className={cn(
-              "flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed transition-colors duration-150 cursor-pointer",
+              "hidden flex-col items-center justify-center gap-3 rounded-lg border border-dashed transition-colors duration-150 cursor-pointer md:flex",
               hasRightPanel ? "py-5 px-4" : "py-12 px-4",
               isDragging ? "border-primary bg-primary/5" : "border-muted-foreground/25 hover:border-muted-foreground/40 hover:bg-muted/20",
               submitting && "pointer-events-none opacity-60",
@@ -321,7 +321,7 @@ export function SubmitPage() {
           </div>
 
           {/* Divider */}
-          <div className="flex items-center gap-3">
+          <div className="hidden items-center gap-3 md:flex">
             <div className="h-px flex-1 bg-border" />
             <span className="text-xs text-muted-foreground">或输入链接</span>
             <div className="h-px flex-1 bg-border" />
@@ -337,16 +337,19 @@ export function SubmitPage() {
                   setSource(e.target.value)
                   setCollection(null)
                 }}
-                placeholder="粘贴视频链接或本地路径..."
-                className="pl-9"
+                placeholder="粘贴视频或网页链接"
+                className="h-11 pl-9 md:h-9"
                 disabled={submitting}
                 autoComplete="off"
+                inputMode="url"
+                autoCapitalize="none"
+                spellCheck={false}
               />
             </div>
           </form>
 
           {/* Submit */}
-          <Button size="lg" disabled={!canSubmit} onClick={handleSubmitAll} className="w-full">
+          <Button size="lg" disabled={!canSubmit} onClick={handleSubmitAll} className="h-11 w-full">
             {submitting
               ? <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
               : <HugeiconsIcon icon={PlayIcon} className="h-4 w-4 mr-2" />
@@ -364,7 +367,7 @@ export function SubmitPage() {
           {error && <p className="text-sm text-destructive text-center">{error}</p>}
 
           {/* Advanced options */}
-          <div>
+          <div className="hidden md:block">
             <button
               type="button"
               className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
@@ -462,12 +465,55 @@ export function SubmitPage() {
               </div>
             )}
           </div>
+
+          <section className="space-y-2 md:hidden" aria-labelledby="recent-submit-title">
+            <div className="flex items-center justify-between gap-3">
+              <h2 id="recent-submit-title" className="flex items-center gap-2 text-sm font-medium">
+                <HugeiconsIcon icon={Clock01Icon} className="size-4 text-muted-foreground" />
+                最近提交
+              </h2>
+              {submitHistory.items.length > 0 ? (
+                <button
+                  type="button"
+                  className="min-h-11 px-2 text-xs text-muted-foreground"
+                  onClick={submitHistory.clear}
+                >
+                  清空
+                </button>
+              ) : null}
+            </div>
+            {submitHistory.items.length > 0 ? (
+              <div className="divide-y rounded-lg border bg-card">
+                {submitHistory.items.map((item) => (
+                  <button
+                    type="button"
+                    key={`${item.source}-${item.submittedAt}`}
+                    className="flex min-h-12 w-full items-center gap-3 px-3 text-left active:bg-muted"
+                    onClick={() => {
+                      setSource(item.source)
+                      setCollection(null)
+                    }}
+                  >
+                    <HugeiconsIcon icon={Link01Icon} className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate text-sm">{item.source}</span>
+                    <span className="shrink-0 text-[0.6875rem] text-muted-foreground">
+                      {new Date(item.submittedAt).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="rounded-lg border border-dashed px-4 py-5 text-center text-sm text-muted-foreground">
+                成功提交链接后会显示在这里。
+              </p>
+            )}
+          </section>
         </div>
       </div>
 
       {/* ── Right panel: file and collection list ── */}
       {hasRightPanel && (
-        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+        <div className="flex min-h-72 flex-none flex-col overflow-hidden border-t md:min-h-0 md:flex-1 md:border-t-0">
           {/* Header */}
           <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b">
             <div className="flex items-center gap-2 text-sm">
@@ -521,7 +567,7 @@ export function SubmitPage() {
           </div>
 
           {/* Scrollable list */}
-          <div className="flex-1 overflow-y-auto px-4 py-2">
+          <div className="max-h-[50dvh] flex-1 overflow-y-auto px-2 py-2 sm:px-4 md:max-h-none">
             <div className="space-y-1">
               {collection?.items.map((item, index) => {
                 const selected = collection.selectedIds.includes(item.id)

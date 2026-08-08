@@ -1,7 +1,10 @@
-import { Search01Icon, FolderOpenIcon } from "@hugeicons/core-free-icons"
+import { useState } from "react"
+import { FilterHorizontalIcon, Search01Icon, FolderOpenIcon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 
+import { MobileFilterSheet } from "@/components/app-shell/mobile-filter-sheet"
 import { PlatformIcon } from "@/components/platform-icon"
+import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger } from "@/components/ui/select"
 import {
@@ -58,12 +61,46 @@ export function PageToolbar({
   onSourceFilterChange,
   onSortChange,
 }: PageToolbarProps) {
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
   const selectedMediaFilter = MEDIA_FILTER_OPTIONS.find((option) => option.value === mediaFilter) ?? MEDIA_FILTER_OPTIONS[0]
   const selectedSourceFilter = SOURCE_FILTER_OPTIONS.find((option) => option.value === sourceFilter) ?? SOURCE_FILTER_OPTIONS[0]
+  const activeFilterCount = Number(mediaFilter !== "all") + Number(sourceFilter !== "all") + Number(sort !== "created_desc")
 
   return (
-    <div className="grid min-w-0 grid-cols-1 gap-2 md:flex md:items-center" role="search" aria-label="文件搜索与筛选">
-      <div className="relative min-w-0 md:flex-1 md:max-w-xs">
+    <div className="min-w-0" role="search" aria-label="文件搜索与筛选">
+      <div className="flex min-w-0 items-center gap-2 md:hidden">
+        <div className="relative min-w-0 flex-1">
+          <HugeiconsIcon
+            icon={Search01Icon}
+            className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+          />
+          <Input
+            value={search}
+            onChange={(event) => onSearchChange(event.target.value)}
+            placeholder="搜索标题、话题、关键词..."
+            className="h-11 pl-9 text-sm"
+            autoComplete="off"
+            aria-label="搜索文件"
+          />
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          className="relative size-11 px-0"
+          onClick={() => setMobileFiltersOpen(true)}
+          aria-label={activeFilterCount > 0 ? `筛选，已启用 ${activeFilterCount} 项` : "筛选"}
+        >
+          <HugeiconsIcon icon={FilterHorizontalIcon} className="size-4" />
+          {activeFilterCount > 0 ? (
+            <span className="absolute -right-1 -top-1 flex size-5 items-center justify-center rounded-full bg-primary text-[0.625rem] text-primary-foreground">
+              {activeFilterCount}
+            </span>
+          ) : null}
+        </Button>
+      </div>
+
+      <div className="hidden min-w-0 items-center gap-2 md:flex">
+      <div className="relative min-w-0 flex-1 max-w-xs">
         <HugeiconsIcon
           icon={Search01Icon}
           className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
@@ -72,13 +109,13 @@ export function PageToolbar({
           value={search}
           onChange={(event) => onSearchChange(event.target.value)}
           placeholder="搜索标题、话题、关键词..."
-          className="h-11 pl-9 text-sm md:h-9"
+          className="h-9 pl-9 text-sm"
           autoComplete="off"
           aria-label="搜索文件"
         />
       </div>
 
-      <div className="grid min-w-0 grid-cols-3 gap-2 md:flex md:shrink-0">
+      <div className="flex min-w-0 shrink-0 gap-2">
         <Select value={mediaFilter} onValueChange={(value) => onMediaFilterChange(value as MediaFilter)}>
           <SelectTrigger size="sm" className="min-w-0 w-full data-[size=sm]:h-11 md:w-24 md:data-[size=sm]:h-9">
             <span className="truncate">{selectedMediaFilter.label}</span>
@@ -128,6 +165,18 @@ export function PageToolbar({
           </SelectContent>
         </Select>
       </div>
+      </div>
+
+      <MobileFilterSheet
+        open={mobileFiltersOpen}
+        onOpenChange={setMobileFiltersOpen}
+        mediaFilter={mediaFilter}
+        sourceFilter={sourceFilter}
+        sort={sort}
+        onMediaFilterChange={onMediaFilterChange}
+        onSourceFilterChange={onSourceFilterChange}
+        onSortChange={onSortChange}
+      />
     </div>
   )
 }

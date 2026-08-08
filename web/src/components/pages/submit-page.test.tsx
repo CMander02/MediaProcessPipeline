@@ -45,11 +45,13 @@ describe("SubmitPage Bilibili collection selection", () => {
         },
       ],
     })
-    const createBatch = vi.spyOn(api.tasks, "createBatch").mockResolvedValue([])
+    const createBatch = vi.spyOn(api.tasks, "createBatch").mockResolvedValue([
+      { id: "task-1" },
+    ] as Awaited<ReturnType<typeof api.tasks.createBatch>>)
 
     render(<SubmitPage />)
 
-    fireEvent.change(screen.getByPlaceholderText("粘贴视频链接或本地路径..."), {
+    fireEvent.change(screen.getByPlaceholderText("粘贴视频或网页链接"), {
       target: { value: "https://www.bilibili.com/video/BV1DK4y1b7bY/" },
     })
     fireEvent.click(screen.getByRole("button", { name: "开始处理" }))
@@ -69,6 +71,6 @@ describe("SubmitPage Bilibili collection selection", () => {
         {},
       )
     })
-    expect(navigate).toHaveBeenCalledWith("#/files")
+    expect(navigate).toHaveBeenCalledWith("#/result/task/task-1")
   })
 })

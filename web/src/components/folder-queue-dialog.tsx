@@ -40,11 +40,6 @@ interface MediaFile {
   size: number
 }
 
-const MEDIA_EXTS = new Set([
-  "mp4", "mkv", "avi", "webm", "mov", "flv", "wmv",
-  "mp3", "wav", "aac", "flac", "ogg", "m4a", "wma",
-])
-
 function isVideo(name: string) {
   const ext = name.split(".").pop()?.toLowerCase() ?? ""
   return ["mp4", "mkv", "avi", "webm", "mov", "flv", "wmv"].includes(ext)
@@ -60,11 +55,10 @@ interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   options: Record<string, unknown>
-  onSubmitted?: () => void
+  onSubmitted?: (taskId?: string) => void
 }
 
 export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: Props) {
-  const [currentPath, setCurrentPath] = useState("")
   const [items, setItems] = useState<BrowseItem[]>([])
   const [drives, setDrives] = useState<BrowseItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -105,7 +99,6 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
     try {
       const data = await api.filesystem.browse(path, "directory")
       if (data.success) {
-        setCurrentPath(data.path)
         setPathInput(data.path)
         setItems(data.items ?? [])
       }
@@ -137,11 +130,13 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
     setFailedFiles([])
     cancelledRef.current = false
     let count = 0
+    let firstTaskId: string | undefined
     const failed: string[] = []
     for (const file of mediaFiles) {
       if (cancelledRef.current) break
       try {
-        await api.tasks.create(file.path, options)
+        const task = await api.tasks.create(file.path, options)
+        firstTaskId ??= task.id
       } catch {
         failed.push(file.name)
       }
@@ -151,7 +146,7 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
     setFailedFiles(failed)
     setSubmitting(false)
     setDone(true)
-    if (!cancelledRef.current) onSubmitted?.()
+    if (!cancelledRef.current) onSubmitted?.(firstTaskId)
   }
 
   const handleCancelSubmit = () => {
