@@ -11,8 +11,8 @@
 - **语音转录**: 支持 API ASR、Qwen3-ASR GGUF/llama.cpp、本地 Qwen3-ASR
 - **智能润色**: LLM 滑动窗口润色，修正错字、添加标点
 - **内容分析**: 自动提取关键信息、生成摘要和思维导图（支持 map-reduce 长文本）
-- **桌面应用**: Tauri 打包，双击即用
-- **Android 远程投递**: 从手机系统分享面板提交链接到远程 MPP
+- **统一 Web/PWA**: 同一 React 界面服务本机 PC、服务器浏览器和手机
+- **响应式体验**: PC/Pad 使用顶部导航，手机使用底部导航与触控布局
 
 ## 项目结构
 
@@ -33,14 +33,16 @@ MediaProcessPipeline/
 │   └── run.py
 ├── web/                        # Vite + React 19 + shadcn/ui
 │   └── src/
-├── web/src-tauri/              # Tauri 桌面壳
+├── web/src-tauri/              # 冻结的 Tauri 兼容代码
 │   └── src/main.rs
-├── android/                    # Kotlin + Jetpack Compose 远程投递客户端
+├── android/                    # 冻结的 Compose 兼容客户端
 ├── scripts/                    # CLI 快捷脚本
 │   ├── mpp.ps1                 # PowerShell
+│   ├── start-web.ps1           # Windows Web 一键启动
+│   ├── start-web.sh            # Linux Web 一键启动
 │   ├── android.ps1             # Android 检查、构建与调试
 │   └── mpp                     # bash
-└── data/                       # 配置目录（settings.json）；
+└── config.json                 # 运行时配置；
                                 # 实际数据/任务输出/SQLite 走 settings.data_root
                                 # （本机：D:/Video/MediaProcessPipeline/）
 ```
@@ -104,36 +106,39 @@ uv run playwright install chromium
 
 ### 启动
 
-**方式 1: Tauri 桌面应用**
+**方式 1：本机 Web**
 
-```bash
-cd web && npm install && npm run dev
+```powershell
+.\start.bat
 ```
 
-或打包：
+也可以直接运行启动脚本：
 
-```bash
-cd web && npm run tauri:build
+```powershell
+.\scripts\start-web.ps1
 ```
 
-构建成功后会将最新桌面程序复制到项目根目录的 `MPP.exe`，后续构建直接替换该文件。
+健康检查通过后打开 [http://localhost:18000](http://localhost:18000)。
 
-**方式 2: 后端 + 浏览器**
+**方式 2：Linux / 服务器 Web**
 
 ```bash
-start.bat                          # 启动后端并自动打开浏览器
+./scripts/start-web.sh             # 本机浏览器模式
+./scripts/start-web.sh --server --no-browser
 ```
 
-或手动运行：
+服务器模式强制 API Token。systemd、Caddy/Nginx 和 HTTPS 配置见 [Web/PWA 启动与部署](docs/web-deployment.md)。
+
+手动启动后端：
 
 ```bash
 cd backend
 uv run python -m app.cli serve     # 启动 daemon :18000
 ```
 
-浏览器打开 http://localhost:18000
+浏览器打开 [http://localhost:18000](http://localhost:18000)。
 
-**方式 3: CLI**
+**方式 3：CLI**
 
 ```bash
 # PowerShell
@@ -151,10 +156,9 @@ uv run python -m app.cli serve     # 启动 daemon :18000
 ./scripts/mpp run --direct --api-flow <url-or-file>
 ```
 
-**方式 4: Android 远程投递客户端**
+**旧客户端兼容**
 
-安装 Android Studio 后打开 `android/` 目录，通过模拟器或 USB 真机运行。完整环境配置、
-Server URL 和系统分享测试见 [android/README.md](android/README.md)。
+Tauri 与 Compose Android 代码保留兼容维护。新 UI 与交互统一进入 `web/`。
 
 ### 开发模式
 
@@ -163,7 +167,7 @@ Server URL 和系统分享测试见 [android/README.md](android/README.md)。
 cd backend && uv run python run.py --reload
 
 # 前端 (Vite dev server, 代理 API 到 :18000)
-cd web && npm run web:dev          # :5173
+cd web && npm run dev              # :5173
 ```
 
 ## API 端点
@@ -213,7 +217,7 @@ cd web && npm run web:dev          # :5173
 
 > ⚠️ **任务数据库实际位置**：`tasks.db` 不在仓库里的 `data/`，而在 `settings.data_root` 指向的目录下，例如本机 `D:/Video/MediaProcessPipeline/tasks.db`。仓库下的 `data/tasks.db` 是历史遗留的 0 字节文件，不要去查它。需要直连 SQLite 调试时，认准 `data_root`。
 
-在前端 Settings 页面或 `data/settings.json` 中配置：
+在前端设置页面或根目录 `config.json` 中配置：
 
 - **LLM**: Provider (OpenAI / Anthropic / DeepSeek 等 OpenAI 兼容), 模型, API 密钥
 - **ASR**: Qwen3-ASR 模型路径、对齐器路径、设备

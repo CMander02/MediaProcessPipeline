@@ -1,0 +1,18 @@
+[Unit]
+Description=MediaProcessPipeline Web service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mpp
+Group=mpp
+WorkingDirectory=/opt/MediaProcessPipeline
+ExecStart=/opt/MediaProcessPipeline/scripts/start-web.sh --server --no-browser
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
