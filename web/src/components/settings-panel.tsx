@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { api, getApiToken, persistApiToken, type Settings, type YtdlpStatus } from "@/lib/api"
+import { api, type Settings, type YtdlpStatus } from "@/lib/api"
 import { usePreferences } from "@/hooks/use-preferences"
 import { ProxySetting, SettingRow } from "@/components/settings/setting-controls"
 import { LocalModelSettings, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
@@ -23,11 +23,12 @@ type TabId = "overall" | "knowledge" | "registry" | "services" | "local" | "pipe
 interface TabDef {
   id: TabId
   label: string
+  mobile?: boolean
 }
 
 const TABS: TabDef[] = [
-  { id: "overall", label: "通用设置" },
-  { id: "knowledge", label: "知识库" },
+  { id: "overall", label: "通用设置", mobile: true },
+  { id: "knowledge", label: "知识库", mobile: true },
   { id: "registry", label: "模型提供商" },
   { id: "services", label: "服务配置" },
   { id: "local", label: "本地模型" },
@@ -40,7 +41,7 @@ export function SettingsPanel() {
   const [saved, setSaved] = useState<Record<string, boolean>>({})
   const [saveError, setSaveError] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [apiTokenInput, setApiTokenInput] = useState(() => getApiToken())
+  const [apiTokenInput, setApiTokenInput] = useState("")
   const [authenticating, setAuthenticating] = useState(false)
   const [darkMode, setDarkMode] = useState(
     () => document.documentElement.classList.contains("dark"),
@@ -55,6 +56,19 @@ export function SettingsPanel() {
 
   // Bilibili auth status (needed for sidebar dot indicator)
   const [biliLoggedIn, setBiliLoggedIn] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return
+    const query = window.matchMedia("(max-width: 767px)")
+    const keepMobileTabValid = () => {
+      if (query.matches) {
+        setActiveTab((current) => TABS.find((tab) => tab.id === current)?.mobile ? current : "overall")
+      }
+    }
+    keepMobileTabValid()
+    query.addEventListener("change", keepMobileTabValid)
+    return () => query.removeEventListener("change", keepMobileTabValid)
+  }, [])
 
   const loadSettings = useCallback(async () => {
     try {
@@ -88,9 +102,12 @@ export function SettingsPanel() {
   const unlockSettings = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setAuthenticating(true)
-    persistApiToken(apiTokenInput)
-    await loadSettings()
-    setAuthenticating(false)
+    try {
+      await api.auth.unlock(apiTokenInput)
+      await loadSettings()
+    } finally {
+      setAuthenticating(false)
+    }
   }
 
   const updateSettings = useCallback(
@@ -245,7 +262,7 @@ export function SettingsPanel() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {TABS.map((tab) => (
+              {TABS.filter((tab) => tab.mobile).map((tab) => (
                 <SelectItem key={tab.id} value={tab.id} className="min-h-11">
                   {tab.label}
                 </SelectItem>
@@ -349,6 +366,7 @@ export function SettingsPanel() {
                 </CardContent>
               </Card>
 
+              <div className="hidden space-y-4 md:block">
               {/* Data Paths */}
               <Card>
                 <CardHeader className="pb-3">
@@ -399,6 +417,18 @@ export function SettingsPanel() {
                     masked
                     placeholder="留空则不启用"
                   />
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <Label>远程文件系统</Label>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        允许远程浏览服务器目录、提交本地路径并打开系统文件夹。
+                      </p>
+                    </div>
+                    <Switch
+                      checked={Boolean(settings.allow_remote_filesystem)}
+                      onCheckedChange={(value) => updateSetting("allow_remote_filesystem", value)}
+                    />
+                  </div>
                 </CardContent>
               </Card>
 
@@ -486,6 +516,7 @@ export function SettingsPanel() {
                   </div>
                 </CardContent>
               </Card>
+              </div>
             </div>
           )}
 

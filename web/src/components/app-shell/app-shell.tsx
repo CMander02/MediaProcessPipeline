@@ -13,9 +13,10 @@ interface AppShellProps {
   activePage: Route["page"]
   toolbar?: ReactNode
   children: ReactNode
+  runtimeControls?: boolean
 }
 
-export function AppShell({ activePage, toolbar, children }: AppShellProps) {
+export function AppShell({ activePage, toolbar, children, runtimeControls = true }: AppShellProps) {
   const settingsActive = activePage === "settings"
 
   return (
@@ -38,22 +39,24 @@ export function AppShell({ activePage, toolbar, children }: AppShellProps) {
           )}
 
           <div className="ml-auto flex shrink-0 items-center gap-1">
-            <TaskQueueDropdown />
-            <button
-              type="button"
-              onClick={() => navigate("#/settings")}
-              aria-label="打开设置"
-              aria-current={settingsActive ? "page" : undefined}
-              className={cn(
-                "flex size-11 items-center justify-center rounded-md transition-colors md:size-9",
-                settingsActive
-                  ? "bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
-              )}
-              title="设置"
-            >
-              <HugeiconsIcon icon={Settings01Icon} className="size-4" />
-            </button>
+            {runtimeControls && <TaskQueueDropdown />}
+            {runtimeControls && (
+              <button
+                type="button"
+                onClick={() => navigate("#/settings")}
+                aria-label="打开设置"
+                aria-current={settingsActive ? "page" : undefined}
+                className={cn(
+                  "flex size-11 items-center justify-center rounded-md transition-colors md:size-9",
+                  settingsActive
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                )}
+                title="设置"
+              >
+                <HugeiconsIcon icon={Settings01Icon} className="size-4" />
+              </button>
+            )}
           </div>
         </div>
       </header>

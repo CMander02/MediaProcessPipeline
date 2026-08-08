@@ -222,33 +222,67 @@ export interface PipelineStep {
   name_en?: string
 }
 
-// ---- Fetch helpers ----
-
-export const API_TOKEN_STORAGE_KEY = "mpp_api_token"
-
-export function getApiToken(): string {
-  if (typeof localStorage === "undefined") return ""
-  return localStorage.getItem(API_TOKEN_STORAGE_KEY) ?? ""
+export interface AuthStatus {
+  required: boolean
+  authenticated: boolean
+  mode: "local" | "remote"
 }
 
-export function persistApiToken(token: string) {
-  if (typeof localStorage === "undefined" || typeof document === "undefined") return
-  const trimmed = token.trim()
-  if (trimmed) {
-    localStorage.setItem(API_TOKEN_STORAGE_KEY, trimmed)
-    document.cookie = `${API_TOKEN_STORAGE_KEY}=${encodeURIComponent(trimmed)}; Path=/; SameSite=Strict`
-  } else {
-    localStorage.removeItem(API_TOKEN_STORAGE_KEY)
-    document.cookie = `${API_TOKEN_STORAGE_KEY}=; Path=/; Max-Age=0; SameSite=Strict`
+export interface Capabilities {
+  mode: "local" | "remote"
+  authenticated: boolean
+  url_submission: boolean
+  browser_file_upload: boolean
+  browser_folder_upload: boolean
+  task_control: boolean
+  settings: boolean
+  filesystem_browse: boolean
+  local_path_submission: boolean
+  open_local_folder: boolean
+  archive_mutation: boolean
+}
+
+// ---- Fetch helpers ----
+
+export class ApiRequestError extends Error {
+  status: number
+  path: string
+
+  constructor(message: string, status: number, path: string) {
+    super(message)
+    this.name = "ApiRequestError"
+    this.status = status
+    this.path = path
   }
+}
+
+interface ApiClientConfig {
+  baseUrl: string
+  credentials: RequestCredentials
+  credentialProvider: () => HeadersInit
+}
+
+const apiClientConfig: ApiClientConfig = {
+  baseUrl: String(import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, ""),
+  credentials: "include",
+  credentialProvider: () => ({}),
+}
+
+export function configureApiClient(config: Partial<ApiClientConfig>) {
+  if (typeof config.baseUrl === "string") apiClientConfig.baseUrl = config.baseUrl.replace(/\/$/, "")
+  if (config.credentials) apiClientConfig.credentials = config.credentials
+  if (config.credentialProvider) apiClientConfig.credentialProvider = config.credentialProvider
+}
+
+export function resolveApiUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path
+  return `${apiClientConfig.baseUrl}${path}`
 }
 
 function headers(json = false): HeadersInit {
   const h: Record<string, string> = {}
   if (json) h["Content-Type"] = "application/json"
-  const token = getApiToken()
-  if (token) h.Authorization = `Bearer ${token}`
-  return h
+  return { ...h, ...apiClientConfig.credentialProvider() }
 }
 
 function requestedJsonHeaders(): HeadersInit {
@@ -259,7 +293,7 @@ function requestedHeaders(): HeadersInit {
   return { ...headers(false), "X-Requested-With": "fetch" }
 }
 
-async function parseError(res: Response): Promise<Error> {
+async function parseError(res: Response, path: string): Promise<ApiRequestError> {
   try {
     const data = await readJson<Record<string, unknown>>(res)
     const detail =
@@ -268,10 +302,10 @@ async function parseError(res: Response): Promise<Error> {
         : typeof data.error === "string"
           ? data.error
           : `${res.status} ${res.statusText}`
-    return new Error(detail)
+    return new ApiRequestError(detail, res.status, path)
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
-    return new Error(`${res.status} ${res.statusText}: ${detail}`)
+    return new ApiRequestError(`${res.status} ${res.statusText}: ${detail}`, res.status, path)
   }
 }
 
@@ -289,56 +323,80 @@ async function readJson<T>(res: Response): Promise<T> {
   }
 }
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(path, { headers: headers() })
-  if (!res.ok) throw await parseError(res)
+function dispatchApiEvent(name: "mpp:api-error" | "mpp:offline" | "mpp:capabilities-change", detail: Record<string, unknown>) {
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(name, { detail }))
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  let res: Response
+  try {
+    res = await fetch(resolveApiUrl(path), {
+      ...init,
+      credentials: init.credentials ?? apiClientConfig.credentials,
+    })
+  } catch (error) {
+    dispatchApiEvent("mpp:offline", { path })
+    throw new ApiRequestError(error instanceof Error ? error.message : "网络连接失败", 0, path)
+  }
+
+  if (!res.ok) {
+    const error = await parseError(res, path)
+    if (res.status === 401 || res.status === 403) {
+      dispatchApiEvent("mpp:api-error", { status: res.status, path, message: error.message })
+    }
+    throw error
+  }
   return readJson<T>(res)
 }
 
+async function get<T>(path: string): Promise<T> {
+  return request<T>(path, { headers: headers() })
+}
+
 async function post<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
+  return request<T>(path, {
     method: "POST",
     headers: requestedJsonHeaders(),
     body: body ? JSON.stringify(body) : undefined,
   })
-  if (!res.ok) throw await parseError(res)
-  return readJson<T>(res)
 }
 
 async function patch<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
+  return request<T>(path, {
     method: "PATCH",
     headers: requestedJsonHeaders(),
     body: JSON.stringify(body),
   })
-  if (!res.ok) throw await parseError(res)
-  return readJson<T>(res)
 }
 
 async function put<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
+  return request<T>(path, {
     method: "PUT",
     headers: requestedJsonHeaders(),
     body: JSON.stringify(body),
   })
-  if (!res.ok) throw await parseError(res)
-  return readJson<T>(res)
 }
 
 async function httpDelete<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
+  return request<T>(path, {
     method: "DELETE",
     headers: requestedJsonHeaders(),
     body: body ? JSON.stringify(body) : undefined,
   })
-  if (!res.ok) throw await parseError(res)
-  return readJson<T>(res)
 }
 
 // ---- Tasks ----
 
 export const api = {
   health: () => get<HealthInfo>("/health"),
+
+  auth: {
+    status: () => get<AuthStatus>("/api/auth/status"),
+    unlock: (token: string) => post<AuthStatus>("/api/auth/unlock", { token }),
+    logout: () => post<AuthStatus>("/api/auth/logout"),
+  },
+
+  capabilities: () => get<Capabilities>("/api/capabilities"),
 
   tasks: {
     create: (source: string, options: Record<string, unknown> = {}) =>
@@ -367,7 +425,11 @@ export const api = {
       const preparedUpdates = createSettingsPatch(updates)
       const updated = await patch<Settings>("/api/settings", preparedUpdates)
       if (typeof preparedUpdates.api_token === "string") {
-        persistApiToken(preparedUpdates.api_token)
+        const token = preparedUpdates.api_token.trim()
+        if (token) await post<AuthStatus>("/api/auth/unlock", { token })
+      }
+      if (typeof preparedUpdates.allow_remote_filesystem === "boolean") {
+        dispatchApiEvent("mpp:capabilities-change", {})
       }
       return updated
     },
@@ -405,7 +467,7 @@ export const api = {
       httpDelete<{ message: string; path: string }>("/api/pipeline/archives", { path }),
     rename: (path: string, title: string) =>
       post<{ success: boolean; title: string }>("/api/pipeline/archives/rename", { path, title }),
-    thumbnailUrl: (path: string) => `/api/pipeline/archives/thumbnail?path=${encodeURIComponent(path)}`,
+    thumbnailUrl: (path: string) => resolveApiUrl(`/api/pipeline/archives/thumbnail?path=${encodeURIComponent(path)}`),
   },
 
   filesystem: {
@@ -415,7 +477,7 @@ export const api = {
       ),
     write: (path: string, content: string) =>
       post<{ success: boolean; error?: string }>("/api/filesystem/write", { path, content }),
-    mediaUrl: (path: string) => `/api/filesystem/media?path=${encodeURIComponent(path)}`,
+    mediaUrl: (path: string) => resolveApiUrl(`/api/filesystem/media?path=${encodeURIComponent(path)}`),
     drives: () =>
       get<{ success: boolean; drives: Array<{ name: string; path: string; is_dir: boolean; size?: number | null }> }>(
         "/api/filesystem/drives",
@@ -440,21 +502,19 @@ export const api = {
     stage: async (file: File, signal?: AbortSignal) => {
       const form = new FormData()
       form.append("file", file)
-      const res = await fetch("/api/pipeline/stage", {
-        method: "POST",
-        headers: requestedHeaders(),
-        body: form,
-        signal,
-      })
-      if (!res.ok) throw await parseError(res)
-      return res.json() as Promise<{
+      return request<{
         staging_id: string
         path: string
         filename: string
         title: string
         size: number
         media_type: string
-      }>
+      }>("/api/pipeline/stage", {
+        method: "POST",
+        headers: requestedHeaders(),
+        body: form,
+        signal,
+      })
     },
     deleteStaged: (stagingId: string) =>
       httpDelete<{ deleted: boolean }>(`/api/pipeline/stage/${stagingId}`),
@@ -485,7 +545,7 @@ export const api = {
         `/api/voiceprints/persons/${dstId}/merge`,
         { src_person_id: srcId },
       ),
-    sampleClipUrl: (sampleId: string) => `/api/voiceprints/samples/${sampleId}/clip`,
+    sampleClipUrl: (sampleId: string) => resolveApiUrl(`/api/voiceprints/samples/${sampleId}/clip`),
     renameTaskSpeaker: (
       taskId: string,
       oldName: string,
@@ -565,7 +625,7 @@ export function subscribeTaskEvents(
   taskId: string,
   onEvent: (event: { task_id: string; type: string; data: Record<string, unknown>; timestamp: string }) => void,
 ): () => void {
-  const es = new EventSource(`/api/tasks/${taskId}/events`)
+  const es = new EventSource(resolveApiUrl(`/api/tasks/${taskId}/events`), { withCredentials: true })
   es.onmessage = (e) => {
     try {
       onEvent(JSON.parse(e.data))
@@ -579,7 +639,7 @@ export function subscribeTaskEvents(
 export function subscribeAllEvents(
   onEvent: (event: { task_id: string; type: string; data: Record<string, unknown>; timestamp: string }) => void,
 ): () => void {
-  const es = new EventSource("/api/tasks/events")
+  const es = new EventSource(resolveApiUrl("/api/tasks/events"), { withCredentials: true })
   es.onmessage = (e) => {
     try {
       onEvent(JSON.parse(e.data))

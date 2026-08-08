@@ -9,6 +9,23 @@ import { api } from "@/lib/api"
 import { navigate } from "@/lib/router"
 
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }))
+vi.mock("@/hooks/use-app-access-context", () => ({
+  useAppAccess: () => ({
+    capabilities: {
+      mode: "local",
+      authenticated: true,
+      url_submission: true,
+      browser_file_upload: true,
+      browser_folder_upload: true,
+      task_control: true,
+      settings: true,
+      filesystem_browse: true,
+      local_path_submission: true,
+      open_local_folder: true,
+      archive_mutation: true,
+    },
+  }),
+}))
 
 afterEach(() => {
   cleanup()

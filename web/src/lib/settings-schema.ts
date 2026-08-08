@@ -178,6 +178,7 @@ export interface RuntimeSettings {
   vlm_timeout_sec?: number
 
   api_token?: string
+  allow_remote_filesystem?: boolean
   data_root?: string
   network_proxy?: string
   ytdlp_auto_update?: boolean

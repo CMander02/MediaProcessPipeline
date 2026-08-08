@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, type FormEvent, type KeyboardEvent } from "react"
 import { useDropZone } from "@/hooks/use-drop-zone"
 import { useSubmitHistory } from "@/hooks/use-submit-history"
+import { useAppAccess } from "@/hooks/use-app-access-context"
 import { navigate } from "@/lib/router"
 import { api, type BilibiliCollectionItem } from "@/lib/api"
 import { Input } from "@/components/ui/input"
@@ -61,6 +62,7 @@ function looksLikeBilibiliVideo(value: string) {
 type SubtitleStrategy = "auto" | "force_asr"
 
 export function SubmitPage() {
+  const { capabilities } = useAppAccess()
   const submitHistory = useSubmitHistory()
   const [source, setSource] = useState("")
   const [queuedFiles, setQueuedFiles] = useState<QueuedFile[]>([])
@@ -76,6 +78,7 @@ export function SubmitPage() {
   const [collection, setCollection] = useState<CollectionSelection | null>(null)
   const [showFolderDialog, setShowFolderDialog] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const folderInputRef = useRef<HTMLInputElement>(null)
   const hotwordInputRef = useRef<HTMLInputElement>(null)
   const abortControllers = useRef<Map<string, AbortController>>(new Map())
 
@@ -265,7 +268,7 @@ export function SubmitPage() {
   return (
     <div className="flex h-full flex-col overflow-y-auto md:flex-row md:overflow-hidden">
       <FolderQueueDialog
-        open={showFolderDialog}
+        open={showFolderDialog && capabilities.filesystem_browse}
         onOpenChange={setShowFolderDialog}
         options={buildOptions()}
         onSubmitted={(taskId) => navigate(taskId ? `#/result/task/${taskId}` : "#/files")}
@@ -279,7 +282,7 @@ export function SubmitPage() {
         <div className={cn("flex w-full flex-col gap-4", !hasRightPanel && "md:max-w-xl")}>
 
           {/* Drop zone */}
-          <div
+          {capabilities.browser_file_upload && <div
             {...dropZoneProps}
             className={cn(
               "hidden flex-col items-center justify-center gap-3 rounded-lg border border-dashed transition-colors duration-150 cursor-pointer md:flex",
@@ -303,7 +306,11 @@ export function SubmitPage() {
                 <HugeiconsIcon icon={Upload01Icon} className="h-3.5 w-3.5 mr-1.5" />
                 选择文件
               </Button>
-              <Button variant="outline" size="sm" onClick={() => setShowFolderDialog(true)}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => capabilities.filesystem_browse ? setShowFolderDialog(true) : folderInputRef.current?.click()}
+              >
                 <HugeiconsIcon icon={FolderOpenIcon} className="h-3.5 w-3.5 mr-1.5" />
                 选择文件夹
               </Button>
@@ -318,10 +325,24 @@ export function SubmitPage() {
                 if (e.target.files) { handleFileSelect(Array.from(e.target.files)); e.target.value = "" }
               }}
             />
-          </div>
+            <input
+              ref={folderInputRef}
+              type="file"
+              accept="video/*,audio/*"
+              multiple
+              className="hidden"
+              {...({ webkitdirectory: "", directory: "" } as React.InputHTMLAttributes<HTMLInputElement>)}
+              onChange={(event) => {
+                if (event.target.files) {
+                  handleFileSelect(Array.from(event.target.files))
+                  event.target.value = ""
+                }
+              }}
+            />
+          </div>}
 
           {/* Divider */}
-          <div className="hidden items-center gap-3 md:flex">
+          <div className={cn("hidden items-center gap-3", capabilities.browser_file_upload && "md:flex")}>
             <div className="h-px flex-1 bg-border" />
             <span className="text-xs text-muted-foreground">或输入链接</span>
             <div className="h-px flex-1 bg-border" />
