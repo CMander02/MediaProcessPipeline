@@ -62,6 +62,7 @@ def _client(tmp_path: Path, monkeypatch) -> tuple[TestClient, FakeQueue]:
     settings = RuntimeSettings(
         data_root=str(tmp_path),
         api_token="",
+        allow_remote_filesystem=True,
         siliconflow_api_base="https://api.siliconflow.cn",
         siliconflow_api_key="sk-test",
     )
@@ -464,7 +465,12 @@ def test_main_app_lifespan_auth_and_task_submission_smoke(tmp_path, monkeypatch)
     from app import main as app_main
     from app.services.ingestion import ytdlp_version
 
-    settings = RuntimeSettings(data_root=str(tmp_path), api_token="", max_download_concurrency=1)
+    settings = RuntimeSettings(
+        data_root=str(tmp_path),
+        api_token="",
+        allow_remote_filesystem=True,
+        max_download_concurrency=1,
+    )
     monkeypatch.setattr(settings_module, "_runtime_settings", settings)
     monkeypatch.setattr(settings_module, "_save_settings_to_file", lambda _settings: None)
     monkeypatch.setattr(app_main, "get_runtime_settings", lambda: settings)

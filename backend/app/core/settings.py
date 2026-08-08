@@ -338,6 +338,7 @@ class RuntimeSettings(BaseModel):
 
     # Security
     api_token: str = ""  # Bearer token for API auth; empty = auth disabled
+    allow_remote_filesystem: bool = False
 
     # Paths
     data_root: str = "D:/Video/MediaProcessPipeline"

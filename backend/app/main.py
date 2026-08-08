@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 
-from app.api.routes import tasks, pipeline, filesystem, voiceprints
+from app.api.routes import tasks, pipeline, filesystem, voiceprints, auth
 from app.api.routes import settings as settings_router
 from app.api.routes import kb as kb_router
 from app.core.settings import get_runtime_settings, SETTINGS_FILE
@@ -19,6 +19,7 @@ from app.core.events import get_event_bus
 from app.core.logging_setup import setup_logging
 from app.core.pipeline import process_task
 from app.core.queue import get_task_queue
+from app.core.security import request_is_authenticated
 
 # Force UTF-8 encoding for stdout/stderr on Windows
 if sys.platform == "win32":
@@ -121,7 +122,12 @@ app.add_middleware(
 # a matching Bearer token. Static assets, /health, and frontend routes are
 # exempt so the SPA still loads.
 
-_AUTH_EXEMPT_PREFIXES = ("/health", "/assets", "/favicon")
+_AUTH_EXEMPT_PATHS = {
+    "/api/auth/status",
+    "/api/auth/unlock",
+    "/api/auth/logout",
+    "/api/capabilities",
+}
 
 
 @app.middleware("http")
@@ -132,10 +138,8 @@ async def auth_middleware(request: Request, call_next):
         # Bearer token auth (optional — only when api_token is configured)
         rt = get_runtime_settings()
         token = rt.api_token
-        if token:
-            auth_header = request.headers.get("authorization", "")
-            cookie_token = request.cookies.get("mpp_api_token", "")
-            if auth_header != f"Bearer {token}" and cookie_token != token:
+        if token and path not in _AUTH_EXEMPT_PATHS:
+            if not request_is_authenticated(request, token):
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Unauthorized — invalid or missing Bearer token"},
@@ -161,6 +165,7 @@ app.include_router(settings_router.router, prefix="/api")
 app.include_router(filesystem.router, prefix="/api")
 app.include_router(voiceprints.router, prefix="/api")
 app.include_router(kb_router.router, prefix="/api")
+app.include_router(auth.router, prefix="/api")
 
 
 @app.get("/health")

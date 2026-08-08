@@ -13,6 +13,9 @@ from fastapi import APIRouter, Query, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
+from app.core.security import require_filesystem_access
+from app.core.settings import get_runtime_settings
+
 router = APIRouter(prefix="/filesystem", tags=["filesystem"])
 
 
@@ -27,6 +30,7 @@ class OpenFolderRequest(BaseModel):
 
 @router.get("/browse")
 async def browse_directory(
+    request: Request,
     path: str = Query(".", description="Directory path to browse"),
     mode: Literal["file", "directory", "all"] = Query("all", description="Filter mode"),
 ):
@@ -38,6 +42,7 @@ async def browse_directory(
     it powers the file picker for importing local media. Access control
     is provided by the API auth layer (see main.py middleware).
     """
+    require_filesystem_access(request, get_runtime_settings())
     try:
         dir_path = Path(path).expanduser().resolve()
 
@@ -113,8 +118,9 @@ async def browse_directory(
 
 
 @router.post("/open-folder")
-async def open_folder(req: OpenFolderRequest):
+async def open_folder(req: OpenFolderRequest, request: Request):
     """Open a local folder in the system file manager."""
+    require_filesystem_access(request, get_runtime_settings())
     try:
         target = Path(req.path).expanduser().resolve()
 
@@ -384,6 +390,7 @@ MEDIA_EXTENSIONS = {
 
 @router.get("/scan-folder")
 async def scan_folder(
+    request: Request,
     path: str = Query(..., description="Root folder path to scan"),
     recursive: bool = Query(True, description="Scan subdirectories"),
 ):
@@ -392,6 +399,7 @@ async def scan_folder(
     NOTE: Intentionally allows scanning outside data_root — used for
     batch-importing from user-chosen folders. Protected by API auth layer.
     """
+    require_filesystem_access(request, get_runtime_settings())
     try:
         folder = Path(path).expanduser().resolve()
         if not folder.exists() or not folder.is_dir():
@@ -418,10 +426,11 @@ async def scan_folder(
 
 
 @router.get("/drives")
-async def list_drives():
+async def list_drives(request: Request):
     """
     List available drives (Windows) or mount points (Unix).
     """
+    require_filesystem_access(request, get_runtime_settings())
     drives = []
 
     if os.name == 'nt':

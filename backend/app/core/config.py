@@ -28,7 +28,11 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # CORS
-    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    cors_origins: list[str] = [
+        "http://localhost:5173",
+        "capacitor://localhost",
+        "http://localhost",
+    ]
 
     # Data paths - simplified flat structure
     data_root: Path = Path("D:/Video/MediaProcessPipeline")  # All task outputs go here

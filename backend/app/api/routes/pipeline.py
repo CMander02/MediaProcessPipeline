@@ -9,7 +9,7 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Any
@@ -26,6 +26,7 @@ from app.core.settings import get_runtime_settings
 from app.core.pipeline import pipeline_steps_schema
 from app.core.source_normalization import normalize_source_input
 from app.core.network import urllib_urlopen
+from app.core.security import require_filesystem_access
 from app.services.archiving.thumbnails import (
     create_image_thumbnail,
     create_image_thumbnail_from_bytes,
@@ -324,23 +325,26 @@ async def download(req: DownloadRequest):
 
 
 @router.post("/scan")
-async def scan():
+async def scan(request: Request):
     """Scan inbox for new files."""
+    require_filesystem_access(request, get_runtime_settings())
     from app.services.ingestion import scan_inbox
     files = await scan_inbox()
     return {"new_files": files, "count": len(files)}
 
 
 @router.post("/separate")
-async def separate(audio_path: str):
+async def separate(audio_path: str, request: Request):
     """Separate vocals from audio."""
+    require_filesystem_access(request, get_runtime_settings())
     from app.services.preprocessing import separate_vocals
     return await separate_vocals(audio_path)
 
 
 @router.post("/transcribe")
-async def transcribe(req: TranscribeRequest):
+async def transcribe(req: TranscribeRequest, request: Request):
     """Transcribe audio file."""
+    require_filesystem_access(request, get_runtime_settings())
     from app.services.recognition import transcribe_audio
     return await transcribe_audio(req.audio_path, req.language)
 

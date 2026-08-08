@@ -10,6 +10,8 @@ import threading
 import time
 import uvicorn
 
+from app.core.security import is_loopback_host
+
 
 def _setup_win32_job_object() -> None:
     """Create a Windows Job Object so all child processes die with us.
@@ -132,6 +134,13 @@ def run_server(host: str = "127.0.0.1", port: int = 18000, reload: bool = False)
 
     from rich.console import Console
     console = Console()
+
+    if not is_loopback_host(host):
+        from app.core.settings import get_runtime_settings
+
+        if not get_runtime_settings().api_token:
+            console.print("[red bold]服务器模式需要先配置 API Token。[/red bold]")
+            raise SystemExit(2)
 
     # Check if port is already in use
     if _port_in_use(host, port):

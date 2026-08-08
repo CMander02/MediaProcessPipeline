@@ -11,11 +11,13 @@ import asyncio
 import ipaddress
 import json
 import logging
+import re
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.core.database import get_task_store
@@ -25,11 +27,29 @@ from app.core.pipeline import (
     _clean_source_path, create_task_dir, write_metadata_json,
 )
 from app.core.queue import get_task_queue
+from app.core.security import filesystem_access_allowed
+from app.core.settings import get_runtime_settings
 from app.core.source_resolver import resolve_source_flow
 from app.models import Task, TaskBatchCreate, TaskCreate, TaskStatus
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 logger = logging.getLogger(__name__)
+
+
+def _is_managed_staging_source(source: str, data_root: str) -> bool:
+    """Allow remote tasks to consume files created by the upload endpoint."""
+    try:
+        staging_root = (Path(data_root) / "_staging").resolve()
+        candidate = Path(source).expanduser().resolve()
+        relative = candidate.relative_to(staging_root)
+    except (OSError, ValueError):
+        return False
+
+    return (
+        len(relative.parts) == 2
+        and re.fullmatch(r"[0-9a-f]{32}", relative.parts[0]) is not None
+        and candidate.is_file()
+    )
 
 
 def _validate_public_http_url(url: str) -> None:
@@ -58,12 +78,18 @@ def _validate_public_http_url(url: str) -> None:
 # ---------------------------------------------------------------------------
 
 @router.post("", response_model=Task)
-async def create_task(task_create: TaskCreate):
+async def create_task(task_create: TaskCreate, request: Request):
     """Create a new processing task and submit it to the queue."""
-    from pathlib import Path
     from app.services.ingestion.ytdlp import normalize_bilibili_source_url
 
     source = normalize_bilibili_source_url(_clean_source_path(task_create.source))
+    runtime = get_runtime_settings()
+    if (
+        _looks_like_local_path(source)
+        and not filesystem_access_allowed(request, runtime)
+        and not _is_managed_staging_source(source, runtime.data_root)
+    ):
+        raise HTTPException(status_code=403, detail="当前远程实例未开放本地路径任务提交。")
     task = Task(
         task_type=task_create.task_type,
         source=source,
@@ -120,7 +146,7 @@ async def create_task(task_create: TaskCreate):
 
 
 @router.post("/batch", response_model=list[Task])
-async def create_tasks_batch(batch_create: TaskBatchCreate):
+async def create_tasks_batch(batch_create: TaskBatchCreate, request: Request):
     """Create multiple tasks with one shared option set."""
     from app.services.ingestion.ytdlp import normalize_bilibili_source_url
 
@@ -139,7 +165,7 @@ async def create_tasks_batch(batch_create: TaskBatchCreate):
             source=source,
             options=batch_create.options,
             webhook_url=batch_create.webhook_url,
-        )))
+        ), request))
     return tasks_created
 
 
