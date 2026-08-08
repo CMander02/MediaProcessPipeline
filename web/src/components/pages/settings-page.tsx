@@ -5,7 +5,7 @@ import { Settings01Icon } from "@hugeicons/core-free-icons"
 export function SettingsPage() {
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
-      <div className="shrink-0 border-b bg-card">
+      <div className="hidden shrink-0 border-b bg-card md:block">
         <div className="mx-auto flex w-full max-w-[1680px] items-center gap-3 px-4 py-4 sm:px-6 sm:py-5">
           <div className="flex h-9 w-9 items-center justify-center text-muted-foreground">
             <HugeiconsIcon icon={Settings01Icon} className="h-5 w-5" />

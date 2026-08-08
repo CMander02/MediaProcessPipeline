@@ -45,6 +45,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [actionBusy, setActionBusy] = useState<"pause" | "resume" | "delete" | "cancel" | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   // Fetch initial task state
@@ -55,7 +56,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
         setFlow(taskData.flow ?? null)
         setLogs(timeline.events.map(timelineToLog))
       })
-      .catch(() => {})
+      .catch((error) => setActionError(error instanceof Error ? error.message : String(error)))
   }, [taskId])
 
   // Subscribe to SSE events
@@ -100,7 +101,9 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
         if (t.status === "completed" || t.status === "failed" || t.status === "cancelled" || t.status === "paused") {
           clearInterval(interval)
         }
-      } catch {}
+      } catch {
+        return
+      }
     }, 10000)
 
     return () => {
@@ -127,9 +130,11 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
 
   const handleCancel = async () => {
     setActionBusy("cancel")
+    setActionError(null)
     try {
       await api.tasks.cancel(taskId)
-    } catch {
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error))
     } finally {
       setActionBusy(null)
     }
@@ -137,12 +142,14 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
 
   const handlePause = async () => {
     setActionBusy("pause")
+    setActionError(null)
     try {
       await api.tasks.pause(taskId)
       const next = await api.tasks.get(taskId)
       setTask(next)
       setFlow(next.flow ?? null)
-    } catch {
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error))
     } finally {
       setActionBusy(null)
     }
@@ -150,12 +157,14 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
 
   const handleResume = async () => {
     setActionBusy("resume")
+    setActionError(null)
     try {
       await api.tasks.resume(taskId)
       const next = await api.tasks.get(taskId)
       setTask(next)
       setFlow(next.flow ?? null)
-    } catch {
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error))
     } finally {
       setActionBusy(null)
     }
@@ -163,11 +172,13 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
 
   const handleDelete = async () => {
     setActionBusy("delete")
+    setActionError(null)
     try {
       await api.tasks.delete(taskId)
       setDeleteOpen(false)
       navigate("#/files")
-    } catch {
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error))
     } finally {
       setActionBusy(null)
     }
@@ -180,11 +191,11 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
 
   return (
     <>
-    <div className="h-full overflow-y-auto flex items-center justify-center">
-      <div className="max-w-3xl w-full p-6 space-y-6">
+    <div className="flex h-full items-start justify-center overflow-y-auto">
+      <div className="w-full max-w-3xl space-y-5 p-4 md:space-y-6 md:p-6">
         {/* Header */}
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" onClick={() => navigate("#/files")}>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button className="h-11 md:h-8" variant="ghost" size="sm" onClick={() => navigate("#/files")}>
             <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4 mr-1" />
             返回
           </Button>
@@ -208,25 +219,25 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
             )}
           </div>
           {task && !isTerminal && (
-            <div className="flex shrink-0 items-center gap-1.5">
+            <div className="flex w-full shrink-0 items-center gap-1.5 md:w-auto">
               {canPause && (
-                <Button variant="outline" size="sm" onClick={handlePause} disabled={actionBusy !== null}>
+                <Button className="h-11 flex-1 md:h-8 md:flex-none" variant="outline" size="sm" onClick={handlePause} disabled={actionBusy !== null}>
                   <HugeiconsIcon icon={actionBusy === "pause" ? Loading03Icon : PauseIcon} className={cn("h-3.5 w-3.5 mr-1", actionBusy === "pause" && "animate-spin")} />
                   暂停
                 </Button>
               )}
               {canResume && (
-                <Button variant="outline" size="sm" onClick={handleResume} disabled={actionBusy !== null}>
+                <Button className="h-11 flex-1 md:h-8 md:flex-none" variant="outline" size="sm" onClick={handleResume} disabled={actionBusy !== null}>
                   <HugeiconsIcon icon={actionBusy === "resume" ? Loading03Icon : PlayIcon} className={cn("h-3.5 w-3.5 mr-1", actionBusy === "resume" && "animate-spin")} />
                   恢复
                 </Button>
               )}
-              <Button variant="outline" size="sm" onClick={handleCancel} disabled={actionBusy !== null}>
+              <Button className="h-11 flex-1 md:h-8 md:flex-none" variant="outline" size="sm" onClick={handleCancel} disabled={actionBusy !== null}>
                 <HugeiconsIcon icon={actionBusy === "cancel" ? Loading03Icon : CancelCircleIcon} className={cn("h-3.5 w-3.5 mr-1", actionBusy === "cancel" && "animate-spin")} />
                 取消
               </Button>
               {canDelete && (
-                <Button variant="destructive" size="sm" onClick={() => setDeleteOpen(true)} disabled={actionBusy !== null}>
+                <Button className="hidden h-11 flex-1 md:flex md:h-8 md:flex-none" variant="destructive" size="sm" onClick={() => setDeleteOpen(true)} disabled={actionBusy !== null}>
                   <HugeiconsIcon icon={Delete01Icon} className="h-3.5 w-3.5 mr-1" />
                   删除
                 </Button>
@@ -236,7 +247,8 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
         </div>
 
         {/* Pipeline steps - horizontal */}
-        <div className="flex items-center gap-1">
+        <div className="overflow-x-auto pb-1">
+          <div className="flex w-max min-w-full items-center gap-1">
           {pipelineSteps.map((step, i) => {
             const isCompleted = task?.completed_steps?.includes(step.id)
             const isCurrent = task?.current_step === step.id
@@ -291,7 +303,14 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
               </div>
             )
           })}
+          </div>
         </div>
+
+        {actionError && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert">
+            {actionError}
+          </div>
+        )}
 
         {flow && (
           <div className="space-y-2 border-y bg-muted/20 px-3 py-2">
@@ -328,7 +347,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
           <h3 className="mb-2 text-base font-semibold text-foreground">
             事件日志
           </h3>
-          <div className="rounded-md border bg-muted/30 p-3 font-mono text-xs space-y-0.5 max-h-[60vh] overflow-y-auto">
+          <div className="max-h-[55dvh] space-y-0.5 overflow-y-auto rounded-md border bg-muted/30 p-3 font-mono text-xs md:max-h-[60vh]">
             {logs.length === 0 && (
               <p className="text-muted-foreground py-2 text-center font-sans text-sm">
                 等待事件...
@@ -343,7 +362,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
                   e.level === "warning" && "text-muted-foreground",
                   !e.level && "text-muted-foreground",
                 )}>{e.type}</span>
-                <span className="text-foreground truncate">{e.detail}</span>
+                <span className="min-w-0 break-words text-foreground">{e.detail}</span>
               </div>
             ))}
             <div ref={bottomRef} />

@@ -144,6 +144,23 @@ function usePortraitResultLayout(): boolean {
   return portrait
 }
 
+function useMobileResultLayout(): boolean {
+  const [mobile, setMobile] = useState(() => {
+    if (typeof window === "undefined") return false
+    return window.matchMedia("(max-width: 767px)").matches
+  })
+
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 767px)")
+    const update = () => setMobile(query.matches)
+    update()
+    query.addEventListener("change", update)
+    return () => query.removeEventListener("change", update)
+  }, [])
+
+  return mobile
+}
+
 function resolveSourceUrl(metadata: Record<string, unknown>): string | null {
   const extra = asRecord(metadata.extra)
   const nested = asRecord(extra?.metadata) ?? asRecord(extra?.raw) ?? asRecord(extra?.info)
@@ -1252,6 +1269,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   }, [archivePath, openingFolder])
 
   const isPortraitLayout = usePortraitResultLayout()
+  const isMobileLayout = useMobileResultLayout()
   const videoLoop = Boolean(prefs.videoLoop)
   const toggleVideoLoop = useCallback(() => {
     updatePrefs({ videoLoop: !videoLoop })
@@ -1289,7 +1307,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const mediaPane = (
     <div className={cn(
       "h-full min-h-0 space-y-3",
-      isPortraitLayout ? "overflow-hidden p-0" : "overflow-y-auto p-4",
+      isPortraitLayout || isMobileLayout ? "overflow-y-auto p-0" : "overflow-y-auto p-4",
     )}>
       {isArticleNote ? (
         <ArticleNoteReader
@@ -1344,7 +1362,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const contentPane = (
     <div className={cn(
       "h-full min-h-0 flex flex-col",
-      isPortraitLayout ? "p-0" : "p-4",
+      isPortraitLayout || isMobileLayout ? "p-0" : "p-4",
     )}>
       <Tabs value={activeTab} onValueChange={(v: any) => { setActiveTab(String(v)); updateActiveTab(String(v)) }} className="flex flex-col flex-1 min-h-0">
         <div className="shrink-0 flex min-w-0 items-center gap-1.5">
@@ -1563,8 +1581,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   return (
     <div className="flex h-full flex-col">
       {/* Top bar */}
-      <div className="shrink-0 flex items-center gap-3 px-4 py-2 border-b">
-        <Button variant="ghost" size="sm" onClick={() => navigate("#/files")}>
+      <div className="flex shrink-0 items-center gap-2 border-b px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-2">
+        <Button className="h-11 md:h-8" variant="ghost" size="sm" onClick={() => navigate("#/files")}>
           <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4 mr-1" />
           返回
         </Button>
@@ -1582,15 +1600,16 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
           />
         ) : (
           <div className="flex-1 flex items-center gap-1.5 min-w-0">
+            <span className="truncate text-sm font-medium md:hidden">{displayTitle}</span>
             <button
-              className="text-sm font-medium truncate text-left hover:text-primary transition-colors group flex items-center gap-1 min-w-0"
+              className="group hidden min-w-0 items-center gap-1 truncate text-left text-sm font-medium transition-colors hover:text-primary md:flex"
               onClick={startEditTitle}
               title="点击编辑标题"
             >
               <span className="truncate">{displayTitle}</span>
               <HugeiconsIcon icon={PencilEdit01Icon} className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-50 transition-opacity" />
             </button>
-            <div className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
+            <div className="hidden shrink-0 items-center gap-1.5 text-muted-foreground sm:flex">
               {platform ? (
                 sourceHref ? (
                   <button
@@ -1658,7 +1677,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon-sm" aria-label="更多操作" title="更多操作">
+            <Button className="h-11 w-11 md:h-8 md:w-8" variant="ghost" size="icon-sm" aria-label="更多操作" title="更多操作">
               <HugeiconsIcon icon={MoreHorizontalIcon} className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
@@ -1671,12 +1690,13 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
               <HugeiconsIcon icon={rerunning ? Loading03Icon : RefreshIcon} className={rerunning ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
               {rerunning ? "重做中" : "完整重做"}
             </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem disabled={openingFolder} onClick={handleOpenLocalFolder}>
+            <DropdownMenuSeparator className="hidden md:block" />
+            <DropdownMenuItem className="hidden md:flex" disabled={openingFolder} onClick={handleOpenLocalFolder}>
               <HugeiconsIcon icon={openingFolder ? Loading03Icon : FolderOpenIcon} className={openingFolder ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
               打开本地文件夹
             </DropdownMenuItem>
             <DropdownMenuItem
+              className="hidden md:flex"
               variant="destructive"
               onClick={() => setShowDeleteDialog(true)}
             >
@@ -1761,7 +1781,18 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
 
       {/* Main content area — three-column layout */}
       <div className="flex-1 min-h-0 relative">
-        {isPortraitLayout ? (
+        {isMobileLayout ? (
+          <div className="absolute inset-0 overflow-y-auto p-3">
+            <div className="space-y-3">
+              <section aria-label="媒体与说话人" className="h-[min(58dvh,36rem)] min-h-[22rem] overflow-hidden rounded-lg border bg-background p-3 [&_button]:min-h-11 [&_button]:min-w-11">
+                {mediaPane}
+              </section>
+              <section aria-label="知识内容" className="h-[calc(100dvh-10rem)] min-h-[38rem] overflow-hidden rounded-lg border bg-background p-3 [&_button]:min-h-11 [&_button]:min-w-11">
+                {contentPane}
+              </section>
+            </div>
+          </div>
+        ) : isPortraitLayout ? (
           <div className="absolute inset-0 overflow-hidden p-3">
             <div className="grid h-full min-h-0 grid-rows-[minmax(220px,42%)_minmax(0,1fr)] gap-3 sm:grid-cols-[minmax(260px,0.95fr)_minmax(300px,1fr)] sm:grid-rows-1">
               <div className="min-h-0 overflow-hidden">

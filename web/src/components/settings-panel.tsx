@@ -7,6 +7,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { api, getApiToken, persistApiToken, type Settings, type YtdlpStatus } from "@/lib/api"
 import { usePreferences } from "@/hooks/use-preferences"
 import { ProxySetting, SettingRow } from "@/components/settings/setting-controls"
@@ -25,12 +26,12 @@ interface TabDef {
 }
 
 const TABS: TabDef[] = [
-  { id: "overall", label: "Overall" },
-  { id: "knowledge", label: "Knowledge Base" },
-  { id: "registry", label: "Providers" },
-  { id: "services", label: "Services" },
-  { id: "local", label: "Local Models" },
-  { id: "pipelines", label: "Pipelines/Sources" },
+  { id: "overall", label: "通用设置" },
+  { id: "knowledge", label: "知识库" },
+  { id: "registry", label: "模型提供商" },
+  { id: "services", label: "服务配置" },
+  { id: "local", label: "本地模型" },
+  { id: "pipelines", label: "处理管线与来源" },
 ]
 
 export function SettingsPanel() {
@@ -235,8 +236,26 @@ export function SettingsPanel() {
         </div>
       )}
       <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row lg:gap-5">
+        <div className="shrink-0 lg:hidden">
+          <Label htmlFor="settings-category" className="mb-1.5 block text-xs text-muted-foreground">
+            设置分类
+          </Label>
+          <Select value={activeTab} onValueChange={(value) => setActiveTab(value as TabId)}>
+            <SelectTrigger id="settings-category" className="h-11! w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {TABS.map((tab) => (
+                <SelectItem key={tab.id} value={tab.id} className="min-h-11">
+                  {tab.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
         {/* Left sidebar */}
-        <nav className="w-full shrink-0 overflow-x-auto rounded-lg border bg-card p-1 lg:sticky lg:top-5 lg:h-fit lg:w-[220px] lg:space-y-1 lg:p-2">
+        <nav className="hidden w-full shrink-0 rounded-lg border bg-card p-1 lg:sticky lg:top-5 lg:block lg:h-fit lg:w-[220px] lg:space-y-1 lg:p-2">
           {TABS.map((tab) => {
             const isActive = activeTab === tab.id
 

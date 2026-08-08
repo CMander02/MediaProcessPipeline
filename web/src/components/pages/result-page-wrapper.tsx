@@ -4,12 +4,10 @@
  */
 import { useEffect, useState } from "react"
 import { useRoute } from "@/lib/router"
-import { navigate } from "@/lib/router"
 import { api } from "@/lib/api"
 import { ResultPageLive } from "./result-page-live"
 import { ResultPageComplete } from "./result-page-complete"
-import { HugeiconsIcon } from "@hugeicons/react"
-import { Loading03Icon } from "@hugeicons/core-free-icons"
+import { LoadingState } from "@/components/ui/page-state"
 
 export function ResultPageWrapper() {
   const route = useRoute()
@@ -57,11 +55,7 @@ function TaskResolver({ taskId }: { taskId: string }) {
   }, [taskId])
 
   if (resolved === "loading") {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <HugeiconsIcon icon={Loading03Icon} className="h-5 w-5 animate-spin text-muted-foreground" />
-      </div>
-    )
+    return <LoadingState title="正在加载任务" className="h-full" />
   }
 
   if (resolved === "archive" && outputDir) {

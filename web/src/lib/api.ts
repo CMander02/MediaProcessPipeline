@@ -70,6 +70,12 @@ export interface TaskStats {
   paused?: number
 }
 
+export interface HealthInfo {
+  status: string
+  service?: string
+  version?: string
+}
+
 export interface BilibiliCollectionItem {
   id: string
   bvid: string
@@ -332,7 +338,7 @@ async function httpDelete<T>(path: string, body?: unknown): Promise<T> {
 // ---- Tasks ----
 
 export const api = {
-  health: () => get<{ status: string }>("/health"),
+  health: () => get<HealthInfo>("/health"),
 
   tasks: {
     create: (source: string, options: Record<string, unknown> = {}) =>

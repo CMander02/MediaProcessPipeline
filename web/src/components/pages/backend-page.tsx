@@ -1,52 +1,31 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
-  CancelCircleIcon,
+  Activity01Icon,
+  AiBrain01Icon,
+  Clock01Icon,
   ComputerTerminal01Icon,
   Loading03Icon,
-  PlayIcon,
   RefreshIcon,
   ServerStack01Icon,
-  StopIcon,
-  Tick02Icon,
+  Task01Icon,
 } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
-import { getBackendBridge, type BackendLogEntry, type BackendState, type BackendStatus } from "@/lib/tauri"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { EmptyState } from "@/components/ui/page-state"
+import { api, subscribeAllEvents, type HealthInfo, type Settings, type Task, type TaskStats } from "@/lib/api"
+import { navigate } from "@/lib/router"
 import { cn } from "@/lib/utils"
 
-const defaultStatus: BackendStatus = {
-  state: "stopped",
-  command: "uv run python -m app.cli serve",
-  cwd: "backend",
-  pid: null,
-  url: "http://localhost:18000",
-  message: "仅桌面端应用内可管理后端进程。",
+interface ServiceEvent {
+  id: string
+  taskId: string
+  type: string
+  message: string
+  timestamp: string
 }
 
-const statusLabel: Record<BackendState, string> = {
-  stopped: "已停止",
-  starting: "启动中",
-  running: "运行中",
-  stopping: "停止中",
-  external: "外部运行",
-  error: "异常",
-}
-
-const statusClassName: Record<BackendState, string> = {
-  stopped: "bg-muted text-muted-foreground",
-  starting: "bg-muted text-foreground",
-  running: "bg-muted text-foreground",
-  stopping: "bg-muted text-muted-foreground",
-  external: "bg-muted text-foreground",
-  error: "border border-destructive/30 text-destructive",
-}
-
-const sourceClassName: Record<BackendLogEntry["source"], string> = {
-  stdout: "text-zinc-200",
-  stderr: "text-zinc-400",
-  system: "text-zinc-300",
-  error: "text-destructive",
-}
+const activeStatuses = new Set<Task["status"]>(["queued", "processing", "paused"])
 
 function formatTime(value: string) {
   const date = new Date(value)
@@ -54,169 +33,229 @@ function formatTime(value: string) {
   return date.toLocaleTimeString("zh-CN", { hour12: false })
 }
 
-function formatError(error: unknown) {
-  if (error instanceof Error) return error.message
-  if (typeof error === "string") return error
-  return JSON.stringify(error)
+function statusLabel(status: Task["status"]) {
+  if (status === "processing") return "处理中"
+  if (status === "queued") return "排队中"
+  if (status === "paused") return "已暂停"
+  return status
 }
 
-function makeLogEntry(source: BackendLogEntry["source"], line: string): BackendLogEntry {
-  return {
-    ts: new Date().toISOString(),
-    source,
-    line,
+function eventMessage(type: string, data: Record<string, unknown>) {
+  if (typeof data.message === "string" && data.message) return data.message
+  if (typeof data.error === "string" && data.error) return data.error
+  if (typeof data.step === "string" && data.step) {
+    const progress = Number(data.progress)
+    return Number.isFinite(progress) ? `${data.step} · ${Math.round(progress * 100)}%` : data.step
   }
-}
-
-function StatusIcon({ state }: { state: BackendState }) {
-  if (state === "running" || state === "external") {
-    return <HugeiconsIcon icon={Tick02Icon} className="h-4 w-4" />
-  }
-  if (state === "starting" || state === "stopping") {
-    return <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin" />
-  }
-  if (state === "error") {
-    return <HugeiconsIcon icon={CancelCircleIcon} className="h-4 w-4" />
-  }
-  return <HugeiconsIcon icon={ServerStack01Icon} className="h-4 w-4" />
+  return type
 }
 
 export function BackendPage() {
-  const bridge = getBackendBridge()
-  const [status, setStatus] = useState<BackendStatus>(defaultStatus)
-  const [logs, setLogs] = useState<BackendLogEntry[]>([])
-  const [busy, setBusy] = useState(false)
-  const logEndRef = useRef<HTMLDivElement>(null)
-  const hasDesktopBridge = Boolean(bridge)
-  const commandLine = useMemo(() => `cd ${status.cwd} && ${status.command}`, [status.cwd, status.command])
-  const canStart = hasDesktopBridge && !busy && (status.state === "stopped" || status.state === "error")
-  const canStop = hasDesktopBridge && !busy && (status.state === "running" || status.state === "starting")
-  const canRestart = hasDesktopBridge && !busy && (status.state === "running" || status.state === "external" || status.state === "error")
+  const [health, setHealth] = useState<HealthInfo | null>(null)
+  const [stats, setStats] = useState<TaskStats | null>(null)
+  const [tasks, setTasks] = useState<Task[]>([])
+  const [settings, setSettings] = useState<Settings | null>(null)
+  const [events, setEvents] = useState<ServiceEvent[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
 
-  useEffect(() => {
-    if (!bridge) return
-
-    let active = true
-    bridge.getStatus().then((nextStatus) => {
-      if (active) setStatus(nextStatus)
-    }).catch((error: unknown) => {
-      if (!active) return
-      const message = `桌面桥接状态读取失败：${formatError(error)}`
-      setStatus((current) => ({ ...current, state: "error", message }))
-      setLogs((current) => [...current.slice(-1199), makeLogEntry("error", message)])
-    })
-    bridge.getLogs().then((nextLogs) => {
-      if (active) setLogs(nextLogs)
-    }).catch((error: unknown) => {
-      if (!active) return
-      const message = `桌面桥接日志读取失败：${formatError(error)}`
-      setLogs((current) => [...current.slice(-1199), makeLogEntry("error", message)])
-    })
-
-    const unsubscribeStatus = bridge.onStatus(setStatus)
-    const unsubscribeLog = bridge.onLog((entry) => {
-      setLogs((current) => [...current.slice(-1199), entry])
-    })
-
-    return () => {
-      active = false
-      unsubscribeStatus()
-      unsubscribeLog()
-    }
-  }, [bridge])
-
-  useEffect(() => {
-    logEndRef.current?.scrollIntoView({ block: "end" })
-  }, [logs.length])
-
-  async function runAction(action: "start" | "stop" | "restart") {
-    if (!bridge) return
-    setBusy(true)
+  const refresh = useCallback(async (showBusy = false) => {
+    if (showBusy) setRefreshing(true)
     try {
-      const nextStatus = await bridge[action]()
-      setStatus(nextStatus)
-    } catch (error) {
-      const actionLabel = action === "start" ? "启动" : action === "stop" ? "停止" : "重启"
-      const message = `后端${actionLabel}失败：${formatError(error)}`
-      setStatus((current) => ({ ...current, state: "error", message }))
-      setLogs((current) => [...current.slice(-1199), makeLogEntry("error", message)])
+      const [healthInfo, taskStats, queued, processing, paused, runtimeSettings] = await Promise.all([
+        api.health(),
+        api.tasks.stats(),
+        api.tasks.list("queued", 50),
+        api.tasks.list("processing", 50),
+        api.tasks.list("paused", 50),
+        api.settings.get(),
+      ])
+      setHealth(healthInfo)
+      setStats(taskStats)
+      setTasks(
+        [...processing, ...queued, ...paused]
+          .filter((task, index, all) => activeStatuses.has(task.status) && all.findIndex((item) => item.id === task.id) === index)
+          .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)),
+      )
+      setSettings(runtimeSettings)
+      setError(null)
+      setLastUpdated(new Date())
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError))
     } finally {
-      setBusy(false)
+      if (showBusy) setRefreshing(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), 10_000)
+    const unsubscribe = subscribeAllEvents((event) => {
+      setEvents((current) => [{
+        id: `${event.timestamp}-${event.task_id}-${event.type}`,
+        taskId: event.task_id,
+        type: event.type,
+        message: eventMessage(event.type, event.data),
+        timestamp: event.timestamp,
+      }, ...current].slice(0, 50))
+    })
+    return () => {
+      window.clearInterval(timer)
+      unsubscribe()
+    }
+  }, [refresh])
+
+  const processingCount = stats?.processing ?? tasks.filter((task) => task.status === "processing").length
+  const activeCount = (stats?.processing ?? 0) + (stats?.queued ?? 0) + (stats?.paused ?? 0)
+  const serviceHealthy = health?.status === "ok" || health?.status === "healthy"
+  const modelState = processingCount > 0 ? "占用中" : "空闲"
+  const asrName = settings?.asr_provider || "未配置"
+  const llmName = settings?.llm_provider || "未配置"
+  const lastUpdateText = useMemo(
+    () => lastUpdated?.toLocaleTimeString("zh-CN", { hour12: false }) ?? "等待首次检查",
+    [lastUpdated],
+  )
+
+  const metrics = [
+    { label: "服务状态", value: serviceHealthy ? "运行正常" : "检查中", detail: health?.service ?? "MediaProcessPipeline", icon: ServerStack01Icon },
+    { label: "活动任务", value: String(activeCount), detail: `${processingCount} 个正在处理`, icon: Task01Icon },
+    { label: "模型占用", value: modelState, detail: "单 GPU 工作器", icon: AiBrain01Icon },
+    { label: "服务版本", value: health?.version ?? "--", detail: `更新于 ${lastUpdateText}`, icon: Clock01Icon },
+  ]
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-background">
-      <div className="shrink-0 border-b px-6 py-5">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+    <section className="h-full min-h-0 overflow-y-auto bg-background">
+      <div className="mx-auto w-full max-w-[1680px] space-y-4 p-3 pb-8 sm:p-6">
+        <header className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="flex items-center gap-2 text-sm font-medium">
-              <HugeiconsIcon icon={ComputerTerminal01Icon} className="h-4.5 w-4.5 text-primary" />
-              后端守护进程
+            <div className="flex items-center gap-2 text-lg font-semibold md:text-xl">
+              <HugeiconsIcon icon={ComputerTerminal01Icon} className="h-5 w-5 text-primary" />
+              后端运行中心
             </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <span className={cn("inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium", statusClassName[status.state])}>
-                <StatusIcon state={status.state} />
-                {statusLabel[status.state]}
-              </span>
-              <span>PID: {status.pid ?? "-"}</span>
-              <span>{status.url}</span>
-            </div>
+            <p className="mt-1 text-sm text-muted-foreground">查看服务健康、任务队列、模型占用和实时事件。</p>
           </div>
+          <Button className="h-11 md:h-9" variant="outline" onClick={() => void refresh(true)} disabled={refreshing}>
+            <HugeiconsIcon icon={RefreshIcon} className={cn("h-4 w-4", refreshing && "animate-spin")} />
+            刷新状态
+          </Button>
+        </header>
 
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="outline" disabled={!canStart} onClick={() => runAction("start")}>
-              <HugeiconsIcon icon={PlayIcon} className="h-3.5 w-3.5" />
-              启动
-            </Button>
-            <Button size="sm" variant="outline" disabled={!canRestart} onClick={() => runAction("restart")}>
-              <HugeiconsIcon icon={RefreshIcon} className={cn("h-3.5 w-3.5", busy && "animate-spin")} />
-              重启
-            </Button>
-            <Button size="sm" variant="destructive" disabled={!canStop} onClick={() => runAction("stop")}>
-              <HugeiconsIcon icon={StopIcon} className="h-3.5 w-3.5" />
-              停止
-            </Button>
-          </div>
-        </div>
-
-        <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_1fr]">
-          <div className="min-w-0 rounded-md border bg-muted/30 px-3 py-2">
-            <div className="text-xs font-medium text-muted-foreground">命令</div>
-            <div className="mt-1 truncate font-mono text-xs" title={commandLine}>{commandLine}</div>
-          </div>
-          <div className="min-w-0 rounded-md border bg-muted/30 px-3 py-2">
-            <div className="text-xs font-medium text-muted-foreground">状态</div>
-            <div className="mt-1 truncate text-xs" title={status.message}>{status.message}</div>
-          </div>
-        </div>
-
-        {!hasDesktopBridge && (
-          <div className="mt-3 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-            当前是浏览器模式，只能查看 Web 前端；启动、停止和日志观察需要通过桌面端入口打开。
+        {error && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive" role="alert">
+            服务状态读取失败：{error}
           </div>
         )}
-      </div>
 
-      <div className="flex min-h-0 flex-1 flex-col px-6 py-4">
-        <div className="mb-2 flex items-center justify-between">
-          <div className="text-sm font-medium">后端输出</div>
-          <div className="text-xs text-muted-foreground">{logs.length} lines</div>
+        <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+          {metrics.map((metric) => (
+            <Card key={metric.label} className="gap-3 py-4 shadow-none">
+              <CardHeader className="flex flex-row items-center justify-between px-4 pb-0">
+                <CardTitle className="text-xs font-medium text-muted-foreground sm:text-sm">{metric.label}</CardTitle>
+                <HugeiconsIcon icon={metric.icon} className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent className="px-4">
+                <div className="text-xl font-semibold sm:text-2xl">{metric.value}</div>
+                <p className="mt-1 truncate text-xs text-muted-foreground" title={metric.detail}>{metric.detail}</p>
+              </CardContent>
+            </Card>
+          ))}
         </div>
-        <div className="min-h-0 flex-1 overflow-auto rounded-md border bg-zinc-950 p-3 font-mono text-[12px] leading-5 text-zinc-100">
-          {logs.length === 0 ? (
-            <div className="text-zinc-500">暂无日志。</div>
-          ) : (
-            logs.map((entry, index) => (
-              <div key={`${entry.ts}-${index}`} className="flex gap-3">
-                <span className="w-20 shrink-0 text-zinc-500">{formatTime(entry.ts)}</span>
-                <span className={cn("w-14 shrink-0", sourceClassName[entry.source])}>{entry.source}</span>
-                <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{entry.line}</span>
+
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
+          <Card className="min-h-[280px] gap-3 py-4 shadow-none">
+            <CardHeader className="flex flex-row items-center justify-between px-4 pb-0">
+              <div>
+                <CardTitle className="text-base">任务队列</CardTitle>
+                <p className="mt-1 text-xs text-muted-foreground">排队、处理和暂停中的任务</p>
               </div>
-            ))
-          )}
-          <div ref={logEndRef} />
+              <span className="rounded-md bg-muted px-2 py-1 text-xs tabular-nums">{tasks.length}</span>
+            </CardHeader>
+            <CardContent className="px-4">
+              {tasks.length === 0 ? (
+                <EmptyState title="当前队列为空" description="新任务提交后会显示在这里。" className="min-h-[190px]" />
+              ) : (
+                <div className="space-y-2">
+                  {tasks.map((task) => (
+                    <button
+                      key={task.id}
+                      type="button"
+                      onClick={() => navigate(`#/result/task/${task.id}`)}
+                      className="flex min-h-14 w-full items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <span className={cn("h-2 w-2 shrink-0 rounded-full", task.status === "processing" ? "bg-primary" : "bg-muted-foreground/50")} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">{task.source.split(/[/\\]/).pop() || task.id}</span>
+                        <span className="mt-0.5 block truncate text-xs text-muted-foreground">{task.message || task.current_step || "等待处理"}</span>
+                      </span>
+                      <span className="shrink-0 text-right">
+                        <span className="block text-xs font-medium">{statusLabel(task.status)}</span>
+                        <span className="mt-0.5 block text-xs tabular-nums text-muted-foreground">{Math.round((task.progress ?? 0) * 100)}%</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="gap-3 py-4 shadow-none">
+            <CardHeader className="px-4 pb-0">
+              <CardTitle className="text-base">模型运行</CardTitle>
+              <p className="text-xs text-muted-foreground">当前处理配置和工作器占用</p>
+            </CardHeader>
+            <CardContent className="space-y-3 px-4">
+              <div className="flex items-center justify-between rounded-lg border px-3 py-3">
+                <span className="text-sm text-muted-foreground">ASR</span>
+                <span className="max-w-[60%] truncate text-sm font-medium" title={asrName}>{asrName}</span>
+              </div>
+              <div className="flex items-center justify-between rounded-lg border px-3 py-3">
+                <span className="text-sm text-muted-foreground">LLM</span>
+                <span className="max-w-[60%] truncate text-sm font-medium" title={llmName}>{llmName}</span>
+              </div>
+              <div className="flex items-center justify-between rounded-lg border px-3 py-3">
+                <span className="text-sm text-muted-foreground">工作器</span>
+                <span className="inline-flex items-center gap-1.5 text-sm font-medium">
+                  {processingCount > 0 && <HugeiconsIcon icon={Loading03Icon} className="h-3.5 w-3.5 animate-spin" />}
+                  {modelState}
+                </span>
+              </div>
+              <div className="rounded-lg bg-muted/40 px-3 py-2 text-xs leading-5 text-muted-foreground">
+                服务进程由 Windows 或 Linux 启动脚本管理，网页持续显示运行状态。
+              </div>
+            </CardContent>
+          </Card>
         </div>
+
+        <Card className="gap-3 py-4 shadow-none">
+          <CardHeader className="flex flex-row items-center justify-between px-4 pb-0">
+            <div>
+              <CardTitle className="text-base">实时事件</CardTitle>
+              <p className="mt-1 text-xs text-muted-foreground">本次页面打开后收到的任务事件</p>
+            </div>
+            <HugeiconsIcon icon={Activity01Icon} className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent className="px-4">
+            {events.length === 0 ? (
+              <div className="flex min-h-28 items-center justify-center text-sm text-muted-foreground">等待任务事件…</div>
+            ) : (
+              <div className="max-h-72 overflow-y-auto rounded-lg border">
+                {events.map((event) => (
+                  <button
+                    key={event.id}
+                    type="button"
+                    onClick={() => event.taskId && navigate(`#/result/task/${event.taskId}`)}
+                    className="grid min-h-11 w-full grid-cols-[4.5rem_minmax(0,1fr)] gap-2 border-b px-3 py-2 text-left text-xs last:border-b-0 hover:bg-muted/40 sm:grid-cols-[4.5rem_7rem_minmax(0,1fr)]"
+                  >
+                    <span className="tabular-nums text-muted-foreground">{formatTime(event.timestamp)}</span>
+                    <span className="hidden truncate text-muted-foreground sm:block">{event.type}</span>
+                    <span className="min-w-0 break-words">{event.message}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </section>
   )

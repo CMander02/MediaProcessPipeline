@@ -334,24 +334,24 @@ describe("SettingsPanel", () => {
   it("renders six hierarchical tabs", async () => {
     render(<SettingsPanel />)
 
-    await screen.findByRole("button", { name: "Overall" })
+    await screen.findByRole("button", { name: "通用设置" })
     const nav = screen.getByRole("navigation")
     const labels = within(nav).getAllByRole("button").map((button) => button.textContent?.trim())
 
     expect(labels).toEqual([
-      "Overall",
-      "Knowledge Base",
-      "Providers",
-      "Services",
-      "Local Models",
-      "Pipelines/Sources",
+      "通用设置",
+      "知识库",
+      "模型提供商",
+      "服务配置",
+      "本地模型",
+      "处理管线与来源",
     ])
   })
 
   it("places Jina Reader settings under Services", async () => {
     render(<SettingsPanel />)
 
-    fireEvent.click(await screen.findByRole("button", { name: "Services" }))
+    fireEvent.click(await screen.findByRole("button", { name: "服务配置" }))
 
     expect(await screen.findByText("yt-dlp")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "更新到最新并重启后端" })).toBeInTheDocument()
@@ -366,7 +366,7 @@ describe("SettingsPanel", () => {
   it("places platform source settings under Pipelines/Sources", async () => {
     render(<SettingsPanel />)
 
-    fireEvent.click(await screen.findByRole("button", { name: "Pipelines/Sources" }))
+    fireEvent.click(await screen.findByRole("button", { name: "处理管线与来源" }))
 
     expect(await screen.findByText("哔哩哔哩")).toBeInTheDocument()
     expect(screen.getByText("登录凭据")).toBeInTheDocument()
@@ -388,7 +388,7 @@ describe("SettingsPanel", () => {
     expect(screen.queryByText(/当前：/)).not.toBeInTheDocument()
     expect(screen.getByDisplayValue("BAAI/bge-m3 · SiliconFlow")).toBeInTheDocument()
 
-    fireEvent.click(await screen.findByRole("button", { name: "Providers" }))
+    fireEvent.click(await screen.findByRole("button", { name: "模型提供商" }))
 
     const providerSearch = await screen.findByPlaceholderText("搜索 Providers...")
     const providerList = providerSearch.closest("aside")
@@ -443,7 +443,7 @@ describe("SettingsPanel", () => {
     await waitFor(() => expect(api.settings.providerOAuthStatus).toHaveBeenCalledWith("codex-oauth"))
     expect(await screen.findByText("已连接")).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole("button", { name: "Local Models" }))
+    fireEvent.click(screen.getByRole("button", { name: "本地模型" }))
 
     expect(await screen.findByPlaceholderText("搜索本地模型...")).toBeInTheDocument()
     expect(await screen.findByRole("heading", { name: "Qwen3-ASR GGUF" })).toBeInTheDocument()
