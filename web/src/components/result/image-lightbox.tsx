@@ -42,6 +42,11 @@ export function ImageLightbox({
     setDragging(false)
   }, [])
 
+  const close = useCallback(() => {
+    resetView()
+    onOpenChange(false)
+  }, [onOpenChange, resetView])
+
   const go = useCallback((delta: number) => {
     if (images.length <= 1) return
     const next = (index + delta + images.length) % images.length
@@ -52,17 +57,13 @@ export function ImageLightbox({
   useEffect(() => {
     if (!open) return
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onOpenChange(false)
+      if (event.key === "Escape") close()
       if (event.key === "ArrowLeft") go(-1)
       if (event.key === "ArrowRight") go(1)
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [go, onOpenChange, open])
-
-  useEffect(() => {
-    if (open) resetView()
-  }, [index, open, resetView])
+  }, [close, go, open])
 
   if (!open || !current) return null
 
@@ -70,13 +71,13 @@ export function ImageLightbox({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center overscroll-none bg-black/75"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onOpenChange(false)
+        if (event.target === event.currentTarget) close()
       }}
     >
       <button
         type="button"
         className="absolute left-4 top-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-background/90 text-foreground shadow-sm hover:bg-background"
-        onClick={() => onOpenChange(false)}
+        onClick={close}
         title="关闭"
       >
         <HugeiconsIcon icon={Cancel01Icon} className="h-5 w-5" />

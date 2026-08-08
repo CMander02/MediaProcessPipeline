@@ -35,7 +35,7 @@ export function useTasks() {
 
   // SSE for real-time updates
   useEffect(() => {
-    refresh()
+    const initialRefresh = window.setTimeout(() => void refresh(), 0)
     const unsub = subscribeAllEvents(() => {
       scheduleRefresh()
     })
@@ -47,6 +47,7 @@ export function useTasks() {
     }
 
     return () => {
+      window.clearTimeout(initialRefresh)
       unsub()
       if (interval) clearInterval(interval)
       if (refreshTimer.current) {
@@ -66,11 +67,14 @@ export function useTask(taskId: string | null) {
     if (!taskId) return
     try {
       setTask(await api.tasks.get(taskId))
-    } catch {}
+    } catch (error) {
+      console.debug("Task refresh deferred:", error)
+    }
   }, [taskId])
 
   useEffect(() => {
-    refresh()
+    const initialRefresh = window.setTimeout(() => void refresh(), 0)
+    return () => window.clearTimeout(initialRefresh)
   }, [refresh])
 
   return { task, refresh }

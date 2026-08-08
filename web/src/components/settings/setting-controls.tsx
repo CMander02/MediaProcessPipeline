@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { FloppyDiskIcon, FolderOpenIcon, Tick02Icon } from "@hugeicons/core-free-icons"
 
@@ -52,6 +52,12 @@ function proxyMode(value: string): ProxyMode {
 }
 
 export function ProxySetting({
+  ...props
+}: SettingRowProps) {
+  return <ProxySettingEditor key={`${props.settingKey}:${props.value}`} {...props} />
+}
+
+function ProxySettingEditor({
   label,
   settingKey,
   value,
@@ -62,12 +68,6 @@ export function ProxySetting({
   const persistedMode = proxyMode(value)
   const [mode, setMode] = useState<ProxyMode>(persistedMode)
   const [customValue, setCustomValue] = useState(persistedMode === "custom" ? value : "")
-
-  useEffect(() => {
-    const nextMode = proxyMode(value)
-    setMode(nextMode)
-    if (nextMode === "custom") setCustomValue(value)
-  }, [value])
 
   const saveMode = (nextMode: ProxyMode) => {
     setMode(nextMode)
@@ -170,6 +170,12 @@ export function DeviceChoice({
 }
 
 export function PathPickerRow({
+  ...props
+}: SettingRowProps & { title?: string }) {
+  return <PathPickerRowEditor key={`${props.settingKey}:${props.value}`} {...props} />
+}
+
+function PathPickerRowEditor({
   label,
   settingKey,
   value,
@@ -180,10 +186,6 @@ export function PathPickerRow({
   title,
 }: SettingRowProps & { title?: string }) {
   const [editValue, setEditValue] = useState(value)
-
-  useEffect(() => {
-    setEditValue(value)
-  }, [value])
 
   const pickDirectory = async () => {
     try {
@@ -250,6 +252,12 @@ export function PathPickerRow({
 }
 
 export function SettingRow({
+  ...props
+}: SettingRowProps) {
+  return <SettingRowEditor key={`${props.settingKey}:${props.value}`} {...props} />
+}
+
+function SettingRowEditor({
   label,
   settingKey,
   value,
@@ -260,10 +268,6 @@ export function SettingRow({
   placeholder,
 }: SettingRowProps) {
   const [editValue, setEditValue] = useState(value)
-
-  useEffect(() => {
-    setEditValue(value)
-  }, [value])
 
   const isDirty = editValue !== value
   const isSaving = saving[settingKey]

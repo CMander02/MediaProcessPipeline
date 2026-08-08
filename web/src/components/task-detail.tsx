@@ -33,7 +33,9 @@ export function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () =>
     try {
       await api.tasks.cancel(taskId)
       api.tasks.get(taskId).then(setTask)
-    } catch {}
+    } catch (error) {
+      console.warn("Failed to cancel task:", error)
+    }
   }
 
   return (

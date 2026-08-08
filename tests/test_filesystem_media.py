@@ -18,7 +18,7 @@ def _client(tmp_path: Path, monkeypatch) -> TestClient:
     monkeypatch.setattr(
         settings_module,
         "_runtime_settings",
-        RuntimeSettings(data_root=str(tmp_path)),
+        RuntimeSettings(data_root=str(tmp_path), allow_remote_filesystem=True),
     )
     app = FastAPI()
     app.include_router(filesystem_route.router, prefix="/api")

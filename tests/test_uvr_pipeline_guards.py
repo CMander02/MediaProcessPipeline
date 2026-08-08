@@ -1,7 +1,7 @@
 import logging
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -54,7 +54,20 @@ def test_uvr_separator_uses_configured_chunk_duration(tmp_path, monkeypatch):
         def load_model(self, model_name: str) -> None:
             self.model_name = model_name
 
-    monkeypatch.setattr("audio_separator.separator.Separator", FakeSeparator)
+    separator_module = ModuleType("audio_separator.separator")
+    separator_module.Separator = FakeSeparator
+    package_module = ModuleType("audio_separator")
+    package_module.separator = separator_module
+    monkeypatch.setitem(sys.modules, "audio_separator", package_module)
+    monkeypatch.setitem(sys.modules, "audio_separator.separator", separator_module)
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(
+            cuda=SimpleNamespace(is_available=lambda: False),
+            device=lambda name: SimpleNamespace(type=name),
+        ),
+    )
     monkeypatch.setattr(
         uvr_mod,
         "get_runtime_settings",
@@ -88,9 +101,11 @@ def test_uvr_device_setting_is_validated():
 
 
 def test_uvr_cuda_requires_onnx_cuda_provider(monkeypatch):
-    import torch
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: True),
+        device=lambda name: SimpleNamespace(type=name),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setattr(uvr_mod, "_available_onnx_providers", lambda: ["CPUExecutionProvider"])
 
     with pytest.raises(RuntimeError, match="CUDAExecutionProvider"):
@@ -102,9 +117,11 @@ def test_uvr_cuda_requires_onnx_cuda_provider(monkeypatch):
 
 
 def test_uvr_device_configuration_selects_requested_provider(monkeypatch):
-    import torch
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: True),
+        device=lambda name: SimpleNamespace(type=name),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setattr(
         uvr_mod,
         "_available_onnx_providers",

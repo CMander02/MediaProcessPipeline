@@ -1,6 +1,6 @@
-import { memo, useState, useRef, useEffect, type MouseEvent } from "react"
+import { memo, useState, useRef } from "react"
 import type { Subtitle } from "@/lib/srt"
-import { getSpeakerColor, formatSpeakerLabel, formatSRTTime } from "@/lib/srt"
+import { getSpeakerColor, formatSpeakerLabel } from "@/lib/srt"
 import { formatTimeShort } from "@/lib/format"
 import {
   ContextMenu,
@@ -54,15 +54,13 @@ export const TranscriptSegment = memo(function TranscriptSegment({
   const [editEnd, setEditEnd] = useState(formatTimeInput(subtitle.endTime))
   const textRef = useRef<HTMLTextAreaElement>(null)
 
-  // Reset edit state when entering edit mode
-  useEffect(() => {
-    if (editing) {
-      setEditText(subtitle.text)
-      setEditStart(formatTimeInput(subtitle.startTime))
-      setEditEnd(formatTimeInput(subtitle.endTime))
-      setTimeout(() => textRef.current?.focus(), 50)
-    }
-  }, [editing, subtitle])
+  const beginEdit = () => {
+    setEditText(subtitle.text)
+    setEditStart(formatTimeInput(subtitle.startTime))
+    setEditEnd(formatTimeInput(subtitle.endTime))
+    onEditStart()
+    window.setTimeout(() => textRef.current?.focus(), 50)
+  }
 
   const handleCopy = () => {
     navigator.clipboard.writeText(subtitle.text)
@@ -228,7 +226,7 @@ export const TranscriptSegment = memo(function TranscriptSegment({
       </ContextMenuTrigger>
 
       <ContextMenuContent>
-        <ContextMenuItem onClick={onEditStart}>
+        <ContextMenuItem onClick={beginEdit}>
           <HugeiconsIcon icon={PencilEdit01Icon} className="h-4 w-4" />
           编辑
         </ContextMenuItem>

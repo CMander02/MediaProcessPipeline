@@ -123,9 +123,6 @@ async def open_folder(req: OpenFolderRequest, request: Request):
     require_filesystem_access(request, get_runtime_settings())
     try:
         target = Path(req.path).expanduser().resolve()
-
-        from app.core.settings import get_runtime_settings
-
         data_root = Path(get_runtime_settings().data_root).resolve()
         try:
             target.relative_to(data_root)

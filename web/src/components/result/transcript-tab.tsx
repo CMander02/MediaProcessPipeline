@@ -137,7 +137,6 @@ export function TranscriptTab({
   const [searchQuery, setSearchQuery] = useState("")
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [isNewInsert, setIsNewInsert] = useState(false) // track if editing a freshly inserted subtitle
-  const [pendingScrollIndex, setPendingScrollIndex] = useState<number | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const segmentRefs = useRef<Map<number, HTMLDivElement>>(new Map())
   const isUserScrolling = useRef(false)
@@ -174,13 +173,6 @@ export function TranscriptTab({
 
     scrollToSegment(currentSegmentIndex)
   }, [currentSegmentIndex, autoScroll, searchQuery, editingIndex, scrollToSegment])
-
-  useEffect(() => {
-    if (pendingScrollIndex === null || searchQuery) return
-    if (scrollToSegment(pendingScrollIndex)) {
-      setPendingScrollIndex(null)
-    }
-  }, [filteredIndices.length, pendingScrollIndex, scrollToSegment, searchQuery])
 
   const handleScroll = useCallback(() => {
     if (programmaticScroll.current) return
@@ -274,10 +266,10 @@ export function TranscriptTab({
     if (targetIndex < 0 && subtitles.length > 0) targetIndex = 0
     if (targetIndex >= 0) {
       if (searchQuery) setSearchQuery("")
-      setPendingScrollIndex(targetIndex)
+      window.setTimeout(() => scrollToSegment(targetIndex), 0)
     }
     onTocSeek?.(timeMs)
-  }, [onTocSeek, searchQuery, subtitles])
+  }, [onTocSeek, scrollToSegment, searchQuery, subtitles])
 
   return (
     <div className="flex h-full min-h-0">

@@ -53,7 +53,7 @@ function VideoPlayer({
   useEffect(() => {
     if (!containerRef.current) return
 
-    const options: Record<string, any> = {
+    const options: ConstructorParameters<typeof Artplayer>[0] = {
       container: containerRef.current,
       url: src,
       volume: 1,
@@ -80,7 +80,7 @@ function VideoPlayer({
         html: "循环",
         tooltip: loop ? "开" : "关",
         switch: loop,
-        onSwitch(item: any) {
+        onSwitch(item) {
           const nextState = !item.switch
           if (art.video) art.video.loop = nextState
           onLoopChange?.(nextState)
@@ -91,12 +91,12 @@ function VideoPlayer({
     }
 
     if (vttUrl) {
-      options.subtitle = { url: vttUrl, type: "vtt", style: { "font-size": "18px" }, encoding: "utf-8" }
-      options.settings = [...options.settings, {
+      options.subtitle = { url: vttUrl, type: "vtt", style: { fontSize: "18px" }, encoding: "utf-8" }
+      options.settings = [...(options.settings ?? []), {
         html: "字幕",
         tooltip: "开",
         switch: true,
-        onSwitch(item: any) {
+        onSwitch(item) {
           const nextState = !item.switch
           art.subtitle.show = nextState
           item.tooltip = nextState ? "开" : "关"
@@ -105,7 +105,7 @@ function VideoPlayer({
       }]
     }
 
-    const art = new Artplayer(options as any)
+    const art = new Artplayer(options)
 
     artRef.current = art
 

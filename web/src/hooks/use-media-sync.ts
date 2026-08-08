@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { Subtitle } from "@/lib/srt"
 import { findSubtitleIndexAtTime } from "@/lib/srt"
 
@@ -15,29 +15,25 @@ export function useMediaSync({ subtitles, initialTime, onTimeUpdate }: UseMediaS
   const [currentTime, setCurrentTime] = useState(0) // seconds
   const [duration, setDuration] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
-  const [currentSegmentIndex, setCurrentSegmentIndex] = useState(-1)
   const [autoScroll, setAutoScroll] = useState(true)
   const autoScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const initialTimeApplied = useRef(false)
 
-  // Update current segment on time change
-  useEffect(() => {
-    if (subtitles.length === 0) return
+  const currentSegmentIndex = useMemo(() => {
+    if (subtitles.length === 0) return -1
     const timeMs = currentTime * 1000
     const idx = findSubtitleIndexAtTime(subtitles, timeMs)
-    // Only set if the subtitle actually contains currentTime
-    if (idx >= 0 && timeMs <= subtitles[idx].endTime) {
-      setCurrentSegmentIndex(idx)
-    } else {
-      setCurrentSegmentIndex(-1)
-    }
+    return idx >= 0 && timeMs <= subtitles[idx].endTime ? idx : -1
   }, [currentTime, subtitles])
 
   // Stable refs for callbacks so bindMedia doesn't re-create on every render
   const onTimeUpdateCbRef = useRef(onTimeUpdate)
-  onTimeUpdateCbRef.current = onTimeUpdate
   const initialTimeRef = useRef(initialTime)
-  initialTimeRef.current = initialTime
+
+  useEffect(() => {
+    onTimeUpdateCbRef.current = onTimeUpdate
+    initialTimeRef.current = initialTime
+  }, [initialTime, onTimeUpdate])
 
   // Bind media element events
   const bindMedia = useCallback((el: HTMLMediaElement | null) => {

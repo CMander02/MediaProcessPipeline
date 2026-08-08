@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { ArrowLeft01Icon, ArrowRight01Icon, Loading03Icon } from "@hugeicons/core-free-icons"
@@ -13,45 +13,37 @@ export interface ImageDescription {
 }
 
 interface Props {
-  archivePath: string
   descriptions: ImageDescription[]
   activeIndex?: number
   onImageIndexChange?: (index: number) => void
   isProcessing?: boolean
 }
 
-export function ImageNoteViewer({ archivePath, descriptions, activeIndex, onImageIndexChange, isProcessing }: Props) {
-  const [currentIdx, setCurrentIdx] = useState(0)
-  const [imgError, setImgError] = useState(false)
+export function ImageNoteViewer({ descriptions, activeIndex, onImageIndexChange, isProcessing }: Props) {
+  const [selectedIdx, setSelectedIdx] = useState(0)
+  const [failedImagePath, setFailedImagePath] = useState<string | null>(null)
   const [lightboxOpen, setLightboxOpen] = useState(false)
 
   const total = descriptions.length
+  const activeDescriptionIndex = typeof activeIndex === "number"
+    ? descriptions.findIndex((item) => item.index === activeIndex)
+    : -1
+  const controlledIdx = activeDescriptionIndex >= 0 ? activeDescriptionIndex : activeIndex
+  const currentIdx = typeof controlledIdx === "number" && controlledIdx >= 0 && controlledIdx < total
+    ? controlledIdx
+    : Math.max(0, Math.min(total - 1, selectedIdx))
   const current = descriptions[currentIdx]
+  const imgError = Boolean(current?.image_path && failedImagePath === current.image_path)
 
   const setImageIndex = useCallback((nextIndex: number) => {
     const next = Math.max(0, Math.min(total - 1, nextIndex))
-    setCurrentIdx(next)
+    setSelectedIdx(next)
     onImageIndexChange?.(descriptions[next]?.index ?? next)
-    setImgError(false)
   }, [descriptions, total, onImageIndexChange])
 
   const go = useCallback((delta: number) => {
     setImageIndex(currentIdx + delta)
   }, [currentIdx, setImageIndex])
-
-  useEffect(() => {
-    setImgError(false)
-  }, [currentIdx])
-
-  useEffect(() => {
-    if (typeof activeIndex !== "number" || total <= 0) return
-    const byDescriptionIndex = descriptions.findIndex((item) => item.index === activeIndex)
-    const next = byDescriptionIndex >= 0 ? byDescriptionIndex : activeIndex
-    if (next >= 0 && next < total && next !== currentIdx) {
-      setCurrentIdx(next)
-      setImgError(false)
-    }
-  }, [activeIndex, currentIdx, descriptions, total])
 
   if (isProcessing && total === 0) {
     return (
@@ -93,7 +85,7 @@ export function ImageNoteViewer({ archivePath, descriptions, activeIndex, onImag
               src={imgUrl}
               alt={`图片 ${currentIdx + 1}`}
               className="max-h-full max-w-full object-contain"
-              onError={() => setImgError(true)}
+              onError={() => setFailedImagePath(current.image_path)}
             />
           </button>
         ) : (

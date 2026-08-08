@@ -1,10 +1,6 @@
 import { useRef, useState, type ReactNode } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
-  ChevronDownIcon,
-  ChevronRightIcon,
-  CircleMinusIcon,
-  CirclePlusIcon,
   Delete01Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons"
@@ -1987,7 +1983,7 @@ function getCustomProfiles(settings: Settings): CustomProfile[] {
   }]
 }
 
-function CustomProfilesEditor({
+export function CustomProfilesEditor({
   settings,
   updateSettings,
 }: {
@@ -2258,7 +2254,7 @@ function AudioFlowControls({
 
 type DeepSeekConfigProps = SharedSettingsProps
 
-function DeepSeekConfig({ settings, updateSetting, saving, saved }: DeepSeekConfigProps) {
+export function DeepSeekConfig({ settings, updateSetting, saving, saved }: DeepSeekConfigProps) {
   return (
     <div className="space-y-4">
       <p className="text-xs text-muted-foreground">

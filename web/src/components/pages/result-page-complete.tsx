@@ -1327,7 +1327,6 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
       ) : isImageNote ? (
         <div className="h-full">
           <ImageNoteViewer
-            archivePath={archivePath}
             descriptions={imageDescriptions}
             activeIndex={activeImageIdx}
             onImageIndexChange={setActiveImageIdx}
@@ -1833,7 +1832,6 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
               ) : isImageNote ? (
                 <div className="h-full">
                   <ImageNoteViewer
-                    archivePath={archivePath}
                     descriptions={imageDescriptions}
                     activeIndex={activeImageIdx}
                     onImageIndexChange={setActiveImageIdx}
