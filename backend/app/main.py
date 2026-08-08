@@ -20,6 +20,7 @@ from app.core.logging_setup import setup_logging
 from app.core.pipeline import process_task
 from app.core.queue import get_task_queue
 from app.core.security import request_is_authenticated
+from app.version import __version__
 
 # Force UTF-8 encoding for stdout/stderr on Windows
 if sys.platform == "win32":
@@ -101,7 +102,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=config.api_title,
-    version=config.api_version,
+    version=__version__,
     debug=config.debug,
     lifespan=lifespan,
 )
@@ -170,7 +171,7 @@ app.include_router(auth.router, prefix="/api")
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "service": config.api_title, "version": config.api_version}
+    return {"status": "healthy", "service": config.api_title, "version": __version__}
 
 
 # Serve frontend static files (built Vite output)

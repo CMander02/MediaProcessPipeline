@@ -55,6 +55,7 @@ _json_mode: bool = False
 @app.callback(invoke_without_command=True)
 def _global_options(
     ctx: typer.Context,
+    version: bool = typer.Option(False, "--version", help="显示 MPP 版本", is_eager=True),
     plain: bool = typer.Option(False, "--plain", help="纯文本输出，无颜色，无 Unicode 图标（ASCII）"),
     no_color: bool = typer.Option(False, "--no-color", help="去掉颜色，保留格式结构"),
     json_out: bool = typer.Option(False, "--json", help="机器可读 JSON 输出（stdout）"),
@@ -64,6 +65,12 @@ def _global_options(
     ),
 ) -> None:
     global _plain_mode, _json_mode
+    if version:
+        from app.version import __version__
+
+        typer.echo(f"MPP {__version__}")
+        raise typer.Exit()
+
     _plain_mode = plain or (os.environ.get("MPP_PLAIN_OUTPUT") == "1")
     _json_mode = json_out
 

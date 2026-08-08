@@ -158,7 +158,7 @@ uv run python -m app.cli serve     # 启动 daemon :18000
 
 **旧客户端兼容**
 
-Tauri 与 Compose Android 代码保留兼容维护。新 UI 与交互统一进入 `web/`。
+Tauri 与 Compose Android 客户端冻结在 `0.4.1` 并保留兼容维护。`0.4.2` 起的新 UI 与交互统一进入 `web/`。
 
 ### 开发模式
 

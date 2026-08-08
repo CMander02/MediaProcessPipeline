@@ -1,9 +1,10 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.version import __version__
 
 
 class LLMProviderConfig(BaseModel):
@@ -24,7 +25,7 @@ class Settings(BaseSettings):
 
     # API Settings
     api_title: str = "Media Process Pipeline"
-    api_version: str = "0.4.0"
+    api_version: str = __version__
     debug: bool = False
 
     # CORS
