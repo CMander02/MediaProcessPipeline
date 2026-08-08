@@ -1,5 +1,7 @@
 export type MediaFilter = "all" | "video" | "audio" | "image"
 
+export type ArchiveSort = "created_desc" | "created_asc" | "published_desc" | "title_asc"
+
 export type SourceFilter =
   | "all"
   | "xiaohongshu"

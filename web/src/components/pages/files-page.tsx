@@ -3,7 +3,7 @@ import { useArchives } from "@/hooks/use-archives"
 import { usePreferences } from "@/hooks/use-preferences"
 import { navigate } from "@/lib/router"
 import { api } from "@/lib/api"
-import { sourceFilterFromMetadata, type MediaFilter, type SourceFilter } from "@/lib/archive-filters"
+import { sourceFilterFromMetadata, type ArchiveSort, type MediaFilter, type SourceFilter } from "@/lib/archive-filters"
 import type { ArchiveItem } from "@/hooks/use-archives"
 import { ArchiveCard } from "@/components/archive-card"
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
@@ -16,8 +16,7 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination"
-import { HugeiconsIcon } from "@hugeicons/react"
-import { Loading03Icon, FolderOpenIcon } from "@hugeicons/core-free-icons"
+import { EmptyState, LoadingState } from "@/components/ui/page-state"
 
 const PAGE_SIZE = 28
 const MIN_PAGE_SIZE = 1
@@ -28,8 +27,6 @@ interface FilesPageProps {
   sourceFilter: SourceFilter
   sort: ArchiveSort
 }
-
-export type ArchiveSort = "created_desc" | "created_asc" | "published_desc" | "title_asc"
 
 export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPageProps) {
   const { archives, loading, refresh, removeArchive } = useArchives()
@@ -217,11 +214,7 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
   const pageItems = getPaginationItems(safePage, totalPages, paginationRangeSize)
 
   if (loading) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <HugeiconsIcon icon={Loading03Icon} className="h-5 w-5 animate-spin text-muted-foreground" />
-      </div>
-    )
+    return <LoadingState title="正在加载文件" className="h-full" />
   }
 
   return (
@@ -257,14 +250,11 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
           ))}
         </div>
       ) : (
-        <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 text-muted-foreground">
-          <HugeiconsIcon icon={FolderOpenIcon} className="h-12 w-12 opacity-20" />
-          {archives.length === 0 ? (
-            <p>还没有归档结果。处理完成后这里会显示文件。</p>
-          ) : (
-            <p>没有匹配的结果</p>
-          )}
-        </div>
+        <EmptyState
+          className="h-full min-h-0"
+          title={archives.length === 0 ? "还没有归档结果" : "没有匹配的结果"}
+          description={archives.length === 0 ? "处理完成后，文件会显示在这里。" : "调整搜索条件或筛选项后再试。"}
+        />
       )}
 
       {/* Pagination */}
@@ -330,7 +320,7 @@ function getPaginationItems(currentPage: number, totalPages: number, rangeSize: 
 
   const half = Math.floor(rangeSize / 2)
   let start = Math.max(1, currentPage - half)
-  let end = Math.min(totalPages, start + rangeSize - 1)
+  const end = Math.min(totalPages, start + rangeSize - 1)
   start = Math.max(1, end - rangeSize + 1)
 
   const pages = new Set<number>([1, totalPages])

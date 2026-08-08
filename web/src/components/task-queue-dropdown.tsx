@@ -130,7 +130,9 @@ export function TaskQueueDropdown() {
         api.tasks.list("paused", 200),
       ])
       setActiveTasks([...processing, ...queued, ...paused])
-    } catch {}
+    } catch (error) {
+      console.debug("Task queue refresh deferred:", error)
+    }
   }, [])
 
   const scheduleRefresh = useCallback(() => {
@@ -204,7 +206,7 @@ export function TaskQueueDropdown() {
       <button
         onClick={() => setOpen(!open)}
         className={cn(
-          "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors",
+          "flex min-h-11 items-center gap-1.5 rounded-md px-2 text-xs transition-colors md:min-h-9",
           open
             ? "bg-primary/10 text-primary"
             : "text-muted-foreground hover:text-foreground hover:bg-muted",
@@ -219,7 +221,7 @@ export function TaskQueueDropdown() {
 
       {/* Dropdown panel */}
       {open && (
-        <div className="absolute right-0 top-full mt-1.5 z-50 w-80 rounded-lg border bg-background shadow-lg">
+        <div className="absolute right-0 top-full z-50 mt-1.5 w-[min(20rem,calc(100vw-1.5rem))] rounded-lg border bg-background shadow-lg">
           <div className="px-3 py-2 border-b">
             <span className="text-xs font-medium text-muted-foreground">
               处理队列 ({processingCount} 进行中
