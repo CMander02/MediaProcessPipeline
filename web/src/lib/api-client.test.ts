@@ -2,10 +2,10 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { api, configureApiClient } from "./api"
+import { api, configureApiClient, subscribeAllEvents } from "./api"
 
 afterEach(() => {
-  configureApiClient({ baseUrl: "", credentials: "include", credentialProvider: () => ({}) })
+  configureApiClient({ baseUrl: "", credentials: "include", credentialProvider: () => ({}), requestedWith: "fetch" })
   vi.restoreAllMocks()
 })
 
@@ -55,5 +55,50 @@ describe("API client", () => {
     expect(handler).toHaveBeenCalledOnce()
 
     window.removeEventListener("mpp:offline", handler)
+  })
+
+  it("streams Android SSE with the Bearer header", async () => {
+    const payload = { task_id: "task-1", type: "snapshot", data: {}, timestamp: "2026-08-09T00:00:00Z" }
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(payload)}\n\n`))
+        controller.close()
+      },
+    })
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(stream, { status: 200 }))
+    configureApiClient({
+      baseUrl: "https://mpp.example.com",
+      credentials: "omit",
+      credentialProvider: () => ({ Authorization: "Bearer android-token" }),
+      requestedWith: "mpp-android",
+    })
+    const handler = vi.fn()
+
+    const unsubscribe = subscribeAllEvents(handler)
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledWith(payload))
+    unsubscribe()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://mpp.example.com/api/tasks/events",
+      expect.objectContaining({
+        credentials: "omit",
+        headers: expect.objectContaining({ Authorization: "Bearer android-token" }),
+      }),
+    )
+  })
+
+  it("marks Android mutations with the native request source", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([]), { status: 200 }))
+    configureApiClient({ requestedWith: "mpp-android" })
+
+    await api.tasks.createBatch(["https://example.com/video"])
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/tasks/batch",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-Requested-With": "mpp-android" }),
+      }),
+    )
   })
 })

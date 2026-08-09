@@ -33,6 +33,7 @@ class Settings(BaseSettings):
         "http://localhost:5173",
         "capacitor://localhost",
         "http://localhost",
+        "https://localhost",
     ]
 
     # Data paths - simplified flat structure

@@ -256,22 +256,29 @@ export class ApiRequestError extends Error {
   }
 }
 
-interface ApiClientConfig {
+export interface ApiClientConfig {
   baseUrl: string
   credentials: RequestCredentials
   credentialProvider: () => HeadersInit
+  requestedWith: string
 }
 
 const apiClientConfig: ApiClientConfig = {
   baseUrl: String(import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, ""),
   credentials: "include",
   credentialProvider: () => ({}),
+  requestedWith: "fetch",
 }
 
 export function configureApiClient(config: Partial<ApiClientConfig>) {
   if (typeof config.baseUrl === "string") apiClientConfig.baseUrl = config.baseUrl.replace(/\/$/, "")
   if (config.credentials) apiClientConfig.credentials = config.credentials
   if (config.credentialProvider) apiClientConfig.credentialProvider = config.credentialProvider
+  if (config.requestedWith) apiClientConfig.requestedWith = config.requestedWith
+}
+
+export function getApiClientConfig(): ApiClientConfig {
+  return { ...apiClientConfig }
 }
 
 export function resolveApiUrl(path: string): string {
@@ -286,11 +293,11 @@ function headers(json = false): HeadersInit {
 }
 
 function requestedJsonHeaders(): HeadersInit {
-  return { ...headers(true), "X-Requested-With": "fetch" }
+  return { ...headers(true), "X-Requested-With": apiClientConfig.requestedWith }
 }
 
 function requestedHeaders(): HeadersInit {
-  return { ...headers(false), "X-Requested-With": "fetch" }
+  return { ...headers(false), "X-Requested-With": apiClientConfig.requestedWith }
 }
 
 async function parseError(res: Response, path: string): Promise<ApiRequestError> {
@@ -393,6 +400,12 @@ export const api = {
   auth: {
     status: () => get<AuthStatus>("/api/auth/status"),
     unlock: (token: string) => post<AuthStatus>("/api/auth/unlock", { token }),
+    unlockForNative: (token: string) => request<AuthStatus>("/api/auth/unlock", {
+      method: "POST",
+      credentials: "include",
+      headers: requestedJsonHeaders(),
+      body: JSON.stringify({ token, client: "android" }),
+    }),
     logout: () => post<AuthStatus>("/api/auth/logout"),
   },
 
@@ -625,27 +638,116 @@ export function subscribeTaskEvents(
   taskId: string,
   onEvent: (event: { task_id: string; type: string; data: Record<string, unknown>; timestamp: string }) => void,
 ): () => void {
-  const es = new EventSource(resolveApiUrl(`/api/tasks/${taskId}/events`), { withCredentials: true })
-  es.onmessage = (e) => {
-    try {
-      onEvent(JSON.parse(e.data))
-    } catch {
-      // Ignore malformed SSE payloads from interrupted connections.
-    }
-  }
-  return () => es.close()
+  return subscribeEvents(`/api/tasks/${taskId}/events`, onEvent)
 }
 
 export function subscribeAllEvents(
   onEvent: (event: { task_id: string; type: string; data: Record<string, unknown>; timestamp: string }) => void,
 ): () => void {
-  const es = new EventSource(resolveApiUrl("/api/tasks/events"), { withCredentials: true })
-  es.onmessage = (e) => {
-    try {
-      onEvent(JSON.parse(e.data))
-    } catch {
-      // Ignore malformed SSE payloads from interrupted connections.
-    }
+  return subscribeEvents("/api/tasks/events", onEvent)
+}
+
+type TaskEventPayload = { task_id: string; type: string; data: Record<string, unknown>; timestamp: string }
+
+function subscribeEvents(path: string, onEvent: (event: TaskEventPayload) => void): () => void {
+  const subscriptionHeaders = headers()
+  const normalizedHeaders = new Headers(subscriptionHeaders)
+
+  if (!normalizedHeaders.has("Authorization")) {
+    const eventSource = new EventSource(resolveApiUrl(path), {
+      withCredentials: apiClientConfig.credentials === "include",
+    })
+    eventSource.onmessage = (event) => emitSsePayload(event.data, onEvent)
+    return () => eventSource.close()
   }
-  return () => es.close()
+
+  const controller = new AbortController()
+  void streamAuthenticatedEvents(path, subscriptionHeaders, controller.signal, onEvent)
+  return () => controller.abort()
+}
+
+async function streamAuthenticatedEvents(
+  path: string,
+  requestHeaders: HeadersInit,
+  signal: AbortSignal,
+  onEvent: (event: TaskEventPayload) => void,
+) {
+  while (!signal.aborted) {
+    const shouldReconnect = await readAuthenticatedEventStream(path, requestHeaders, signal, onEvent)
+    if (!shouldReconnect || signal.aborted) return
+    await waitForReconnect(signal)
+  }
+}
+
+async function readAuthenticatedEventStream(
+  path: string,
+  requestHeaders: HeadersInit,
+  signal: AbortSignal,
+  onEvent: (event: TaskEventPayload) => void,
+): Promise<boolean> {
+  try {
+    const response = await fetch(resolveApiUrl(path), {
+      credentials: apiClientConfig.credentials,
+      headers: requestHeaders,
+      signal,
+    })
+    if (!response.ok) {
+      const error = await parseError(response, path)
+      if (response.status === 401 || response.status === 403) {
+        dispatchApiEvent("mpp:api-error", { status: response.status, path, message: error.message })
+        return false
+      }
+      throw error
+    }
+    if (!response.body) throw new Error("服务未返回事件流")
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ""
+    while (!signal.aborted) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      buffer = buffer.replace(/\r\n/g, "\n")
+      let boundary = buffer.indexOf("\n\n")
+      while (boundary >= 0) {
+        const frame = buffer.slice(0, boundary)
+        buffer = buffer.slice(boundary + 2)
+        const payload = frame
+          .split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart())
+          .join("\n")
+        if (payload) emitSsePayload(payload, onEvent)
+        boundary = buffer.indexOf("\n\n")
+      }
+    }
+    return true
+  } catch (error) {
+    if (signal.aborted) return false
+    if (!(error instanceof ApiRequestError && (error.status === 401 || error.status === 403))) {
+      dispatchApiEvent("mpp:offline", { path })
+    }
+    return !(error instanceof ApiRequestError && (error.status === 401 || error.status === 403))
+  }
+}
+
+function waitForReconnect(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const finish = () => {
+      window.clearTimeout(timer)
+      signal.removeEventListener("abort", finish)
+      resolve()
+    }
+    const timer = window.setTimeout(finish, 1500)
+    signal.addEventListener("abort", finish, { once: true })
+  })
+}
+
+function emitSsePayload(data: string, onEvent: (event: TaskEventPayload) => void) {
+  try {
+    onEvent(JSON.parse(data) as TaskEventPayload)
+  } catch {
+    // Interrupted or incomplete frames are ignored until the next refresh.
+  }
 }

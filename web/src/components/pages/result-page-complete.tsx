@@ -31,7 +31,7 @@ import { useAppAccess } from "@/hooks/use-app-access-context"
 import { parseSRT, subtitlesToMarkdown, subtitlesToSRT, type Subtitle } from "@/lib/srt"
 import { navigate } from "@/lib/router"
 import { api, type Task, type TaskFlowSnapshot, type TaskTimelineEvent } from "@/lib/api"
-import { openExternalUrl } from "@/lib/tauri"
+import { usePlatform } from "@/platform/use-platform"
 import { MediaPlayer } from "@/components/result/media-player"
 import { SpeakerPanel } from "@/components/result/speaker-panel"
 import { TranscriptTab, type MindmapTocNode } from "@/components/result/transcript-tab"
@@ -479,6 +479,7 @@ function ArticleNoteReader({
 }
 
 export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
+  const platformAdapter = usePlatform()
   const { capabilities } = useAppAccess()
   const { archives, refresh: refreshArchives } = useArchives()
   const { prefs, update: updatePrefs } = usePreferences()
@@ -1192,24 +1193,22 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     setTimeout(() => setCopied(false), 2000)
   }
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     const tab = getTabContent()
     if (!tab?.content) return
     const baseName = (displayTitle ?? "output").replace(/[/\\:*?"<>|]/g, "_")
     const filename = `${baseName}-${tab.suffix}.${tab.ext}`
-    const blob = new Blob([tab.content], { type: "text/plain;charset=utf-8" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = filename
-    a.click()
-    URL.revokeObjectURL(url)
+    try {
+      await platformAdapter.saveTextFile(filename, tab.content)
+    } catch (error) {
+      window.alert(`下载失败：${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   const handleOpenSource = useCallback(() => {
     if (!sourceHref) return
-    void openExternalUrl(sourceHref)
-  }, [sourceHref])
+    void platformAdapter.openExternal(sourceHref)
+  }, [platformAdapter, sourceHref])
 
   const handleResumeFromCheckpoint = useCallback(async () => {
     if (resuming) return

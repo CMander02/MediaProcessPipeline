@@ -11,7 +11,7 @@
 - **语音转录**: 支持 API ASR、Qwen3-ASR GGUF/llama.cpp、本地 Qwen3-ASR
 - **智能润色**: LLM 滑动窗口润色，修正错字、添加标点
 - **内容分析**: 自动提取关键信息、生成摘要和思维导图（支持 map-reduce 长文本）
-- **统一 Web/PWA**: 同一 React 界面服务本机 PC、服务器浏览器和手机
+- **统一 Web/PWA/Android**: 同一 React 界面服务本机 PC、服务器浏览器和 Capacitor Android
 - **响应式体验**: PC/Pad 使用顶部导航，手机使用底部导航与触控布局
 
 ## 项目结构
@@ -32,7 +32,8 @@ MediaProcessPipeline/
 │   │       └── archiving/      # 结果归档
 │   └── run.py
 ├── web/                        # Vite + React 19 + shadcn/ui
-│   └── src/
+│   ├── src/                    # PC、服务器与 Android 的唯一 UI 源码
+│   └── android/                # Capacitor Android 轻量原生外壳
 ├── web/src-tauri/              # 冻结的 Tauri 兼容代码
 │   └── src/main.rs
 ├── android/                    # 冻结的 Compose 兼容客户端
@@ -138,7 +139,18 @@ uv run python -m app.cli serve     # 启动 daemon :18000
 
 浏览器打开 [http://localhost:18000](http://localhost:18000)。
 
-**方式 3：CLI**
+**方式 3：Android App**
+
+Android 复用 `web/src/`，首次打开后填写 MPP 服务器地址和 API Token。构建环境需要 Node.js 22+、Android Studio 2025.2.1+ 和 Android SDK 36。
+
+```powershell
+cd web
+npm run android:apk
+```
+
+Debug APK 输出到 `web/android/app/build/outputs/apk/debug/app-debug.apk`。连接、ADB 调试、Keystore 和 Release 签名说明见 [Capacitor Android 构建与调试](docs/android-capacitor.md)。
+
+**方式 4：CLI**
 
 ```bash
 # PowerShell
@@ -158,7 +170,7 @@ uv run python -m app.cli serve     # 启动 daemon :18000
 
 **旧客户端兼容**
 
-Tauri 与 Compose Android 客户端冻结在 `0.4.1` 并保留兼容维护。`0.4.2` 起的新 UI 与交互统一进入 `web/`。
+Tauri 与根目录 Compose Android 客户端保持冻结。`0.4.3` 的 Android App 由 `web/android/` Capacitor 外壳承载，UI 与交互统一进入 `web/src/`。
 
 ### 开发模式
 

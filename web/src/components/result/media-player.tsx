@@ -72,7 +72,7 @@ function VideoPlayer({
       theme: "#3b82f6",
       lang: "zh-cn",
       moreVideoAttr: {
-        crossOrigin: "anonymous",
+        crossOrigin: "use-credentials",
         preload: "metadata",
         loop,
       },

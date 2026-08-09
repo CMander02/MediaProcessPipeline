@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, type FormEvent, type KeyboardEvent } from "react"
+import { useEffect, useState, useRef, useCallback, type FormEvent, type KeyboardEvent } from "react"
 import { useDropZone } from "@/hooks/use-drop-zone"
 import { useSubmitHistory } from "@/hooks/use-submit-history"
 import { useAppAccess } from "@/hooks/use-app-access-context"
@@ -15,6 +15,7 @@ import {
 } from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
 import { formatDuration } from "@/lib/format"
+import { usePlatform } from "@/platform/use-platform"
 
 interface QueuedFile {
   id: string
@@ -63,6 +64,7 @@ type SubtitleStrategy = "auto" | "force_asr"
 
 export function SubmitPage() {
   const { capabilities } = useAppAccess()
+  const platform = usePlatform()
   const submitHistory = useSubmitHistory()
   const [source, setSource] = useState("")
   const [queuedFiles, setQueuedFiles] = useState<QueuedFile[]>([])
@@ -81,6 +83,21 @@ export function SubmitPage() {
   const folderInputRef = useRef<HTMLInputElement>(null)
   const hotwordInputRef = useRef<HTMLInputElement>(null)
   const abortControllers = useRef<Map<string, AbortController>>(new Map())
+
+  useEffect(() => {
+    const applyShare = (text: string) => {
+      setSource(text)
+      setCollection(null)
+    }
+    const pending = platform.consumeSharedText()
+    if (pending) applyShare(pending)
+    const handleShare = (event: Event) => {
+      const text = (event as CustomEvent<{ text?: string }>).detail?.text?.trim()
+      if (text) applyShare(text)
+    }
+    window.addEventListener("mpp:share-received", handleShare)
+    return () => window.removeEventListener("mpp:share-received", handleShare)
+  }, [platform])
 
   const buildOptions = () => {
     const opts: Record<string, unknown> = {}
@@ -669,7 +686,7 @@ export function SubmitPage() {
           </div>
 
           {/* Footer hint */}
-          <div className="shrink-0 px-4 py-2 border-t">
+          {(capabilities.filesystem_browse || capabilities.browser_folder_upload) && <div className="shrink-0 px-4 py-2 border-t">
             <button
               className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
               onClick={() => setShowFolderDialog(true)}
@@ -677,7 +694,7 @@ export function SubmitPage() {
               <HugeiconsIcon icon={Folder01Icon} className="h-3.5 w-3.5" />
               从文件夹继续添加
             </button>
-          </div>
+          </div>}
         </div>
       )}
     </div>

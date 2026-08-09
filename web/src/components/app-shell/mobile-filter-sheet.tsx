@@ -135,7 +135,7 @@ export function MobileFilterSheet({
           </section>
         </div>
 
-        <DialogFooter className="grid grid-cols-2 gap-2 border-t px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
+        <DialogFooter className="grid grid-cols-2 gap-2 border-t px-4 pb-[max(1rem,var(--mpp-safe-bottom))] pt-3">
           <Button variant="outline" className="h-11" onClick={reset}>恢复默认</Button>
           <Button className="h-11" onClick={() => onOpenChange(false)}>完成</Button>
         </DialogFooter>

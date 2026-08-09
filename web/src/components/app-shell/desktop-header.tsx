@@ -10,7 +10,7 @@ interface DesktopHeaderProps {
 
 export function DesktopHeader({ activePage }: DesktopHeaderProps) {
   return (
-    <div className="hidden shrink-0 items-center gap-5 md:flex">
+    <div className="hidden shrink-0 items-center gap-5 md:flex" data-desktop-header>
       <button
         type="button"
         className="flex h-9 items-center gap-2 rounded-md px-1 text-foreground"

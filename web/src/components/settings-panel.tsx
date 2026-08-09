@@ -15,6 +15,9 @@ import { LocalModelSettings, PurposeModelBindings, RegistrySettings } from "@/co
 import { BilibiliCard, PlaceholderSection, TwitterCard, XiaohongshuCard, YoutubeCard, ZhihuCard } from "@/components/settings/source-cards"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Loading03Icon, Tick02Icon, Moon02Icon, Sun01Icon } from "@hugeicons/core-free-icons"
+import { NativeConnectionSettings } from "@/components/native-connection"
+import { usePlatform } from "@/platform/use-platform"
+import { getThemePreference, setThemePreference, type ThemePreference } from "@/lib/theme"
 
 // --- Tab definitions ---
 
@@ -36,6 +39,7 @@ const TABS: TabDef[] = [
 ]
 
 export function SettingsPanel() {
+  const platform = usePlatform()
   const [settings, setSettings] = useState<Settings | null>(null)
   const [saving, setSaving] = useState<Record<string, boolean>>({})
   const [saved, setSaved] = useState<Record<string, boolean>>({})
@@ -43,9 +47,8 @@ export function SettingsPanel() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [apiTokenInput, setApiTokenInput] = useState("")
   const [authenticating, setAuthenticating] = useState(false)
-  const [darkMode, setDarkMode] = useState(
-    () => document.documentElement.classList.contains("dark"),
-  )
+  const [themePreference, setThemePreferenceState] = useState<ThemePreference>(getThemePreference)
+  const [darkMode, setDarkMode] = useState(() => document.documentElement.classList.contains("dark"))
   const { prefs, update: updatePrefs } = usePreferences()
   const [activeTab, setActiveTab] = useState<TabId>("overall")
   const [uvrDetecting, setUvrDetecting] = useState(false)
@@ -141,11 +144,18 @@ export function SettingsPanel() {
     [updateSettings],
   )
 
-  const toggleDark = () => {
-    const next = !darkMode
-    setDarkMode(next)
-    document.documentElement.classList.toggle("dark", next)
-    localStorage.setItem("theme", next ? "dark" : "light")
+  useEffect(() => {
+    const handleThemeChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ preference: ThemePreference; dark: boolean }>).detail
+      setThemePreferenceState(detail.preference)
+      setDarkMode(detail.dark)
+    }
+    window.addEventListener("mpp:theme-change", handleThemeChange)
+    return () => window.removeEventListener("mpp:theme-change", handleThemeChange)
+  }, [])
+
+  const updateTheme = (value: string) => {
+    setThemePreference(value as ThemePreference)
   }
 
   if (!settings) {
@@ -273,7 +283,7 @@ export function SettingsPanel() {
 
         {/* Left sidebar */}
         <nav className="hidden w-full shrink-0 rounded-lg border bg-card p-1 lg:sticky lg:top-5 lg:block lg:h-fit lg:w-[220px] lg:space-y-1 lg:p-2">
-          {TABS.map((tab) => {
+          {TABS.filter((tab) => !platform.isNative || tab.mobile).map((tab) => {
             const isActive = activeTab === tab.id
 
             return (
@@ -307,6 +317,7 @@ export function SettingsPanel() {
           {/* ── Overall ── */}
           {activeTab === "overall" && (
             <div className="h-full min-h-0 space-y-4 overflow-y-auto pr-1">
+              <NativeConnectionSettings />
               {/* Appearance */}
               <Card>
                 <CardHeader className="pb-3">
@@ -318,9 +329,18 @@ export function SettingsPanel() {
                       {darkMode
                         ? <HugeiconsIcon icon={Moon02Icon} className="h-4 w-4" />
                         : <HugeiconsIcon icon={Sun01Icon} className="h-4 w-4" />}
-                      <Label>深色模式</Label>
+                      <Label htmlFor="theme-preference">主题</Label>
                     </div>
-                    <Switch checked={darkMode} onCheckedChange={toggleDark} />
+                    <Select value={themePreference} onValueChange={updateTheme}>
+                      <SelectTrigger id="theme-preference" className="h-11 w-32 md:h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="system">跟随系统</SelectItem>
+                        <SelectItem value="light">浅色</SelectItem>
+                        <SelectItem value="dark">深色</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
                 </CardContent>
               </Card>
@@ -366,7 +386,7 @@ export function SettingsPanel() {
                 </CardContent>
               </Card>
 
-              <div className="hidden space-y-4 md:block">
+              <div className={platform.isNative ? "hidden" : "hidden space-y-4 md:block"}>
               {/* Data Paths */}
               <Card>
                 <CardHeader className="pb-3">

@@ -20,6 +20,7 @@ router = APIRouter(tags=["access"])
 
 class UnlockRequest(BaseModel):
     token: str
+    client: str | None = None
 
 
 def _access_status(request: Request) -> dict[str, object]:
@@ -44,13 +45,14 @@ async def auth_unlock(payload: UnlockRequest, request: Request, response: Respon
         raise HTTPException(status_code=401, detail="访问令牌无效。")
 
     if settings.api_token:
+        native_client = payload.client == "android"
         response.set_cookie(
             key=SESSION_COOKIE_NAME,
             value=settings.api_token,
             max_age=60 * 60 * 24 * 30,
             httponly=True,
             secure=request.url.scheme == "https",
-            samesite="strict",
+            samesite="none" if native_client and request.url.scheme == "https" else "strict",
             path="/",
         )
     return _access_status_with_auth(request, authenticated=True)

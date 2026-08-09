@@ -1,18 +1,24 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react"
 
 import { AppShell } from "@/components/app-shell/app-shell"
+import { NativeConnectionScreen } from "@/components/native-connection"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { LoadingState, OfflineState, UnauthorizedState } from "@/components/ui/page-state"
 import { AppAccessContext } from "@/hooks/use-app-access-context"
 import { api, type AuthStatus, type Capabilities } from "@/lib/api"
 import { useRoute } from "@/lib/router"
+import { usePlatform } from "@/platform/use-platform"
+import type { ServerConnection } from "@/platform"
 
 export function AppAccessBoundary({ children }: { children: ReactNode }) {
   const route = useRoute()
+  const platform = usePlatform()
   const [auth, setAuth] = useState<AuthStatus | null>(null)
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null)
-  const [connectionDown, setConnectionDown] = useState(() => typeof navigator !== "undefined" && !navigator.onLine)
+  const [connection, setConnection] = useState<ServerConnection | null>(null)
+  const [connectionDown, setConnectionDown] = useState(false)
+  const [editingConnection, setEditingConnection] = useState(false)
   const [unlockToken, setUnlockToken] = useState("")
   const [unlocking, setUnlocking] = useState(false)
   const [unlockError, setUnlockError] = useState<string | null>(null)
@@ -21,15 +27,23 @@ export function AppAccessBoundary({ children }: { children: ReactNode }) {
     try {
       const [nextAuth, nextCapabilities] = await Promise.all([api.auth.status(), api.capabilities()])
       setAuth(nextAuth)
-      setCapabilities(nextCapabilities)
+      setCapabilities(platform.applyCapabilities(nextCapabilities))
       setConnectionDown(false)
     } catch {
       setConnectionDown(true)
     }
-  }, [])
+  }, [platform])
 
   useEffect(() => {
-    void refresh()
+    let active = true
+    void platform.getConnection().then((nextConnection) => {
+      if (!active) return
+      setConnection(nextConnection)
+      if (nextConnection.configured) void refresh()
+    })
+    void platform.getNetworkStatus().then((connected) => {
+      if (active && !connected) setConnectionDown(true)
+    })
     const handleOnline = () => void refresh()
     const handleOffline = () => setConnectionDown(true)
     const handleApiError = (event: Event) => {
@@ -41,14 +55,25 @@ export function AppAccessBoundary({ children }: { children: ReactNode }) {
     window.addEventListener("mpp:offline", handleOffline)
     window.addEventListener("mpp:api-error", handleApiError)
     window.addEventListener("mpp:capabilities-change", handleOnline)
+    window.addEventListener("mpp:app-resume", handleOnline)
+    window.addEventListener("mpp:connection-change", handleOnline)
     return () => {
+      active = false
       window.removeEventListener("online", handleOnline)
       window.removeEventListener("offline", handleOffline)
       window.removeEventListener("mpp:offline", handleOffline)
       window.removeEventListener("mpp:api-error", handleApiError)
       window.removeEventListener("mpp:capabilities-change", handleOnline)
+      window.removeEventListener("mpp:app-resume", handleOnline)
+      window.removeEventListener("mpp:connection-change", handleOnline)
     }
-  }, [refresh])
+  }, [platform, refresh])
+
+  const handleNativeConnected = async () => {
+    setConnection(await platform.getConnection())
+    setEditingConnection(false)
+    await refresh()
+  }
 
   const unlock = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -58,7 +83,7 @@ export function AppAccessBoundary({ children }: { children: ReactNode }) {
       const nextAuth = await api.auth.unlock(unlockToken)
       const nextCapabilities = await api.capabilities()
       setAuth(nextAuth)
-      setCapabilities(nextCapabilities)
+      setCapabilities(platform.applyCapabilities(nextCapabilities))
       setUnlockToken("")
     } catch (error) {
       setUnlockError(error instanceof Error ? error.message : String(error))
@@ -67,13 +92,36 @@ export function AppAccessBoundary({ children }: { children: ReactNode }) {
     }
   }
 
+  if (!connection) {
+    return (
+      <AppShell activePage={route.page} runtimeControls={false}>
+        <LoadingState title="正在准备 MPP" className="h-full" />
+      </AppShell>
+    )
+  }
+
+  if (platform.isNative && (!connection.configured || editingConnection || (auth && !auth.authenticated))) {
+    return (
+      <AppShell activePage={route.page} runtimeControls={false}>
+        <NativeConnectionScreen serverUrl={connection.serverUrl} onConnected={handleNativeConnected} />
+      </AppShell>
+    )
+  }
+
   if (connectionDown) {
     return (
       <AppShell activePage={route.page} runtimeControls={false}>
         <OfflineState
           title="当前处于离线状态"
           description="应用外壳可以继续打开；连接恢复后即可读取归档和操作任务。"
-          action={<Button className="h-11" variant="outline" onClick={() => void refresh()}>重新连接</Button>}
+          action={(
+            <div className="flex gap-2">
+              <Button className="h-11" variant="outline" onClick={() => void refresh()}>重新连接</Button>
+              {platform.isNative && (
+                <Button className="h-11" onClick={() => setEditingConnection(true)}>连接设置</Button>
+              )}
+            </div>
+          )}
           className="h-full"
         />
       </AppShell>

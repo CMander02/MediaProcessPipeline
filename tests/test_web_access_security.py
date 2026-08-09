@@ -72,6 +72,47 @@ def test_browser_unlock_uses_http_only_cookie(tmp_path, monkeypatch):
     assert client.cookies.get(SESSION_COOKIE_NAME) is None
 
 
+def test_android_unlock_creates_secure_cross_site_media_session(tmp_path, monkeypatch):
+    runtime = _settings(tmp_path, api_token="secret-token")
+    monkeypatch.setattr(auth_route, "get_runtime_settings", lambda: runtime)
+
+    app = FastAPI()
+    app.include_router(auth_route.router, prefix="/api")
+    client = TestClient(app, base_url="https://mpp.example.com")
+
+    unlocked = client.post(
+        "/api/auth/unlock",
+        json={"token": "secret-token", "client": "android"},
+    )
+
+    assert unlocked.status_code == 200
+    set_cookie = unlocked.headers["set-cookie"].lower()
+    assert "httponly" in set_cookie
+    assert "secure" in set_cookie
+    assert "samesite=none" in set_cookie
+
+
+def test_main_cors_allows_capacitor_https_origin(tmp_path, monkeypatch):
+    from app import main as app_main
+
+    runtime = _settings(tmp_path, api_token="")
+    monkeypatch.setattr(settings_module, "_runtime_settings", runtime)
+    monkeypatch.setattr(app_main, "get_runtime_settings", lambda: runtime)
+
+    response = TestClient(app_main.app).options(
+        "/api/capabilities",
+        headers={
+            "Origin": "https://localhost",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization,x-requested-with",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://localhost"
+    assert response.headers["access-control-allow-credentials"] == "true"
+
+
 def test_remote_capabilities_and_filesystem_boundary(tmp_path, monkeypatch):
     runtime = _settings(tmp_path, allow_remote_filesystem=False)
     monkeypatch.setattr(auth_route, "get_runtime_settings", lambda: runtime)

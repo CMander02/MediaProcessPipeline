@@ -11,7 +11,8 @@ interface MobileBottomNavProps {
 export function MobileBottomNav({ activePage }: MobileBottomNavProps) {
   return (
     <nav
-      className="grid shrink-0 grid-cols-3 border-t bg-card px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1.5 md:hidden"
+      className="grid shrink-0 grid-cols-3 border-t bg-card px-2 pb-[max(0.5rem,var(--mpp-safe-bottom))] pt-1.5 md:hidden"
+      data-mobile-bottom-nav
       aria-label="主导航"
     >
       {PRIMARY_NAV_ITEMS.map((item) => {

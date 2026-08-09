@@ -21,11 +21,11 @@ export function AppShell({ activePage, toolbar, children, runtimeControls = true
 
   return (
     <div className="flex h-screen supports-[height:100dvh]:h-dvh flex-col overflow-hidden bg-background">
-      <header className="shrink-0 border-b bg-card pt-[env(safe-area-inset-top)]">
+      <header className="shrink-0 border-b bg-card pt-[var(--mpp-safe-top)]">
         <div className="flex min-h-14 flex-wrap items-center gap-2 px-3 py-2 sm:px-4">
           <DesktopHeader activePage={activePage} />
 
-          <div className="flex min-w-0 flex-1 items-center gap-2 md:hidden">
+          <div className="flex min-w-0 flex-1 items-center gap-2 md:hidden" data-mobile-header>
             <img src="/favicon.svg" className="size-5 shrink-0" alt="" aria-hidden="true" />
             <h1 className="truncate text-base font-semibold tracking-tight">{PAGE_TITLES[activePage]}</h1>
           </div>
