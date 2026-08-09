@@ -10,7 +10,7 @@ import { api, configureApiClient } from "@/lib/api"
 import { navigate } from "@/lib/router"
 import { applyAndroidCapabilities } from "@/platform/capabilities"
 import { normalizeServerUrl } from "@/platform/server-url"
-import type { ConnectInput, PlatformAdapter } from "@/platform/types"
+import type { ConnectInput, OfflineArchiveRecord, OfflineSyncStatus, PlatformAdapter } from "@/platform/types"
 
 const SERVER_URL_KEY = "mpp_server_url"
 
@@ -32,9 +32,24 @@ interface FileDownloadPlugin {
   saveText(options: { filename: string; content: string }): Promise<{ uri: string }>
 }
 
+interface OfflineArchivePlugin {
+  getStatus(): Promise<OfflineSyncStatus>
+  listArchives(): Promise<{ archives: OfflineArchiveRecord[] }>
+  getArchive(options: { archiveId: string }): Promise<{ archive: OfflineArchiveRecord }>
+  readText(options: { archiveId: string; relativePath: string }): Promise<{ content: string }>
+  sync(options: { serverUrl: string; token: string }): Promise<OfflineSyncStatus>
+  clear(): Promise<OfflineSyncStatus>
+  resetIndex(): Promise<OfflineSyncStatus>
+  addListener(
+    eventName: "syncProgress",
+    listener: (event: OfflineSyncStatus) => void,
+  ): Promise<PluginListenerHandle>
+}
+
 const SecureCredentials = registerPlugin<SecureCredentialsPlugin>("SecureCredentials")
 const ShareTarget = registerPlugin<ShareTargetPlugin>("ShareTarget")
 const FileDownload = registerPlugin<FileDownloadPlugin>("FileDownload")
+const OfflineArchive = registerPlugin<OfflineArchivePlugin>("OfflineArchive")
 
 let serverUrl = ""
 let token = ""
@@ -98,6 +113,9 @@ async function registerNativeListeners() {
     applySharedText(text)
     void ShareTarget.getPendingShare()
   })
+  await OfflineArchive.addListener("syncProgress", (status) => {
+    window.dispatchEvent(new CustomEvent("mpp:offline-sync-change", { detail: status }))
+  })
   applySharedText((await ShareTarget.getPendingShare()).text)
 }
 
@@ -136,6 +154,7 @@ export function createCapacitorPlatform(): PlatformAdapter {
         const capabilities = await api.capabilities()
         await SecureCredentials.setToken({ token })
         await Preferences.set({ key: SERVER_URL_KEY, value: serverUrl })
+        window.dispatchEvent(new Event("mpp:connection-change"))
         return {
           serverUrl,
           serverVersion: health.version,
@@ -183,6 +202,34 @@ export function createCapacitorPlatform(): PlatformAdapter {
     async syncTheme(dark) {
       await SystemBars.setStyle({ style: dark ? SystemBarsStyle.Dark : SystemBarsStyle.Light })
       await SystemBars.show()
+    },
+    async getOfflineSyncStatus() {
+      return OfflineArchive.getStatus()
+    },
+    async listOfflineArchives() {
+      return (await OfflineArchive.listArchives()).archives ?? []
+    },
+    async getOfflineArchive(archiveId) {
+      try {
+        return (await OfflineArchive.getArchive({ archiveId })).archive
+      } catch {
+        return null
+      }
+    },
+    async readOfflineText(archiveId, relativePath) {
+      return (await OfflineArchive.readText({ archiveId, relativePath })).content ?? ""
+    },
+    async syncOfflineArchives() {
+      if (!serverUrl) return OfflineArchive.getStatus()
+      return OfflineArchive.sync({ serverUrl, token })
+    },
+    async clearOfflineArchives() {
+      return OfflineArchive.clear()
+    },
+    async rebuildOfflineIndex() {
+      const status = await OfflineArchive.resetIndex()
+      if (serverUrl) void OfflineArchive.sync({ serverUrl, token })
+      return status
     },
   }
 }

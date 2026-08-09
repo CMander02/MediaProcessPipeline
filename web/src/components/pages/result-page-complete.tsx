@@ -2,7 +2,7 @@
  * Unified result viewer — handles both in-progress and completed archives.
  * Loads files progressively and subscribes to SSE for real-time updates.
  */
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { ReactNode } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
@@ -62,6 +62,7 @@ import {
   ListTreeIcon,
 } from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
+import { createArchiveRepository, resolveOfflineFileUrl } from "@/repositories/archive-repository"
 
 interface SubtitleTrackInfo {
   lang: string
@@ -218,10 +219,17 @@ function resolveNoteMediaSrc(src: string | undefined, archivePath: string, sep: 
   if (!src) return src
   if (/^(?:https?:|data:|blob:)/i.test(src)) return src
   const normalized = src.replace(/\\/g, "/")
+  const offlineRelative = normalized.match(/(?:^|\/)((?:images|descriptions)\/.*)$/i)?.[1] ?? normalized
+  const offlineUrl = resolveOfflineFileUrl(archivePath, offlineRelative)
+  if (offlineUrl) return offlineUrl
   if (/^[A-Za-z]:\//.test(normalized) || normalized.startsWith("/")) {
     return api.filesystem.mediaUrl(src)
   }
   return api.filesystem.mediaUrl(archivePath + sep + normalized.replace(/\//g, sep))
+}
+
+function mediaSource(path: string): string {
+  return /^(?:https?:|data:|blob:)/i.test(path) ? path : api.filesystem.mediaUrl(path)
 }
 
 function NoteMarkdown({ content, archivePath, sep }: { content: string; archivePath: string; sep: string }) {
@@ -419,7 +427,7 @@ function ArticleNoteReader({
   const localImages = showLocalImages ? descriptions.filter((item) => item.image_path) : []
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
   const lightboxImages: LightboxImage[] = localImages.map((item) => ({
-    src: api.filesystem.mediaUrl(item.image_path),
+    src: mediaSource(item.image_path),
     alt: `图片 ${item.index + 1}`,
   }))
 
@@ -449,7 +457,7 @@ function ArticleNoteReader({
                   title="查看大图"
                 >
                   <img
-                    src={api.filesystem.mediaUrl(item.image_path)}
+                    src={mediaSource(item.image_path)}
                     alt={`图片 ${item.index + 1}`}
                     className="mx-auto max-h-[640px] w-full rounded-md object-contain"
                     loading="lazy"
@@ -480,7 +488,8 @@ function ArticleNoteReader({
 
 export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const platformAdapter = usePlatform()
-  const { capabilities } = useAppAccess()
+  const archiveRepository = useMemo(() => createArchiveRepository(platformAdapter), [platformAdapter])
+  const { capabilities, online } = useAppAccess()
   const { archives, refresh: refreshArchives } = useArchives()
   const { prefs, update: updatePrefs } = usePreferences()
   const [archive, setArchive] = useState<ArchiveItem | null>(null)
@@ -700,22 +709,22 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
 
   const refreshArchiveDetail = useCallback(async (silent = false) => {
     try {
-      const data = await api.archives.get(archivePath)
-      const item = data.archive as ArchiveItem
+      const item = await archiveRepository.get(archivePath)
+      if (!item) return null
       applyArchiveSnapshot(item)
       return item
     } catch (error) {
       if (!silent) console.warn("Failed to load archive detail:", error)
       return null
     }
-  }, [archivePath, applyArchiveSnapshot])
+  }, [archivePath, applyArchiveSnapshot, archiveRepository])
 
   useEffect(() => {
     let cancelled = false
-    api.archives.get(archivePath)
-      .then((data) => {
+    archiveRepository.get(archivePath)
+      .then((item) => {
         if (cancelled) return
-        applyArchiveSnapshot(data.archive as ArchiveItem)
+        if (item) applyArchiveSnapshot(item)
       })
       .catch((error) => {
         if (!cancelled) console.warn("Failed to load archive detail:", error)
@@ -723,7 +732,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     return () => {
       cancelled = true
     }
-  }, [archivePath, applyArchiveSnapshot])
+  }, [archivePath, applyArchiveSnapshot, archiveRepository])
 
   // Find archive from list
   useEffect(() => {
@@ -747,12 +756,12 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
 
   // Resolve media URL
   const resolveMediaUrl = useCallback((arch: ArchiveItem | null) => {
-    if (!arch?.media_file) {
+    if (!arch?.media_file || !online) {
       setMediaUrl(null)
       return
     }
     setMediaUrl(api.filesystem.mediaUrl(arch.media_file))
-  }, [])
+  }, [online])
 
   useEffect(() => {
     resolveMediaUrl(archive)
@@ -761,12 +770,11 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   // --- Progressive file loading ---
   const readFilePath = useCallback(async (path: string): Promise<string> => {
     try {
-      const data = await api.filesystem.read(path)
-      return data.content ?? ""
+      return await archiveRepository.readFile(path)
     } catch {
       return ""
     }
-  }, [])
+  }, [archiveRepository])
 
   const loadFile = useCallback(async (filename: string, basePath = archivePath): Promise<string> => {
     const baseSep = basePath.includes("\\") ? "\\" : "/"
@@ -820,7 +828,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   }, [archivePath, applyTranscriptContent, loadFile])
 
   const refreshTaskSnapshot = useCallback(async () => {
-    if (!resolvedTaskId) return null
+    if (!resolvedTaskId || !online) return null
     try {
       const task = await api.tasks.get(resolvedTaskId)
       applyTaskSnapshot(task)
@@ -828,10 +836,10 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     } catch {
       return null
     }
-  }, [resolvedTaskId, applyTaskSnapshot])
+  }, [resolvedTaskId, online, applyTaskSnapshot])
 
   useEffect(() => {
-    if (!resolvedTaskId) return
+    if (!resolvedTaskId || !online) return
     let cancelled = false
     Promise.all([
       api.tasks.get(resolvedTaskId),
@@ -846,13 +854,34 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     return () => {
       cancelled = true
     }
-  }, [resolvedTaskId, applyTaskSnapshot])
+  }, [resolvedTaskId, online, applyTaskSnapshot])
 
   // Load image descriptions for image_note content type
   const loadImageDescriptions = useCallback(async () => {
     if (!archivePath) return
     const resultDescriptions: ImageDescription[] = []
-    if (resolvedTaskId) {
+    if (archive?.offline) {
+      const files = archiveRepository.listFiles(archive, "images")
+        .filter((file) => /\.(?:jpe?g|png|webp|gif|bmp|avif)$/i.test(file.relativePath))
+        .sort((a, b) => a.relativePath.localeCompare(b.relativePath, undefined, { numeric: true }))
+      for (const file of files) {
+        const stem = file.relativePath.split("/").pop()?.replace(/\.[^.]+$/, "") ?? ""
+        const index = Number.parseInt(stem, 10)
+        const text = await archiveRepository.readFile(`${archivePath}/descriptions/${stem}.md`)
+        resultDescriptions.push({
+          index: Number.isFinite(index) ? index : resultDescriptions.length,
+          image_path: file.url,
+          kind: "content",
+          text,
+        })
+      }
+      if (resultDescriptions.length > 0) {
+        setImageDescriptions(resultDescriptions)
+        setActiveImageIdx(resultDescriptions[0].index)
+      }
+      return
+    }
+    if (resolvedTaskId && online) {
       try {
         const task = await api.tasks.get(resolvedTaskId)
         const descs = task.result?.image_descriptions as ImageDescription[] | undefined
@@ -921,7 +950,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
       setImageDescriptions(sorted)
       setActiveImageIdx((current) => sorted.some((item) => item.index === current) ? current : sorted[0].index)
     }
-  }, [archivePath, sep, resolvedTaskId])
+  }, [archivePath, sep, resolvedTaskId, online, archive, archiveRepository])
 
   useEffect(() => {
     // Wait until resolvedTaskId is known (undefined = not yet resolved, null/string = resolved)
@@ -934,7 +963,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   }, [archivePath, loadGeneratedContent])
 
   // --- SSE subscription for in-progress tasks ---
-  useTaskSSE(resolvedTaskId, {
+  useTaskSSE(online ? resolvedTaskId : null, {
     // Snapshot is sent immediately on (re)connect — rebuilds pipeline state
     // when the user navigates back to the result page mid-processing.
     onSnapshot(data) {
@@ -1307,6 +1336,10 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         loop={videoLoop}
         onLoopChange={setVideoLoop}
       />
+    </div>
+  ) : archive?.media_file && !online ? (
+    <div className="flex min-h-32 items-center justify-center rounded-lg border bg-muted/20 px-4 text-center text-sm text-muted-foreground">
+      连接服务器后播放音视频；摘要、字幕、导图和图文资料可继续离线阅读。
     </div>
   ) : null
 

@@ -11,6 +11,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(SecureCredentialsPlugin.class);
         registerPlugin(ShareTargetPlugin.class);
         registerPlugin(FileDownloadPlugin.class);
+        registerPlugin(OfflineArchivePlugin.class);
         super.onCreate(savedInstanceState);
         handleShareIntent(getIntent());
     }

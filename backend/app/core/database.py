@@ -76,6 +76,36 @@ CREATE TABLE IF NOT EXISTS task_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_events_task_id_id ON task_events(task_id, id);
+
+CREATE TABLE IF NOT EXISTS archive_sync_meta (
+    id               INTEGER PRIMARY KEY CHECK (id = 1),
+    current_revision INTEGER NOT NULL DEFAULT 0
+);
+
+INSERT OR IGNORE INTO archive_sync_meta (id, current_revision) VALUES (1, 0);
+
+CREATE TABLE IF NOT EXISTS archive_sync_index (
+    archive_id   TEXT PRIMARY KEY,
+    archive_path TEXT NOT NULL,
+    revision     INTEGER NOT NULL,
+    fingerprint  TEXT NOT NULL,
+    snapshot     TEXT NOT NULL,
+    deleted      INTEGER NOT NULL DEFAULT 0,
+    updated_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_archive_sync_path ON archive_sync_index(archive_path);
+CREATE INDEX IF NOT EXISTS idx_archive_sync_active ON archive_sync_index(deleted, revision);
+
+CREATE TABLE IF NOT EXISTS archive_sync_changes (
+    revision   INTEGER PRIMARY KEY,
+    archive_id TEXT NOT NULL,
+    operation  TEXT NOT NULL CHECK (operation IN ('upsert', 'delete')),
+    snapshot   TEXT,
+    changed_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_archive_sync_changes_archive ON archive_sync_changes(archive_id, revision);
 """
 
 # Columns added after initial schema — applied idempotently via ALTER TABLE

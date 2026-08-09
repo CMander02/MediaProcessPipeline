@@ -11,6 +11,20 @@ import { useRoute } from "@/lib/router"
 import { usePlatform } from "@/platform/use-platform"
 import type { ServerConnection } from "@/platform"
 
+const OFFLINE_CAPABILITIES: Capabilities = {
+  mode: "remote",
+  authenticated: true,
+  url_submission: false,
+  browser_file_upload: false,
+  browser_folder_upload: false,
+  task_control: false,
+  settings: false,
+  filesystem_browse: false,
+  local_path_submission: false,
+  open_local_folder: false,
+  archive_mutation: false,
+}
+
 export function AppAccessBoundary({ children }: { children: ReactNode }) {
   const route = useRoute()
   const platform = usePlatform()
@@ -22,6 +36,7 @@ export function AppAccessBoundary({ children }: { children: ReactNode }) {
   const [unlockToken, setUnlockToken] = useState("")
   const [unlocking, setUnlocking] = useState(false)
   const [unlockError, setUnlockError] = useState<string | null>(null)
+  const [offlineArchiveCount, setOfflineArchiveCount] = useState(0)
 
   const refresh = useCallback(async () => {
     try {
@@ -44,11 +59,21 @@ export function AppAccessBoundary({ children }: { children: ReactNode }) {
     void platform.getNetworkStatus().then((connected) => {
       if (active && !connected) setConnectionDown(true)
     })
+    if (platform.isNative) {
+      void platform.getOfflineSyncStatus().then((status) => {
+        if (active) setOfflineArchiveCount(status.archiveCount)
+      })
+    }
     const handleOnline = () => void refresh()
     const handleOffline = () => setConnectionDown(true)
     const handleApiError = (event: Event) => {
       const status = (event as CustomEvent<{ status?: number }>).detail?.status
       if (status === 401) setAuth((current) => current ? { ...current, authenticated: false } : current)
+    }
+    const handleOfflineLibrary = (event: Event) => {
+      const detail = (event as CustomEvent<{ archiveCount?: number }>).detail
+      if (typeof detail?.archiveCount === "number") setOfflineArchiveCount(detail.archiveCount)
+      else void platform.getOfflineSyncStatus().then((status) => setOfflineArchiveCount(status.archiveCount))
     }
     window.addEventListener("online", handleOnline)
     window.addEventListener("offline", handleOffline)
@@ -57,6 +82,8 @@ export function AppAccessBoundary({ children }: { children: ReactNode }) {
     window.addEventListener("mpp:capabilities-change", handleOnline)
     window.addEventListener("mpp:app-resume", handleOnline)
     window.addEventListener("mpp:connection-change", handleOnline)
+    window.addEventListener("mpp:offline-sync-change", handleOfflineLibrary)
+    window.addEventListener("mpp:offline-library-change", handleOfflineLibrary)
     return () => {
       active = false
       window.removeEventListener("online", handleOnline)
@@ -66,6 +93,8 @@ export function AppAccessBoundary({ children }: { children: ReactNode }) {
       window.removeEventListener("mpp:capabilities-change", handleOnline)
       window.removeEventListener("mpp:app-resume", handleOnline)
       window.removeEventListener("mpp:connection-change", handleOnline)
+      window.removeEventListener("mpp:offline-sync-change", handleOfflineLibrary)
+      window.removeEventListener("mpp:offline-library-change", handleOfflineLibrary)
     }
   }, [platform, refresh])
 
@@ -100,7 +129,7 @@ export function AppAccessBoundary({ children }: { children: ReactNode }) {
     )
   }
 
-  if (platform.isNative && (!connection.configured || editingConnection || (auth && !auth.authenticated))) {
+  if (platform.isNative && (!connection.configured || editingConnection || (auth && !auth.authenticated && offlineArchiveCount === 0))) {
     return (
       <AppShell activePage={route.page} runtimeControls={false}>
         <NativeConnectionScreen serverUrl={connection.serverUrl} onConnected={handleNativeConnected} />
@@ -109,6 +138,29 @@ export function AppAccessBoundary({ children }: { children: ReactNode }) {
   }
 
   if (connectionDown) {
+    if (platform.isNative && offlineArchiveCount > 0) {
+      return (
+        <AppAccessContext.Provider value={{
+          auth: auth ?? { required: true, authenticated: true, mode: "remote" },
+          capabilities: OFFLINE_CAPABILITIES,
+          refresh,
+          online: false,
+          authExpired: Boolean(auth && !auth.authenticated),
+        }}>
+          <div className="relative h-full">
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-50 flex justify-center px-3 pt-[max(0.5rem,env(safe-area-inset-top))]">
+              <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-amber-500/30 bg-background/95 px-3 py-1.5 text-xs shadow-sm backdrop-blur">
+                <span>{auth && !auth.authenticated ? "访问令牌已失效，正在使用离线资料" : "离线资料模式"}</span>
+                <Button className="h-7 rounded-full px-2.5 text-xs" variant="outline" onClick={() => setEditingConnection(true)}>
+                  连接设置
+                </Button>
+              </div>
+            </div>
+            {children}
+          </div>
+        </AppAccessContext.Provider>
+      )
+    }
     return (
       <AppShell activePage={route.page} runtimeControls={false}>
         <OfflineState
@@ -137,6 +189,23 @@ export function AppAccessBoundary({ children }: { children: ReactNode }) {
   }
 
   if (!auth.authenticated) {
+    if (platform.isNative && offlineArchiveCount > 0) {
+      return (
+        <AppAccessContext.Provider value={{ auth, capabilities: OFFLINE_CAPABILITIES, refresh, online: false, authExpired: true }}>
+          <div className="relative h-full">
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-50 flex justify-center px-3 pt-[max(0.5rem,env(safe-area-inset-top))]">
+              <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-amber-500/30 bg-background/95 px-3 py-1.5 text-xs shadow-sm backdrop-blur">
+                <span>访问令牌已失效，正在使用离线资料</span>
+                <Button className="h-7 rounded-full px-2.5 text-xs" variant="outline" onClick={() => setEditingConnection(true)}>
+                  连接设置
+                </Button>
+              </div>
+            </div>
+            {children}
+          </div>
+        </AppAccessContext.Provider>
+      )
+    }
     return (
       <AppShell activePage={route.page} runtimeControls={false}>
         <UnauthorizedState
@@ -167,7 +236,7 @@ export function AppAccessBoundary({ children }: { children: ReactNode }) {
   }
 
   return (
-    <AppAccessContext.Provider value={{ auth, capabilities, refresh }}>
+    <AppAccessContext.Provider value={{ auth, capabilities, refresh, online: true, authExpired: false }}>
       {children}
     </AppAccessContext.Provider>
   )

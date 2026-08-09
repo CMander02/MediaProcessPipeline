@@ -12,6 +12,10 @@ export interface ImageDescription {
   text: string
 }
 
+function imageSource(path: string): string {
+  return /^(?:https?:|data:|blob:)/i.test(path) ? path : api.filesystem.mediaUrl(path)
+}
+
 interface Props {
   descriptions: ImageDescription[]
   activeIndex?: number
@@ -62,11 +66,11 @@ export function ImageNoteViewer({ descriptions, activeIndex, onImageIndexChange,
     )
   }
 
-  const imgUrl = current ? api.filesystem.mediaUrl(current.image_path) : null
+  const imgUrl = current ? imageSource(current.image_path) : null
   const lightboxImages: LightboxImage[] = descriptions
     .filter((item) => item.image_path)
     .map((item) => ({
-      src: api.filesystem.mediaUrl(item.image_path),
+      src: imageSource(item.image_path),
       alt: `图片 ${item.index + 1}`,
     }))
 

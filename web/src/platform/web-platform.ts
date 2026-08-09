@@ -37,5 +37,14 @@ export function createWebPlatform(): PlatformAdapter {
     },
     consumeSharedText: () => null,
     async syncTheme() {},
+    async getOfflineSyncStatus() {
+      return { syncing: false, cursor: 0, archiveCount: 0, completedFiles: 0, totalFiles: 0, completedBytes: 0, totalBytes: 0, lastSync: 0, lastError: "" }
+    },
+    async listOfflineArchives() { return [] },
+    async getOfflineArchive() { return null },
+    async readOfflineText() { return "" },
+    async syncOfflineArchives() { return this.getOfflineSyncStatus() },
+    async clearOfflineArchives() { return this.getOfflineSyncStatus() },
+    async rebuildOfflineIndex() { return this.getOfflineSyncStatus() },
   }
 }

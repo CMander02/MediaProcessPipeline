@@ -34,9 +34,6 @@ MediaProcessPipeline/
 ├── web/                        # Vite + React 19 + shadcn/ui
 │   ├── src/                    # PC、服务器与 Android 的唯一 UI 源码
 │   └── android/                # Capacitor Android 轻量原生外壳
-├── web/src-tauri/              # 冻结的 Tauri 兼容代码
-│   └── src/main.rs
-├── android/                    # 冻结的 Compose 兼容客户端
 ├── scripts/                    # CLI 快捷脚本
 │   ├── mpp.ps1                 # PowerShell
 │   ├── start-web.ps1           # Windows Web 一键启动
@@ -148,7 +145,7 @@ cd web
 npm run android:apk
 ```
 
-Debug APK 输出到 `web/android/app/build/outputs/apk/debug/app-debug.apk`。连接、ADB 调试、Keystore 和 Release 签名说明见 [Capacitor Android 构建与调试](docs/android-capacitor.md)。
+Release APK 输出到 `web/android/app/build/outputs/apk/release/`。Debug APK 使用 `npm run android:debug`，应用商店 AAB 使用 `npm run android:aab`。连接、离线同步、ADB 调试、Keystore 和签名说明见 [Capacitor Android 构建与调试](docs/android-capacitor.md)。
 
 **方式 4：CLI**
 
@@ -167,10 +164,6 @@ Debug APK 输出到 `web/android/app/build/outputs/apk/debug/app-debug.apk`。�
 ./scripts/mpp config preset api-flow
 ./scripts/mpp run --direct --api-flow <url-or-file>
 ```
-
-**旧客户端兼容**
-
-Tauri 与根目录 Compose Android 客户端保持冻结。`0.4.3` 的 Android App 由 `web/android/` Capacitor 外壳承载，UI 与交互统一进入 `web/src/`。
 
 ### 开发模式
 
@@ -199,6 +192,9 @@ cd web && npm run dev              # :5173
 - `POST /api/pipeline/mindmap` - 生成思维导图
 - `GET /api/pipeline/archives` - 列出归档
 - `DELETE /api/pipeline/archives` - 删除归档
+- `GET /api/sync/changes` - Android 增量同步归档变更
+- `GET /api/sync/archives/{id}/manifest` - 获取离线文件清单
+- `GET /api/sync/archives/{id}/files/{path}` - 下载清单内的离线文件
 
 ### 设置
 - `GET /api/settings` - 获取运行时设置
@@ -240,8 +236,7 @@ cd web && npm run dev              # :5173
 
 - **Backend**: Python 3.11+, FastAPI, SQLite, uv
 - **Frontend**: React 19, Vite, shadcn/ui, Tailwind CSS 4
-- **Desktop**: Tauri
-- **Android**: Kotlin, Jetpack Compose, Android Gradle Plugin
+- **Android**: Capacitor WebView、原生 SQLite/Keystore、Android Gradle Plugin
 - **AI**: Qwen3-ASR, pyannote-audio, UVR5 (audio-separator), OpenAI SDK（Anthropic / OpenAI / DeepSeek v4 / OpenAI-compatible）
 - **下载**: yt-dlp, FFmpeg
 

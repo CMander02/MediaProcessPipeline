@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react"
-import { api, subscribeAllEvents, type Task, type TaskStats } from "@/lib/api"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { type Task, type TaskStats } from "@/lib/api"
+import { useAppAccess } from "@/hooks/use-app-access-context"
+import { createTaskRepository } from "@/repositories/task-repository"
 
 export function useTasks() {
+  const { online } = useAppAccess()
+  const repository = useMemo(() => createTaskRepository(online), [online])
   const [tasks, setTasks] = useState<Task[]>([])
   const [stats, setStats] = useState<TaskStats>({ total: 0 })
   const [loading, setLoading] = useState(true)
@@ -12,18 +16,15 @@ export function useTasks() {
 
   const refresh = useCallback(async () => {
     try {
-      const [taskList, taskStats] = await Promise.all([
-        api.tasks.list(undefined, 50),
-        api.tasks.stats(),
-      ])
-      setTasks(taskList)
-      setStats(taskStats)
+      const snapshot = await repository.list()
+      setTasks(snapshot.tasks)
+      setStats(snapshot.stats)
     } catch (err) {
       console.warn("Failed to fetch tasks:", err)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [repository])
 
   const scheduleRefresh = useCallback(() => {
     if (refreshTimer.current) return
@@ -36,7 +37,7 @@ export function useTasks() {
   // SSE for real-time updates
   useEffect(() => {
     const initialRefresh = window.setTimeout(() => void refresh(), 0)
-    const unsub = subscribeAllEvents(() => {
+    const unsub = repository.subscribeAll(() => {
       scheduleRefresh()
     })
 
@@ -55,22 +56,24 @@ export function useTasks() {
         refreshTimer.current = null
       }
     }
-  }, [hasActiveTasks, refresh, scheduleRefresh])
+  }, [hasActiveTasks, refresh, scheduleRefresh, repository])
 
   return { tasks, stats, loading, refresh }
 }
 
 export function useTask(taskId: string | null) {
+  const { online } = useAppAccess()
+  const repository = useMemo(() => createTaskRepository(online), [online])
   const [task, setTask] = useState<Task | null>(null)
 
   const refresh = useCallback(async () => {
     if (!taskId) return
     try {
-      setTask(await api.tasks.get(taskId))
+      setTask(await repository.get(taskId))
     } catch (error) {
       console.debug("Task refresh deferred:", error)
     }
-  }, [taskId])
+  }, [taskId, repository])
 
   useEffect(() => {
     const initialRefresh = window.setTimeout(() => void refresh(), 0)

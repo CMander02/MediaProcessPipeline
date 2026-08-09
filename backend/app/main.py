@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 
-from app.api.routes import tasks, pipeline, filesystem, voiceprints, auth
+from app.api.routes import tasks, pipeline, filesystem, voiceprints, auth, sync
 from app.api.routes import settings as settings_router
 from app.api.routes import kb as kb_router
 from app.core.settings import get_runtime_settings, SETTINGS_FILE
@@ -66,6 +66,10 @@ async def lifespan(app: FastAPI):
 
     # Initialize SQLite task store
     init_db()
+
+    # Keep stable archive identities and the mobile sync revision current.
+    from app.core.archive_sync import get_archive_sync_service
+    await asyncio.to_thread(get_archive_sync_service().reconcile)
 
     # Start task queue worker
     queue = get_task_queue()
@@ -167,6 +171,7 @@ app.include_router(filesystem.router, prefix="/api")
 app.include_router(voiceprints.router, prefix="/api")
 app.include_router(kb_router.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
+app.include_router(sync.router, prefix="/api")
 
 
 @app.get("/health")

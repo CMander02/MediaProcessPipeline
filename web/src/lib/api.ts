@@ -242,6 +242,21 @@ export interface Capabilities {
   archive_mutation: boolean
 }
 
+export interface SyncChange {
+  revision: number
+  archive_id: string
+  operation: "upsert" | "delete"
+  changed_at: string
+  archive?: Record<string, unknown>
+}
+
+export interface SyncManifestFile {
+  relative_path: string
+  size: number
+  mime: string
+  sha256: string
+}
+
 // ---- Fetch helpers ----
 
 export class ApiRequestError extends Error {
@@ -481,6 +496,20 @@ export const api = {
     rename: (path: string, title: string) =>
       post<{ success: boolean; title: string }>("/api/pipeline/archives/rename", { path, title }),
     thumbnailUrl: (path: string) => resolveApiUrl(`/api/pipeline/archives/thumbnail?path=${encodeURIComponent(path)}`),
+  },
+
+  sync: {
+    changes: (cursor = 0, limit = 100) =>
+      get<{ changes: SyncChange[]; next_cursor: number; has_more: boolean; server_revision: number }>(
+        `/api/sync/changes?cursor=${cursor}&limit=${limit}`,
+      ),
+    manifest: (archiveId: string) =>
+      get<{ archive_id: string; revision: number; files: SyncManifestFile[]; total_size: number }>(
+        `/api/sync/archives/${encodeURIComponent(archiveId)}/manifest`,
+      ),
+    fileUrl: (archiveId: string, relativePath: string) =>
+      resolveApiUrl(`/api/sync/archives/${encodeURIComponent(archiveId)}/files/${relativePath.split("/").map(encodeURIComponent).join("/")}`),
+    rebuild: () => post<{ archives: number; revision: number }>("/api/sync/rebuild"),
   },
 
   filesystem: {

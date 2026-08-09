@@ -5,7 +5,6 @@ import { FloppyDiskIcon, FolderOpenIcon, Tick02Icon } from "@hugeicons/core-free
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { selectDirectory } from "@/lib/tauri"
 
 export type DeviceValue = "auto" | "cuda" | "cpu"
 
@@ -188,22 +187,7 @@ function PathPickerRowEditor({
   const [editValue, setEditValue] = useState(value)
 
   const pickDirectory = async () => {
-    try {
-      const selected = await selectDirectory({
-        title: title ?? "选择模型文件夹",
-        defaultPath: editValue || undefined,
-      })
-      if (selected) {
-        setEditValue(selected)
-        await onSave(settingKey, selected)
-        return
-      }
-      if (selected === null) return
-    } catch (error) {
-      console.warn("Directory picker unavailable; falling back to manual path input", error)
-    }
-
-    const manual = window.prompt("输入文件夹路径", editValue)
+    const manual = window.prompt(title ?? "输入文件夹路径", editValue)
     if (manual !== null) {
       setEditValue(manual)
       await onSave(settingKey, manual)

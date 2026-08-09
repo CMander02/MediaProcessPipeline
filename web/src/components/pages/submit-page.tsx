@@ -63,7 +63,7 @@ function looksLikeBilibiliVideo(value: string) {
 type SubtitleStrategy = "auto" | "force_asr"
 
 export function SubmitPage() {
-  const { capabilities } = useAppAccess()
+  const { capabilities, online } = useAppAccess()
   const platform = usePlatform()
   const submitHistory = useSubmitHistory()
   const [source, setSource] = useState("")
@@ -277,7 +277,7 @@ export function SubmitPage() {
       ? selectedCollectionCount
       : source.trim() ? 1 : 0
   )
-  const canSubmit = totalCount > 0 && !submitting && !anyUploading
+  const canSubmit = online && totalCount > 0 && !submitting && !anyUploading
   const hasFiles = queuedFiles.length > 0
   const hasRightPanel = hasFiles || collection !== null
   const activeOptions = [forceAsr, !!numSpeakers, hotwordTags.length > 0].filter(Boolean).length
@@ -377,7 +377,7 @@ export function SubmitPage() {
                 }}
                 placeholder="粘贴视频或网页链接"
                 className="h-11 pl-9 md:h-9"
-                disabled={submitting}
+                disabled={submitting || !online}
                 autoComplete="off"
                 inputMode="url"
                 autoCapitalize="none"
@@ -401,6 +401,8 @@ export function SubmitPage() {
                 : "开始处理"
             }
           </Button>
+
+          {!online && <p className="text-center text-sm text-muted-foreground">连接服务器后可提交链接和控制任务。</p>}
 
           {error && <p className="text-sm text-destructive text-center">{error}</p>}
 

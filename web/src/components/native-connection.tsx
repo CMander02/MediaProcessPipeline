@@ -131,7 +131,7 @@ export function NativeConnectionSettings() {
 
 function NativeConnectionSettingsContent() {
   const platform = usePlatform()
-  const { refresh } = useAppAccess()
+  const { refresh, online, authExpired } = useAppAccess()
   const [serverUrl, setServerUrl] = useState("")
   const [editing, setEditing] = useState(false)
 
@@ -164,7 +164,9 @@ function NativeConnectionSettingsContent() {
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="truncate text-sm font-medium">{serverUrl}</p>
-              <p className="mt-0.5 text-xs text-muted-foreground">在线服务已连接</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {authExpired ? "访问令牌需要更新" : online ? "在线服务已连接" : "服务器暂时不可达"}
+              </p>
             </div>
             <Button className="h-11 shrink-0 md:h-9" type="button" variant="outline" onClick={() => setEditing(true)}>
               更换服务器

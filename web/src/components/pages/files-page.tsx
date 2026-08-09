@@ -3,6 +3,7 @@ import { useArchives } from "@/hooks/use-archives"
 import { usePreferences } from "@/hooks/use-preferences"
 import { navigate } from "@/lib/router"
 import { api } from "@/lib/api"
+import { cn } from "@/lib/utils"
 import { sourceFilterFromMetadata, type ArchiveSort, type MediaFilter, type SourceFilter } from "@/lib/archive-filters"
 import type { ArchiveItem } from "@/hooks/use-archives"
 import { ArchiveCard } from "@/components/archive-card"
@@ -17,6 +18,9 @@ import {
   PaginationPrevious,
 } from "@/components/ui/pagination"
 import { EmptyState, LoadingState } from "@/components/ui/page-state"
+import { useAppAccess } from "@/hooks/use-app-access-context"
+import { OfflineSyncStatus } from "@/components/offline-sync-status"
+import { usePlatform } from "@/platform/use-platform"
 
 const PAGE_SIZE = 28
 const MIN_PAGE_SIZE = 1
@@ -30,6 +34,8 @@ interface FilesPageProps {
 
 export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPageProps) {
   const { archives, loading, refresh, removeArchive } = useArchives()
+  const { capabilities, online } = useAppAccess()
+  const platform = usePlatform()
   const { update: updatePrefs } = usePreferences()
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(PAGE_SIZE)
@@ -218,7 +224,11 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
   }
 
   return (
-    <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_auto] gap-2 px-3 pt-3 pb-1 sm:px-4">
+    <div className={cn(
+      "grid h-full min-h-0 gap-2 px-3 pt-3 pb-1 sm:px-4",
+      platform.isNative ? "grid-rows-[auto_minmax(0,1fr)_auto]" : "grid-rows-[minmax(0,1fr)_auto]",
+    )}>
+      {platform.isNative && <OfflineSyncStatus compact />}
       {/* Grid */}
       {filtered.length > 0 ? (
         <div
@@ -232,17 +242,17 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
               archive={a}
               compact
               onClick={() => handleOpen(a.path, a.task_id)}
-              onDelete={() => setDeleteTarget({
+              onDelete={capabilities.archive_mutation ? () => setDeleteTarget({
                 title: a.title,
                 path: a.path,
                 taskId: a.task_id,
                 taskDelete: Boolean(a.processing && a.task_id),
-              })}
-              onRenamed={() => refresh(true)}
-              onRerun={() => handleRerun(a)}
-              onCheckpointRerun={a.task_id ? () => handleCheckpointRerun(a) : undefined}
-              onPause={a.task_id ? () => handleTaskAction(a, "pause") : undefined}
-              onResume={a.task_id ? () => handleTaskAction(a, "resume") : undefined}
+              }) : undefined}
+              onRenamed={capabilities.archive_mutation ? () => refresh(true) : undefined}
+              onRerun={online ? () => handleRerun(a) : undefined}
+              onCheckpointRerun={online && a.task_id ? () => handleCheckpointRerun(a) : undefined}
+              onPause={online && a.task_id ? () => handleTaskAction(a, "pause") : undefined}
+              onResume={online && a.task_id ? () => handleTaskAction(a, "resume") : undefined}
               rerunning={rerunningPath === a.path}
               checkpointRerunning={checkpointRerunningPath === a.path}
               taskActionBusy={taskActionPath === a.path}

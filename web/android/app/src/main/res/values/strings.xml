@@ -1,7 +1,4 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">MPP</string>
-    <string name="title_activity_main">MPP</string>
-    <string name="package_name">com.mpp.remote</string>
-    <string name="custom_url_scheme">com.mpp.remote</string>
+    <!-- Release identity is generated from web/release.config.json by Gradle. -->
 </resources>

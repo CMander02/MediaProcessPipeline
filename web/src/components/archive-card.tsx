@@ -57,7 +57,7 @@ export function ArchiveCard({
   const canResume = archive.processing && metadataStatus === "paused" && Boolean(onResume)
 
   const showThumbnail = !imgError && (!isTextNote || archive.has_image)
-  const thumbnailUrl = api.archives.thumbnailUrl(archive.path)
+  const thumbnailUrl = archive.thumbnail_url ?? api.archives.thumbnailUrl(archive.path)
   const thumbnailClassName =
     "h-full w-full object-cover object-center transition-opacity duration-150 group-hover:opacity-90"
 
@@ -184,24 +184,28 @@ export function ArchiveCard({
           </ContextMenuItem>
         )}
         {(canPause || canResume) && <ContextMenuSeparator />}
-        <ContextMenuItem onClick={() => setShowRename(true)}>
-          <HugeiconsIcon icon={PencilEdit01Icon} className="h-4 w-4" />
-          重命名
-        </ContextMenuItem>
-        <ContextMenuItem variant="destructive" onClick={() => onDelete?.()}>
-          <HugeiconsIcon icon={Delete01Icon} className="h-4 w-4" />
-          删除
-        </ContextMenuItem>
+        {onRenamed && (
+          <ContextMenuItem onClick={() => setShowRename(true)}>
+            <HugeiconsIcon icon={PencilEdit01Icon} className="h-4 w-4" />
+            重命名
+          </ContextMenuItem>
+        )}
+        {onDelete && (
+          <ContextMenuItem variant="destructive" onClick={onDelete}>
+            <HugeiconsIcon icon={Delete01Icon} className="h-4 w-4" />
+            删除
+          </ContextMenuItem>
+        )}
       </ContextMenuContent>
     </ContextMenu>
 
-    <RenameDialog
+    {onRenamed && <RenameDialog
       open={showRename}
       onOpenChange={setShowRename}
       archivePath={archive.path}
       currentTitle={archive.title}
       onRenamed={(newTitle) => onRenamed?.(newTitle)}
-    />
+    />}
     </>
   )
 }

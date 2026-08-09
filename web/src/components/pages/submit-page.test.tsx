@@ -11,6 +11,8 @@ import { navigate } from "@/lib/router"
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }))
 vi.mock("@/hooks/use-app-access-context", () => ({
   useAppAccess: () => ({
+    online: true,
+    authExpired: false,
     capabilities: {
       mode: "local",
       authenticated: true,

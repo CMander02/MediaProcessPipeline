@@ -81,7 +81,7 @@ tmp-electron-run/
 .experiment/
 .agentspace/
 
-# Electron build outputs
+# Legacy binary build outputs
 release/
 MPP.exe
 

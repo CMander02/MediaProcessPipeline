@@ -12,10 +12,11 @@ import {
 } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { EmptyState } from "@/components/ui/page-state"
+import { EmptyState, OfflineState } from "@/components/ui/page-state"
 import { api, subscribeAllEvents, type HealthInfo, type Settings, type Task, type TaskStats } from "@/lib/api"
 import { navigate } from "@/lib/router"
 import { cn } from "@/lib/utils"
+import { useAppAccess } from "@/hooks/use-app-access-context"
 
 interface ServiceEvent {
   id: string
@@ -51,6 +52,7 @@ function eventMessage(type: string, data: Record<string, unknown>) {
 }
 
 export function BackendPage() {
+  const { online } = useAppAccess()
   const [health, setHealth] = useState<HealthInfo | null>(null)
   const [stats, setStats] = useState<TaskStats | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
@@ -61,6 +63,7 @@ export function BackendPage() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
 
   const refresh = useCallback(async (showBusy = false) => {
+    if (!online) return
     if (showBusy) setRefreshing(true)
     try {
       const [healthInfo, taskStats, queued, processing, paused, runtimeSettings] = await Promise.all([
@@ -86,9 +89,10 @@ export function BackendPage() {
     } finally {
       if (showBusy) setRefreshing(false)
     }
-  }, [])
+  }, [online])
 
   useEffect(() => {
+    if (!online) return
     void refresh()
     const timer = window.setInterval(() => void refresh(), 10_000)
     const unsubscribe = subscribeAllEvents((event) => {
@@ -104,7 +108,7 @@ export function BackendPage() {
       window.clearInterval(timer)
       unsubscribe()
     }
-  }, [refresh])
+  }, [online, refresh])
 
   const processingCount = stats?.processing ?? tasks.filter((task) => task.status === "processing").length
   const activeCount = (stats?.processing ?? 0) + (stats?.queued ?? 0) + (stats?.paused ?? 0)
@@ -123,6 +127,10 @@ export function BackendPage() {
     { label: "模型占用", value: modelState, detail: "单 GPU 工作器", icon: AiBrain01Icon },
     { label: "服务版本", value: health?.version ?? "--", detail: `更新于 ${lastUpdateText}`, icon: Clock01Icon },
   ]
+
+  if (!online) {
+    return <OfflineState className="h-full" title="后端当前离线" description="离线资料仍可在文件页检索和阅读；连接服务器后恢复任务状态与控制。" />
+  }
 
   return (
     <section className="h-full min-h-0 overflow-y-auto bg-background">

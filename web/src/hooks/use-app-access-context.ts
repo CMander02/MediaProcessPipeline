@@ -6,6 +6,8 @@ export interface AppAccessValue {
   auth: AuthStatus
   capabilities: Capabilities
   refresh: () => Promise<void>
+  online: boolean
+  authExpired: boolean
 }
 
 export const AppAccessContext = createContext<AppAccessValue | null>(null)

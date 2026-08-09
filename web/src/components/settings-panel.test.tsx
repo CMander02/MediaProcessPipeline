@@ -7,6 +7,10 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { SettingsPanel } from "./settings-panel"
 import { api } from "@/lib/api"
 
+vi.mock("@/hooks/use-app-access-context", () => ({
+  useAppAccess: () => ({ online: true, authExpired: false }),
+}))
+
 const { mockSettings } = vi.hoisted(() => ({
   mockSettings: {
     llm_provider: "deepseek",

@@ -16,8 +16,10 @@ import { BilibiliCard, PlaceholderSection, TwitterCard, XiaohongshuCard, Youtube
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Loading03Icon, Tick02Icon, Moon02Icon, Sun01Icon } from "@hugeicons/core-free-icons"
 import { NativeConnectionSettings } from "@/components/native-connection"
+import { OfflineSyncStatus } from "@/components/offline-sync-status"
 import { usePlatform } from "@/platform/use-platform"
 import { getThemePreference, setThemePreference, type ThemePreference } from "@/lib/theme"
+import { useAppAccess } from "@/hooks/use-app-access-context"
 
 // --- Tab definitions ---
 
@@ -40,6 +42,7 @@ const TABS: TabDef[] = [
 
 export function SettingsPanel() {
   const platform = usePlatform()
+  const { online } = useAppAccess()
   const [settings, setSettings] = useState<Settings | null>(null)
   const [saving, setSaving] = useState<Record<string, boolean>>({})
   const [saved, setSaved] = useState<Record<string, boolean>>({})
@@ -74,6 +77,7 @@ export function SettingsPanel() {
   }, [])
 
   const loadSettings = useCallback(async () => {
+    if (!online) return false
     try {
       const loaded = await api.settings.get()
       setSettings(loaded)
@@ -83,24 +87,26 @@ export function SettingsPanel() {
       setLoadError(error instanceof Error ? error.message : String(error))
       return false
     }
-  }, [])
+  }, [online])
 
   const loadYtdlpStatus = useCallback(async () => {
+    if (!online) return
     try {
       const status = await api.settings.ytdlpStatus()
       setYtdlpStatus(status)
     } catch (error) {
       setYtdlpMessage(error instanceof Error ? error.message : String(error))
     }
-  }, [])
+  }, [online])
 
   useEffect(() => {
+    if (!online) return
     void loadSettings()
     void loadYtdlpStatus()
     api.bilibili.status()
       .then((s) => setBiliLoggedIn(s.logged_in))
       .catch(() => setBiliLoggedIn(false))
-  }, [loadSettings, loadYtdlpStatus])
+  }, [online, loadSettings, loadYtdlpStatus])
 
   const unlockSettings = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -156,6 +162,25 @@ export function SettingsPanel() {
 
   const updateTheme = (value: string) => {
     setThemePreference(value as ThemePreference)
+  }
+
+  if (platform.isNative && !online) {
+    return (
+      <div className="h-full min-h-0 space-y-4 overflow-y-auto pr-1">
+        <NativeConnectionSettings />
+        <OfflineSyncStatus />
+        <Card>
+          <CardHeader className="pb-3"><CardTitle className="text-base">外观</CardTitle></CardHeader>
+          <CardContent>
+            <RadioGroup value={themePreference} onValueChange={updateTheme} className="grid grid-cols-3 gap-2">
+              <Label className="flex min-h-11 items-center gap-2 rounded-md border px-3"><RadioGroupItem value="system" />跟随系统</Label>
+              <Label className="flex min-h-11 items-center gap-2 rounded-md border px-3"><RadioGroupItem value="light" />浅色</Label>
+              <Label className="flex min-h-11 items-center gap-2 rounded-md border px-3"><RadioGroupItem value="dark" />深色</Label>
+            </RadioGroup>
+          </CardContent>
+        </Card>
+      </div>
+    )
   }
 
   if (!settings) {
@@ -318,6 +343,7 @@ export function SettingsPanel() {
           {activeTab === "overall" && (
             <div className="h-full min-h-0 space-y-4 overflow-y-auto pr-1">
               <NativeConnectionSettings />
+              <OfflineSyncStatus />
               {/* Appearance */}
               <Card>
                 <CardHeader className="pb-3">

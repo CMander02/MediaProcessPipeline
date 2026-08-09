@@ -1,3 +1,5 @@
+import groovy.json.JsonSlurper
+
 apply plugin: 'com.android.application'
 
 def pyprojectFile = rootProject.file('../../pyproject.toml')
@@ -8,17 +10,23 @@ if (!versionMatch.find()) {
 def mppVersionName = "${versionMatch.group(1)}.${versionMatch.group(2)}.${versionMatch.group(3)}"
 def mppVersionCode = versionMatch.group(1).toInteger() * 10000 + versionMatch.group(2).toInteger() * 100 + versionMatch.group(3).toInteger()
 def releaseStoreFile = System.getenv('MPP_ANDROID_KEYSTORE')
+def releaseConfig = new JsonSlurper().parse(rootProject.file('../release.config.json'))
 
 android {
-    namespace = "com.mpp.remote"
+    namespace = releaseConfig.appId
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "com.mpp.remote"
+        applicationId releaseConfig.appId
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode mppVersionCode
         versionName mppVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        resValue "string", "app_name", releaseConfig.appName
+        resValue "string", "title_activity_main", releaseConfig.appName
+        resValue "string", "package_name", releaseConfig.appId
+        resValue "string", "custom_url_scheme", releaseConfig.appId
+        resValue "color", "mpp_theme_color", releaseConfig.themeColor
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61

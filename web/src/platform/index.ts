@@ -19,4 +19,4 @@ async function createPlatform(): Promise<PlatformAdapter> {
   return adapter
 }
 
-export type { ConnectInput, ConnectionCheck, PlatformAdapter, PlatformKind, ServerConnection } from "@/platform/types"
+export type { ConnectInput, ConnectionCheck, OfflineArchiveFile, OfflineArchiveRecord, OfflineSyncStatus, PlatformAdapter, PlatformKind, ServerConnection } from "@/platform/types"

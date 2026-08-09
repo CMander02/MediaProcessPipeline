@@ -6,7 +6,6 @@ from PIL import Image, ImageDraw
 
 
 ROOT = Path(__file__).resolve().parent.parent
-TAURI_ICON_DIR = ROOT / "web" / "src-tauri" / "icons"
 PUBLIC_DIR = ROOT / "web" / "public"
 
 CANVAS = 256
@@ -94,17 +93,11 @@ def render_png(size: int) -> Image.Image:
 
 
 def main() -> None:
-    TAURI_ICON_DIR.mkdir(parents=True, exist_ok=True)
     PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
 
-    (TAURI_ICON_DIR / "icon.svg").write_text(SVG, encoding="utf-8")
     (PUBLIC_DIR / "favicon.svg").write_text(SVG, encoding="utf-8")
-
-    png = render_png(512)
-    png.save(TAURI_ICON_DIR / "icon.png")
-
-    ico_sizes = [render_png(size) for size in (256, 128, 64, 48, 32, 16)]
-    ico_sizes[0].save(TAURI_ICON_DIR / "icon.ico", sizes=[image.size for image in ico_sizes], append_images=ico_sizes[1:])
+    render_png(192).save(PUBLIC_DIR / "pwa-192x192.png")
+    render_png(512).save(PUBLIC_DIR / "pwa-512x512.png")
 
 
 if __name__ == "__main__":

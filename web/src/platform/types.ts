@@ -18,6 +18,34 @@ export interface ConnectionCheck {
   capabilities: Capabilities
 }
 
+export interface OfflineSyncStatus {
+  syncing: boolean
+  cursor: number
+  archiveCount: number
+  completedFiles: number
+  totalFiles: number
+  completedBytes: number
+  totalBytes: number
+  lastSync: number
+  lastError: string
+  message?: string
+}
+
+export interface OfflineArchiveFile {
+  relative_path: string
+  sha256: string
+  size: number
+  mime: string
+  uri: string
+}
+
+export interface OfflineArchiveRecord extends Record<string, unknown> {
+  archive_id: string
+  path: string
+  server_path?: string
+  offline_files?: OfflineArchiveFile[]
+}
+
 export interface PlatformAdapter {
   readonly kind: PlatformKind
   readonly isNative: boolean
@@ -33,4 +61,11 @@ export interface PlatformAdapter {
   saveTextFile(filename: string, content: string): Promise<void>
   consumeSharedText(): string | null
   syncTheme(dark: boolean): Promise<void>
+  getOfflineSyncStatus(): Promise<OfflineSyncStatus>
+  listOfflineArchives(): Promise<OfflineArchiveRecord[]>
+  getOfflineArchive(archiveId: string): Promise<OfflineArchiveRecord | null>
+  readOfflineText(archiveId: string, relativePath: string): Promise<string>
+  syncOfflineArchives(): Promise<OfflineSyncStatus>
+  clearOfflineArchives(): Promise<OfflineSyncStatus>
+  rebuildOfflineIndex(): Promise<OfflineSyncStatus>
 }
