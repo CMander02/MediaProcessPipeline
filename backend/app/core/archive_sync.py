@@ -129,7 +129,11 @@ class ArchiveSyncService:
             "total_size": sum(int(entry["size"]) for entry in files),
         }
 
-    def resolve_declared_file(self, archive_id: str, relative_path: str) -> tuple[Path, SyncFile] | None:
+    def resolve_declared_file(
+        self,
+        archive_id: str,
+        relative_path: str,
+    ) -> tuple[Path, SyncFile] | None:
         record = self._active_record(archive_id)
         if not record:
             return None
@@ -144,7 +148,10 @@ class ArchiveSyncService:
             return None
         if not target.is_file() or target.is_symlink():
             return None
-        allowed = {entry.relative_path: entry for entry in self._iter_sync_files(archive_dir, with_hash=True)}
+        allowed = {
+            entry.relative_path: entry
+            for entry in self._iter_sync_files(archive_dir, with_hash=True)
+        }
         entry = allowed.get(normalized)
         return (target, entry) if entry else None
 
@@ -165,11 +172,17 @@ class ArchiveSyncService:
         metadata: dict[str, Any] = {}
         if metadata_path.is_file():
             try:
-                loaded = json.loads(metadata_path.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    metadata = loaded
-            except (OSError, json.JSONDecodeError):
-                metadata = {}
+                content = metadata_path.read_bytes()
+            except OSError:
+                content = b""
+            for encoding in ("utf-8-sig", "gb18030"):
+                try:
+                    loaded = json.loads(content.decode(encoding))
+                    if isinstance(loaded, dict):
+                        metadata = loaded
+                    break
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
 
         candidates = (metadata.get("archive_id"), task_id, metadata.get("task_id"))
         archive_id: str | None = None
@@ -208,7 +221,8 @@ class ArchiveSyncService:
     ) -> None:
         conn = _get_conn()
         row = conn.execute(
-            "SELECT archive_path, revision, fingerprint, deleted FROM archive_sync_index WHERE archive_id = ?",
+            "SELECT archive_path, revision, fingerprint, deleted "
+            "FROM archive_sync_index WHERE archive_id = ?",
             (archive_id,),
         ).fetchone()
         archive_path = str(archive_dir.resolve())

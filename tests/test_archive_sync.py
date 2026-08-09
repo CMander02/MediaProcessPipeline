@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -16,7 +15,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.api.routes import sync as sync_route  # noqa: E402
-from app.core import database, settings as settings_module  # noqa: E402
+from app.core import database  # noqa: E402
+from app.core import settings as settings_module  # noqa: E402
 from app.core.archive_sync import get_archive_sync_service  # noqa: E402
 from app.core.settings import RuntimeSettings  # noqa: E402
 
@@ -63,7 +63,8 @@ def test_sync_changes_are_revisioned_paginated_and_tombstoned(tmp_path, monkeypa
     assert len(page_two["changes"]) == 1
     assert page_two["has_more"] is False
     assert page_two["server_revision"] == 2
-    assert all(change["operation"] == "upsert" for change in first_page["changes"] + page_two["changes"])
+    all_changes = first_page["changes"] + page_two["changes"]
+    assert all(change["operation"] == "upsert" for change in all_changes)
 
     metadata = json.loads((first / "metadata.json").read_text(encoding="utf-8"))
     metadata["title"] = "第一份（已更新）"
@@ -88,7 +89,10 @@ def test_sync_manifest_filters_media_and_serves_etag(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     archive_id = str(uuid4())
     archive = _archive(tmp_path, "rich", "同步资料", archive_id)
-    (archive / "transcript_polished.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\n你好", encoding="utf-8")
+    (archive / "transcript_polished.srt").write_text(
+        "1\n00:00:00,000 --> 00:00:01,000\n你好",
+        encoding="utf-8",
+    )
     (archive / "video.mp4").write_bytes(b"media")
     (archive / ".browser.mp3").write_bytes(b"browser-media")
     (archive / "random.jpg").write_bytes(b"not-a-cover")
@@ -122,7 +126,9 @@ def test_sync_manifest_filters_media_and_serves_etag(tmp_path, monkeypatch):
     assert "random.jpg" not in paths
     assert "work/secret.json" not in paths
 
-    image_entry = next(entry for entry in manifest["files"] if entry["relative_path"] == "images/00.jpg")
+    image_entry = next(
+        entry for entry in manifest["files"] if entry["relative_path"] == "images/00.jpg"
+    )
     assert image_entry["sha256"] == hashlib.sha256(b"image-zero").hexdigest()
     downloaded = client.get(f"/api/sync/archives/{archive_id}/files/images/00.jpg")
     assert downloaded.status_code == 200
@@ -173,6 +179,30 @@ def test_sync_rebuild_recreates_current_index(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"archives": 2, "revision": 2}
+
+
+def test_sync_migrates_legacy_gb18030_metadata(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    archive = tmp_path / "legacy-encoding"
+    archive.mkdir()
+    legacy_metadata = {
+        "title": "旧编码资料",
+        "platform": "webpage",
+        "status": "completed",
+    }
+    (archive / "metadata.json").write_bytes(
+        json.dumps(legacy_metadata, ensure_ascii=False).encode("gb18030")
+    )
+    (archive / "summary.md").write_text("# 旧编码资料\n", encoding="utf-8")
+
+    response = client.get("/api/sync/changes")
+
+    assert response.status_code == 200
+    change = response.json()["changes"][0]
+    assert change["archive"]["title"] == "旧编码资料"
+    migrated = json.loads((archive / "metadata.json").read_text(encoding="utf-8"))
+    assert migrated["title"] == "旧编码资料"
+    assert migrated["archive_id"] == change["archive_id"]
 
 
 def test_sync_preserves_id_on_move_and_repairs_copied_id(tmp_path, monkeypatch):

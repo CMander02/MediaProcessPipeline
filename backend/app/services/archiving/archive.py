@@ -56,13 +56,19 @@ class ArchiveService:
 
         # Metadata
         meta_path = output_dir / "metadata.json"
-        meta_path.write_text(json.dumps(metadata.model_dump(mode="json"), indent=2, ensure_ascii=False), encoding="utf-8")
+        meta_path.write_text(
+            json.dumps(metadata.model_dump(mode="json"), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
         files["metadata"] = str(meta_path)
 
         # Analysis (LLM extracted metadata)
         if analysis:
             analysis_path = output_dir / "analysis.json"
-            analysis_path.write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
+            analysis_path.write_text(
+                json.dumps(analysis, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
             files["analysis"] = str(analysis_path)
 
         # Original SRT (raw transcription)
@@ -169,7 +175,9 @@ class ArchiveService:
             store = get_task_store()
             for task in store.list(limit=10000):
                 result = task.result or {}
-                out_dir = result.get("output_dir") or (result.get("archive") or {}).get("output_dir")
+                out_dir = result.get("output_dir") or (result.get("archive") or {}).get(
+                    "output_dir"
+                )
                 if out_dir:
                     dir_to_task[str(Path(out_dir).resolve())] = {
                         "id": str(task.id),
@@ -246,7 +254,11 @@ class ArchiveService:
         metadata_path = task_dir / "metadata.json"
         created_at = task_info.get("created_at")
         if not created_at:
-            timestamp = metadata_path.stat().st_mtime if metadata_path.exists() else task_dir.stat().st_mtime
+            timestamp = (
+                metadata_path.stat().st_mtime
+                if metadata_path.exists()
+                else task_dir.stat().st_mtime
+            )
             created_at = datetime.fromtimestamp(timestamp).isoformat()
         duration_seconds = metadata.get("duration_seconds") or metadata.get("duration")
         if not duration_seconds:
@@ -257,7 +269,8 @@ class ArchiveService:
             "date": datetime.fromisoformat(created_at).strftime("%Y-%m-%d"),
             "created_at": created_at,
             "title": metadata.get("title", task_dir.name),
-            "has_transcript": (task_dir / "transcript_polished.srt").exists() or (task_dir / "transcript.srt").exists(),
+            "has_transcript": (task_dir / "transcript_polished.srt").exists()
+            or (task_dir / "transcript.srt").exists(),
             "has_summary": (task_dir / "summary.md").exists(),
             "has_mindmap": (task_dir / "mindmap.md").exists(),
             "has_video": has_video,
@@ -277,10 +290,16 @@ class ArchiveService:
         if not path.exists():
             return {}
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except Exception:
+            content = path.read_bytes()
+        except OSError:
             return {}
+        for encoding in ("utf-8-sig", "gb18030"):
+            try:
+                data = json.loads(content.decode(encoding))
+                return data if isinstance(data, dict) else {}
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+        return {}
 
     @staticmethod
     def _lite_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
