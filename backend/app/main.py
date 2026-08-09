@@ -1,25 +1,24 @@
+import asyncio
 import logging
 import sys
-import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import tasks, pipeline, filesystem, voiceprints, auth, sync
-from app.api.routes import settings as settings_router
+from app.api.routes import auth, filesystem, logs, pipeline, sync, tasks, voiceprints
 from app.api.routes import kb as kb_router
-from app.core.settings import get_runtime_settings, SETTINGS_FILE
+from app.api.routes import settings as settings_router
 from app.core.config import get_settings
-from app.core.database import init_db, close_db
-from app.core.events import get_event_bus
+from app.core.database import close_db, init_db
 from app.core.logging_setup import setup_logging
 from app.core.pipeline import process_task
 from app.core.queue import get_task_queue
 from app.core.security import request_is_authenticated
+from app.core.settings import SETTINGS_FILE, get_runtime_settings
 from app.version import __version__
 
 # Force UTF-8 encoding for stdout/stderr on Windows
@@ -95,8 +94,8 @@ async def lifespan(app: FastAPI):
             await queue.stop()
         finally:
             try:
-                from app.services.recognition import release_asr_models
                 from app.services.analysis.local_llm_runtime import release_local_llm_runtime
+                from app.services.recognition import release_asr_models
 
                 await asyncio.to_thread(release_asr_models)
                 await asyncio.to_thread(release_local_llm_runtime)
@@ -172,6 +171,7 @@ app.include_router(voiceprints.router, prefix="/api")
 app.include_router(kb_router.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(sync.router, prefix="/api")
+app.include_router(logs.router, prefix="/api")
 
 
 @app.get("/health")

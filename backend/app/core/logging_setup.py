@@ -132,6 +132,8 @@ _LEVEL_ALIAS = {
     "CRITICAL": "CRIT",
 }
 
+_current_log_file: Path | None = None
+
 
 class ConsoleFormatter(logging.Formatter):
     """Readable one-line formatter.
@@ -217,6 +219,8 @@ def setup_logging(log_dir: Path | None = None) -> Path | None:
     Creates (and returns path to) a rotating file handler under `log_dir` if
     provided. Returns None if no file handler was configured.
     """
+    global _current_log_file
+
     root = logging.root
     root.setLevel(logging.INFO)
     # Wipe any pre-existing handlers so we own the pipeline
@@ -292,4 +296,10 @@ def setup_logging(log_dir: Path | None = None) -> Path | None:
             return "ConnectionResetError" not in msg
         logging.getLogger("asyncio").addFilter(_filter_connection_reset)
 
+    _current_log_file = log_file
     return log_file
+
+
+def get_current_log_file() -> Path | None:
+    """Return the log file owned by the current backend process."""
+    return _current_log_file

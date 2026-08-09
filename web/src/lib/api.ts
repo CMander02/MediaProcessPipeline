@@ -76,6 +76,41 @@ export interface HealthInfo {
   version?: string
 }
 
+export interface BackendLogEntry {
+  id: string
+  timestamp: string
+  level: "DEBUG" | "INFO" | "WARN" | "ERROR" | "CRIT" | "RAW" | string
+  module: string
+  task_id: string
+  worker: string
+  source: string
+  event: string
+  message: string
+  raw: string
+}
+
+export interface BackendLogFile {
+  name: string
+  size: number
+  modified_at: string
+  active: boolean
+}
+
+export interface BackendLogFilesResponse {
+  active_file: string | null
+  files: BackendLogFile[]
+}
+
+export interface BackendLogResponse {
+  file: string
+  active: boolean
+  size: number
+  cursor: number
+  reset: boolean
+  truncated: boolean
+  entries: BackendLogEntry[]
+}
+
 export interface BilibiliCollectionItem {
   id: string
   bvid: string
@@ -411,6 +446,18 @@ async function httpDelete<T>(path: string, body?: unknown): Promise<T> {
 
 export const api = {
   health: () => get<HealthInfo>("/health"),
+
+  logs: {
+    files: () => get<BackendLogFilesResponse>("/api/logs/files"),
+    read: (options: { file?: string; cursor?: number; maxBytes?: number } = {}) => {
+      const params = new URLSearchParams()
+      if (options.file) params.set("file", options.file)
+      if (options.cursor !== undefined) params.set("cursor", String(options.cursor))
+      if (options.maxBytes !== undefined) params.set("max_bytes", String(options.maxBytes))
+      const suffix = params.toString() ? `?${params}` : ""
+      return get<BackendLogResponse>(`/api/logs${suffix}`)
+    },
+  },
 
   auth: {
     status: () => get<AuthStatus>("/api/auth/status"),
