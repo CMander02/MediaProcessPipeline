@@ -809,7 +809,11 @@ def resolve_asr_binding(
 
     if provider == "qwen3":
         model = rt.qwen3_asr_model_path or _DEFAULT_QWEN3_ASR_MODEL
-        diarize = bool(rt.enable_diarization and not options.get("disable_diarization", False))
+        diarize = bool(
+            rt.enable_diarization
+            and rt.pyannote_model_path
+            and not options.get("disable_diarization", False)
+        )
         return ASRBinding(
             provider="qwen3",
             source=source,
@@ -852,12 +856,17 @@ def resolve_asr_binding(
         chunk_strategy = _normalize_provider(
             options.get("asr_chunk_strategy") or rt.qwen3_gguf_chunk_strategy
         )
+        diarize = bool(
+            rt.enable_diarization
+            and rt.pyannote_model_path
+            and not options.get("disable_diarization", False)
+        )
         return ASRBinding(
             provider="qwen3_gguf",
             source=source,
             model=model_path or hf_repo,
             language=language,
-            diarize=False,
+            diarize=diarize,
             num_speakers=num_speakers,
             chunk_strategy=chunk_strategy,
             configured=configured,
@@ -875,6 +884,8 @@ def resolve_asr_binding(
                 "chunk_strategy": chunk_strategy,
                 "max_chunk_sec": 30.0,
                 "silero_onnx_model_path": rt.silero_onnx_model_path,
+                "diarize": diarize,
+                "num_speakers": num_speakers,
                 "alias": _DEFAULT_QWEN3_GGUF_ALIAS,
             },
         )
@@ -911,6 +922,11 @@ def resolve_asr_binding(
     )
     binding_ready = provider_binding.configured if provider_binding else True
     configured = bool(binding_ready and api_base and api_key and model and endpoint)
+    diarize = bool(
+        rt.enable_diarization
+        and rt.pyannote_model_path
+        and not options.get("disable_diarization", False)
+    )
     return ASRBinding(
         provider="siliconflow",
         source=source,
@@ -918,7 +934,7 @@ def resolve_asr_binding(
         api_base=api_base,
         api_key=api_key,
         language=lang_hint,
-        diarize=False,
+        diarize=diarize,
         num_speakers=num_speakers,
         chunk_strategy=chunk_strategy,
         configured=configured,
@@ -933,7 +949,7 @@ def resolve_asr_binding(
             "max_chunk_sec": rt.siliconflow_asr_max_chunk_sec,
             "timeout_sec": rt.siliconflow_asr_timeout_sec,
             "chunk_strategy": chunk_strategy,
-            "diarize": False,
+            "diarize": diarize,
             "num_speakers": num_speakers,
             "default_params": default_params,
         },

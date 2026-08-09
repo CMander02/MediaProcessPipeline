@@ -7,7 +7,7 @@ from typing import Any, Generator
 
 import httpx
 
-DEFAULT_BASE_URL = "http://127.0.0.1:18000"
+DEFAULT_BASE_URL = "http://localhost:18000"
 
 # Disable proxy for localhost — system proxy (e.g. Clash) would intercept otherwise.
 _NO_PROXY = httpx.Client(proxy=None, timeout=10.0, trust_env=False)

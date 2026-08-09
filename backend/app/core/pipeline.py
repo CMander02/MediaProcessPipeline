@@ -1106,14 +1106,14 @@ async def _run_voiceprint_step(
         log_event(logger, logging.INFO, "voiceprint.skipped", reason="no_speaker_labels")
         return recognition_segments
 
-    from app.services.recognition import get_asr_service
-    service = get_asr_service()
-    pipeline_obj = service.get_pyannote_pipeline() if hasattr(service, "get_pyannote_pipeline") else None
+    from app.services.recognition import get_diarization_service
+    service = get_diarization_service()
+    pipeline_obj = service.get_pyannote_pipeline()
     if pipeline_obj is None:
         log_event(logger, logging.INFO, "voiceprint.skipped", reason="pyannote_not_loaded")
         return recognition_segments
 
-    diarize_df, audio_path = service.get_last_diarization() if hasattr(service, "get_last_diarization") else (None, None)
+    diarize_df, audio_path = service.get_last_diarization()
     if diarize_df is None or audio_path is None:
         log_event(logger, logging.INFO, "voiceprint.skipped", reason="no_cached_diarization")
         return recognition_segments
@@ -3238,6 +3238,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                                 chunk_strategy=task.options.get("asr_chunk_strategy"),
                                 hotwords=task.options.get("hotwords"),
                                 audio_processing_flow=task.options.get("audio_processing_flow"),
+                                diarization_audio_path=audio_path,
                                 progress_callback=_on_asr_progress,
                             )
                             await asyncio.sleep(0)

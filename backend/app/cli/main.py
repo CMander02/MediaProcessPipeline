@@ -181,7 +181,7 @@ def _require_daemon(client=None, auto_start: bool = False) -> "MppClient":  # no
         console.print("[red]后台服务启动超时，请手动运行 mpp serve[/red]")
         raise typer.Exit(1)
 
-    console.print(f"[green]{ok_char}[/green] 后台服务已启动  (http://127.0.0.1:18000)")
+    console.print(f"[green]{ok_char}[/green] 后台服务已启动  (http://localhost:18000)")
     return client
 
 
@@ -282,8 +282,8 @@ def ping():
     from app.cli.display import console
     client = _get_client()
     if client.ping():
-        console.print("[green]+[/green] daemon 在线  (http://127.0.0.1:18000)" if _plain_mode
-                      else "[green]✓[/green] daemon 在线  (http://127.0.0.1:18000)")
+        console.print("[green]+[/green] daemon 在线  (http://localhost:18000)" if _plain_mode
+                      else "[green]✓[/green] daemon 在线  (http://localhost:18000)")
     else:
         console.print("[red]x[/red] daemon 未运行" if _plain_mode else "[red]✗[/red] daemon 未运行")
         raise typer.Exit(1)
@@ -1373,14 +1373,14 @@ def config_preset(
 @app.command()
 def doctor():
     """检查运行环境（ffmpeg、CUDA、模型文件、API key 等）。"""
-    import shutil
+    import importlib.util
     import pathlib
+    import shutil
+
     from app.cli.display import console
 
     ok  = "[green]+" if _plain_mode else "[green]✓"
     err = "[red]x"   if _plain_mode else "[red]✗"
-    warn = "[yellow]!"
-
     def check(label: str, passed: bool, detail: str = "") -> None:
         icon = ok if passed else err
         style_end = "[/green]" if passed else "[/red]"
@@ -1392,7 +1392,7 @@ def doctor():
     # Daemon
     client = _get_client()
     daemon_ok = client.ping()
-    check("Daemon", daemon_ok, "http://127.0.0.1:18000" if daemon_ok else "未运行 — mpp serve")
+    check("Daemon", daemon_ok, "http://localhost:18000" if daemon_ok else "未运行 — mpp serve")
 
     # ffmpeg
     ff = shutil.which("ffmpeg")
@@ -1418,12 +1418,51 @@ def doctor():
     key_field = f"{provider}_api_key" if provider in ("anthropic", "openai", "custom") else ""
     if key_field:
         has_key = bool(settings.get(key_field, ""))
-        check(f"LLM key ({provider})", has_key, "已配置" if has_key else f"未设置 — mpp config set {key_field} <key>")
+        check(
+            f"LLM key ({provider})",
+            has_key,
+            "已配置" if has_key else f"未设置 — mpp config set {key_field} <key>",
+        )
     else:
         check("LLM", True, f"provider={provider}")
 
-    # ASR model
-    mp = settings.get("qwen3_asr_model_path", "")
-    mp_ok = pathlib.Path(mp).exists() if mp else False
-    check("ASR model (qwen3)", mp_ok or not mp,
-          mp if mp_ok else ("未配置路径 (将从 HF 下载)" if not mp else f"路径不存在: {mp}"))
+    # ASR and speech segmentation
+    asr_provider = settings.get("asr_provider", "qwen3_gguf")
+    check("ASR provider", bool(asr_provider), asr_provider)
+
+    silero_path = settings.get("silero_onnx_model_path", "")
+    silero_file_ok = bool(silero_path and pathlib.Path(silero_path).is_file())
+    onnxruntime_ok = importlib.util.find_spec("onnxruntime") is not None
+    check(
+        "Silero ONNX",
+        silero_file_ok and onnxruntime_ok,
+        (
+            f"{silero_path or '未配置'} | "
+            f"onnxruntime={'ready' if onnxruntime_ok else 'missing'}"
+        ),
+    )
+
+    diarization_enabled = bool(settings.get("enable_diarization", True))
+    if diarization_enabled:
+        pipeline_path = pathlib.Path(settings.get("pyannote_model_path", ""))
+        segmentation_path = pathlib.Path(settings.get("pyannote_segmentation_path", ""))
+        embedding_path = pathlib.Path(settings.get("pyannote_embedding_path", ""))
+        pipeline_ok = (pipeline_path / "config.yaml").is_file()
+        segmentation_ok = (segmentation_path / "config.yaml").is_file() and (
+            segmentation_path / "pytorch_model.bin"
+        ).is_file()
+        embedding_ok = (embedding_path / "config.yaml").is_file() and (
+            embedding_path / "pytorch_model.bin"
+        ).is_file()
+        packages_ok = all(
+            importlib.util.find_spec(name) is not None
+            for name in ("pyannote.audio", "soundfile", "torch", "torchaudio")
+        )
+        check(
+            "Pyannote 3.1",
+            pipeline_ok and segmentation_ok and embedding_ok and packages_ok,
+            (
+                f"{pipeline_path} | "
+                f"packages={'ready' if packages_ok else 'missing'}"
+            ),
+        )

@@ -928,9 +928,11 @@ class Qwen3ASRService:
 
         if sample_rate != 16000:
             # Resample to 16kHz
-            import librosa
+            import torch
+            import torchaudio
             logger.info(f"Resampling audio from {sample_rate}Hz to 16000Hz (this may take a moment)...")
-            audio_data = librosa.resample(audio_data, orig_sr=sample_rate, target_sr=16000)
+            waveform = torch.from_numpy(audio_data.astype(np.float32))
+            audio_data = torchaudio.functional.resample(waveform, sample_rate, 16000).numpy()
             logger.info(f"Resampling complete, new shape: {audio_data.shape}")
 
         duration_sec = len(audio_data) / 16000

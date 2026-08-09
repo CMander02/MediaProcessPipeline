@@ -38,8 +38,11 @@ def _load_audio_mono_16k(audio_path: str | Path) -> np.ndarray:
     if data.ndim > 1:
         data = np.mean(data, axis=1)
     if sr != SAMPLE_RATE:
-        import librosa
-        data = librosa.resample(data.astype(np.float32), orig_sr=sr, target_sr=SAMPLE_RATE)
+        import torch
+        import torchaudio
+
+        waveform = torch.from_numpy(data.astype(np.float32))
+        data = torchaudio.functional.resample(waveform, sr, SAMPLE_RATE).numpy()
     return data.astype(np.float32)
 
 

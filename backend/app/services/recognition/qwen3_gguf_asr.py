@@ -254,10 +254,14 @@ class Qwen3GGUFASRService:
         self._runtime.stop()
 
     def get_pyannote_pipeline(self):
-        return None
+        from app.services.recognition.diarization import get_diarization_service
+
+        return get_diarization_service().get_pyannote_pipeline()
 
     def get_last_diarization(self):
-        return None, None
+        from app.services.recognition.diarization import get_diarization_service
+
+        return get_diarization_service().get_last_diarization()
 
     def transcribe(
         self,
@@ -360,7 +364,7 @@ class Qwen3GGUFASRService:
             audio_file,
             strategy=strategy,
             max_duration=max_chunk,
-            allow_fallback=True,
+            allow_fallback=strategy not in {"silero_onnx", "silero_torch"},
         )
         checkpoint_file = Path(checkpoint_path) if checkpoint_path else None
         checkpoint_signature = self._checkpoint_signature(

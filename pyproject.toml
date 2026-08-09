@@ -52,7 +52,17 @@ local-asr = [
     # Qwen3-ASR (支持本地模型)
     "qwen-asr>=0.0.6",
     # 说话人分离 / 声纹
-    "pyannote-audio>=3.4.0",
+    "pyannote-audio>=3.4.0,<4",
+    "soundfile>=0.12.1",
+    "numba>=0.61.2",
+]
+diarization = [
+    # 独立于 Python ASR 模型，可与 Qwen3 GGUF / API ASR 组合使用。
+    "torch~=2.8.0",
+    "torchaudio~=2.8.0",
+    "pyannote-audio>=3.4.0,<4",
+    "soundfile>=0.12.1",
+    "numba>=0.61.2",
 ]
 local-llm = [
     "torch~=2.8.0",
@@ -69,7 +79,8 @@ local-models = [
     # Installing onnxruntime alongside it overwrites the shared Python module on Windows.
     "audio-separator[gpu]>=0.41.0",
     "qwen-asr>=0.0.6",
-    "pyannote-audio>=3.4.0",
+    "pyannote-audio>=3.4.0,<4",
+    "numba>=0.61.2",
     "accelerate>=0.34.0",
 ]
 

@@ -16,9 +16,16 @@ SUPPORTED_ASR_PROVIDERS = {"moss_cpp", "qwen3", "qwen3_gguf", "siliconflow"}
 __all__ = [
     "SUPPORTED_ASR_PROVIDERS",
     "get_asr_service",
+    "get_diarization_service",
     "release_asr_models",
     "transcribe_audio",
 ]
+
+
+def get_diarization_service():
+    from app.services.recognition.diarization import get_diarization_service as _get_service
+
+    return _get_service()
 
 
 def get_asr_service(provider: str | None = None) -> ASRService:
@@ -63,6 +70,9 @@ def release_asr_models() -> None:
     release_qwen3_gguf_service()
     release_qwen3_service()
     release_siliconflow_service()
+    from app.services.recognition.diarization import release_diarization_service
+
+    release_diarization_service()
 
 
 async def transcribe_audio(
@@ -75,6 +85,7 @@ async def transcribe_audio(
     chunk_strategy: str | None = None,
     hotwords: list[str] | None = None,
     audio_processing_flow: str | None = None,
+    diarization_audio_path: str | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Transcribe audio with the configured ASR provider and optionally write an SRT file."""
@@ -132,6 +143,13 @@ async def transcribe_audio(
                 progress_callback=progress_callback,
                 **binding.request_kwargs,
             )
+        if provider_id == "qwen3":
+            return service.transcribe(
+                audio_path,
+                language=binding.language,
+                diarize=False,
+                num_speakers=binding.num_speakers,
+            )
         return service.transcribe(
             audio_path,
             language=binding.language,
@@ -140,6 +158,36 @@ async def transcribe_audio(
         )
 
     result = await asyncio.to_thread(_run_transcribe)
+    if binding.diarize and provider_id != "moss_cpp":
+        raw_segments = result.get("segments")
+        if isinstance(raw_segments, list) and raw_segments:
+            if progress_callback:
+                progress_callback({
+                    "phase": "diarizing",
+                    "progress": 0.0,
+                    "message": "正在执行完整音频说话人分离",
+                })
+            cache_path = Path(output_dir) / "diarization.json" if output_dir else None
+            diarization_result = await asyncio.to_thread(
+                get_diarization_service().apply,
+                diarization_audio_path or audio_path,
+                raw_segments,
+                num_speakers=binding.num_speakers,
+                cache_path=cache_path,
+            )
+            result["segments"] = diarization_result["segments"]
+            result["speakers"] = diarization_result["speakers"]
+            result["speaker_count"] = diarization_result["speaker_count"]
+            result["diarization"] = diarization_result["diarization"]
+            result["diarization_cache_hit"] = diarization_result["cache_hit"]
+            if progress_callback:
+                progress_callback({
+                    "phase": "diarizing",
+                    "progress": 1.0,
+                    "message": (
+                        f"说话人分离完成：{diarization_result['speaker_count']} 位说话人"
+                    ),
+                })
     segments = service.to_segments(result)
     srt_content = service.to_srt(segments)
     detected_language = result.get("language", language or "unknown")

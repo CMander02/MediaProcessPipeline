@@ -154,6 +154,37 @@ def test_asr_qwen3_gguf_binding_uses_local_model_pair_and_cpu():
     assert binding.request_kwargs["binary_path"] == "D:/tools/llama-server.exe"
 
 
+def test_asr_qwen3_gguf_binding_enables_global_pyannote_diarization():
+    settings = RuntimeSettings(
+        asr_provider="qwen3_gguf",
+        enable_diarization=True,
+        pyannote_model_path="D:/models/pyannote-speaker-diarization-3.1",
+    )
+
+    binding = resolve_asr_binding(settings, task_options={"num_speakers": 2})
+
+    assert binding.diarize is True
+    assert binding.num_speakers == 2
+    assert binding.request_kwargs["diarize"] is True
+    assert binding.request_kwargs["num_speakers"] == 2
+
+
+def test_asr_api_binding_enables_global_pyannote_diarization():
+    settings = RuntimeSettings(
+        asr_provider="siliconflow",
+        siliconflow_api_base="https://asr.example/v1",
+        siliconflow_api_key="sf-key",
+        siliconflow_asr_model="asr-model",
+        enable_diarization=True,
+        pyannote_model_path="D:/models/pyannote-speaker-diarization-3.1",
+    )
+
+    binding = resolve_asr_binding(settings, task_options={"num_speakers": 2})
+
+    assert binding.diarize is True
+    assert binding.request_kwargs["diarize"] is True
+
+
 def test_asr_qwen3_gguf_binding_rejects_partial_local_model_pair():
     settings = RuntimeSettings(
         asr_provider="qwen3_gguf",

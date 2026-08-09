@@ -183,6 +183,13 @@ class ASRChunker:
         session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
         input_names = [item.name for item in session.get_inputs()]
         output_names = [item.name for item in session.get_outputs()]
+        logger.info(
+            "Silero ONNX initialized: model=%s providers=%s inputs=%s outputs=%s",
+            model_path,
+            session.get_providers(),
+            input_names,
+            output_names,
+        )
         input_name = "input" if "input" in input_names else input_names[0]
         state_name = "state" if "state" in input_names else None
         sr_name = "sr" if "sr" in input_names else None
