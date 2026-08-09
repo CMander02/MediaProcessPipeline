@@ -2,6 +2,12 @@
 
 from typing import Any
 
+POLISH_SYSTEM_PROMPT = """You are a constrained subtitle copy editor.
+You may correct recognition errors, punctuation, and light verbal clutter. Subtitle
+index, timestamp, speaker identity, and canonical entity spelling are read-only fields.
+Never add a speaker label when the input cue has none. Return only the requested JSON
+array."""
+
 
 def get_polish_prompt(
     text: str,
@@ -10,6 +16,9 @@ def get_polish_prompt(
     main_topics: list[str] | None = None,
     keywords: list[str] | None = None,
     proper_nouns: list[str] | None = None,
+    entities: list[dict[str, Any]] | None = None,
+    speaker_ids: list[str] | None = None,
+    timeline_context: str = "",
 ) -> str:
     """
     Generate the polish prompt with context from analysis phase.
@@ -28,6 +37,19 @@ def get_polish_prompt(
     topics_str = ", ".join(main_topics) if main_topics else "未知"
     keywords_str = ", ".join(keywords) if keywords else "未知"
     nouns_str = ", ".join(proper_nouns) if proper_nouns else "未知"
+    entity_lines = []
+    for entity in entities or []:
+        canonical = str(entity.get("canonical") or "").strip()
+        aliases = ", ".join(str(item) for item in entity.get("aliases") or [])
+        if canonical:
+            entity_lines.append(f"- {canonical}" + (f"（别名：{aliases}）" if aliases else ""))
+    entities_str = "\n".join(entity_lines) or "- 无"
+    speakers_str = ", ".join(speaker_ids or []) or "无说话人标签"
+    speaker_rule = (
+        f"输入允许的说话人标签只有：{speakers_str}。每条输出必须保留对应输入的原标签。"
+        if speaker_ids
+        else "输入没有说话人标签。所有输出都禁止新增任何 [SPEAKER]、人物名或角色前缀。"
+    )
 
     return f"""你是专业的字幕校对编辑。请根据上下文信息润色下面的字幕片段。
 
@@ -37,23 +59,27 @@ def get_polish_prompt(
 - 主要话题: {topics_str}
 - 关键词: {keywords_str}
 - 专有名词（请保持一致拼写）: {nouns_str}
+- 当前时间轴范围: {timeline_context or '未提供'}
+- 输入 speaker 集合: {speakers_str}
+
+## 规范实体表
+{entities_str}
 
 ## 润色要求
 1. 修正语音识别错误和错别字
 2. 添加适当的标点符号
 3. 移除口语填充词（如"呃"、"那个"、"就是说"、"然后"等）
 4. 保持原意和说话者风格
-5. **必须**保留每条字幕的 index、timestamp、[SPEAKER_XX] 标记
+5. {speaker_rule}
 6. **不要**合并或拆分字幕条目；输入有 N 条，输出就必须有 N 条
 7. **不要**改写 timestamp，必须原样保留
+8. 实体表中的 canonical 拼写必须保持一致
 
 ## 输出格式（严格遵守）
 直接输出 JSON 数组，**不要**任何前后解释/markdown 代码块/废话引导句。
-每个元素是一个对象：{{"index": <整数>, "timestamp": "<原时间戳>", "text": "<润色后的文本，包含 [SPEAKER_XX] 前缀>"}}
-
-示例输出（仅示例，请勿照抄）：
-[{{"index": 1, "timestamp": "00:00:00,800 --> 00:00:06,719", "text": "[SPEAKER_04] 大家好。"}},
- {{"index": 2, "timestamp": "00:00:07,440 --> 00:00:17,519", "text": "[SPEAKER_04] 今天我们聊一聊。"}}]
+每个元素是一个对象：
+{{"index": <输入整数>, "timestamp": "<输入原时间戳>",
+  "text": "<润色后的正文；speaker 前缀遵循输入>"}}
 
 ## 待润色的字幕片段
 {text}

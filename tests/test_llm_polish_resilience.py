@@ -28,6 +28,128 @@ def _srt(segments: list[dict[str, object]]) -> str:
     )
 
 
+def test_polish_constraints_restore_cue_fields_and_prevent_speaker_invention():
+    service = LLMService()
+    original = [
+        {
+            "index": 1,
+            "timestamp": "00:00:00,000 --> 00:00:01,000",
+            "text": "Evolvent 发布成果",
+        },
+        {
+            "index": 2,
+            "timestamp": "00:00:01,000 --> 00:00:02,000",
+            "text": "[SPEAKER_00] 原始内容",
+        },
+    ]
+    polished = [
+        {
+            "index": 1,
+            "timestamp": "00:09:00,000 --> 00:09:01,000",
+            "text": "[主持人] Evolvent 发布了成果。",
+        },
+        {
+            "index": 2,
+            "timestamp": "00:09:01,000 --> 00:09:02,000",
+            "text": "[嘉宾] 润色内容。",
+        },
+    ]
+    context = {
+        "entities": [
+            {
+                "canonical": "Evolvent AI",
+                "aliases": ["Evolvent"],
+                "type": "organization",
+                "evidence": "title",
+            }
+        ]
+    }
+
+    constrained = service._enforce_polish_constraints(polished, original, context)
+
+    assert constrained[0] == {
+        "index": 1,
+        "timestamp": original[0]["timestamp"],
+        "text": "Evolvent AI 发布了成果。",
+    }
+    assert constrained[1]["timestamp"] == original[1]["timestamp"]
+    assert constrained[1]["text"] == "[SPEAKER_00] 润色内容。"
+
+
+@pytest.mark.asyncio
+async def test_summary_preserves_source_timeline(monkeypatch):
+    service = LLMService()
+    source_context = {
+        "timeline": [
+            {"start": 0, "title": "开场", "source": "derived"},
+            {"start": 75, "title": "第一章", "source": "source_chapter"},
+        ],
+        "entities": [],
+    }
+
+    async def fake_call(_prompt, **_kwargs):
+        return json.dumps(
+            {
+                "tldr": "摘要",
+                "key_facts": [],
+                "action_items": [],
+                "topics": [],
+                "timeline": [
+                    {"start": 75, "title": "模型改写的标题", "summary": "章节摘要"}
+                ],
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(service, "_call", fake_call)
+    result = await service.summarize("正文", source_context=source_context)
+
+    assert [(item["start"], item["title"]) for item in result["timeline"]] == [
+        (0, "开场"),
+        (75, "第一章"),
+    ]
+    assert result["timeline"][1]["summary"] == "章节摘要"
+
+
+@pytest.mark.asyncio
+async def test_long_summary_maps_each_source_chapter_before_reduce(monkeypatch):
+    service = LLMService()
+    source_context = {
+        "timeline": [
+            {"start": 0, "title": "开场", "source": "derived"},
+            {"start": 60, "title": "第一章", "source": "source_chapter"},
+        ],
+        "entities": [],
+    }
+    long_srt = (
+        "1\n00:00:00,000 --> 00:00:59,000\n" + "甲" * 8000 + "\n\n"
+        "2\n00:01:00,000 --> 00:02:00,000\n" + "乙" * 8000
+    )
+    calls = []
+
+    async def fake_call(prompt, **_kwargs):
+        calls.append(prompt)
+        return json.dumps(
+            {
+                "tldr": "章节摘要",
+                "key_facts": ["事实"],
+                "action_items": [],
+                "topics": ["主题"],
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(service, "_call", fake_call)
+    result = await service.summarize(long_srt, source_context=source_context)
+
+    assert len(calls) == 3
+    assert [(item["start"], item["title"]) for item in result["timeline"]] == [
+        (0, "开场"),
+        (60, "第一章"),
+    ]
+    assert all(item["summary"] == "章节摘要" for item in result["timeline"])
+
+
 @pytest.mark.asyncio
 async def test_parallel_polish_retries_only_transiently_failed_chunk(monkeypatch):
     service = LLMService()

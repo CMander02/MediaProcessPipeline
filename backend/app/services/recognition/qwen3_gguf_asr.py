@@ -20,6 +20,7 @@ import httpx
 from app.core.settings import get_runtime_settings
 from app.models import TranscriptSegment
 from app.services.recognition.chunking import ASRChunker
+from app.services.recognition.quality import assess_asr_text
 
 logger = logging.getLogger(__name__)
 
@@ -378,6 +379,7 @@ class Qwen3GGUFASRService:
             checkpoint_signature,
             total_chunks=len(chunks),
         )
+        quality_diagnostics: list[dict[str, Any]] = []
 
         logger.info(
             "Qwen3 GGUF ASR: %s (chunks=%s, strategy=%s, model=%s)",
@@ -446,6 +448,40 @@ class Qwen3GGUFASRService:
                             )
                             self._runtime.stop()
                             base_url = self._runtime.ensure(kwargs)
+                    quality = assess_asr_text(text, chunk.end - chunk.start)
+                    if text and not quality["valid"]:
+                        logger.warning(
+                            "Qwen3 GGUF chunk %d/%d failed quality gate; retrying: %s",
+                            index + 1,
+                            len(chunks),
+                            ",".join(quality["reasons"]),
+                        )
+                        retry_text = self._post_chunk(
+                            client,
+                            f"{base_url}/v1/chat/completions",
+                            str(kwargs.get("alias") or _DEFAULT_ALIAS),
+                            tmp_path,
+                            language=language,
+                            hotwords=hotwords,
+                            strict=True,
+                        )
+                        retry_quality = assess_asr_text(
+                            retry_text,
+                            chunk.end - chunk.start,
+                        )
+                        if retry_quality["valid"]:
+                            text = retry_text
+                        else:
+                            quality_diagnostics.append(
+                                {
+                                    **retry_quality,
+                                    "chunk": index + 1,
+                                    "start": chunk.start,
+                                    "end": chunk.end,
+                                    "action": "isolated_after_retry",
+                                }
+                            )
+                            text = ""
                     if text:
                         segments.extend(self._split_chunk_text(chunk.start, chunk.end, text))
                     self._save_checkpoint(
@@ -481,6 +517,7 @@ class Qwen3GGUFASRService:
             "language": language or "unknown",
             "segments": segments,
             "provider": "qwen3_gguf",
+            "quality_diagnostics": quality_diagnostics,
         }
 
     @staticmethod
@@ -575,6 +612,7 @@ class Qwen3GGUFASRService:
         *,
         language: str | None = None,
         hotwords: list[str] | None = None,
+        strict: bool = False,
     ) -> str:
         audio_b64 = base64.b64encode(wav_path.read_bytes()).decode("ascii")
         prompt = "Transcribe this audio. Return only the transcription text."
@@ -584,6 +622,12 @@ class Qwen3GGUFASRService:
             words = ", ".join(word.strip() for word in hotwords if str(word).strip())
             if words:
                 prompt += f" Preserve these terms exactly when they are spoken: {words}."
+        if strict:
+            prompt += (
+                " This is a quality-control retry. Do not emit song syllables, repeated "
+                "tokens, translations, explanations, or guessed speech. Return an empty "
+                "string when no intelligible speech is present."
+            )
         payload = {
             "model": model,
             "messages": [

@@ -1,20 +1,16 @@
 """
-Platform subtitle processor — speaker identification + punctuation via LLM.
+Platform subtitle processor — cue-preserving punctuation and correction via LLM.
 
 When platform subtitles are available (YouTube auto/manual, Bilibili, local SRT),
-this module processes them through LLM to add:
-  - Speaker identification (from metadata + text context)
-  - Punctuation and sentence structuring
-  - Paragraph segmentation with timestamp ranges
+this module processes them through the same constrained polish path as ASR.
+Speaker and timestamp fields remain read-only.
 
 Output is compatible with the ASR path (segments + SRT format).
 """
 
-import asyncio
 import json
 import logging
 import re
-import time
 from pathlib import Path
 from typing import Any
 
@@ -22,12 +18,6 @@ from app.core.logging_setup import log_event
 from app.models import MediaMetadata
 
 logger = logging.getLogger(__name__)
-
-# Chunking parameters (validated in experiment)
-CHUNK_SIZE = 150
-CHUNK_OVERLAP = 15
-MAX_CONCURRENCY = 1  # Sequential to preserve speaker context across chunks
-
 
 # ---------------------------------------------------------------------------
 # Subtitle parsing
@@ -128,230 +118,13 @@ def parse_subtitle_file(path: str, fmt: str) -> list[dict]:
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
-def _fmt_ts(ms: int) -> str:
-    """Format milliseconds to HH:MM:SS."""
-    s = ms // 1000
-    h, s = divmod(s, 3600)
-    m, s = divmod(s, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}"
-
-
 def _ts_to_seconds(ts: str) -> float:
-    parts = ts.split(":")
+    parts = ts.replace(",", ".").split(":")
     if len(parts) == 3:
         return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
     elif len(parts) == 2:
         return int(parts[0]) * 60 + float(parts[1])
     return 0
-
-
-def _ts_to_ms(ts: str) -> int:
-    return int(_ts_to_seconds(ts) * 1000)
-
-
-# ---------------------------------------------------------------------------
-# LLM prompt construction
-# ---------------------------------------------------------------------------
-
-def _build_context_header(metadata: MediaMetadata) -> str:
-    """Build metadata context for the LLM from MediaMetadata model."""
-    chapters_str = ""
-    if metadata.chapters:
-        chapters_str = "\n".join(
-            f"  - [{_fmt_ts(int(ch.start_time * 1000))}] {ch.title}"
-            for ch in metadata.chapters
-        )
-        chapters_str = f"\n章节:\n{chapters_str}"
-
-    duration_str = _fmt_ts(int(metadata.duration_seconds * 1000)) if metadata.duration_seconds else "未知"
-    desc = (metadata.description or "")[:1000]
-
-    return f"""## 视频信息
-- 标题: {metadata.title}
-- 频道/上传者: {metadata.uploader or '未知'}
-- 时长: {duration_str}
-{chapters_str}
-
-## 简介（节选）
-{desc}
-"""
-
-
-def _build_transcript_prompt(
-    context_header: str,
-    segments: list[dict],
-    known_speakers: list[str] | None = None,
-) -> str:
-    """Build the speaker identification + punctuation prompt."""
-    raw_block = "\n".join(
-        f"{_fmt_ts(s['start_ms'])} {s['text']}"
-        for s in segments
-    )
-
-    time_range_start = _fmt_ts(segments[0]["start_ms"])
-    time_range_end = _fmt_ts(segments[-1]["end_ms"])
-
-    known_str = ""
-    if known_speakers:
-        known_str = f"\n已知说话人: {', '.join(known_speakers)}\n"
-
-    return f"""你是专业的字幕转录编辑。将下面的原始字幕转换为带说话人标注、正确标点、合理分段的结构化转录稿。
-
-{context_header}{known_str}
-
-## 核心规则
-
-### 内容保真
-- 保留每一个口语词，包括语气词（"嗯"、"啊"、"对"）和重复
-- 不翻译、不改写、不总结
-- 笑声等非语言内容用括号标注：（笑）（哈哈哈）
-
-### 说话人识别
-1. 从视频元数据推断说话人（标题、频道名、简介）
-2. 从文本线索推断（自我介绍、称呼、问答模式）
-3. 无法确认时用有意义的标签（主持人、嘉宾）
-4. 同一人连续发言不重复标注说话人名
-
-### 标点与分段
-- 添加正确的中文标点（逗号、句号、问号、感叹号、省略号）
-- 每2-4句话为一个段落
-- 每个段落带一个时间戳范围
-
-## 原始字幕（{time_range_start} ~ {time_range_end}）
-{raw_block}
-
-## 输出格式
-严格按以下格式输出，不要输出其他内容：
-
-第一行输出说话人列表：
-SPEAKERS: 说话人1,说话人2
-
-然后输出转录稿，每个段落格式为：
-[HH:MM:SS → HH:MM:SS] **说话人:**
-段落文本，带标点。
-
-说话人连续发言时省略说话人标注：
-[HH:MM:SS → HH:MM:SS]
-继续的段落文本。
-
-说话人切换时必须标注：
-[HH:MM:SS → HH:MM:SS] **新说话人:**
-新说话人的文本。"""
-
-
-# ---------------------------------------------------------------------------
-# Parse LLM output
-# ---------------------------------------------------------------------------
-
-def _parse_transcript_output(response: str) -> dict:
-    """Parse the structured transcript output from LLM."""
-    lines = response.strip().split("\n")
-
-    speakers = []
-    paragraphs = []
-    current_speaker = None
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-
-        # Parse SPEAKERS line
-        if line.upper().startswith("SPEAKERS:") or line.upper().startswith("SPEAKERS："):
-            sp_text = line.split(":", 1)[-1] if ":" in line else line.split("：", 1)[-1]
-            speakers = [s.strip() for s in sp_text.split(",") if s.strip()]
-            continue
-
-        # Parse timestamp + speaker line
-        ts_match = re.match(
-            r"\[(\d{2}:\d{2}:\d{2})\s*[→\->]+\s*(\d{2}:\d{2}:\d{2})\]\s*(.*)",
-            line,
-        )
-        if ts_match:
-            start_ts = ts_match.group(1)
-            end_ts = ts_match.group(2)
-            rest = ts_match.group(3).strip()
-
-            speaker_match = re.match(r"\*\*(.+?)[:：]\*\*\s*(.*)", rest)
-            if speaker_match:
-                current_speaker = speaker_match.group(1).strip()
-                text = speaker_match.group(2).strip()
-            else:
-                text = rest
-
-            paragraphs.append({
-                "start": start_ts,
-                "end": end_ts,
-                "speaker": current_speaker or "Unknown",
-                "text": text,
-            })
-            continue
-
-        # Continuation text — append to last paragraph
-        if paragraphs and not line.startswith("[") and not line.upper().startswith("SPEAKERS"):
-            paragraphs[-1]["text"] += " " + line if paragraphs[-1]["text"] else line
-
-    return {"speakers": speakers, "paragraphs": paragraphs}
-
-
-# ---------------------------------------------------------------------------
-# Convert paragraphs to SRT and Markdown
-# ---------------------------------------------------------------------------
-
-def _paragraphs_to_srt(paragraphs: list[dict]) -> str:
-    """Convert structured paragraphs to SRT format."""
-    srt_blocks = []
-    for i, p in enumerate(paragraphs, 1):
-        start = p["start"].replace(".", ",") + ",000" if "," not in p["start"] else p["start"]
-        end = p["end"].replace(".", ",") + ",000" if "," not in p["end"] else p["end"]
-        # Add SRT timestamp format: HH:MM:SS,mmm
-        if len(start.split(",")[0].split(":")) == 3 and "," in start:
-            start_srt = start
-        else:
-            start_srt = f"{p['start']},000"
-        if len(end.split(",")[0].split(":")) == 3 and "," in end:
-            end_srt = end
-        else:
-            end_srt = f"{p['end']},000"
-
-        speaker_prefix = f"[{p['speaker']}] " if p.get("speaker") else ""
-        srt_blocks.append(f"{i}\n{start_srt} --> {end_srt}\n{speaker_prefix}{p['text']}")
-
-    return "\n\n".join(srt_blocks)
-
-
-def _paragraphs_to_markdown(paragraphs: list[dict], title: str = "") -> str:
-    """Convert structured paragraphs to a clean Markdown document."""
-    lines = []
-    if title:
-        lines.append(f"# {title}")
-        lines.append("")
-
-    # Group consecutive paragraphs by speaker
-    groups = []
-    if paragraphs:
-        current = {"speaker": paragraphs[0]["speaker"], "paragraphs": [paragraphs[0]]}
-        for p in paragraphs[1:]:
-            if p["speaker"] == current["speaker"]:
-                current["paragraphs"].append(p)
-            else:
-                groups.append(current)
-                current = {"speaker": p["speaker"], "paragraphs": [p]}
-        groups.append(current)
-
-    speakers = set(p["speaker"] for p in paragraphs if p.get("speaker"))
-    multi_speaker = len(speakers) > 1
-
-    for g in groups:
-        if multi_speaker and g["speaker"]:
-            lines.append(f"**{g['speaker']}:**")
-            lines.append("")
-
-        for p in g["paragraphs"]:
-            lines.append(p["text"])
-            lines.append("")
-
-    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -363,9 +136,10 @@ async def process_subtitles(
     subtitle_format: str,
     metadata: MediaMetadata,
     on_progress: Any = None,
+    source_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    Process platform subtitles through LLM for speaker identification and punctuation.
+    Process platform subtitles through cue-preserving LLM correction.
 
     Args:
         subtitle_path: Path to the subtitle file
@@ -379,7 +153,7 @@ async def process_subtitles(
             "language": str,
             "segments": list[dict],
             "srt": str,              # Original subtitle as SRT
-            "polished_srt": str,     # LLM-processed SRT with speakers + punctuation
+            "polished_srt": str,     # Corrected SRT with cue fields preserved
             "polished_md": str,      # Markdown version
             "speakers": list[str],
             "subtitle_source": "platform",
@@ -405,128 +179,53 @@ async def process_subtitles(
     # Build original SRT from raw segments
     original_srt = _segments_to_original_srt(segments)
 
-    # Step 2: Build context
-    context_header = _build_context_header(metadata)
-
-    # Step 3: Chunk and process
-    chunks = []
-    i = 0
-    while i < len(segments):
-        end = min(i + CHUNK_SIZE, len(segments))
-        chunks.append(segments[i:end])
-        i += CHUNK_SIZE - CHUNK_OVERLAP
-
-    log_event(
-        logger,
-        logging.INFO,
-        "subtitle.chunks.started",
-        segments=len(segments),
-        chunks=len(chunks),
-        chunk_size=CHUNK_SIZE,
-        overlap=CHUNK_OVERLAP,
-    )
-
+    # Platform captions do not carry trusted speaker identity. Route them
+    # through the same cue-preserving polish path as ASR subtitles so the LLM
+    # cannot invent speaker labels or rewrite timestamps.
     llm_service = get_llm_service()
-    all_paragraphs = []
-    known_speakers = []
+    context: dict[str, Any] = {}
+    if source_context:
+        from app.services.analysis.source_context import source_context_to_analysis
 
-    for idx, chunk in enumerate(chunks):
-        ts_start = _fmt_ts(chunk[0]["start_ms"])
-        ts_end = _fmt_ts(chunk[-1]["end_ms"])
-        chunk_t0 = time.perf_counter()
-        log_event(
-            logger,
-            logging.INFO,
-            "subtitle.chunk.started",
-            chunk=idx + 1,
-            chunks=len(chunks),
-            start=ts_start,
-            end=ts_end,
-            segments=len(chunk),
+        context = source_context_to_analysis(source_context)
+    if not context:
+        context = {
+            "language": "unknown",
+            "content_type": metadata.content_subtype or str(metadata.media_type),
+            "proper_nouns": [],
+        }
+    try:
+        polished_srt = await llm_service.polish(original_srt, context=context)
+    except Exception as exc:
+        log_event(logger, logging.ERROR, "subtitle.polish.failed", error=exc)
+        polished_srt = original_srt
+    if on_progress:
+        await on_progress(1.0)
+    polished_md = llm_service.srt_to_markdown(polished_srt, metadata.title)
+
+    result_segments: list[dict[str, Any]] = []
+    known_speakers: list[str] = []
+    for cue in llm_service._parse_srt(polished_srt):
+        start_text, end_text = cue["timestamp"].split("-->", 1)
+        speaker, body = llm_service._split_speaker_prefix(cue["text"])
+        if speaker and speaker not in known_speakers:
+            known_speakers.append(speaker)
+        result_segments.append(
+            {
+                "start": _ts_to_seconds(start_text.strip()),
+                "end": _ts_to_seconds(end_text.strip()),
+                "text": body,
+                "speaker": speaker,
+            }
         )
-
-        prompt = _build_transcript_prompt(context_header, chunk, known_speakers or None)
-
-        t0 = time.time()
-        try:
-            response = await llm_service._call(prompt)
-            result = _parse_transcript_output(response)
-
-            for sp in result["speakers"]:
-                if sp and sp not in known_speakers:
-                    known_speakers.append(sp)
-
-            paras = result["paragraphs"]
-            if paras:
-                if idx == 0:
-                    all_paragraphs.extend(paras)
-                else:
-                    # Skip paragraphs in the overlap region
-                    non_overlap_start_ms = chunk[CHUNK_OVERLAP]["start_ms"] if len(chunk) > CHUNK_OVERLAP else chunk[0]["start_ms"]
-                    non_overlap_start_s = non_overlap_start_ms / 1000
-
-                    for p in paras:
-                        p_start = _ts_to_seconds(p["start"])
-                        if p_start >= non_overlap_start_s - 5:
-                            all_paragraphs.append(p)
-
-                dt = time.time() - t0
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "subtitle.chunk.completed",
-                    chunk=idx + 1,
-                    paragraphs=len(paras),
-                    speakers=",".join(known_speakers) if known_speakers else "none",
-                    duration_ms=round((time.perf_counter() - chunk_t0) * 1000),
-                )
-            else:
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "subtitle.chunk.empty",
-                    chunk=idx + 1,
-                    duration_ms=round((time.perf_counter() - chunk_t0) * 1000),
-                )
-
-        except Exception as e:
-            log_event(
-                logger,
-                logging.ERROR,
-                "subtitle.chunk.failed",
-                chunk=idx + 1,
-                duration_ms=round((time.perf_counter() - chunk_t0) * 1000),
-                error=e,
-            )
-
-        # Report progress
-        if on_progress:
-            progress = (idx + 1) / len(chunks)
-            await on_progress(progress)
 
     log_event(
         logger,
         logging.INFO,
         "subtitle.process.completed",
-        paragraphs=len(all_paragraphs),
-        speakers=",".join(known_speakers) if known_speakers else "none",
+        segments=len(result_segments),
+        speakers=len(known_speakers),
     )
-
-    # Step 4: Convert to output formats
-    polished_srt = llm_service.merge_consecutive_speaker_segments(
-        _paragraphs_to_srt(all_paragraphs)
-    )
-    polished_md = llm_service.srt_to_markdown(polished_srt, metadata.title)
-
-    # Build segments list (compatible with ASR output)
-    result_segments = []
-    for p in all_paragraphs:
-        result_segments.append({
-            "start": _ts_to_seconds(p["start"]),
-            "end": _ts_to_seconds(p["end"]),
-            "text": p["text"],
-            "speaker": p.get("speaker"),
-        })
 
     return {
         "language": "zh",

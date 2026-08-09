@@ -32,6 +32,23 @@ def test_assign_speakers_uses_largest_global_turn_overlap():
     assert "speaker" not in segments[0]
 
 
+def test_assign_speakers_splits_a_cue_that_crosses_speaker_turns():
+    mapped = DiarizationService.assign_speakers(
+        [{"start": 0.0, "end": 10.0, "text": "前半段内容后半段内容"}],
+        [
+            {"start": 0.0, "end": 4.0, "speaker": "SPEAKER_00"},
+            {"start": 4.0, "end": 10.0, "speaker": "SPEAKER_01"},
+        ],
+    )
+
+    assert len(mapped) == 2
+    assert [(item["start"], item["end"], item["speaker"]) for item in mapped] == [
+        (0.0, 4.0, "SPEAKER_00"),
+        (4.0, 10.0, "SPEAKER_01"),
+    ]
+    assert "".join(item["text"] for item in mapped) == "前半段内容后半段内容"
+
+
 def test_annotation_to_turns_supports_pyannote_3_annotation():
     class Segment:
         def __init__(self, start, end):
@@ -137,11 +154,15 @@ async def test_transcribe_audio_runs_global_diarization_on_original_audio(
         output_dir=tmp_path,
         provider="qwen3_gguf",
         num_speakers=2,
+        min_speakers=1,
+        max_speakers=3,
         diarization_audio_path=str(original_audio),
     )
 
     assert captured["audio_path"] == str(original_audio)
     assert captured["kwargs"]["num_speakers"] == 2
+    assert captured["kwargs"]["min_speakers"] == 1
+    assert captured["kwargs"]["max_speakers"] == 3
     assert captured["kwargs"]["cache_path"] == tmp_path / "diarization.json"
     if provider == "qwen3":
         assert captured["asr_diarize"] is False

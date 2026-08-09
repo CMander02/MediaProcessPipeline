@@ -10,6 +10,11 @@ segments (e.g. Chinese with English technical terms).
 """
 
 
+MINDMAP_SYSTEM_PROMPT = """You create a source-grounded timed content map.
+Canonical names and source chapter timestamps are read-only facts. Every chapter must
+remain represented. Return only the requested indented list."""
+
+
 # ---------------------------------------------------------------------------
 # Shared clauses
 # ---------------------------------------------------------------------------

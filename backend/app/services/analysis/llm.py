@@ -14,6 +14,10 @@ from app.core.config import get_settings
 from app.core.logging_setup import log_event
 from app.core.settings import get_runtime_settings
 from app.services.analysis.prompts import (
+    ANALYZE_SYSTEM_PROMPT,
+    MINDMAP_SYSTEM_PROMPT,
+    POLISH_SYSTEM_PROMPT,
+    SUMMARY_SYSTEM_PROMPT,
     get_analyze_prompt,
     get_polish_prompt,
     get_simple_polish_prompt,
@@ -300,7 +304,7 @@ class LLMService:
         rt = get_runtime_settings()
         return resolve_llm_binding(rt, provider_override=provider_override, stage="polish").provider
 
-    async def _call_local(self, prompt: str) -> str:
+    async def _call_local(self, prompt: str, system_prompt: str = "") -> str:
         """Call local HF model (transformers). Loads on first call; serialised via lock."""
         global _local_llm, _local_llm_path
         rt = get_runtime_settings()
@@ -338,7 +342,10 @@ class LLMService:
             model = state["model"]
             tokenizer = state["tokenizer"]
 
-            messages = [{"role": "user", "content": prompt}]
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
             text = tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True,
             )
@@ -362,7 +369,12 @@ class LLMService:
         async with infer_lock:
             return await loop.run_in_executor(None, _infer)
 
-    async def _call_local_llama_cpp(self, prompt: str, binding: Any) -> str:
+    async def _call_local_llama_cpp(
+        self,
+        prompt: str,
+        binding: Any,
+        system_prompt: str = "",
+    ) -> str:
         """Call a managed local llama.cpp OpenAI-compatible endpoint."""
         import httpx
 
@@ -383,9 +395,13 @@ class LLMService:
             max_retries=1,
             timeout=timeout,
         )
+        messages: list[dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
         request: dict[str, Any] = {
             "model": binding.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "max_tokens": int(binding.request_kwargs.get("max_new_tokens") or 4096),
         }
         temperature = self._static_settings.temperature
@@ -402,6 +418,7 @@ class LLMService:
         max_retries: int = 3,
         provider_override: str = "",
         stage: str = "polish",
+        system_prompt: str = "",
     ) -> str:
         from app.core.model_router import resolve_llm_binding
 
@@ -418,14 +435,23 @@ class LLMService:
             if rt.local_llm_model_path:
                 log_event(logger, logging.INFO, "llm.local.call_started")
                 if binding.transport == "llama_cpp":
-                    return await self._call_local_llama_cpp(prompt, binding)
-                return await self._call_local(prompt)
+                    return await self._call_local_llama_cpp(
+                        prompt,
+                        binding,
+                        system_prompt=system_prompt,
+                    )
+                return await self._call_local(prompt, system_prompt=system_prompt)
             log_event(logger, logging.WARNING, "llm.local.fallback", reason="model_path_empty")
             provider_override = ""
             provider = resolve_llm_binding(rt, stage=stage).provider
 
         if provider == "deepseek":
-            return await self._call_deepseek(prompt, stage=stage, max_retries=max_retries)
+            return await self._call_deepseek(
+                prompt,
+                stage=stage,
+                max_retries=max_retries,
+                system_prompt=system_prompt,
+            )
 
         if binding.transport in {"codex_cli", "agy_cli"}:
             from app.services.analysis.coding_plan_cli import call_coding_plan_cli
@@ -442,10 +468,11 @@ class LLMService:
                 stage=stage,
             )
             try:
+                cli_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
                 content = await call_coding_plan_cli(
                     str(binding.request_kwargs.get("provider_type") or ""),
                     model=binding.model,
-                    prompt=prompt,
+                    prompt=cli_prompt,
                     cli_path=str(binding.request_kwargs.get("cli_path") or ""),
                     timeout_sec=float(binding.request_kwargs.get("timeout_sec") or 600),
                 )
@@ -479,7 +506,11 @@ class LLMService:
             log_event(logger, logging.WARNING, "llm.not_configured", provider=provider)
             return "[LLM not configured]"
 
-        params["messages"] = [{"role": "user", "content": prompt}]
+        messages: list[dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        params["messages"] = messages
 
         model = params.get("model")
         t0 = time.perf_counter()
@@ -517,6 +548,7 @@ class LLMService:
         *,
         stage: str = "polish",
         max_retries: int = 3,
+        system_prompt: str = "",
     ) -> str:
         """Call DeepSeek through the OpenAI SDK so native v4 options pass through."""
         params = _get_deepseek_params(stage)
@@ -535,9 +567,13 @@ class LLMService:
             max_retries=max_retries,
             timeout=timeout,
         )
+        messages: list[dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
         request: dict[str, Any] = {
             "model": params["model"],
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "extra_body": params["extra_body"],
         }
         if params.get("reasoning_effort"):
@@ -580,6 +616,23 @@ class LLMService:
                 )
                 raise
 
+    @staticmethod
+    def _sample_analysis_text(text: str, limit: int = 8000) -> str:
+        """Sample opening, closing, and evenly spaced body regions."""
+        if len(text) <= limit:
+            return text
+        window = 1000
+        samples = [text[:2000]]
+        body_start = 2000
+        body_end = max(body_start, len(text) - 1000)
+        slots = 5
+        for index in range(slots):
+            ratio = index / max(1, slots - 1)
+            start = int(body_start + (body_end - body_start - window) * ratio)
+            samples.append(text[max(body_start, start):max(body_start, start) + window])
+        samples.append(text[-1000:])
+        return "\n\n--- transcript sample ---\n\n".join(samples)[:limit]
+
     async def analyze_content(
         self,
         text: str,
@@ -596,8 +649,7 @@ class LLMService:
             title: Video/audio title
             metadata: Optional metadata dict with uploader, description, tags, chapters
         """
-        # Truncate text if too long (take first 8000 chars for analysis)
-        truncated = text[:8000] if len(text) > 8000 else text
+        truncated = self._sample_analysis_text(text)
 
         # Extract metadata fields
         uploader = metadata.get("uploader") if metadata else None
@@ -613,7 +665,12 @@ class LLMService:
             tags=tags,
             chapters=chapters,
         )
-        resp = await self._call(prompt, provider_override=provider_override, stage="analyze")
+        resp = await self._call(
+            prompt,
+            provider_override=provider_override,
+            stage="analyze",
+            system_prompt=ANALYZE_SYSTEM_PROMPT,
+        )
 
         try:
             # Extract JSON from response
@@ -878,6 +935,10 @@ class LLMService:
 
         for event in events:
             speaker = event.get("speaker")
+            if not speaker:
+                flush_current()
+                readable.append(event)
+                continue
             if (
                 current is not None
                 and (
@@ -1041,6 +1102,62 @@ class LLMService:
                 aligned.append(dict(orig))
         return aligned
 
+    def _enforce_polish_constraints(
+        self,
+        polished: list[dict],
+        original: list[dict],
+        context: dict[str, Any],
+    ) -> list[dict]:
+        """Restore read-only cue fields and canonical source spellings."""
+        from app.services.analysis.source_context import canonicalize_text
+
+        aligned = self._align_polished_to_input(polished, original)
+        constrained: list[dict] = []
+        for output, source in zip(aligned, original, strict=True):
+            source_speaker, _source_body = self._split_speaker_prefix(
+                str(source.get("text") or "")
+            )
+            _output_speaker, output_body = self._split_speaker_prefix(
+                str(output.get("text") or "")
+            )
+            body = canonicalize_text(output_body, context)
+            text = f"[{source_speaker}] {body}" if source_speaker else body
+            constrained.append(
+                {
+                    "index": source["index"],
+                    "timestamp": source["timestamp"],
+                    "text": text.strip(),
+                }
+            )
+        return constrained
+
+    def _polish_timeline_context(
+        self,
+        context: dict[str, Any],
+        chunk_segments: list[dict],
+    ) -> str:
+        timeline = context.get("timeline") or []
+        if not timeline or not chunk_segments:
+            return ""
+        start_ts, end_ts = self._timestamp_bounds(str(chunk_segments[0].get("timestamp") or ""))
+        chunk_start = _timestamp_to_seconds(start_ts)
+        _last_start, last_end = self._timestamp_bounds(
+            str(chunk_segments[-1].get("timestamp") or "")
+        )
+        chunk_end = _timestamp_to_seconds(last_end)
+        if chunk_start is None:
+            return ""
+        labels: list[str] = []
+        for index, item in enumerate(timeline):
+            try:
+                item_start = float(item.get("start") or 0)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            next_start = float(timeline[index + 1].get("start") or 1e18) if index + 1 < len(timeline) else 1e18
+            if item_start <= (chunk_end if chunk_end is not None else chunk_start) and next_start > chunk_start:
+                labels.append(f"{item_start:g}s {item.get('title', '')}")
+        return " / ".join(labels)
+
     async def polish_with_context_parallel(
         self,
         srt_content: str,
@@ -1080,7 +1197,12 @@ class LLMService:
         if not segments:
             # Fallback to simple polish if not valid SRT
             prompt = get_simple_polish_prompt(srt_content)
-            return await self._call(prompt, provider_override=provider_override, stage="polish")
+            return await self._call(
+                prompt,
+                provider_override=provider_override,
+                stage="polish",
+                system_prompt=POLISH_SYSTEM_PROMPT,
+            )
 
         # Generate all chunks with overlap
         chunks: list[tuple[int, int, list[dict]]] = []
@@ -1127,6 +1249,17 @@ class LLMService:
                 # Convert chunk to SRT text
                 chunk_srt = self._segments_to_srt(chunk_segments)
 
+                speaker_ids = sorted(
+                    {
+                        speaker
+                        for speaker, _body in (
+                            self._split_speaker_prefix(str(segment.get("text") or ""))
+                            for segment in chunk_segments
+                        )
+                        if speaker
+                    }
+                )
+
                 # Build prompt with context
                 prompt = get_polish_prompt(
                     text=chunk_srt,
@@ -1135,10 +1268,18 @@ class LLMService:
                     main_topics=context.get("main_topics"),
                     keywords=context.get("keywords"),
                     proper_nouns=context.get("proper_nouns"),
+                    entities=context.get("entities"),
+                    speaker_ids=speaker_ids,
+                    timeline_context=self._polish_timeline_context(context, chunk_segments),
                 )
 
                 # Call LLM
-                polished_chunk = await self._call(prompt, provider_override=provider_override, stage="polish")
+                polished_chunk = await self._call(
+                    prompt,
+                    provider_override=provider_override,
+                    stage="polish",
+                    system_prompt=POLISH_SYSTEM_PROMPT,
+                )
 
                 # Try JSON first (preferred output format), then fall back to SRT
                 polished_segs = self._parse_polish_response(polished_chunk, chunk_segments)
@@ -1164,6 +1305,11 @@ class LLMService:
                         duration_ms=round((time.perf_counter() - chunk_t0) * 1000),
                     )
 
+                polished_segs = self._enforce_polish_constraints(
+                    polished_segs,
+                    chunk_segments,
+                    context,
+                )
                 return (idx, polished_segs)
 
         # Process all chunks in parallel (with semaphore limiting concurrency)
@@ -1281,7 +1427,12 @@ class LLMService:
                 text, context, provider_override=provider_override
             )
         prompt = get_simple_polish_prompt(text)
-        return await self._call(prompt, provider_override=provider_override, stage="polish")
+        return await self._call(
+            prompt,
+            provider_override=provider_override,
+            stage="polish",
+            system_prompt=POLISH_SYSTEM_PROMPT,
+        )
 
     def srt_to_markdown(self, srt_content: str, title: str = "") -> str:
         """
@@ -1324,16 +1475,172 @@ class LLMService:
         text: str,
         user_language: str | None = None,
         provider_override: str = "",
+        source_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        prompt = get_summarize_prompt(text, user_language=user_language)
-        resp = await self._call(prompt, provider_override=provider_override, stage="summary")
+        from app.services.analysis.source_context import canonicalize_json
+
+        if (
+            source_context
+            and source_context.get("timeline")
+            and len(text) > 15000
+            and self._parse_srt(text)
+        ):
+            return await self._summarize_by_timeline(
+                text,
+                user_language=user_language,
+                provider_override=provider_override,
+                source_context=source_context,
+            )
+
+        prompt = get_summarize_prompt(
+            text,
+            user_language=user_language,
+            source_context=source_context,
+        )
+        resp = await self._call(
+            prompt,
+            provider_override=provider_override,
+            stage="summary",
+            system_prompt=SUMMARY_SYSTEM_PROMPT,
+        )
         try:
             start, end = resp.find("{"), resp.rfind("}") + 1
             if start >= 0 and end > start:
-                return json.loads(resp[start:end])
-        except json.JSONDecodeError:
+                result = canonicalize_json(json.loads(resp[start:end]), source_context)
+                if source_context and source_context.get("timeline"):
+                    generated = result.get("timeline") or []
+                    generated_by_start = {
+                        float(item.get("start") or 0): str(item.get("summary") or "")
+                        for item in generated
+                        if isinstance(item, dict)
+                    }
+                    result["timeline"] = [
+                        {
+                            **item,
+                            "summary": generated_by_start.get(float(item.get("start") or 0), ""),
+                        }
+                        for item in source_context["timeline"]
+                    ]
+                return result
+        except (json.JSONDecodeError, TypeError, ValueError):
             pass
-        return {"tldr": resp, "key_facts": [], "action_items": [], "topics": []}
+        result = {"tldr": resp, "key_facts": [], "action_items": [], "topics": []}
+        if source_context and source_context.get("timeline"):
+            result["timeline"] = [dict(item, summary="") for item in source_context["timeline"]]
+        return canonicalize_json(result, source_context)
+
+    @staticmethod
+    def _parse_summary_json(response: str) -> dict[str, Any] | None:
+        start, end = response.find("{"), response.rfind("}") + 1
+        if start < 0 or end <= start:
+            return None
+        try:
+            value = json.loads(response[start:end])
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    async def _summarize_by_timeline(
+        self,
+        text: str,
+        *,
+        user_language: str | None,
+        provider_override: str,
+        source_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Summarize long SRT chapter by chapter before a compact final reduce."""
+        from app.services.analysis.source_context import canonicalize_json
+
+        timeline = [
+            item
+            for item in source_context.get("timeline") or []
+            if isinstance(item, dict) and item.get("title")
+        ]
+        chapters = [
+            {"title": item["title"], "start_time": item.get("start", 0)}
+            for item in timeline
+        ]
+        blocks = self._split_segments_by_chapters(self._parse_srt(text), chapters)
+        semaphore = asyncio.Semaphore(6)
+
+        async def summarize_chapter(item: dict[str, Any]) -> dict[str, Any]:
+            chapter_context = {**source_context, "timeline": [item]}
+            chapter_text = blocks.get(str(item["title"]), "")
+            if not chapter_text.strip():
+                return {
+                    "tldr": "",
+                    "key_facts": [],
+                    "action_items": [],
+                    "topics": [],
+                }
+            async with semaphore:
+                response = await self._call(
+                    get_summarize_prompt(
+                        chapter_text,
+                        user_language=user_language,
+                        source_context=chapter_context,
+                    ),
+                    provider_override=provider_override,
+                    stage="analyze",
+                    system_prompt=SUMMARY_SYSTEM_PROMPT,
+                )
+            parsed = self._parse_summary_json(response)
+            if parsed is None:
+                parsed = {
+                    "tldr": response.strip(),
+                    "key_facts": [],
+                    "action_items": [],
+                    "topics": [],
+                }
+            return canonicalize_json(parsed, source_context)
+
+        chapter_results = await asyncio.gather(
+            *(summarize_chapter(item) for item in timeline)
+        )
+        digest_lines = []
+        for item, result in zip(timeline, chapter_results, strict=True):
+            digest_lines.append(
+                f"[{float(item.get('start') or 0):g}s] {item['title']}: "
+                f"{str(result.get('tldr') or '').strip()}"
+            )
+        reduce_response = await self._call(
+            get_summarize_prompt(
+                "\n".join(digest_lines),
+                user_language=user_language,
+                source_context=source_context,
+            ),
+            provider_override=provider_override,
+            stage="summary",
+            system_prompt=SUMMARY_SYSTEM_PROMPT,
+        )
+        reduced = self._parse_summary_json(reduce_response) or {
+            "tldr": reduce_response.strip(),
+            "key_facts": [],
+            "action_items": [],
+            "topics": [],
+        }
+        reduced["timeline"] = [
+            {
+                **item,
+                "summary": str(result.get("tldr") or "").strip(),
+            }
+            for item, result in zip(timeline, chapter_results, strict=True)
+        ]
+        if not reduced.get("key_facts"):
+            reduced["key_facts"] = [
+                fact
+                for result in chapter_results
+                for fact in list(result.get("key_facts") or [])
+            ][:10]
+        if not reduced.get("action_items"):
+            reduced["action_items"] = [
+                action
+                for result in chapter_results
+                for action in list(result.get("action_items") or [])
+            ]
+        if not reduced.get("topics"):
+            reduced["topics"] = [str(item["title"]) for item in timeline]
+        return canonicalize_json(reduced, source_context)
 
     async def detail(
         self,
@@ -1343,7 +1650,12 @@ class LLMService:
     ) -> str:
         """Generate optional detailed video outline (`detail.md`)."""
         prompt = get_detail_prompt(text, user_language=user_language)
-        resp = await self._call(prompt, provider_override=provider_override, stage="summary")
+        resp = await self._call(
+            prompt,
+            provider_override=provider_override,
+            stage="summary",
+            system_prompt=SUMMARY_SYSTEM_PROMPT,
+        )
         return self._filter_mindmap_lines(resp)
 
     async def mindmap(
@@ -1354,8 +1666,7 @@ class LLMService:
         provider_override: str = "",
     ) -> str:
         """Generate mindmap, auto-selecting single-pass or map-reduce based on length."""
-        # Rough threshold: ~15k chars ≈ 30min of Chinese transcript
-        if len(text) > 15000 and metadata:
+        if metadata:
             chapters = metadata.get("chapters")
             if chapters:
                 return await self._mindmap_map_reduce(
@@ -1365,7 +1676,9 @@ class LLMService:
                     user_language=user_language,
                     provider_override=provider_override,
                 )
-            # No chapters but long text — auto-split by segment count
+        # Rough threshold: ~15k chars ≈ 30min of Chinese transcript
+        if len(text) > 15000 and metadata:
+            # No source chapters: split by segment count.
             return await self._mindmap_map_reduce_auto(
                 text,
                 metadata,
@@ -1375,7 +1688,12 @@ class LLMService:
 
         # Short content: single-pass
         prompt = get_mindmap_prompt(text, user_language=user_language)
-        resp = await self._call(prompt, provider_override=provider_override, stage="mindmap")
+        resp = await self._call(
+            prompt,
+            provider_override=provider_override,
+            stage="mindmap",
+            system_prompt=MINDMAP_SYSTEM_PROMPT,
+        )
         return self._filter_mindmap_lines(resp)
 
     async def _mindmap_map_reduce(
@@ -1408,7 +1726,12 @@ class LLMService:
                 prompt = get_mindmap_map_prompt(
                     title, content, global_context, user_language=user_language,
                 )
-                resp = await self._call(prompt, provider_override=provider_override, stage="mindmap")
+                resp = await self._call(
+                    prompt,
+                    provider_override=provider_override,
+                    stage="mindmap",
+                    system_prompt=MINDMAP_SYSTEM_PROMPT,
+                )
                 return title, resp
 
         map_results = await asyncio.gather(*[
@@ -1425,12 +1748,30 @@ class LLMService:
             chars=sum(len(v) for v in chapter_summaries.values()),
         )
 
-        # --- Reduce phase: group into batches to stay within output limits ---
-        return await self._mindmap_reduce(
-            chapter_summaries,
-            user_language=user_language,
-            provider_override=provider_override,
-        )
+        return self._compose_chapter_mindmap(chapters, chapter_summaries)
+
+    def _compose_chapter_mindmap(
+        self,
+        chapters: list[dict],
+        chapter_summaries: dict[str, str],
+    ) -> str:
+        """Use source chapters as immutable top-level mindmap nodes."""
+        lines: list[str] = []
+        for chapter in chapters:
+            title = str(chapter.get("title") or "").strip()
+            if not title:
+                continue
+            try:
+                start = float(chapter.get("start_time") or 0)
+            except (TypeError, ValueError):
+                start = 0
+            timestamp = _seconds_to_srt_timestamp(start).split(",", 1)[0]
+            lines.append(f"- {title} [{timestamp}]")
+            summary = self._filter_mindmap_lines(chapter_summaries.get(title, ""))
+            for raw_line in summary.splitlines():
+                if raw_line.strip():
+                    lines.append(f"  {raw_line}")
+        return "\n".join(lines)
 
     async def _mindmap_map_reduce_auto(
         self,
@@ -1468,7 +1809,12 @@ class LLMService:
                 prompt = get_mindmap_map_prompt(
                     title, content, global_context, user_language=user_language,
                 )
-                resp = await self._call(prompt, provider_override=provider_override, stage="mindmap")
+                resp = await self._call(
+                    prompt,
+                    provider_override=provider_override,
+                    stage="mindmap",
+                    system_prompt=MINDMAP_SYSTEM_PROMPT,
+                )
                 return title, resp
 
         map_results = await asyncio.gather(*[
@@ -1513,7 +1859,12 @@ class LLMService:
                 prompt = get_mindmap_reduce_prompt(
                     label, summaries, user_language=user_language,
                 )
-                resp = await self._call(prompt, provider_override=provider_override, stage="mindmap")
+                resp = await self._call(
+                    prompt,
+                    provider_override=provider_override,
+                    stage="mindmap",
+                    system_prompt=MINDMAP_SYSTEM_PROMPT,
+                )
                 return self._filter_mindmap_lines(resp)
 
         results = await asyncio.gather(*[
@@ -1546,7 +1897,13 @@ class LLMService:
             start = ts_line.split("-->")[0].strip()
             return ts_to_seconds(start)
 
-        seg_starts = [(seg_start_seconds(seg), seg["text"]) for seg in segments]
+        seg_starts = [
+            (
+                seg_start_seconds(seg),
+                f"[{seg['timestamp']}] {seg['text']}",
+            )
+            for seg in segments
+        ]
 
         chapter_texts: dict[str, str] = {}
         for i, ch in enumerate(chapters):
@@ -1585,11 +1942,25 @@ class LLMService:
         if metadata.get("uploader"):
             parts.append(f"作者: {metadata['uploader']}")
         if chapters:
-            ch_list = " / ".join(ch.get("title", "") for ch in chapters)
+            ch_list = " / ".join(
+                f"{ch.get('start_time', 0)}s {ch.get('title', '')}"
+                for ch in chapters
+            )
             parts.append(f"章节: {ch_list}")
         desc = metadata.get("description", "")
         if desc:
             parts.append(f"简介: {desc[:300]}")
+        source_context = metadata.get("source_context") or {}
+        entities = source_context.get("entities") or []
+        if entities:
+            parts.append(
+                "规范实体: "
+                + " / ".join(
+                    str(item.get("canonical") or "")
+                    for item in entities
+                    if isinstance(item, dict) and item.get("canonical")
+                )
+            )
         return "\n".join(parts)
 
     @staticmethod
@@ -1654,11 +2025,13 @@ async def summarize_text(
     text: str,
     user_language: str | None = None,
     provider_override: str = "",
+    source_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return await get_llm_service().summarize(
         text,
         user_language=user_language,
         provider_override=provider_override,
+        source_context=source_context,
     )
 
 

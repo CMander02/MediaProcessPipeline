@@ -135,10 +135,11 @@ def test_qwen3_gguf_post_chunk_sends_input_audio_and_cleans_text(tmp_path):
 
     text = service._post_chunk(
         Client(),
-        "http://127.0.0.1:8080/v1/chat/completions",
+        "http://localhost:8080/v1/chat/completions",
         "Qwen3-ASR-1.7B",
         wav,
         hotwords=["vLLM", "AI Infra"],
+        strict=True,
     )
 
     assert text == "Hello world"
@@ -147,6 +148,7 @@ def test_qwen3_gguf_post_chunk_sends_input_audio_and_cleans_text(tmp_path):
     assert content[0]["type"] == "input_audio"
     assert base64.b64decode(content[0]["input_audio"]["data"]) == b"RIFFtest"
     assert "vLLM, AI Infra" in content[1]["text"]
+    assert "quality-control retry" in content[1]["text"]
 
 
 def test_qwen3_gguf_splits_chunk_text_into_short_segments():

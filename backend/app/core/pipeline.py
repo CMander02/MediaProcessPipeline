@@ -339,6 +339,7 @@ async def _write_summary_files(
         date=datetime.now().strftime("%Y-%m-%d"),
         tldr=summary.get("tldr", ""),
         key_facts=_svc._fmt_list(summary.get("key_facts", [])),
+        timeline=_svc._fmt_timeline(summary.get("timeline", [])),
     )
     sum_path.write_text(sum_content, encoding="utf-8")
     await _emit_file_ready(task, "summary.md", str(sum_path))
@@ -381,6 +382,106 @@ async def _write_text_artifact(task: Task, task_dir: Path, filename: str, conten
     _persist_text_artifact(task, filename, content)
     await _emit_file_ready(task, filename, str(artifact_path))
     return artifact_path
+
+
+async def _prepare_source_context(
+    task: Task,
+    task_dir: Path,
+    metadata: MediaMetadata,
+) -> dict[str, Any]:
+    """Build or restore the source-grounded context before ASR and polishing."""
+    from app.services.analysis.source_context import load_or_build_source_context
+
+    context_path = task_dir / "source_context.json"
+    context = await load_or_build_source_context(
+        metadata,
+        task.options,
+        context_path,
+    )
+    payload = context.model_dump(mode="json")
+    await _write_text_artifact(
+        task,
+        task_dir,
+        "source_context.json",
+        json.dumps(payload, indent=2, ensure_ascii=False),
+    )
+    metadata.extra["source_context_file"] = "source_context.json"
+    metadata.extra["source_context"] = {
+        "entities": len(context.entities),
+        "timeline": len(context.timeline),
+        "speaker_candidates": len(context.speaker_candidates),
+        "speaker_count_hint": context.speaker_count_hint.model_dump(mode="json"),
+    }
+    return payload
+
+
+def _render_recognition_srt(segments: list[dict[str, Any]]) -> str:
+    def fmt_time(seconds: float) -> str:
+        total_ms = max(0, int(round(seconds * 1000)))
+        hours, remainder = divmod(total_ms, 3_600_000)
+        minutes, remainder = divmod(remainder, 60_000)
+        secs, millis = divmod(remainder, 1000)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+    lines: list[str] = []
+    for index, segment in enumerate(segments, 1):
+        start = fmt_time(float(segment.get("start") or 0))
+        end = fmt_time(float(segment.get("end") or 0))
+        text = str(segment.get("text") or "").strip()
+        speaker = str(segment.get("speaker") or "").strip()
+        if speaker:
+            text = f"[{speaker}] {text}"
+        lines.append(f"{index}\n{start} --> {end}\n{text}")
+    return "\n\n".join(lines)
+
+
+async def _write_speaker_map(
+    task: Task,
+    task_dir: Path,
+    segments: list[dict[str, Any]],
+    source_context: dict[str, Any] | None,
+    resolutions: dict[str, Any] | None = None,
+) -> None:
+    speakers = sorted(
+        {
+            str(segment.get("speaker") or "").strip()
+            for segment in segments
+            if str(segment.get("speaker") or "").strip()
+        }
+    )
+    candidates = list((source_context or {}).get("speaker_candidates") or [])
+    mappings = []
+    for speaker in speakers:
+        resolution = (resolutions or {}).get(speaker)
+        mappings.append(
+            {
+                "source_label": speaker,
+                "current_name": (
+                    str(resolution.person_name) if resolution is not None else speaker
+                ),
+                "status": (
+                    "voiceprint_new"
+                    if resolution is not None and resolution.is_new_person
+                    else "voiceprint_matched"
+                    if resolution is not None
+                    else "anonymous"
+                ),
+            }
+        )
+    payload = {
+        "version": 1,
+        "mappings": mappings,
+        "source_candidates": candidates,
+        "confirmed": all(item["status"] == "voiceprint_matched" for item in mappings)
+        if mappings
+        else False,
+    }
+    await _write_text_artifact(
+        task,
+        task_dir,
+        "speaker_map.json",
+        json.dumps(payload, indent=2, ensure_ascii=False),
+    )
 
 
 def _rewrite_path_after_dir_move(value: Any, old_dir: Path, new_dir: Path) -> Any:
@@ -1085,6 +1186,7 @@ async def _run_voiceprint_step(
     task: Task,
     recognition_segments: list,
     task_dir: Path,
+    source_context: dict[str, Any] | None = None,
 ) -> list:
     """Extract speaker embeddings, match against library, rewrite segment speakers.
 
@@ -1125,23 +1227,38 @@ async def _run_voiceprint_step(
     store = get_voiceprint_store()
     clips_dir = store.clips_dir
 
-    voiceprints = extract_voiceprints(
-        audio_path=audio_path,
-        diarize_df=diarize_df,
-        pyannote_pipeline=pipeline_obj,
-        clips_dir=clips_dir,
-        sample_id_prefix=f"{task.id}_",
-    )
+    try:
+        voiceprints = extract_voiceprints(
+            audio_path=audio_path,
+            diarize_df=diarize_df,
+            pyannote_pipeline=pipeline_obj,
+            clips_dir=clips_dir,
+            sample_id_prefix=f"{task.id}_",
+        )
+    except Exception as exc:
+        log_event(logger, logging.WARNING, "voiceprint.extraction_failed", error=exc)
+        return recognition_segments
     if not voiceprints:
         log_event(logger, logging.INFO, "voiceprint.skipped", reason="no_voiceprints")
         return recognition_segments
 
-    resolutions = resolve_speakers(
-        task_id=str(task.id),
-        voiceprints=voiceprints,
-        store=store,
-        match_threshold=float(getattr(rt, "voiceprint_match_threshold", 0.75)),
-        suggest_threshold=float(getattr(rt, "voiceprint_suggest_threshold", 0.60)),
+    try:
+        resolutions = resolve_speakers(
+            task_id=str(task.id),
+            voiceprints=voiceprints,
+            store=store,
+            match_threshold=float(getattr(rt, "voiceprint_match_threshold", 0.75)),
+            suggest_threshold=float(getattr(rt, "voiceprint_suggest_threshold", 0.60)),
+        )
+    except Exception as exc:
+        log_event(logger, logging.WARNING, "voiceprint.resolution_failed", error=exc)
+        return recognition_segments
+    await _write_speaker_map(
+        task,
+        task_dir,
+        recognition_segments,
+        source_context,
+        resolutions=resolutions,
     )
     recognition_segments = apply_to_segments(recognition_segments, resolutions)
     log_event(logger, logging.INFO, "voiceprint.resolved", speakers=len(resolutions))
@@ -1166,8 +1283,19 @@ async def _run_subtitle_fast_path(
 
     Returns the text-related portion of the task result.
     """
+    from app.services.analysis import (
+        analyze_content,
+        generate_detail,
+        generate_mindmap,
+        summarize_text,
+    )
+    from app.services.analysis.source_context import (
+        canonicalize_text,
+        merge_analysis_with_source,
+    )
     from app.services.recognition.subtitle_processor import process_subtitles
-    from app.services.analysis import polish_text, summarize_text, generate_mindmap, generate_detail, analyze_content
+
+    source_context = await _prepare_source_context(task, task_dir, metadata)
 
     # -- SEPARATE: skip (no audio to separate) --
     await _raise_if_cancelled(task.id)
@@ -1203,6 +1331,7 @@ async def _run_subtitle_fast_path(
         subtitle_path=selected_track["path"],
         subtitle_format=selected_track.get("format") or "srt",
         metadata=metadata,
+        source_context=source_context,
     )
     await _raise_if_cancelled(task.id)
     transcript = " ".join(s["text"] for s in sub_result.get("segments", []))
@@ -1264,13 +1393,27 @@ async def _run_subtitle_fast_path(
         "tags": metadata.tags,
         "chapters": [{"title": ch.title, "start_time": ch.start_time}
                      for ch in metadata.chapters] if metadata.chapters else None,
+        "source_context": source_context,
     }
+    source_timeline = list(source_context.get("timeline") or [])
     mindmap_metadata = {
         "title": metadata.title,
         "uploader": metadata.uploader,
         "description": metadata.description,
-        "chapters": [{"title": ch.title, "start_time": ch.start_time}
-                     for ch in metadata.chapters] if metadata.chapters else None,
+        "chapters": (
+            [
+                {"title": item["title"], "start_time": item["start"]}
+                for item in source_timeline
+            ]
+            if source_timeline
+            else [
+                {"title": ch.title, "start_time": ch.start_time}
+                for ch in metadata.chapters
+            ]
+            if metadata.chapters
+            else None
+        ),
+        "source_context": source_context,
     }
 
     analysis_text = _plain_text_from_srt(polished) if polished else transcript
@@ -1278,6 +1421,7 @@ async def _run_subtitle_fast_path(
     rt = get_runtime_settings()
 
     analysis = await analyze_content(analysis_text, metadata.title, metadata=video_metadata)
+    analysis = merge_analysis_with_source(analysis, source_context)
     await _raise_if_cancelled(task.id)
     user_language = _user_language_hint(analysis)
 
@@ -1289,7 +1433,11 @@ async def _run_subtitle_fast_path(
         await _emit_file_ready(task, "analysis.json", str(analysis_path))
 
     tasks = [
-        summarize_text(analysis_text, user_language=user_language),
+        summarize_text(
+            analysis_text,
+            user_language=user_language,
+            source_context=source_context,
+        ),
         generate_mindmap(mindmap_text, metadata=mindmap_metadata, user_language=user_language),
     ]
     if rt.generate_video_detail:
@@ -1297,7 +1445,8 @@ async def _run_subtitle_fast_path(
     results = await asyncio.gather(*tasks)
     summary = results[0]
     mindmap = results[1]
-    detail = results[2] if len(results) > 2 else ""
+    mindmap = canonicalize_text(mindmap, source_context)
+    detail = canonicalize_text(results[2], source_context) if len(results) > 2 else ""
     await _raise_if_cancelled(task.id)
 
     if summary:
@@ -2329,6 +2478,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     summary: dict = {}
     mindmap: str = ""
     detail: str = ""
+    source_context: dict[str, Any] = {}
 
     # ── Checkpoint restore helpers ─────────────────────────────────────────
     def _restore_metadata() -> bool:
@@ -2939,6 +3089,11 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         await _process_image_note(task, metadata, task_dir, ingest_info)
         return
 
+    source_context = await _prepare_source_context(task, task_dir, metadata)
+    from app.services.analysis.source_context import source_context_to_analysis
+
+    analysis = source_context_to_analysis(source_context)
+
     # Hand off to GPU queue if we were called from a download worker.
     # The GPU worker will call process_task again; at that point DOWNLOAD is
     # in completed_steps so this block is skipped and we continue below.
@@ -3117,6 +3272,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         subtitle_path=selected_track["path"],
                         subtitle_format=selected_track.get("format") or "srt",
                         metadata=metadata,
+                        source_context=source_context,
                     )
                     transcript = " ".join(s["text"] for s in sub_result.get("segments", []))
                     srt = sub_result.get("srt", "")
@@ -3125,7 +3281,19 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     subtitle_source = "platform"
                     recognition_segments = sub_result.get("segments", [])
                 else:
-                    num_speakers = task.options.get("num_speakers")
+                    from app.services.analysis.source_context import (
+                        merge_hotwords,
+                        speaker_constraints,
+                    )
+
+                    num_speakers, min_speakers, max_speakers = speaker_constraints(
+                        source_context,
+                        task.options,
+                    )
+                    asr_hotwords = merge_hotwords(
+                        task.options.get("hotwords"),
+                        source_context,
+                    )
                     asr_provider = task.options.get("asr_provider")
                     if task.options.get("api_flow", False) and not asr_provider:
                         asr_provider = "siliconflow"
@@ -3233,10 +3401,12 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                                 selected_audio_path,
                                 output_dir=task_dir,
                                 num_speakers=num_speakers,
+                                min_speakers=min_speakers,
+                                max_speakers=max_speakers,
                                 provider=asr_provider,
                                 diarize=not task.options.get("disable_diarization", False),
                                 chunk_strategy=task.options.get("asr_chunk_strategy"),
-                                hotwords=task.options.get("hotwords"),
+                                hotwords=asr_hotwords,
                                 audio_processing_flow=task.options.get("audio_processing_flow"),
                                 diarization_audio_path=audio_path,
                                 progress_callback=_on_asr_progress,
@@ -3296,13 +3466,37 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     polished_md = None
                     subtitle_source = "asr"
                     recognition_segments = recognition.get("segments", [])
+                    metadata.extra["asr_quality_diagnostics"] = recognition.get(
+                        "quality_diagnostics",
+                        [],
+                    )
+                    await _write_speaker_map(
+                        task,
+                        task_dir,
+                        recognition_segments,
+                        source_context,
+                    )
+                    recognition_segments = await _run_voiceprint_step(
+                        task,
+                        recognition_segments,
+                        task_dir,
+                        source_context,
+                    )
+                    srt = _render_recognition_srt(recognition_segments)
                     metadata.extra["audio_processing"] = {
                         "flow": recognition.get("audio_processing_flow", "asr"),
                         "provider": recognition.get("provider", asr_provider or "settings"),
                         "diarization": recognition.get("diarization", "none"),
                     }
-                    metadata.extra["speakers"] = recognition.get("speakers", [])
-                    metadata.extra["speaker_count"] = recognition.get("speaker_count", 0)
+                    resolved_speakers = sorted(
+                        {
+                            str(segment.get("speaker") or "").strip()
+                            for segment in recognition_segments
+                            if str(segment.get("speaker") or "").strip()
+                        }
+                    )
+                    metadata.extra["speakers"] = resolved_speakers
+                    metadata.extra["speaker_count"] = len(resolved_speakers)
                     await _emit_timeline_event(
                         task,
                         "asr.completed",
@@ -3399,7 +3593,9 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         if has_subtitle:
             log_event(logger, logging.INFO, "pipeline.step.skipped", step=PipelineStep.POLISH, reason="platform_subtitle_prepolished")
         else:
-            hotwords = task.options.get("hotwords")
+            from app.services.analysis.source_context import merge_hotwords
+
+            hotwords = merge_hotwords(task.options.get("hotwords"), source_context)
             if hotwords and analysis:
                 existing = analysis.get("proper_nouns", []) or []
                 analysis["proper_nouns"] = list(set(existing + hotwords))
@@ -3432,18 +3628,39 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             "description": metadata.description,
             "tags": metadata.tags,
             "chapters": [{"title": ch.title, "start_time": ch.start_time} for ch in metadata.chapters] if metadata.chapters else None,
+            "source_context": source_context,
         }
+        source_timeline = list(source_context.get("timeline") or [])
         mindmap_metadata = {
             "title": metadata.title,
             "uploader": metadata.uploader,
             "description": metadata.description,
-            "chapters": [{"title": ch.title, "start_time": ch.start_time} for ch in metadata.chapters] if metadata.chapters else None,
+            "chapters": (
+                [
+                    {"title": item["title"], "start_time": item["start"]}
+                    for item in source_timeline
+                ]
+                if source_timeline
+                else [
+                    {"title": ch.title, "start_time": ch.start_time}
+                    for ch in metadata.chapters
+                ]
+                if metadata.chapters
+                else None
+            ),
+            "source_context": source_context,
         }
 
         analysis_text = _plain_text_from_srt(polished) if polished else transcript
         mindmap_text = polished or srt or transcript
 
+        from app.services.analysis.source_context import (
+            canonicalize_text,
+            merge_analysis_with_source,
+        )
+
         analysis = await analyze_content(analysis_text, metadata.title, metadata=video_metadata)
+        analysis = merge_analysis_with_source(analysis, source_context)
         user_language = _user_language_hint(analysis)
 
         import json as _json
@@ -3453,7 +3670,11 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             await _emit_file_ready(task, "analysis.json", str(analysis_path))
 
         tasks = [
-            summarize_text(analysis_text, user_language=user_language),
+            summarize_text(
+                analysis_text,
+                user_language=user_language,
+                source_context=source_context,
+            ),
             generate_mindmap(mindmap_text, metadata=mindmap_metadata, user_language=user_language),
         ]
         if rt.generate_video_detail:
@@ -3461,7 +3682,8 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         results = await asyncio.gather(*tasks)
         summary = results[0]
         mindmap = results[1]
-        detail = results[2] if len(results) > 2 else ""
+        mindmap = canonicalize_text(mindmap, source_context)
+        detail = canonicalize_text(results[2], source_context) if len(results) > 2 else ""
         await _raise_if_cancelled(task.id)
 
         if summary:

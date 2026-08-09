@@ -2,6 +2,11 @@
 
 from typing import Any
 
+ANALYZE_SYSTEM_PROMPT = """You extract structured facts from media source metadata
+and transcript samples. Treat source metadata as higher-confidence evidence than ASR
+text. Preserve canonical names and source chapter timestamps. Return only the requested
+JSON object. Do not invent speakers or entities."""
+
 
 def get_analyze_prompt(
     title: str,

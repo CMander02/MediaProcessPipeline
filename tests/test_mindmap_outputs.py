@@ -1,5 +1,6 @@
 from app.core.settings import RuntimeSettings
 from app.services.analysis.llm import (
+    LLMService,
     mindmap_markdown_without_timestamps,
     mindmap_markdown_to_timed_tree,
 )
@@ -39,3 +40,25 @@ def test_mindmap_markdown_to_timed_tree_preserves_hierarchy_and_times():
     assert tree["children"][0]["children"][0]["title"] == "OpenAI Podcast 访谈"
     assert tree["children"][1]["title"] == "未来影响"
     assert tree["children"][1]["start"] == 2400.0
+
+
+def test_source_chapters_are_immutable_mindmap_top_level_nodes():
+    service = LLMService()
+    mindmap = service._compose_chapter_mindmap(
+        [
+            {"title": "开场与嘉宾介绍", "start_time": 0},
+            {"title": "第一章", "start_time": 75},
+        ],
+        {
+            "开场与嘉宾介绍": "- 人物背景 [00:00:00 - 00:01:14]",
+            "第一章": "- 创业感受 [00:01:15 - 00:02:35]",
+        },
+    )
+
+    assert "- 开场与嘉宾介绍 [00:00:00]" in mindmap
+    assert "- 第一章 [00:01:15]" in mindmap
+    tree = mindmap_markdown_to_timed_tree(mindmap)
+    assert [item["title"] for item in tree["children"]] == [
+        "开场与嘉宾介绍",
+        "第一章",
+    ]

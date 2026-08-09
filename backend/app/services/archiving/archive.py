@@ -25,6 +25,9 @@ tags: [media-pipeline]
 
 ### Key Facts
 {key_facts}
+
+### Timeline
+{timeline}
 """
 
 
@@ -105,6 +108,7 @@ class ArchiveService:
                 date=date_str,
                 tldr=summary.get("tldr", "") if summary else "",
                 key_facts=self._fmt_list(summary.get("key_facts", []) if summary else []),
+                timeline=self._fmt_timeline(summary.get("timeline", []) if summary else []),
             )
             sum_path.write_text(content, encoding="utf-8")
             files["summary"] = str(sum_path)
@@ -377,6 +381,25 @@ class ArchiveService:
 
     def _fmt_list(self, items: list[str]) -> str:
         return "\n".join(f"- {i}" for i in items) if items else "- None"
+
+    def _fmt_timeline(self, items: list[dict[str, Any]]) -> str:
+        lines: list[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            try:
+                total_seconds = max(0, int(float(item.get("start") or 0)))
+            except (TypeError, ValueError):
+                continue
+            hours, remainder = divmod(total_seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            title = str(item.get("title") or "").strip()
+            summary = str(item.get("summary") or "").strip()
+            if not title:
+                continue
+            suffix = f" — {summary}" if summary else ""
+            lines.append(f"- [{hours:02d}:{minutes:02d}:{seconds:02d}] {title}{suffix}")
+        return "\n".join(lines) if lines else "- None"
 
 
 _service: ArchiveService | None = None

@@ -297,29 +297,77 @@ class DiarizationService:
         temp_path.replace(cache_path)
 
     @staticmethod
+    def _split_text_by_weights(text: str, weights: list[float]) -> list[str]:
+        if len(weights) <= 1 or len(text) <= 1:
+            return [text]
+        total = sum(max(0.0, weight) for weight in weights) or float(len(weights))
+        boundaries = [0]
+        cumulative = 0.0
+        for weight in weights[:-1]:
+            cumulative += max(0.0, weight)
+            target = round(len(text) * cumulative / total)
+            boundaries.append(max(boundaries[-1], min(len(text), target)))
+        boundaries.append(len(text))
+        return [text[boundaries[index]:boundaries[index + 1]].strip() for index in range(len(weights))]
+
+    @staticmethod
     def assign_speakers(
         segments: list[dict[str, Any]],
         turns: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         import numpy as np
 
-        result = [dict(segment) for segment in segments]
         if not turns:
-            return result
+            return [dict(segment) for segment in segments]
         starts = np.asarray([float(turn["start"]) for turn in turns], dtype=float)
         ends = np.asarray([float(turn["end"]) for turn in turns], dtype=float)
         speakers = [str(turn["speaker"]) for turn in turns]
 
         assigned = 0
-        for segment in result:
+        result: list[dict[str, Any]] = []
+        for source_segment in segments:
+            segment = dict(source_segment)
             start = float(segment.get("start") or 0.0)
             end = float(segment.get("end") or 0.0)
             if end <= start:
+                result.append(segment)
                 continue
             overlaps = np.minimum(end, ends) - np.maximum(start, starts)
-            index = int(overlaps.argmax())
-            if overlaps[index] > 0:
-                segment["speaker"] = speakers[index]
+            indexes = [int(index) for index in np.flatnonzero(overlaps > 0.05)]
+            if not indexes:
+                result.append(segment)
+                continue
+            if len({speakers[index] for index in indexes}) == 1:
+                segment["speaker"] = speakers[indexes[0]]
+                assigned += 1
+                result.append(segment)
+                continue
+
+            intervals = [
+                (
+                    max(start, float(starts[index])),
+                    min(end, float(ends[index])),
+                    speakers[index],
+                )
+                for index in indexes
+            ]
+            intervals.sort(key=lambda item: (item[0], item[1]))
+            text_parts = DiarizationService._split_text_by_weights(
+                str(segment.get("text") or ""),
+                [item[1] - item[0] for item in intervals],
+            )
+            for interval, text_part in zip(intervals, text_parts, strict=True):
+                if not text_part:
+                    continue
+                result.append(
+                    {
+                        **segment,
+                        "start": round(interval[0], 3),
+                        "end": round(interval[1], 3),
+                        "speaker": interval[2],
+                        "text": text_part,
+                    }
+                )
                 assigned += 1
         logger.info(
             "Mapped global diarization to ASR segments: assigned=%d total=%d turns=%d",

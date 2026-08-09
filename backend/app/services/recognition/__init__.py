@@ -80,6 +80,8 @@ async def transcribe_audio(
     language: str | None = None,
     output_dir: Path | None = None,
     num_speakers: int | None = None,
+    min_speakers: int | None = None,
+    max_speakers: int | None = None,
     provider: str | None = None,
     diarize: bool = True,
     chunk_strategy: str | None = None,
@@ -158,6 +160,13 @@ async def transcribe_audio(
         )
 
     result = await asyncio.to_thread(_run_transcribe)
+    from app.services.recognition.quality import filter_asr_segments
+
+    raw_segments = result.get("segments")
+    if isinstance(raw_segments, list):
+        filtered_segments, quality_diagnostics = filter_asr_segments(raw_segments)
+        result["segments"] = filtered_segments
+        result["quality_diagnostics"] = list(result.get("quality_diagnostics") or []) + quality_diagnostics
     if binding.diarize and provider_id != "moss_cpp":
         raw_segments = result.get("segments")
         if isinstance(raw_segments, list) and raw_segments:
@@ -173,6 +182,8 @@ async def transcribe_audio(
                 diarization_audio_path or audio_path,
                 raw_segments,
                 num_speakers=binding.num_speakers,
+                min_speakers=min_speakers,
+                max_speakers=max_speakers,
                 cache_path=cache_path,
             )
             result["segments"] = diarization_result["segments"]
@@ -212,6 +223,7 @@ async def transcribe_audio(
         "speakers": speakers,
         "speaker_count": int(result.get("speaker_count", len(speakers))),
         "diarization": result.get("diarization", "pyannote" if binding.diarize else "none"),
+        "quality_diagnostics": result.get("quality_diagnostics", []),
         "srt": srt_content,
         "srt_path": str(srt_path) if srt_path else None,
     }

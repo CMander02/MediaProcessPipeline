@@ -4,8 +4,19 @@ Written in English with explicit language-preservation policy so multilingual
 transcripts don't get collapsed into a single output language.
 """
 
+import json
+from typing import Any
 
-def get_summarize_prompt(text: str, user_language: str | None = None) -> str:
+SUMMARY_SYSTEM_PROMPT = """You create source-grounded structured summaries.
+Use the supplied canonical entity table and source timeline as read-only facts. Preserve
+names and timestamps exactly. Return only the requested JSON object."""
+
+
+def get_summarize_prompt(
+    text: str,
+    user_language: str | None = None,
+    source_context: dict[str, Any] | None = None,
+) -> str:
     """
     Generate the summarization prompt.
 
@@ -19,6 +30,8 @@ def get_summarize_prompt(text: str, user_language: str | None = None) -> str:
     """
     lang = (user_language or "").strip() or "auto-detect from transcript"
 
+    context_block = json.dumps(source_context or {}, ensure_ascii=False, indent=2)
+
     return f"""Analyse the following transcript and produce a structured summary.
 
 ## Language policy (critical)
@@ -30,6 +43,9 @@ def get_summarize_prompt(text: str, user_language: str | None = None) -> str:
   quotes, proper nouns, brand names, code identifiers, song titles), keep
   those tokens in their original script and spelling — do NOT translate them.
 - Do NOT collapse a multilingual transcript into a monolingual output.
+
+## Source context (read-only facts)
+{context_block}
 
 ## Transcript
 {text}
@@ -52,6 +68,9 @@ Return JSON in exactly this shape:
         "topic 1",
         "topic 2",
         "..."
+    ],
+    "timeline": [
+        {{"start": 0, "title": "source chapter title", "summary": "section summary"}}
     ]
 }}
 
