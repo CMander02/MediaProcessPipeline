@@ -681,28 +681,38 @@ export function BackendPage() {
           const nextTab = value as BackendTab
           setActiveTab(nextTab)
           window.history.replaceState(null, "", `#/backend?tab=${nextTab}`)
-        }}>
-          <div className="overflow-x-auto rounded-lg border">
-            <TabsList variant="line" className="grid h-11 min-w-[520px] w-full grid-cols-5 gap-0 p-0">
-              {backendTabs.map((tab) => (
-                <TabsTrigger key={tab.value} value={tab.value} className="h-full rounded-none border-r px-4 last:border-r-0 data-active:text-primary">
-                  {tab.label}
-                </TabsTrigger>
-              ))}
-            </TabsList>
+        }} className="gap-0">
+          <div className="grid min-w-0 gap-4 lg:grid-cols-[11rem_minmax(0,1fr)] lg:items-start">
+            <aside className="min-w-0 lg:sticky lg:top-4">
+              <div className="overflow-x-auto rounded-lg border p-1">
+                <TabsList className="flex min-w-[520px] w-full justify-start gap-1 bg-transparent p-0 group-data-horizontal/tabs:h-auto lg:min-w-0 lg:flex-col">
+                  {backendTabs.map((tab) => (
+                    <TabsTrigger
+                      key={tab.value}
+                      value={tab.value}
+                      className="h-10 min-w-24 flex-none justify-center px-3 data-active:bg-muted data-active:text-primary data-active:shadow-none lg:w-full lg:justify-start"
+                    >
+                      {tab.label}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </div>
+            </aside>
+
+            <div className="flex min-w-0 flex-col gap-4">
+              <StatusStrip serviceHealthy={serviceHealthy} activeCount={activeCount} modelState={modelState} version={health?.version ?? "0.5.0"} />
+
+              <TabsContent value="overview">
+                <OverviewPanel serviceHealthy={serviceHealthy} activeCount={activeCount} processingCount={processingCount} health={health} settings={settings} lastUpdateText={lastUpdateText} />
+              </TabsContent>
+              <TabsContent value="logs">
+                <LogPanel active={activeTab === "logs"} online={online} />
+              </TabsContent>
+              <TabsContent value="tasks"><TaskQueuePanel tasks={tasks} /></TabsContent>
+              <TabsContent value="models"><ModelPanel settings={settings} processingCount={processingCount} /></TabsContent>
+              <TabsContent value="diagnostics"><DiagnosticsPanel serviceHealthy={serviceHealthy} settings={settings} processingCount={processingCount} /></TabsContent>
+            </div>
           </div>
-
-          <StatusStrip serviceHealthy={serviceHealthy} activeCount={activeCount} modelState={modelState} version={health?.version ?? "0.5.0"} />
-
-          <TabsContent value="overview">
-            <OverviewPanel serviceHealthy={serviceHealthy} activeCount={activeCount} processingCount={processingCount} health={health} settings={settings} lastUpdateText={lastUpdateText} />
-          </TabsContent>
-          <TabsContent value="logs">
-            <LogPanel active={activeTab === "logs"} online={online} />
-          </TabsContent>
-          <TabsContent value="tasks"><TaskQueuePanel tasks={tasks} /></TabsContent>
-          <TabsContent value="models"><ModelPanel settings={settings} processingCount={processingCount} /></TabsContent>
-          <TabsContent value="diagnostics"><DiagnosticsPanel serviceHealthy={serviceHealthy} settings={settings} processingCount={processingCount} /></TabsContent>
         </Tabs>
       </div>
     </section>
