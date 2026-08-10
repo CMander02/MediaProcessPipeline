@@ -200,6 +200,8 @@ html[data-platform="android"] [data-mobile-bottom-nav] {
 .prose h3 { font-size: 1.1em; font-weight: 600; margin: 0.8em 0 0.4em; }
 .prose p { margin: 0.5em 0; }
 .prose ul, .prose ol { margin: 0.5em 0; padding-left: 1.5em; }
+.prose ul { list-style-type: disc; }
+.prose ol { list-style-type: decimal; }
 .prose li { margin: 0.2em 0; }
 .prose blockquote {
   border-left: 3px solid var(--border);

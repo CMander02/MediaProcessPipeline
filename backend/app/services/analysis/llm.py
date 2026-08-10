@@ -94,10 +94,15 @@ def _seconds_to_srt_timestamp(seconds: float) -> str:
 def _split_mindmap_line(line: str) -> tuple[int, str, float | None, float | None] | None:
     stripped = line.rstrip()
     marker = re.match(r"^(\s*)[-*]\s+(.+?)\s*$", stripped)
-    if not marker:
+    heading = re.match(r"^(#{2,6})\s+(.+?)\s*$", stripped)
+    if marker:
+        depth = len(marker.group(1).replace("\t", "  ")) // 2
+        title = marker.group(2).strip()
+    elif heading:
+        depth = len(heading.group(1)) - 2
+        title = heading.group(2).strip()
+    else:
         return None
-    depth = len(marker.group(1).replace("\t", "  ")) // 2
-    title = marker.group(2).strip()
     start = end = None
     ts_match = _TIMESTAMP_RE.search(title)
     if ts_match:
@@ -108,14 +113,15 @@ def _split_mindmap_line(line: str) -> tuple[int, str, float | None, float | None
 
 
 def mindmap_markdown_without_timestamps(markdown: str) -> str:
-    """Export timed mindmap markdown as a plain nested Markdown list."""
+    """Export a timed mindmap as an H2-H6 document hierarchy."""
     lines: list[str] = []
     for raw in markdown.splitlines():
         parsed = _split_mindmap_line(raw)
         if not parsed:
             continue
         depth, title, _start, _end = parsed
-        lines.append(f"{'  ' * depth}- {title}")
+        heading_level = min(6, depth + 2)
+        lines.append(f"{'#' * heading_level} {title}")
     return "\n".join(lines)
 
 

@@ -25,9 +25,6 @@ tags: [media-pipeline]
 
 ### Key Facts
 {key_facts}
-
-### Timeline
-{timeline}
 """
 
 
@@ -108,7 +105,6 @@ class ArchiveService:
                 date=date_str,
                 tldr=summary.get("tldr", "") if summary else "",
                 key_facts=self._fmt_list(summary.get("key_facts", []) if summary else []),
-                timeline=self._fmt_timeline(summary.get("timeline", []) if summary else []),
             )
             sum_path.write_text(content, encoding="utf-8")
             files["summary"] = str(sum_path)

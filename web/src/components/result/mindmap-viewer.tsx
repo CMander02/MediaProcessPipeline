@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { IPureNode } from "markmap-common"
-import { Dialog, DialogContent } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
+import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Gps01Icon, Maximize01Icon, HierarchyIcon, File02Icon } from "@hugeicons/core-free-icons"
+import { mindmapMarkdownForReading, sanitizeMindmapMarkdown } from "@/lib/mindmap"
 import { MarkdownRenderer } from "./markdown-renderer"
 
 interface MindmapViewerProps {
@@ -184,6 +186,8 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
   const [rootNode, setRootNode] = useState<MindmapNode | null>(null)
   const mmRef = useRef<MarkmapInstance | null>(null)
   const dialogMMRef = useRef<MarkmapInstance | null>(null)
+  const displayMarkdown = useMemo(() => sanitizeMindmapMarkdown(markdown), [markdown])
+  const readingMarkdown = useMemo(() => mindmapMarkdownForReading(markdown), [markdown])
   const onFitReadyRef = useRef(onFitReady)
   onFitReadyRef.current = onFitReady
 
@@ -194,7 +198,7 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
       try {
         const { Transformer } = await import("markmap-lib")
         const transformer = new Transformer()
-        const { root } = transformer.transform(markdown)
+        const { root } = transformer.transform(displayMarkdown)
 
         if (cancelled) return
 
@@ -212,7 +216,7 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
     return () => {
       cancelled = true
     }
-  }, [markdown, title])
+  }, [displayMarkdown, title])
 
   const renderMarkmap = useCallback(
     async (
@@ -226,11 +230,19 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
         svgEl.innerHTML = ""
         ref.current?.destroy?.()
 
+        // d3-zoom reads SVGAnimatedLength directly. Numeric presentation
+        // attributes keep that lookup resolvable when the canvas itself is
+        // sized responsively with Tailwind's percentage-based utilities.
+        const viewport = svgEl.getBoundingClientRect()
+        svgEl.setAttribute("width", String(Math.max(Math.round(viewport.width), 1)))
+        svgEl.setAttribute("height", String(Math.max(Math.round(viewport.height), 1)))
+
+        const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches
         ref.current = Markmap.create(
           svgEl,
           {
             autoFit: true,
-            duration: 300,
+            duration: reducedMotion ? 0 : 300,
             initialExpandLevel: 2,
             maxWidth: 300,
           },
@@ -337,23 +349,25 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
     setViewMode((m) => (m === "mindmap" ? "markdown" : "mindmap"))
 
   // Button shows the icon of the *other* view — click to switch to it.
+  const viewToggleLabel = viewMode === "mindmap" ? "切换到 Markdown" : "切换到思维导图"
   const ViewToggleButton = (
-    <button
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-sm"
       onClick={toggleView}
-      className="absolute right-2 top-2 z-10 rounded-md bg-background/80 p-1.5 text-muted-foreground shadow-sm backdrop-blur-sm transition-colors hover:bg-muted hover:text-foreground"
-      title={viewMode === "mindmap" ? "切换到 Markdown" : "切换到思维导图"}
+      className="absolute right-2 top-2 bg-background/80 text-muted-foreground shadow-sm backdrop-blur-sm"
+      title={viewToggleLabel}
+      aria-label={viewToggleLabel}
     >
-      <HugeiconsIcon
-        icon={viewMode === "mindmap" ? File02Icon : HierarchyIcon}
-        className="h-4 w-4"
-      />
-    </button>
+      <HugeiconsIcon icon={viewMode === "mindmap" ? File02Icon : HierarchyIcon} />
+    </Button>
   )
 
   const MarkdownPane = (
     <ScrollArea className="h-full w-full">
       <article className="prose prose-sm dark:prose-invert max-w-none px-4 py-3">
-        <MarkdownRenderer>{markdown}</MarkdownRenderer>
+        <MarkdownRenderer>{readingMarkdown}</MarkdownRenderer>
       </article>
     </ScrollArea>
   )
@@ -380,13 +394,17 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
         ) : (
           MarkdownPane
         )}
-        <button
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
           onClick={() => setDialogOpen(true)}
-          className="absolute right-11 top-2 z-10 rounded-md bg-background/80 p-1.5 text-muted-foreground shadow-sm backdrop-blur-sm transition-colors hover:bg-muted hover:text-foreground"
+          className="absolute right-11 top-2 bg-background/80 text-muted-foreground shadow-sm backdrop-blur-sm"
           title="展开导图"
+          aria-label="展开导图"
         >
-          <HugeiconsIcon icon={Maximize01Icon} className="h-4 w-4" />
-        </button>
+          <HugeiconsIcon icon={Maximize01Icon} />
+        </Button>
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -394,26 +412,32 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
           className="flex h-[90vh] flex-col gap-0 p-0 sm:max-w-[95vw]"
           showCloseButton
         >
+          <DialogTitle className="sr-only">{title || "思维导图"}</DialogTitle>
           <div className="shrink-0 border-b px-4 py-2">
             <div className="flex items-center justify-end gap-1">
-              <button
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
                 onClick={toggleView}
-                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                title={viewMode === "mindmap" ? "切换到 Markdown" : "切换到思维导图"}
+                className="text-muted-foreground"
+                title={viewToggleLabel}
+                aria-label={viewToggleLabel}
               >
-                <HugeiconsIcon
-                  icon={viewMode === "mindmap" ? File02Icon : HierarchyIcon}
-                  className="h-4 w-4"
-                />
-              </button>
+                <HugeiconsIcon icon={viewMode === "mindmap" ? File02Icon : HierarchyIcon} />
+              </Button>
               {viewMode === "mindmap" && (
-                <button
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
                   onClick={() => dialogMMRef.current?.fit?.()}
-                  className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  className="text-muted-foreground"
                   title="回正视角"
+                  aria-label="回正视角"
                 >
-                  <HugeiconsIcon icon={Gps01Icon} className="h-4 w-4" />
-                </button>
+                  <HugeiconsIcon icon={Gps01Icon} />
+                </Button>
               )}
             </div>
           </div>

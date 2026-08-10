@@ -18,9 +18,21 @@ def test_mindmap_markdown_export_removes_inline_timestamps():
     - OpenAI Podcast 访谈 [00:00:03 - 00:01:12]
 """
 
-    assert mindmap_markdown_without_timestamps(markdown) == """- AI 破解 80 年数学难题
-  - 背景
-    - OpenAI Podcast 访谈"""
+    assert mindmap_markdown_without_timestamps(markdown) == """## AI 破解 80 年数学难题
+### 背景
+#### OpenAI Podcast 访谈"""
+
+
+def test_heading_mindmap_can_be_reloaded_without_losing_hierarchy():
+    markdown = """## 主话题
+### 子话题
+#### 结论"""
+
+    assert mindmap_markdown_without_timestamps(markdown) == markdown
+    tree = mindmap_markdown_to_timed_tree(markdown)
+    assert tree["title"] == "主话题"
+    assert tree["children"][0]["title"] == "子话题"
+    assert tree["children"][0]["children"][0]["title"] == "结论"
 
 
 def test_mindmap_markdown_to_timed_tree_preserves_hierarchy_and_times():

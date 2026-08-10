@@ -30,6 +30,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,7 @@ _HEADERS = {
     ),
 }
 _ITUNES_NS = "{http://www.itunes.com/dtds/podcast-1.0.dtd}"
+_CONTENT_NS = "{http://purl.org/rss/1.0/modules/content/}encoded"
 
 
 def is_apple_podcast_url(url: str) -> bool:
@@ -131,7 +133,9 @@ def fetch_metadata(url: str) -> dict[str, Any]:
         )
 
     canonical_url = url
-    description = _strip_html(item.get("description") or "")
+    raw_description = item.get("content_encoded") or item.get("description") or ""
+    plain_description = _strip_html(raw_description)
+    description = _html_to_markdown(raw_description)
     duration = _parse_duration(item.get("duration"))
     published_ts = _parse_rfc2822(item.get("pub_date"))
 
@@ -159,7 +163,7 @@ def fetch_metadata(url: str) -> dict[str, Any]:
         "ext": _guess_ext(audio_url),
         "media_type": "podcast",
         "tags": tags,
-        "chapters": _extract_chapters(description or ""),
+        "chapters": _extract_chapters(plain_description),
         "extra": {
             "platform": "apple_podcast",
             "apple_show_id": show_id,
@@ -169,6 +173,10 @@ def fetch_metadata(url: str) -> dict[str, Any]:
             "podcast_title": podcast_title,
             "podcast_author": podcast_author,
             "audio_url": audio_url,
+            "description_format": "markdown",
+            "description_source": (
+                "rss_content_encoded" if item.get("content_encoded") else "rss_description"
+            ),
         },
     }
     return info
@@ -334,6 +342,7 @@ def _normalize_rss_item(item_el: ET.Element) -> dict[str, Any]:
     title = (item_el.findtext("title") or "").strip()
     guid = (item_el.findtext("guid") or "").strip()
     description = (item_el.findtext("description") or "").strip()
+    content_encoded = (item_el.findtext(_CONTENT_NS) or "").strip()
     pub_date = (item_el.findtext("pubDate") or "").strip()
 
     enclosure_url = None
@@ -349,6 +358,7 @@ def _normalize_rss_item(item_el: ET.Element) -> dict[str, Any]:
         "title": title,
         "guid": guid,
         "description": description,
+        "content_encoded": content_encoded,
         "pub_date": pub_date,
         "enclosure_url": enclosure_url,
         "duration": duration,
@@ -368,6 +378,114 @@ def _strip_html(value: str) -> str:
     value = re.sub(r"</p\s*>", "\n", value, flags=re.IGNORECASE)
     value = re.sub(r"<[^>]+>", "", value)
     return html.unescape(value).strip()
+
+
+class _MarkdownDescriptionParser(HTMLParser):
+    """Small RSS-safe HTML-to-Markdown converter for podcast shownotes."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.list_stack: list[str] = []
+        self.link_stack: list[str | None] = []
+        self.in_list_item = 0
+
+    @staticmethod
+    def _attrs(attrs: list[tuple[str, str | None]]) -> dict[str, str]:
+        return {key: value or "" for key, value in attrs}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        values = self._attrs(attrs)
+        if tag in {"p", "div", "section", "article"}:
+            if not self.in_list_item:
+                self.parts.append("\n\n")
+        elif tag == "br":
+            self.parts.append("\n")
+        elif tag in {"strong", "b"}:
+            self.parts.append("**")
+        elif tag in {"em", "i"}:
+            self.parts.append("*")
+        elif tag in {"code", "kbd"}:
+            self.parts.append("`")
+        elif tag == "pre":
+            self.parts.append("\n\n```\n")
+        elif tag in {"ul", "ol"}:
+            self.parts.append("\n")
+            self.list_stack.append(tag)
+        elif tag == "li":
+            indent = "  " * max(0, len(self.list_stack) - 1)
+            marker = "- " if not self.list_stack or self.list_stack[-1] == "ul" else "1. "
+            self.parts.append(f"\n{indent}{marker}")
+            self.in_list_item += 1
+        elif re.fullmatch(r"h[1-6]", tag):
+            self.parts.append(f"\n\n{'#' * int(tag[1])} ")
+        elif tag == "blockquote":
+            self.parts.append("\n\n> ")
+        elif tag == "a":
+            href = values.get("href") or None
+            self.link_stack.append(href)
+            if href:
+                self.parts.append("[")
+        elif tag == "img":
+            src = values.get("src")
+            if src:
+                self.parts.append(f"\n\n![{values.get('alt', '')}]({src})\n\n")
+        elif tag == "hr":
+            self.parts.append("\n\n---\n\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in {"p", "div", "section", "article"}:
+            if not self.in_list_item:
+                self.parts.append("\n\n")
+        elif tag in {"strong", "b"}:
+            self.parts.append("**")
+        elif tag in {"em", "i"}:
+            self.parts.append("*")
+        elif tag in {"code", "kbd"}:
+            self.parts.append("`")
+        elif tag == "pre":
+            self.parts.append("\n```\n\n")
+        elif tag in {"ul", "ol"}:
+            if self.list_stack:
+                self.list_stack.pop()
+            self.parts.append("\n")
+        elif tag == "li":
+            self.in_list_item = max(0, self.in_list_item - 1)
+            self.parts.append("\n")
+        elif re.fullmatch(r"h[1-6]", tag) or tag == "blockquote":
+            self.parts.append("\n\n")
+        elif tag == "a":
+            href = self.link_stack.pop() if self.link_stack else None
+            if href:
+                self.parts.append(f"]({href})")
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+    def markdown(self) -> str:
+        rendered = "".join(self.parts).replace("\r", "")
+        rendered = re.sub(r"[ \t]+\n", "\n", rendered)
+        rendered = re.sub(r"\n[ \t]+", "\n", rendered)
+        rendered = re.sub(r"[ \t]{2,}", " ", rendered)
+        rendered = re.sub(r"\n{3,}", "\n\n", rendered)
+        rendered = re.sub(r"(?m)^\*\*【(.+?)】\*\*$", r"## \1", rendered)
+        rendered = re.sub(r"(?mi)^\*\*(Part\s+\d+.+?)\*\*$", r"### \1", rendered)
+        rendered = re.sub(r"(?m)^【\*\*(.+?)】\*\*$", r"## \1", rendered)
+        rendered = re.sub(r"(\*\*[^*\n]+：\*\*)(?=\S)", r"\1 ", rendered)
+        return rendered.strip()
+
+
+def _html_to_markdown(value: str) -> str:
+    if not value:
+        return ""
+    if not re.search(r"<[^>]+>", value):
+        return html.unescape(value).strip()
+    parser = _MarkdownDescriptionParser()
+    parser.feed(value)
+    parser.close()
+    return parser.markdown()
 
 
 def _parse_duration(value: Any) -> float | None:

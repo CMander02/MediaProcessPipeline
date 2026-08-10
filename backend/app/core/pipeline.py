@@ -339,7 +339,6 @@ async def _write_summary_files(
         date=datetime.now().strftime("%Y-%m-%d"),
         tldr=summary.get("tldr", ""),
         key_facts=_svc._fmt_list(summary.get("key_facts", [])),
-        timeline=_svc._fmt_timeline(summary.get("timeline", [])),
     )
     sum_path.write_text(sum_content, encoding="utf-8")
     await _emit_file_ready(task, "summary.md", str(sum_path))

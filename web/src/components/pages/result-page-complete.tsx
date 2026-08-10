@@ -6,6 +6,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { ReactNode } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   ResizablePanelGroup,
   ResizablePanel,
@@ -34,9 +36,10 @@ import { api, type Task, type TaskFlowSnapshot, type TaskTimelineEvent } from "@
 import { usePlatform } from "@/platform/use-platform"
 import { MediaPlayer } from "@/components/result/media-player"
 import { SpeakerPanel } from "@/components/result/speaker-panel"
-import { TranscriptTab, type MindmapTocNode } from "@/components/result/transcript-tab"
+import { TranscriptTab, type TranscriptTocNode } from "@/components/result/transcript-tab"
 import { SummaryTab } from "@/components/result/summary-tab"
 import { MindmapViewer } from "@/components/result/mindmap-viewer"
+import { formatSourceDescriptionMarkdown } from "@/lib/source-description"
 import { ImageNoteViewer, type ImageDescription } from "@/components/result/image-note-viewer"
 import { ImageLightbox, type LightboxImage } from "@/components/result/image-lightbox"
 import { MarkdownRenderer } from "@/components/result/markdown-renderer"
@@ -191,6 +194,61 @@ function firstTextValue(...values: unknown[]): string {
   return ""
 }
 
+const CHAPTER_TIME_SUFFIX_RE = /\s*\[(?:\d{1,2}:)?\d{1,2}:\d{2}(?:[,.]\d{1,3})?(?:\s*(?:-|–|—|-->)\s*(?:\d{1,2}:)?\d{1,2}:\d{2}(?:[,.]\d{1,3})?)?\]\s*$/
+
+function cleanChapterTitle(value: unknown): string {
+  return typeof value === "string" ? value.replace(CHAPTER_TIME_SUFFIX_RE, "").trim() : ""
+}
+
+function parseChapterTimeline(content: string): TranscriptTocNode[] | null {
+  if (!content) return null
+  try {
+    const payload = asRecord(JSON.parse(content))
+    const timeline = Array.isArray(payload?.timeline) ? payload.timeline : []
+    const seen = new Set<string>()
+    const nodes = timeline.flatMap((value) => {
+      const item = asRecord(value)
+      const start = Number(item?.start)
+      const title = cleanChapterTitle(item?.title)
+      if (!Number.isFinite(start) || start < 0 || !title) return []
+      const key = `${start}:${title}`
+      if (seen.has(key)) return []
+      seen.add(key)
+      return [{ title, start } satisfies TranscriptTocNode]
+    })
+    return nodes.length > 0 ? nodes.toSorted((left, right) => (left.start ?? 0) - (right.start ?? 0)) : null
+  } catch {
+    return null
+  }
+}
+
+function collectLegacyMindmapChapters(tree: TranscriptTocNode | null): TranscriptTocNode[] | null {
+  if (!tree) return null
+  const nodes: TranscriptTocNode[] = []
+  const walk = (node: TranscriptTocNode) => {
+    if (typeof node.start === "number" && Number.isFinite(node.start)) {
+      const title = cleanChapterTitle(node.title)
+      if (title) nodes.push({ title, start: node.start, end: node.end })
+    }
+    node.children?.forEach(walk)
+  }
+  walk(tree)
+  return nodes.length > 0 ? nodes.toSorted((left, right) => (left.start ?? 0) - (right.start ?? 0)) : null
+}
+
+function completeChapterRanges(nodes: TranscriptTocNode[] | null, duration: number): TranscriptTocNode[] {
+  if (!nodes?.length) return []
+  return nodes.map((node, index) => {
+    const nextStart = nodes[index + 1]?.start
+    const inferredEnd = typeof nextStart === "number" ? nextStart : duration > 0 ? duration : undefined
+    return {
+      ...node,
+      title: cleanChapterTitle(node.title),
+      end: typeof node.end === "number" ? node.end : inferredEnd,
+    }
+  })
+}
+
 function resolveRerunSource(metadata: Record<string, unknown>, archive: ArchiveItem | null, sourceUrl: string | null): string {
   const extra = asRecord(metadata.extra)
   const nested = asRecord(extra?.metadata) ?? asRecord(extra?.raw) ?? asRecord(extra?.info)
@@ -233,6 +291,8 @@ function mediaSource(path: string): string {
 }
 
 function NoteMarkdown({ content, archivePath, sep }: { content: string; archivePath: string; sep: string }) {
+  const displayContent = formatSourceDescriptionMarkdown(content)
+
   return (
     <div className="prose prose-sm max-w-none dark:prose-invert">
       <MarkdownRenderer
@@ -250,7 +310,7 @@ function NoteMarkdown({ content, archivePath, sep }: { content: string; archiveP
           ),
         }}
       >
-        {content}
+        {displayContent}
       </MarkdownRenderer>
     </div>
   )
@@ -508,7 +568,9 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const [transcript, setTranscript] = useState<string | null>(null)
   const [isPolished, setIsPolished] = useState(false)
   const [mindmap, setMindmap] = useState<string | null>(null)
-  const [mindmapTree, setMindmapTree] = useState<MindmapTocNode | null>(null)
+  const [mindmapTree, setMindmapTree] = useState<TranscriptTocNode | null>(null)
+  const [sourceChapterNodes, setSourceChapterNodes] = useState<TranscriptTocNode[] | null>(null)
+  const [summaryChapterNodes, setSummaryChapterNodes] = useState<TranscriptTocNode[] | null>(null)
   const [detail, setDetail] = useState<string | null>(null)
   const [mindmapFit, setMindmapFit] = useState<(() => void) | null>(null)
   const [subtitles, setSubtitles] = useState<Subtitle[]>([])
@@ -542,6 +604,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     setIsPolished(false)
     setMindmap(null)
     setMindmapTree(null)
+    setSourceChapterNodes(null)
+    setSummaryChapterNodes(null)
     setDetail(null)
     setSubtitles([])
     setSubtitleTracks([])
@@ -579,6 +643,11 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
       initialTime: savedPos.current.mediaTime,
       onTimeUpdate: updateMediaTime,
     })
+
+  const chapterTocNodes = useMemo(() => {
+    const preferred = sourceChapterNodes ?? summaryChapterNodes ?? collectLegacyMindmapChapters(mindmapTree)
+    return completeChapterRanges(preferred, duration)
+  }, [duration, mindmapTree, sourceChapterNodes, summaryChapterNodes])
 
   const mergeTimelineEvent = useCallback((event: TaskTimelineEvent) => {
     setTimelineEvents((prev) => {
@@ -793,6 +862,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
       summaryMd,
       mindmapMd,
       mindmapJson,
+      sourceContextJson,
+      summaryJson,
       detailMd,
       sourceMd,
       polishedSrt,
@@ -801,6 +872,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
       loadFile("summary.md", basePath),
       loadFile("mindmap.md", basePath),
       loadFile("mindmap.json", basePath),
+      loadFile("source_context.json", basePath),
+      loadFile("summary.json", basePath),
       loadFile("detail.md", basePath),
       loadFile("source.md", basePath),
       loadFile("transcript_polished.srt", basePath),
@@ -811,11 +884,13 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     if (mindmapMd) setMindmap(mindmapMd)
     if (mindmapJson) {
       try {
-        setMindmapTree(JSON.parse(mindmapJson) as MindmapTocNode)
+        setMindmapTree(JSON.parse(mindmapJson) as TranscriptTocNode)
       } catch (err) {
         console.warn("Failed to parse mindmap.json:", err)
       }
     }
+    if (sourceContextJson) setSourceChapterNodes(parseChapterTimeline(sourceContextJson))
+    if (summaryJson) setSummaryChapterNodes(parseChapterTimeline(summaryJson))
     if (detailMd) setDetail(detailMd)
     if (sourceMd) setNoteText(sourceMd)
 
@@ -1003,13 +1078,17 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
         })
       } else if (file === "summary.md") {
         loadReadyFile().then((c) => { if (c) setSummary(c) })
+      } else if (file === "summary.json") {
+        loadReadyFile().then((c) => { if (c) setSummaryChapterNodes(parseChapterTimeline(c)) })
+      } else if (file === "source_context.json") {
+        loadReadyFile().then((c) => { if (c) setSourceChapterNodes(parseChapterTimeline(c)) })
       } else if (file === "mindmap.md") {
         loadReadyFile().then((c) => { if (c) setMindmap(c) })
       } else if (file === "mindmap.json") {
         loadReadyFile().then((c) => {
           if (!c) return
           try {
-            setMindmapTree(JSON.parse(c) as MindmapTocNode)
+            setMindmapTree(JSON.parse(c) as TranscriptTocNode)
           } catch (err) {
             console.warn("Failed to parse mindmap.json:", err)
           }
@@ -1102,6 +1181,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState("")
   const isProcessing = taskStatus === "processing" || taskStatus === "queued"
+  const showSourceTab = (isImageNote && !isArticleNote) || (!isNoteContent && Boolean(noteText || isProcessing))
+  const sourceTabLabel = isImageNote ? "原帖" : "简介"
   const showFlowDiagnostics = isProcessing || taskStatus === "failed"
   const flowCompletedSteps = taskFlow?.completed_steps ?? []
   const recentTimelineEvents = timelineEvents
@@ -1138,11 +1219,11 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     } else if (isPureWebpage && activeTab === "transcript") {
       setActiveTab("summary")
       updateActiveTab("summary")
-    } else if ((!isImageNote || isArticleNote) && activeTab === "source") {
+    } else if (!showSourceTab && activeTab === "source") {
       setActiveTab("summary")
       updateActiveTab("summary")
     }
-  }, [activeTab, isArticleNote, isImageNote, isLongArticle, isPureWebpage, updateActiveTab])
+  }, [activeTab, isLongArticle, isPureWebpage, showSourceTab, updateActiveTab])
 
   // Sync title from archive
   useEffect(() => {
@@ -1200,7 +1281,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
 
   const getTabContent = () => {
     if (activeTab === "summary") return { content: summary, suffix: "摘要", ext: "md" }
-    if (activeTab === "source" && isImageNote) return { content: noteText, suffix: "原帖", ext: "md" }
+    if (activeTab === "source" && showSourceTab) return { content: noteText, suffix: sourceTabLabel, ext: "md" }
     if (activeTab === "transcript" && isTextNote && !isPureWebpage) return { content: noteText, suffix: "正文", ext: "md" }
     if (activeTab === "transcript") {
       return {
@@ -1397,6 +1478,38 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
     </div>
   )
 
+  const renderSourceTab = () => (
+    <TabsContent value="source" className="mt-3 relative flex-1">
+      <div className="absolute inset-0 flex flex-col overflow-hidden rounded-md border">
+        <div className="flex min-h-11 shrink-0 items-center justify-between gap-2 border-b px-4 py-2">
+          <Badge variant="secondary">来源原文</Badge>
+          {sourceHref ? (
+            <Button type="button" variant="ghost" size="sm" onClick={handleOpenSource}>
+              <HugeiconsIcon icon={Link01Icon} data-icon="inline-start" />
+              打开来源
+            </Button>
+          ) : null}
+        </div>
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="p-5 text-sm leading-7">
+            {noteText ? (
+              <NoteMarkdown content={noteText} archivePath={archivePath} sep={sep} />
+            ) : isProcessing ? (
+              <div className="flex min-h-40 items-center justify-center text-muted-foreground">
+                <HugeiconsIcon icon={Loading03Icon} className="mr-2 size-4 animate-spin" />
+                <span className="text-sm">等待{sourceTabLabel}内容…</span>
+              </div>
+            ) : (
+              <div className="flex min-h-40 items-center justify-center text-sm text-muted-foreground">
+                暂无{sourceTabLabel}内容
+              </div>
+            )}
+          </div>
+        </ScrollArea>
+      </div>
+    </TabsContent>
+  )
+
   const contentPane = (
     <div className={cn(
       "h-full min-h-0 flex flex-col",
@@ -1407,7 +1520,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
           <div className="min-w-0 flex-1 overflow-x-auto pb-1">
           <TabsList className="w-max">
             <TabsTrigger value="summary">摘要</TabsTrigger>
-            {isImageNote && !isArticleNote && <TabsTrigger value="source">原帖</TabsTrigger>}
+            {showSourceTab && <TabsTrigger value="source">{sourceTabLabel}</TabsTrigger>}
             {!isPureWebpage && !isLongArticle && (
               <TabsTrigger value="transcript">
                 {isImageNote ? "图片" : isTextNote ? "正文" : "字幕"}
@@ -1466,24 +1579,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
           </div>
         </TabsContent>
 
-        {isImageNote && (
-          <TabsContent value="source" className="mt-3 relative flex-1">
-            <div className="absolute inset-0 overflow-y-auto rounded-md border p-5 text-sm leading-7">
-              {noteText ? (
-                <NoteMarkdown content={noteText} archivePath={archivePath} sep={sep} />
-              ) : isProcessing ? (
-                <div className="flex h-full items-center justify-center text-muted-foreground">
-                  <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
-                  <span className="text-sm">等待原帖正文...</span>
-                </div>
-              ) : (
-                <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
-                  暂无原帖正文
-                </div>
-              )}
-            </div>
-          </TabsContent>
-        )}
+        {showSourceTab ? renderSourceTab() : null}
 
         {!isPureWebpage && !isLongArticle && (
           <TabsContent value="transcript" className="mt-3 relative flex-1">
@@ -1567,7 +1663,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                       autoScroll={autoScroll}
                       onSegmentClick={(sub) => seekTo(sub.startTime)}
                       currentTime={currentTime}
-                      tocTree={mindmapTree}
+                      tocNodes={chapterTocNodes}
                       onTocSeek={seekTo}
                       onManualScroll={onManualScroll}
                       srtPath={archivePath + sep + (
@@ -1912,7 +2008,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                   <div className="min-w-0 flex-1 overflow-x-auto pb-1">
                   <TabsList className="w-max">
                     <TabsTrigger value="summary">摘要</TabsTrigger>
-                    {isImageNote && !isArticleNote && <TabsTrigger value="source">原帖</TabsTrigger>}
+                    {showSourceTab && <TabsTrigger value="source">{sourceTabLabel}</TabsTrigger>}
                     {!isPureWebpage && !isLongArticle && (
                       <TabsTrigger value="transcript">
                         {isImageNote ? "图片" : isTextNote ? "正文" : "字幕"}
@@ -1971,24 +2067,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                   </div>
                 </TabsContent>
 
-                {isImageNote && (
-                  <TabsContent value="source" className="mt-3 relative flex-1">
-                    <div className="absolute inset-0 overflow-y-auto rounded-md border p-5 text-sm leading-7">
-                      {noteText ? (
-                        <NoteMarkdown content={noteText} archivePath={archivePath} sep={sep} />
-                      ) : isProcessing ? (
-                        <div className="flex h-full items-center justify-center text-muted-foreground">
-                          <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
-                          <span className="text-sm">等待原帖正文...</span>
-                        </div>
-                      ) : (
-                        <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
-                          暂无原帖正文
-                        </div>
-                      )}
-                    </div>
-                  </TabsContent>
-                )}
+                {showSourceTab ? renderSourceTab() : null}
 
                 {!isPureWebpage && !isLongArticle && (
                   <TabsContent value="transcript" className="mt-3 relative flex-1">
@@ -2072,7 +2151,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: Props) {
                               autoScroll={autoScroll}
                               onSegmentClick={(sub) => seekTo(sub.startTime)}
                               currentTime={currentTime}
-                              tocTree={mindmapTree}
+                              tocNodes={chapterTocNodes}
                               onTocSeek={seekTo}
                               onManualScroll={onManualScroll}
                               srtPath={archivePath + sep + (

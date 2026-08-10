@@ -80,7 +80,7 @@ async def test_pipeline_artifact_writers_mirror_mindmap_detail_and_subtitles_to_
     await _write_text_artifact(task, archive_dir, "transcript_polished.srt", "1\n00:00:01,000 --> 00:00:02,000\nHi\n")
 
     assert (archive_dir / "mindmap.md").exists()
-    assert store.get_artifact(task.id, "mindmap.md")["content"] == "- Root\n  - Child"
+    assert store.get_artifact(task.id, "mindmap.md")["content"] == "## Root\n### Child"
     assert store.get_artifact(task.id, "mindmap.json")["content_type"] == "application/json"
     assert store.get_artifact(task.id, "detail.md")["content"] == "# Detailed outline\n"
     assert "Hi" in store.get_artifact(task.id, "transcript_polished.srt")["content"]

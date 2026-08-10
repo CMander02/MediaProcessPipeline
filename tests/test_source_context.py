@@ -17,7 +17,7 @@ from app.services.analysis.source_context import (  # noqa: E402
     merge_analysis_with_source,
     speaker_constraints,
 )
-from app.services.archiving.archive import ArchiveService  # noqa: E402
+from app.services.archiving.archive import ArchiveService, SUMMARY_TEMPLATE  # noqa: E402
 
 
 def _apple_metadata() -> dict:
@@ -139,3 +139,17 @@ def test_summary_markdown_timeline_keeps_source_start_and_title():
 
     assert "[00:01:15] 第一章 — 讨论创业感受" in rendered
     assert "[00:56:18] 最后一章 — 说明产品目标" in rendered
+
+
+def test_summary_markdown_keeps_timeline_in_structured_artifact_only():
+    rendered = SUMMARY_TEMPLATE.format(
+        title="示例",
+        source_url="https://example.com",
+        date="2026-08-10",
+        tldr="摘要正文",
+        key_facts="- 事实",
+    )
+
+    assert "摘要正文" in rendered
+    assert "### Key Facts" in rendered
+    assert "Timeline" not in rendered

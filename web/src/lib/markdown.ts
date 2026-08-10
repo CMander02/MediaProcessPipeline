@@ -5,8 +5,26 @@
 export interface ParsedSummary {
   frontmatter: Record<string, string>
   body: string
-  sections: { title: string; content: string }[]
+  displayBody: string
+  sections: { title: string; content: string; level: number }[]
   keyFacts: string[]
+}
+
+const SUMMARY_SECTION_RE = /^(#{2,6})\s+(.+)$/gm
+
+function isTimelineTitle(title: string): boolean {
+  const normalized = title.trim().toLowerCase()
+  return normalized === "timeline" || normalized === "时间轴" || normalized === "章节时间轴"
+}
+
+function isKeyFactsTitle(title: string): boolean {
+  const normalized = title.trim().toLowerCase()
+  return (
+    normalized.includes("关键事实") ||
+    normalized.includes("核心要点") ||
+    normalized === "要点" ||
+    normalized.includes("key fact")
+  )
 }
 
 /**
@@ -24,39 +42,21 @@ export function parseSummaryMarkdown(content: string): ParsedSummary {
   }
 
 
-  // Extract sections by ## headings
-  const sections: { title: string; content: string }[] = []
-  const sectionRegex = /^## (.+)$/gm
-  let lastIndex = 0
-  let lastTitle = ""
-  let match: RegExpExecArray | null
-
-  while ((match = sectionRegex.exec(body)) !== null) {
-    if (lastTitle) {
-      sections.push({
-        title: lastTitle,
-        content: body.slice(lastIndex, match.index).trim(),
-      })
-    }
-    lastTitle = match[1]
-    lastIndex = match.index + match[0].length
-  }
-  if (lastTitle) {
-    sections.push({
-      title: lastTitle,
-      content: body.slice(lastIndex).trim(),
-    })
-  }
+  // Extract independently rendered H2-H6 sections. Summary files historically
+  // used H3 for Key Facts and Timeline, so all content heading levels matter.
+  const sectionMatches = Array.from(body.matchAll(SUMMARY_SECTION_RE))
+  const sections = sectionMatches.map((heading, index) => ({
+    title: heading[2].trim(),
+    level: heading[1].length,
+    content: body.slice(
+      (heading.index ?? 0) + heading[0].length,
+      sectionMatches[index + 1]?.index ?? body.length,
+    ).trim(),
+  }))
 
   // Extract key facts from bullet list under matching section
   const keyFacts: string[] = []
-  const factsSection = sections.find(
-    (s) =>
-      s.title.includes("关键事实") ||
-      s.title.toLowerCase().includes("key fact") ||
-      s.title.includes("核心要点") ||
-      s.title.includes("要点"),
-  )
+  const factsSection = sections.find((section) => isKeyFactsTitle(section.title))
   if (factsSection) {
     const bulletRegex = /^[-*]\s+(.+)$/gm
     let bm: RegExpExecArray | null
@@ -65,7 +65,23 @@ export function parseSummaryMarkdown(content: string): ParsedSummary {
     }
   }
 
-  return { frontmatter, body, sections, keyFacts }
+  const hiddenSections = sectionMatches
+    .map((heading, index) => ({
+      start: heading.index ?? 0,
+      end: sectionMatches[index + 1]?.index ?? body.length,
+      title: heading[2].trim(),
+    }))
+    .filter((section) => isTimelineTitle(section.title) || (keyFacts.length > 0 && isKeyFactsTitle(section.title)))
+
+  let displayBody = body
+  for (const section of hiddenSections.toReversed()) {
+    displayBody = `${displayBody.slice(0, section.start).trimEnd()}\n\n${displayBody.slice(section.end).trimStart()}`
+  }
+  displayBody = displayBody
+    .replace(/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+
+  return { frontmatter, body, displayBody: displayBody.trim(), sections, keyFacts }
 }
 
 function parseSimpleYaml(yaml: string): Record<string, string> {
