@@ -25,6 +25,7 @@ from app.core.archive_sync import (  # noqa: E402
 )
 from app.core.settings import RuntimeSettings  # noqa: E402
 from app.models import Task, TaskStatus, TaskType  # noqa: E402
+from app.services.archiving.archive import get_archive_service  # noqa: E402
 
 
 def _client(tmp_path: Path, monkeypatch) -> TestClient:
@@ -293,3 +294,62 @@ def test_portable_archive_rejects_path_traversal(tmp_path):
         assert "unsafe archive member path" in str(exc)
     else:
         raise AssertionError("unsafe ZIP member was accepted")
+
+
+def test_task_archive_export_excludes_media_by_default(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    archive = _archive(tmp_path, "export-source", "待传输任务")
+    (archive / "transcript.srt").write_text("字幕", encoding="utf-8")
+    (archive / "source.mp4").write_bytes(b"video")
+    task = Task(
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.COMPLETED,
+        source="https://example.com/video",
+        progress=1.0,
+        result={"output_dir": str(archive)},
+    )
+    database.get_task_store().save(task)
+
+    response = client.get(f"/api/sync/tasks/{task.id}/archive")
+
+    assert response.status_code == 200
+    assert response.headers["x-mpp-include-media"] == "false"
+    zip_path = tmp_path / "exported.zip"
+    zip_path.write_bytes(response.content)
+    with zipfile.ZipFile(zip_path) as exported:
+        names = set(exported.namelist())
+    assert "metadata.json" in names
+    assert "transcript.srt" in names
+    assert "source.mp4" not in names
+
+
+def test_portable_archive_keeps_declared_video_task_type_without_media(tmp_path, monkeypatch):
+    _client(tmp_path, monkeypatch)
+    archive = _archive(tmp_path, "video-without-media", "视频任务")
+    metadata_path = archive / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["media_type"] = "video"
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+
+    item = get_archive_service().get_archive(archive, lite=True)
+
+    assert item["has_video"] is True
+    assert item["has_audio"] is False
+    assert item["media_file"] is None
+    assert item["media_is_external"] is True
+
+
+def test_portable_archive_keeps_declared_audio_task_type_without_media(tmp_path, monkeypatch):
+    _client(tmp_path, monkeypatch)
+    archive = _archive(tmp_path, "audio-without-media", "音频任务")
+    metadata_path = archive / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["media_type"] = "audio"
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+
+    item = get_archive_service().get_archive(archive, lite=True)
+
+    assert item["has_video"] is False
+    assert item["has_audio"] is True
+    assert item["media_file"] is None
+    assert item["media_is_external"] is True

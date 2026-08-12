@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Generator
@@ -141,6 +142,47 @@ class MppClient:
         if response.is_error:
             self._raise_http_error(response)
         return response.content
+
+    def download_to(
+        self,
+        path: str,
+        destination: Path,
+        *,
+        params: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Stream a response to disk and return its size, SHA-256, and headers."""
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256()
+        written = 0
+        try:
+            with self._client.stream(
+                "GET",
+                path,
+                params=params,
+                timeout=timeout if timeout is not None else self.timeout,
+            ) as response:
+                if response.is_error:
+                    response.read()
+                    self._raise_http_error(response)
+                with destination.open("wb") as output:
+                    for chunk in response.iter_bytes(1024 * 1024):
+                        written += len(chunk)
+                        digest.update(chunk)
+                        output.write(chunk)
+                headers = dict(response.headers)
+        except MppClientError:
+            destination.unlink(missing_ok=True)
+            raise
+        except (httpx.HTTPError, OSError) as exc:
+            destination.unlink(missing_ok=True)
+            raise MppClientError(
+                "connection_failed",
+                f"Cannot download from {self.base_url}: {exc}",
+                retryable=True,
+                exit_code=3,
+            ) from exc
+        return {"size": written, "sha256": digest.hexdigest(), "headers": headers}
 
     # Health, access, and capabilities
 
@@ -584,3 +626,41 @@ class MppClient:
 
     def sync_rebuild(self) -> dict[str, Any]:
         return self.request("POST", "/api/sync/rebuild", json_body={})
+
+    def export_task_archive(
+        self,
+        task_id: str,
+        destination: Path,
+        *,
+        include_media: bool = False,
+    ) -> dict[str, Any]:
+        encoded_task = quote(task_id, safe="")
+        return self.download_to(
+            f"/api/sync/tasks/{encoded_task}/archive",
+            destination,
+            params={"include_media": str(include_media).lower()},
+            timeout=3600.0,
+        )
+
+    def import_task_archive(
+        self,
+        task: dict[str, Any],
+        archive_path: Path,
+        *,
+        archive_name: str,
+        archive_sha256: str,
+        worker_id: str = "mpp-cli",
+    ) -> dict[str, Any]:
+        with archive_path.open("rb") as archive:
+            return self.request(
+                "POST",
+                "/api/sync/import",
+                data={
+                    "task_json": json.dumps(task, ensure_ascii=False),
+                    "archive_name": archive_name,
+                    "archive_sha256": archive_sha256,
+                    "worker_id": worker_id,
+                },
+                files={"archive": ("archive.zip", archive, "application/zip")},
+                timeout=3600.0,
+            )

@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import unquote
 
 import typer
 
+from app.cli.client import MppClient
 from app.cli.commands.common import api_call, client, resolve_task_ref
-from app.cli.context import get_cli_context
+from app.cli.context import get_cli_context, normalize_server_url
 from app.cli.daemon import daemon_status, start_daemon, stop_daemon
 from app.cli.output import confirm_action, emit, emit_error
 
@@ -23,7 +27,7 @@ voiceprint_app = typer.Typer(help="声纹人员与样本管理", no_args_is_help
 logs_app = typer.Typer(help="后端日志查询与跟踪", no_args_is_help=True)
 storage_app = typer.Typer(help="数据目录使用量与清理", no_args_is_help=True)
 fs_app = typer.Typer(help="服务端文件系统高级操作", no_args_is_help=True)
-sync_app = typer.Typer(help="移动端归档同步管理", no_args_is_help=True)
+sync_app = typer.Typer(help="端间任务传输与移动端归档同步", no_args_is_help=True)
 pipeline_app = typer.Typer(help="原子媒体处理操作", no_args_is_help=True)
 
 
@@ -499,6 +503,145 @@ def sync_rebuild(yes: bool = typer.Option(False, "--yes")):
     api = client()
     result = api_call(api.sync_rebuild)
     emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def _archive_name_from_task(task: dict[str, Any]) -> str:
+    result = task.get("result") if isinstance(task.get("result"), dict) else {}
+    raw_path = result.get("output_dir")
+    if not raw_path and isinstance(result.get("archive"), dict):
+        raw_path = result["archive"].get("output_dir")
+    if raw_path:
+        name = str(raw_path).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        if name:
+            return name
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    return str(metadata.get("title") or task.get("id") or "transferred-task")
+
+
+def _transfer_target(
+    value: str,
+    token: Optional[str],
+    token_env: Optional[str],
+) -> tuple[str, str]:
+    if token and token_env:
+        emit_error("invalid_token_options", "Use one of --to-token or --to-token-env.", exit_code=2)
+    env_token = ""
+    if token_env:
+        env_token = os.environ.get(token_env, "")
+        if not env_token:
+            emit_error(
+                "token_env_missing",
+                f"Environment variable {token_env!r} is empty.",
+                exit_code=2,
+            )
+
+    from app.core.settings import get_runtime_settings
+
+    settings = get_runtime_settings()
+    configured_url = str(settings.remote_server_url or "").strip()
+    if value.strip().casefold() == "remote":
+        if not configured_url:
+            emit_error(
+                "remote_target_missing",
+                "remote_server_url is not configured.",
+                exit_code=2,
+            )
+        target_url = normalize_server_url(configured_url)
+        target_token = token or env_token or str(settings.remote_api_token or "")
+        return target_url, target_token
+
+    try:
+        target_url = normalize_server_url(value)
+    except ValueError as exc:
+        emit_error("invalid_server_url", str(exc), exit_code=2)
+    configured_token = ""
+    if configured_url:
+        try:
+            if normalize_server_url(configured_url) == target_url:
+                configured_token = str(settings.remote_api_token or "")
+        except ValueError:
+            pass
+    return target_url, token or env_token or configured_token
+
+
+@sync_app.command("transfer")
+def sync_transfer(
+    ref: str = typer.Argument(..., help="任务 UUID、UUID 前缀或 @last/@completed"),
+    to: str = typer.Option(..., "--to", help="目标端 URL；remote 使用已配置的 remote"),
+    to_token: Optional[str] = typer.Option(None, "--to-token", help="目标端 Bearer token"),
+    to_token_env: Optional[str] = typer.Option(
+        None,
+        "--to-token-env",
+        help="从环境变量读取目标端 Bearer token",
+    ),
+    include_media: bool = typer.Option(
+        False,
+        "--include-media",
+        help="同时传输音视频媒体文件",
+    ),
+):
+    """把当前端的一个已完成任务传输到另一个 MPP 端。"""
+    source = client()
+    task_id = resolve_task_ref(ref, source)
+    task = api_call(lambda: source.get_task(task_id))
+    if task.get("status") != "completed":
+        emit_error(
+            "task_not_completed",
+            "Only completed tasks can be transferred.",
+            detail={"task_id": task_id, "status": task.get("status")},
+            exit_code=4,
+        )
+    target_url, target_token = _transfer_target(to, to_token, to_token_env)
+    source_url = normalize_server_url(get_cli_context().server_url)
+    if target_url == source_url:
+        emit_error(
+            "same_transfer_endpoint",
+            "Source and target endpoints must be different.",
+            exit_code=2,
+        )
+
+    with tempfile.TemporaryDirectory(prefix="mpp-transfer-") as temp_dir:
+        archive_path = Path(temp_dir) / "archive.zip"
+        exported = api_call(
+            lambda: source.export_task_archive(
+                task_id,
+                archive_path,
+                include_media=include_media,
+            )
+        )
+        headers = exported.get("headers") if isinstance(exported, dict) else {}
+        encoded_name = headers.get("x-mpp-archive-name") if isinstance(headers, dict) else ""
+        archive_name = unquote(encoded_name) if encoded_name else _archive_name_from_task(task)
+        target = MppClient(base_url=target_url, api_token=target_token, timeout=3600.0)
+        try:
+            imported = api_call(
+                lambda: target.import_task_archive(
+                    task,
+                    archive_path,
+                    archive_name=archive_name,
+                    archive_sha256=str(exported["sha256"]),
+                )
+            )
+        finally:
+            target.close()
+
+    result = {
+        "task_id": task_id,
+        "source": source_url,
+        "target": target_url,
+        "archive_name": archive_name,
+        "archive_size": exported["size"],
+        "archive_sha256": exported["sha256"],
+        "include_media": include_media,
+        "already_synced": bool(imported.get("already_synced")),
+    }
+    emit(
+        result,
+        text=(
+            f"{task_id}\t{source_url} -> {target_url}\t"
+            f"{exported['size']} bytes\tmedia={str(include_media).lower()}"
+        ),
+    )
 
 
 def _input_text(text: Optional[str], source_file: Optional[Path]) -> str:

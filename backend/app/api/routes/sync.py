@@ -9,13 +9,16 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from urllib.parse import quote
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
+from starlette.background import BackgroundTask
 
 from app.core.archive_sync import (
     archive_file_manifest,
+    build_archive_zip,
     get_archive_sync_service,
     publish_archive,
     safe_extract_zip,
@@ -28,6 +31,17 @@ from app.models import Task, TaskStatus
 router = APIRouter(prefix="/sync", tags=["sync"])
 
 _MAX_TASK_JSON_BYTES = 4 * 1024 * 1024
+_PORTABLE_RESULT_FIELDS = {
+    "metadata",
+    "image_descriptions",
+    "image_download_diagnostics",
+    "analysis",
+    "warnings",
+    "warning",
+    "content_subtype",
+    "subtitle_source",
+    "transcript_segments",
+}
 
 
 def _safe_archive_name(raw_name: str) -> str:
@@ -60,6 +74,33 @@ def _destination_for(data_root: Path, archive_name: str, task_id: str) -> Path:
         candidate = data_root / f"{base_name} ({suffix})"
         suffix += 1
     return candidate
+
+
+def _task_archive_dir(task: Task, data_root: Path) -> Path:
+    result = task.result if isinstance(task.result, dict) else {}
+    raw_path = result.get("output_dir")
+    if not raw_path and isinstance(result.get("archive"), dict):
+        raw_path = result["archive"].get("output_dir")
+    if not raw_path:
+        raise HTTPException(404, "Task has no archive directory")
+    try:
+        archive_dir = Path(str(raw_path)).resolve()
+        archive_dir.relative_to(data_root)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(403, "Task archive is outside data_root") from exc
+    if not archive_dir.is_dir() or not (archive_dir / "metadata.json").is_file():
+        raise HTTPException(404, "Task archive is unavailable")
+    return archive_dir
+
+
+def _portable_result(result: Any) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {}
+    return {
+        key: result[key]
+        for key in _PORTABLE_RESULT_FIELDS
+        if key in result
+    }
 
 
 @router.get("/changes")
@@ -106,6 +147,46 @@ async def sync_file(
 @router.post("/rebuild")
 async def rebuild_sync_index():
     return get_archive_sync_service().rebuild()
+
+
+@router.get("/tasks/{task_id}/archive")
+async def export_completed_archive(
+    task_id: UUID,
+    include_media: bool = Query(False),
+):
+    """Export one completed task as a portable ZIP for another MPP endpoint."""
+    task = get_task_store().get(task_id)
+    if task is None:
+        raise HTTPException(404, "Task not found")
+    if task.status != TaskStatus.COMPLETED:
+        raise HTTPException(409, "Only completed tasks can be transferred")
+    data_root = Path(get_runtime_settings().data_root).resolve()
+    archive_dir = _task_archive_dir(task, data_root)
+    staging_dir = data_root / "_sync_downloads" / f"{task_id}-{uuid4().hex}"
+    zip_path = staging_dir / "archive.zip"
+    staging_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        await asyncio.to_thread(
+            build_archive_zip,
+            archive_dir,
+            zip_path,
+            include_media=include_media,
+        )
+    except Exception:
+        await asyncio.to_thread(shutil.rmtree, staging_dir, True)
+        raise
+    encoded_name = quote(archive_dir.name, safe="")
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=f"{archive_dir.name}.zip",
+        headers={
+            "Cache-Control": "no-store",
+            "X-MPP-Archive-Name": encoded_name,
+            "X-MPP-Include-Media": str(include_media).lower(),
+        },
+        background=BackgroundTask(shutil.rmtree, staging_dir, True),
+    )
 
 
 @router.post("/import")
@@ -178,7 +259,7 @@ async def import_completed_archive(
             "archive_size": upload_size,
             "synced_at": datetime.now().astimezone().isoformat(),
         }
-        result = dict(task.result or {})
+        result = _portable_result(task.result)
         result["output_dir"] = str(destination)
         result["archive"] = {
             "output_dir": str(destination),

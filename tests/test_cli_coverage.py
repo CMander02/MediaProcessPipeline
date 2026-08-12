@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.api.routes import tasks as task_routes  # noqa: E402
 from app.cli import main as cli_main  # noqa: E402
 from app.cli.client import MppClient, MppClientError  # noqa: E402
+from app.cli.commands import operations as operation_commands  # noqa: E402
 from app.cli.commands import task as task_commands  # noqa: E402
 from app.cli.commands.common import resolve_task_ref  # noqa: E402
 from app.cli.context import configure_cli_context  # noqa: E402
@@ -97,13 +98,86 @@ def test_every_public_leaf_command_renders_help():
 
     collect(root, [])
 
-    assert len(leaves) == 121
+    assert len(leaves) == 122
     failures = []
     for path in leaves:
         result = runner.invoke(app, ["--skip-version-check", "--plain", *path, "--help"])
         if result.exit_code != 0:
             failures.append((" ".join(path), str(result.exception)))
     assert failures == []
+
+
+def test_sync_transfer_streams_one_completed_task_without_media_by_default(
+    tmp_path: Path,
+    monkeypatch,
+):
+    task_id = str(uuid4())
+    task = {
+        "id": task_id,
+        "task_type": "pipeline",
+        "status": "completed",
+        "source": "https://example.com/video",
+        "options": {},
+        "progress": 1.0,
+        "result": {"output_dir": "D:/Media/视频任务"},
+    }
+
+    class SourceApi:
+        def get_task(self, value: str):
+            assert value == task_id
+            return task
+
+        def export_task_archive(self, value, destination, *, include_media=False):
+            assert value == task_id
+            assert include_media is False
+            destination.write_bytes(b"portable")
+            return {
+                "size": 8,
+                "sha256": "a" * 64,
+                "headers": {"x-mpp-archive-name": "%E8%A7%86%E9%A2%91%E4%BB%BB%E5%8A%A1"},
+            }
+
+    captured: dict[str, object] = {}
+
+    class TargetApi:
+        def __init__(self, base_url, api_token, timeout):
+            captured.update(base_url=base_url, api_token=api_token, timeout=timeout)
+
+        def import_task_archive(self, payload, archive_path, **kwargs):
+            captured.update(payload=payload, archive=archive_path.read_bytes(), **kwargs)
+            return {"ok": True, "already_synced": False}
+
+        def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(operation_commands, "client", lambda: SourceApi())
+    monkeypatch.setattr(operation_commands, "MppClient", TargetApi)
+
+    result = runner.invoke(
+        app,
+        [
+            "--skip-version-check",
+            "--json",
+            "--server",
+            "http://localhost:18000",
+            "sync",
+            "transfer",
+            task_id,
+            "--to",
+            "https://target.example",
+            "--to-token",
+            "target-secret",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    output = json.loads(result.stdout)["data"]
+    assert output["include_media"] is False
+    assert output["archive_name"] == "视频任务"
+    assert captured["base_url"] == "https://target.example"
+    assert captured["api_token"] == "target-secret"
+    assert captured["archive"] == b"portable"
+    assert captured["closed"] is True
 
 
 def test_config_replace_dry_run_validates_without_writing(tmp_path: Path):
