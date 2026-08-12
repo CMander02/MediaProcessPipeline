@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
   Delete01Icon,
@@ -14,7 +14,13 @@ import SiliconCloudColor from "@lobehub/icons/es/SiliconCloud/components/Color"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { api, type ProviderModelCatalogResult, type ProviderOAuthStatus, type Settings } from "@/lib/api"
+import {
+  api,
+  type LocalAsrModelsStatus,
+  type ProviderModelCatalogResult,
+  type ProviderOAuthStatus,
+  type Settings,
+} from "@/lib/api"
 import {
   SERVICE_MODEL_TYPES,
   getCapabilitiesForModelType,
@@ -29,7 +35,7 @@ import type {
   ServiceModelRecord,
   ServiceModelType,
 } from "@/lib/settings-schema"
-import { DeviceChoice, PathPickerRow, SettingRow } from "./setting-controls"
+import { PathPickerRow, SettingRow, SettingsSection } from "./setting-controls"
 
 type UpdateSetting = (key: string, value: unknown) => Promise<void>
 type UpdateSettings = (updates: Record<string, unknown>) => Promise<void>
@@ -1028,18 +1034,15 @@ function bindingValue(
 }
 
 function asrBindingValue(settings: Settings, binding: RuntimeModelBinding | undefined): string {
-  const provider = String(settings.asr_provider ?? "qwen3_gguf")
+  const provider = String(settings.asr_provider ?? "sherpa_onnx")
   if (provider === "siliconflow") {
     return bindingValue(binding, "siliconflow", settings.siliconflow_asr_model, "FunAudioLLM/SenseVoiceSmall")
   }
-  if (provider === "qwen3") {
-    return bindingValue(binding, "qwen3", settings.qwen3_asr_model_path, "Qwen/Qwen3-ASR")
-  }
   return bindingValue(
     binding,
-    "qwen3_gguf",
-    settings.qwen3_gguf_model_path || settings.qwen3_gguf_hf_repo,
-    "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0",
+    "sherpa_onnx",
+    settings.sherpa_model_id,
+    "sensevoice-small-int8",
   )
 }
 
@@ -1070,11 +1073,16 @@ function getProviderModelOptions(settings: Settings, capability: string): ModelB
     })
   })
   if (capability === "asr") {
-    options.unshift({ value: modelValue("qwen3", "Qwen/Qwen3-ASR"), label: "Qwen3-ASR · 本地" })
-    options.unshift({
-      value: modelValue("qwen3_gguf", String(settings.qwen3_gguf_model_path || settings.qwen3_gguf_hf_repo || "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0")),
-      label: "Qwen3-ASR GGUF · 本地",
-    })
+    const localModels = [
+      ["qwen3-asr-1.7b-onnx", "Qwen3-ASR 1.7B INT8"],
+      ["sensevoice-small-int8", "SenseVoice Small INT8"],
+      ["paraformer-zh-int8", "Paraformer Chinese INT8"],
+      ["whisper-small-multi-int8", "Whisper Small Multilingual INT8"],
+    ]
+    options.unshift(...localModels.map(([id, label]) => ({
+      value: modelValue("sherpa_onnx", id),
+      label: `${label} · sherpa-onnx`,
+    })))
   }
   if (capability === "llm") {
     const name = String(settings.local_llm_name || "Local LLM")
@@ -1434,6 +1442,31 @@ interface LocalModelSettingsProps extends SharedSettingsProps {
   uvrDetection: string | null
 }
 
+const LOCAL_SETTINGS_ENTRIES = [
+  {
+    id: "audio-flow",
+    title: "音频流程",
+    description: "默认处理方式与说话人标签",
+  },
+  {
+    id: "uvr",
+    title: "人声分离",
+    description: "UVR 本地模型与运行设备",
+  },
+  {
+    id: "sherpa-asr",
+    title: "ASR",
+    description: "语音识别、时间戳与说话人模型",
+  },
+  {
+    id: "local-llm",
+    title: "LLM",
+    description: "本地文本与图像理解",
+  },
+] as const
+
+type LocalSettingsId = (typeof LOCAL_SETTINGS_ENTRIES)[number]["id"]
+
 export function LocalModelSettings({
   settings,
   updateSetting,
@@ -1443,54 +1476,28 @@ export function LocalModelSettings({
   uvrDetecting,
   uvrDetection,
 }: LocalModelSettingsProps) {
-  const [query, setQuery] = useState("")
-  const [selectedId, setSelectedId] = useState("qwen3-gguf")
-  const entries: ModelListItem[] = [
-    {
-      id: "local-llm",
-      title: "Local LLM",
-      description: "本地文本与图像理解",
-      badge: "LL",
-      status: Object.values(getRuntimeModelBindings(settings)).some((binding) => binding.provider_id === "local") ? "ON" : undefined,
-    },
-    {
-      id: "qwen3-gguf",
-      title: "Qwen3-ASR GGUF",
-      description: "llama.cpp 本地语音识别",
-      badge: "GG",
-      status: String(settings.asr_provider ?? "qwen3_gguf") === "qwen3_gguf" ? "ON" : undefined,
-    },
-    {
-      id: "qwen3-asr",
-      title: "Qwen3-ASR",
-      description: "Torch 兼容语音识别",
-      badge: "QA",
-      status: String(settings.asr_provider ?? "") === "qwen3" ? "ON" : undefined,
-    },
-    {
-      id: "audio-flow",
-      title: "音频流程",
-      description: "ASR + pyannote / MOSS 一步转录",
-      badge: "SP",
-      status: String(settings.audio_processing_flow ?? "asr") === "moss" ? "MOSS" : "ASR",
-    },
-    {
-      id: "uvr",
-      title: "UVR Server",
-      description: "人声分离模型",
-      badge: "UV",
-      status: String(settings.uvr_model ?? "") ? "ON" : undefined,
-    },
-  ]
-  const activeItem = entries.find((entry) => entry.id === selectedId) ?? entries[0]
+  const [selectedId, setSelectedId] = useState<LocalSettingsId>("audio-flow")
+  const [sherpaStatus, setSherpaStatus] = useState<LocalAsrModelsStatus | null>(null)
+
+  useEffect(() => {
+    let active = true
+    api.settings.localAsrModels()
+      .then((status) => {
+        if (active) setSherpaStatus(status)
+      })
+      .catch(() => {
+        if (active) setSherpaStatus(null)
+      })
+    return () => {
+      active = false
+    }
+  }, [settings.sherpa_model_id, settings.sherpa_model_root])
+  const activeItem = LOCAL_SETTINGS_ENTRIES.find((entry) => entry.id === selectedId)
+    ?? LOCAL_SETTINGS_ENTRIES[0]
 
   return (
-    <ModelListLayout
-      searchPlaceholder="搜索本地模型..."
-      query={query}
-      onQueryChange={setQuery}
-      items={entries}
-      selectedId={activeItem.id}
+    <LocalSettingsLayout
+      selectedId={selectedId}
       onSelect={setSelectedId}
     >
       <DetailHeader
@@ -1498,338 +1505,87 @@ export function LocalModelSettings({
         description={activeItem.description}
       />
 
-      {activeItem.id === "local-llm" && (
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <Label className="w-24 shrink-0 text-sm text-muted-foreground">推理引擎</Label>
-            <select
-              value={String(settings.local_llm_engine ?? "transformers")}
-              onChange={(event) => updateSetting("local_llm_engine", event.target.value)}
-              className="h-8 min-w-52 rounded-md border border-input bg-background px-3 text-sm"
-            >
-              <option value="llama_cpp">llama.cpp · GGUF</option>
-              <option value="transformers">Transformers · HuggingFace</option>
-            </select>
-            {settings.local_llm_engine === "llama_cpp" && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => updateSetting("runtime_model_bindings", {
-                  ...getRuntimeModelBindings(settings),
-                  vision: {
-                    provider_id: "local",
-                    model_id: String(settings.local_llm_name || "Local LLM"),
-                    capability: "vision",
-                  },
-                })}
-                className="h-8"
-              >
-                设为图文理解
-              </Button>
-            )}
-          </div>
-          <SettingRow
-            label="名称"
-            settingKey="local_llm_name"
-            value={String(settings.local_llm_name ?? "Local LLM")}
-            onSave={updateSetting}
-            saving={saving}
-            saved={saved}
-          />
-          {settings.local_llm_engine === "llama_cpp" && (
-            <SettingRow
-              label="llama.cpp"
-              settingKey="llama_cpp_binary_path"
-              value={String(settings.llama_cpp_binary_path ?? "")}
-              onSave={updateSetting}
-              saving={saving}
-              saved={saved}
-              placeholder="llama-server.exe"
-            />
-          )}
-          <SettingRow
-            label="模型路径"
-            settingKey="local_llm_model_path"
-            value={String(settings.local_llm_model_path ?? "")}
-            onSave={updateSetting}
-            saving={saving}
-            saved={saved}
-            placeholder={settings.local_llm_engine === "llama_cpp" ? "选择 GGUF 模型" : "选择 HuggingFace 模型目录"}
-          />
-          {settings.local_llm_engine === "llama_cpp" && (
-            <SettingRow
-              label="mmproj"
-              settingKey="local_llm_mmproj_path"
-              value={String(settings.local_llm_mmproj_path ?? "")}
-              onSave={updateSetting}
-              saving={saving}
-              saved={saved}
-              placeholder="选择多模态 projector GGUF"
-            />
-          )}
-          <DeviceChoice
-            value={String(settings.local_llm_device ?? "auto")}
-            options={["auto", "cuda", "cpu"]}
-            onChange={(value) => updateSetting("local_llm_device", value)}
-          />
-          {settings.local_llm_engine === "transformers" && (
-            <SettingRow
-              label="数据类型"
-              settingKey="local_llm_dtype"
-              value={String(settings.local_llm_dtype ?? "bfloat16")}
-              onSave={updateSetting}
-              saving={saving}
-              saved={saved}
-            />
-          )}
-          <SettingRow
-            label="Context"
-            settingKey="local_llm_n_ctx"
-            value={String(settings.local_llm_n_ctx ?? 8192)}
-            onSave={(key, value) => updateSetting(key, Number(value))}
-            saving={saving}
-            saved={saved}
-          />
-          <SettingRow
-            label="GPU 层"
-            settingKey="local_llm_n_gpu_layers"
-            value={String(settings.local_llm_n_gpu_layers ?? 99)}
-            onSave={(key, value) => updateSetting(key, Number(value))}
-            saving={saving}
-            saved={saved}
-          />
-          <SettingRow
-            label="并发"
-            settingKey="local_llm_concurrency"
-            value={String(settings.local_llm_concurrency ?? 2)}
-            onSave={(key, value) => updateSetting(key, Number(value))}
-            saving={saving}
-            saved={saved}
-          />
-          <SettingRow
-            label="最大输出"
-            settingKey="local_llm_max_new_tokens"
-            value={String(settings.local_llm_max_new_tokens ?? 4096)}
-            onSave={(key, value) => updateSetting(key, Number(value))}
-            saving={saving}
-            saved={saved}
-          />
-          <SettingRow
-            label="超时"
-            settingKey="local_llm_timeout_sec"
-            value={String(settings.local_llm_timeout_sec ?? 300)}
-            onSave={(key, value) => updateSetting(key, Number(value))}
-            saving={saving}
-            saved={saved}
-          />
-          <SettingRow
-            label="保活"
-            settingKey="local_llm_keepalive_sec"
-            value={String(settings.local_llm_keepalive_sec ?? 600)}
-            onSave={(key, value) => updateSetting(key, Number(value))}
-            saving={saving}
-            saved={saved}
-          />
-        </div>
-      )}
-
-      {activeItem.id === "qwen3-gguf" && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            <Label className="w-24 shrink-0 text-sm text-muted-foreground">Provider</Label>
-            <Button
-              size="sm"
-              variant={String(settings.asr_provider ?? "qwen3_gguf") === "qwen3_gguf" ? "default" : "outline"}
-              onClick={() => updateSetting("asr_provider", "qwen3_gguf")}
-              className="h-8"
-            >
-              设为本地 ASR
-            </Button>
-          </div>
-          <SettingRow
-            label="llama.cpp"
-            settingKey="llama_cpp_binary_path"
-            value={String(settings.llama_cpp_binary_path ?? "")}
-            onSave={updateSetting}
-            saving={saving}
-            saved={saved}
-            placeholder="留空自动查找 llama-server / llama"
-          />
-          <SettingRow
-            label="模型"
-            settingKey="qwen3_gguf_model_path"
-            value={String(settings.qwen3_gguf_model_path ?? "")}
-            onSave={updateSetting}
-            saving={saving}
-            saved={saved}
-            placeholder="可选：Qwen3-ASR-1.7B-Q8_0.gguf"
-          />
-          <SettingRow
-            label="mmproj"
-            settingKey="qwen3_gguf_mmproj_path"
-            value={String(settings.qwen3_gguf_mmproj_path ?? "")}
-            onSave={updateSetting}
-            saving={saving}
-            saved={saved}
-            placeholder="可选：mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
-          />
-          <SettingRow
-            label="HF Repo"
-            settingKey="qwen3_gguf_hf_repo"
-            value={String(settings.qwen3_gguf_hf_repo ?? "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0")}
-            onSave={updateSetting}
-            saving={saving}
-            saved={saved}
-            placeholder="ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0"
-          />
-          <DeviceChoice
-            value={String(settings.qwen3_gguf_device ?? "auto")}
-            options={["auto", "cuda", "cpu"]}
-            onChange={(value) => updateSetting("qwen3_gguf_device", value)}
-          />
-          <div className="flex items-center gap-3">
-            <Label className="w-24 shrink-0 text-sm text-muted-foreground">切块</Label>
-            <select
-              value={String(settings.qwen3_gguf_chunk_strategy ?? "silero_onnx")}
-              onChange={(event) => updateSetting("qwen3_gguf_chunk_strategy", event.target.value)}
-              className="h-8 min-w-52 rounded-md border border-input bg-background px-3 text-sm"
-            >
-              <option value="silero_onnx">Silero ONNX</option>
-              <option value="silero_torch">Silero Torch</option>
-              <option value="ffmpeg">ffmpeg 固定切块</option>
-            </select>
-          </div>
-          <SettingRow
-            label="Silero"
-            settingKey="silero_onnx_model_path"
-            value={String(settings.silero_onnx_model_path ?? "")}
-            onSave={updateSetting}
-            saving={saving}
-            saved={saved}
-            placeholder="可选：silero_vad.onnx"
-          />
-          <SettingRow
-            label="Context"
-            settingKey="qwen3_gguf_ctx"
-            value={String(settings.qwen3_gguf_ctx ?? 4096)}
-            onSave={(key, value) => updateSetting(key, Number(value))}
-            saving={saving}
-            saved={saved}
-          />
-          <SettingRow
-            label="GPU 层"
-            settingKey="qwen3_gguf_n_gpu_layers"
-            value={String(settings.qwen3_gguf_n_gpu_layers ?? 99)}
-            onSave={(key, value) => updateSetting(key, Number(value))}
-            saving={saving}
-            saved={saved}
-          />
-          <SettingRow
-            label="超时"
-            settingKey="qwen3_gguf_timeout_sec"
-            value={String(settings.qwen3_gguf_timeout_sec ?? 300)}
-            onSave={(key, value) => updateSetting(key, Number(value))}
-            saving={saving}
-            saved={saved}
-          />
-          <SettingRow
-            label="保活"
-            settingKey="qwen3_gguf_keepalive_sec"
-            value={String(settings.qwen3_gguf_keepalive_sec ?? 300)}
-            onSave={(key, value) => updateSetting(key, Number(value))}
-            saving={saving}
-            saved={saved}
-          />
-        </div>
-      )}
-
-      {activeItem.id === "qwen3-asr" && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            <Label className="w-24 shrink-0 text-sm text-muted-foreground">Provider</Label>
-            <Button
-              size="sm"
-              variant={String(settings.asr_provider ?? "") === "qwen3" ? "default" : "outline"}
-              onClick={() => updateSetting("asr_provider", "qwen3")}
-              className="h-8"
-            >
-              设为本地 ASR
-            </Button>
-          </div>
-          <PathPickerRow
-            label="模型路径"
-            settingKey="qwen3_asr_model_path"
-            value={String(settings.qwen3_asr_model_path ?? "")}
-            onSave={updateSetting}
-            saving={saving}
-            saved={saved}
-            placeholder="留空使用 HuggingFace，或选择本地模型目录"
-            title="选择 Qwen3-ASR 模型目录"
-          />
-          <DeviceChoice
-            value={String(settings.qwen3_device ?? "cuda")}
-            onChange={(value) => updateSetting("qwen3_device", value)}
-          />
-          <PathPickerRow
-            label="对齐模型"
-            settingKey="qwen3_aligner_model_path"
-            value={String(settings.qwen3_aligner_model_path ?? "")}
-            onSave={updateSetting}
-            saving={saving}
-            saved={saved}
-            placeholder="可选：Qwen3-ForcedAligner 本地目录"
-            title="选择 Qwen3 ForcedAligner 模型目录"
-          />
-        </div>
-      )}
-
-      {activeItem.id === "audio-flow" && (
+      {selectedId === "audio-flow" ? (
         <AudioFlowControls
           settings={settings}
           updateSetting={updateSetting}
           saving={saving}
           saved={saved}
         />
-      )}
+      ) : null}
 
-      {activeItem.id === "uvr" && (
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <Button size="sm" variant="outline" onClick={detectLocalUvr} disabled={uvrDetecting} className="h-8">
-              {uvrDetecting ? "检查中..." : "检查本机 UVR"}
-            </Button>
-            {uvrDetection && <span className="text-xs text-muted-foreground">{uvrDetection}</span>}
-          </div>
-          <PathPickerRow
-            label="模型目录"
-            settingKey="uvr_model_dir"
-            value={String(settings.uvr_model_dir ?? "")}
-            onSave={updateSetting}
-            saving={saving}
-            saved={saved}
-            placeholder="选择本机 UVR models 目录；留空则自动扫描/下载"
-            title="选择 UVR 模型目录"
-          />
-          <div className="flex items-center gap-3">
-            <Label className="w-24 shrink-0 text-sm text-muted-foreground">模型</Label>
-            <select
-              value={String(settings.uvr_model ?? "UVR-MDX-NET-Inst_HQ_3")}
-              onChange={(event) => updateSetting("uvr_model", event.target.value)}
-              className="h-8 min-w-64 rounded-md border border-input bg-background px-3 text-sm"
-            >
-              {["UVR-MDX-NET-Inst_HQ_3", "1_HP-UVR", "UVR-DeNoise-Lite", "Kim_Vocal_2", "UVR-DeEcho-DeReverb", "htdemucs"].map((model) => (
-                <option key={model} value={model}>{model}</option>
-              ))}
-            </select>
-          </div>
-          <DeviceChoice
-            value={String(settings.uvr_device ?? "cuda")}
-            onChange={(value) => updateSetting("uvr_device", value)}
-          />
-        </div>
-      )}
+      {selectedId === "uvr" ? (
+        <VocalSeparationControls
+          settings={settings}
+          updateSetting={updateSetting}
+          saving={saving}
+          saved={saved}
+          detectLocalUvr={detectLocalUvr}
+          uvrDetecting={uvrDetecting}
+          uvrDetection={uvrDetection}
+        />
+      ) : null}
 
-    </ModelListLayout>
+      {selectedId === "sherpa-asr" ? (
+        <AsrSettingsControls
+          settings={settings}
+          updateSetting={updateSetting}
+          saving={saving}
+          saved={saved}
+          sherpaStatus={sherpaStatus}
+        />
+      ) : null}
+
+      {selectedId === "local-llm" ? (
+        <LocalLlmSettingsControls
+          settings={settings}
+          updateSetting={updateSetting}
+          saving={saving}
+          saved={saved}
+        />
+      ) : null}
+    </LocalSettingsLayout>
+  )
+}
+
+function LocalSettingsLayout({
+  selectedId,
+  onSelect,
+  children,
+}: {
+  selectedId: LocalSettingsId
+  onSelect: (id: LocalSettingsId) => void
+  children: ReactNode
+}) {
+  return (
+    <div className="grid h-full min-h-0 grid-cols-1 gap-4 overflow-y-auto xl:grid-cols-[190px_minmax(0,1fr)] xl:overflow-hidden">
+      <aside className="rounded-lg border bg-card/30 p-2 xl:min-h-0">
+        <nav aria-label="本地模型设置" className="flex gap-1 overflow-x-auto xl:block xl:space-y-1">
+          {LOCAL_SETTINGS_ENTRIES.map((entry) => {
+            const active = entry.id === selectedId
+            return (
+              <button
+                key={entry.id}
+                type="button"
+                onClick={() => onSelect(entry.id)}
+                className={[
+                  "shrink-0 rounded-md px-3 py-2 text-left text-sm transition-colors xl:w-full",
+                  active
+                    ? "bg-primary/10 font-medium text-primary"
+                    : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                ].join(" ")}
+              >
+                {entry.title}
+              </button>
+            )
+          })}
+        </nav>
+      </aside>
+
+      <section className="min-h-[360px] min-w-0 overflow-hidden rounded-lg border bg-background xl:min-h-0">
+        <div className="h-full space-y-1 overflow-y-auto p-5 pr-4">{children}</div>
+      </section>
+    </div>
   )
 }
 
@@ -2075,180 +1831,490 @@ function AudioFlowControls({
   const diarizationEnabled = Boolean(settings.enable_diarization ?? true)
 
   return (
-    <div className="space-y-4">
-      <div className="space-y-2">
-        <Label>处理流程</Label>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            size="sm"
-            variant={flow === "asr" ? "default" : "outline"}
-            onClick={() => updateSetting("audio_processing_flow", "asr")}
-          >
-            ASR + pyannote
-          </Button>
-          <Button
-            size="sm"
-            variant={flow === "moss" ? "default" : "outline"}
-            onClick={() => updateSetting("audio_processing_flow", "moss")}
-          >
-            MOSS 一步转录
-          </Button>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          两条流程统一输出字幕片段、时间戳、说话人列表和说话人数。MOSS 使用任务级短进程，任务结束后释放模型内存。
-        </p>
-      </div>
+    <div>
+      <SettingsSection
+        title="处理方式"
+        description="选择新任务默认使用的音频识别方式。"
+      >
+        <SelectSettingRow
+          label="默认处理方式"
+          value={flow}
+          onChange={(value) => updateSetting("audio_processing_flow", value)}
+        >
+          <option value="asr">标准语音识别</option>
+          <option value="moss">MOSS 一体化识别</option>
+        </SelectSettingRow>
+      </SettingsSection>
 
-      {flow === "asr" && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <Label>pyannote 说话人分离</Label>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                在选定 ASR 完成转录后，为字幕片段标注 SPEAKER_XX。
-              </p>
-            </div>
-            <Switch
-              checked={diarizationEnabled}
-              onCheckedChange={(value) => updateSetting("enable_diarization", Boolean(value))}
-            />
-          </div>
-          {diarizationEnabled && (
-            <>
-              <PathPickerRow
-                label="Diarization"
-                settingKey="pyannote_model_path"
-                value={String(settings.pyannote_model_path ?? "")}
-                onSave={updateSetting}
-                saving={saving}
-                saved={saved}
-                placeholder="pyannote-speaker-diarization-3.1 本地目录"
-                title="选择 pyannote diarization 模型目录"
-              />
-              <PathPickerRow
-                label="Segmentation"
-                settingKey="pyannote_segmentation_path"
-                value={String(settings.pyannote_segmentation_path ?? "")}
-                onSave={updateSetting}
-                saving={saving}
-                saved={saved}
-                placeholder="pyannote-segmentation-3.0 本地目录"
-                title="选择 pyannote segmentation 模型目录"
-              />
-              <PathPickerRow
-                label="Embedding"
-                settingKey="pyannote_embedding_path"
-                value={String(settings.pyannote_embedding_path ?? "")}
-                onSave={updateSetting}
-                saving={saving}
-                saved={saved}
-                placeholder="pyannote_wespeaker-voxceleb-resnet34-LM 本地目录"
-                title="选择 pyannote embedding 模型目录"
-              />
-              <SettingRow
-                label="HF Proxy"
-                settingKey="hf_proxy"
-                value={String(settings.hf_proxy ?? "")}
-                onSave={updateSetting}
-                saving={saving}
-                saved={saved}
-                masked
-                placeholder="留空自动读取系统代理，direct 禁用"
-              />
-              <SettingRow
-                label="HF Token"
-                settingKey="hf_token"
-                value={String(settings.hf_token ?? "")}
-                onSave={updateSetting}
-                saving={saving}
-                saved={saved}
-                masked
-              />
-              <SettingRow
-                label="分离批量"
-                settingKey="diarization_batch_size"
-                value={String(settings.diarization_batch_size ?? 16)}
-                onSave={(key, value) => updateSetting(key, Number(value))}
-                saving={saving}
-                saved={saved}
-              />
-            </>
-          )}
-        </div>
-      )}
+      {flow === "asr" ? (
+        <SettingsSection
+          title="说话人分离"
+          description="为字幕片段添加 SPEAKER_XX 标签。模型路径统一在 ASR 页面配置。"
+        >
+          <SwitchSettingRow
+            label="启用说话人分离"
+            checked={diarizationEnabled}
+            onChange={(value) => updateSetting("enable_diarization", value)}
+          />
+        </SettingsSection>
+      ) : null}
 
-      {flow === "moss" && (
-        <div className="space-y-3">
-          <SettingRow
+      {flow === "moss" ? (
+        <SettingsSection
+          title="MOSS"
+          description="MOSS 保留为独立本地识别方式。"
+        >
+          <PathPickerRow
             label="C++ 引擎"
             settingKey="moss_cpp_binary_path"
             value={String(settings.moss_cpp_binary_path ?? "")}
             onSave={updateSetting}
             saving={saving}
             saved={saved}
-            placeholder="backend/tools/moss-transcribe/moss-transcribe.exe"
+            placeholder="moss-transcribe.exe"
+            title="选择 MOSS C++ 引擎"
+            pickerLabel="选择文件"
           />
-          <SettingRow
+          <PathPickerRow
             label="GGUF 模型"
             settingKey="moss_cpp_model_path"
             value={String(settings.moss_cpp_model_path ?? "")}
             onSave={updateSetting}
             saving={saving}
             saved={saved}
-            placeholder="C:/zychen/AIGC/Models/MOSS-Transcribe-Diarize-GGUF/moss-transcribe-q5_k.gguf"
+            placeholder="moss-transcribe-q5_k.gguf"
+            title="选择 MOSS GGUF 模型"
+            pickerLabel="选择文件"
           />
-          <DeviceChoice
+          <SelectSettingRow
+            label="运行设备"
             value={String(settings.moss_cpp_device ?? "auto")}
-            options={["auto", "cuda", "cpu"]}
             onChange={(value) => updateSetting("moss_cpp_device", value)}
-          />
-          <SettingRow
-            label="CPU 线程"
-            settingKey="moss_cpp_threads"
-            value={String(settings.moss_cpp_threads ?? 8)}
-            onSave={(key, value) => updateSetting(key, Number(value))}
-            saving={saving}
-            saved={saved}
-          />
-          <SettingRow
-            label="最大输出"
-            settingKey="moss_cpp_max_new_tokens"
-            value={String(settings.moss_cpp_max_new_tokens ?? 8192)}
-            onSave={(key, value) => updateSetting(key, Number(value))}
-            saving={saving}
-            saved={saved}
-          />
-          <SettingRow
-            label="分段时长（秒）"
-            settingKey="moss_cpp_chunk_duration_sec"
-            value={String(settings.moss_cpp_chunk_duration_sec ?? 1200)}
-            onSave={(key, value) => updateSetting(key, Number(value))}
-            saving={saving}
-            saved={saved}
-          />
-          <SettingRow
-            label="分段重叠（秒）"
-            settingKey="moss_cpp_chunk_overlap_sec"
-            value={String(settings.moss_cpp_chunk_overlap_sec ?? 60)}
-            onSave={(key, value) => updateSetting(key, Number(value))}
-            saving={saving}
-            saved={saved}
-          />
-          <SettingRow
-            label="超时（秒）"
-            settingKey="moss_cpp_timeout_sec"
-            value={String(settings.moss_cpp_timeout_sec ?? 14400)}
-            onSave={(key, value) => updateSetting(key, Number(value))}
-            saving={saving}
-            saved={saved}
-          />
-          <p className="text-xs text-muted-foreground">
-            长录音按重叠分段顺序推理，以限制 CUDA KV Cache 显存；重叠区用于衔接说话人标签。
-            MOSS 自动估计说话人数，任务中的 num_speakers 会记录为结果校验参数。
-          </p>
-        </div>
-      )}
+          >
+            <option value="auto">自动</option>
+            <option value="cuda">CUDA</option>
+            <option value="cpu">CPU</option>
+          </SelectSettingRow>
+          <AdvancedSettings>
+            <NumberSettingRow label="CPU 线程" settingKey="moss_cpp_threads" fallback={8} {...{ settings, updateSetting, saving, saved }} />
+            <NumberSettingRow label="最大输出" settingKey="moss_cpp_max_new_tokens" fallback={8192} {...{ settings, updateSetting, saving, saved }} />
+            <NumberSettingRow label="分段时长（秒）" settingKey="moss_cpp_chunk_duration_sec" fallback={1200} {...{ settings, updateSetting, saving, saved }} />
+            <NumberSettingRow label="分段重叠（秒）" settingKey="moss_cpp_chunk_overlap_sec" fallback={60} {...{ settings, updateSetting, saving, saved }} />
+            <NumberSettingRow label="超时（秒）" settingKey="moss_cpp_timeout_sec" fallback={14400} {...{ settings, updateSetting, saving, saved }} />
+          </AdvancedSettings>
+        </SettingsSection>
+      ) : null}
     </div>
+  )
+}
+
+function VocalSeparationControls({
+  settings,
+  updateSetting,
+  saving,
+  saved,
+  detectLocalUvr,
+  uvrDetecting,
+  uvrDetection,
+}: LocalModelSettingsProps) {
+  const modelPaths = [
+    ["UVR-MDX-NET-Inst_HQ_3", "uvr_mdx_inst_hq3_path"],
+    ["1_HP-UVR", "uvr_hp_uvr_path"],
+    ["UVR-DeNoise-Lite", "uvr_denoise_lite_path"],
+    ["Kim_Vocal_2", "uvr_kim_vocal_2_path"],
+    ["UVR-DeEcho-DeReverb", "uvr_deecho_dereverb_path"],
+    ["htdemucs", "uvr_htdemucs_path"],
+  ] as const
+
+  return (
+    <div>
+      <SettingsSection
+        title="模型"
+        description="选择 UVR 模型并设置统一模型目录。"
+      >
+        <SelectSettingRow
+          label="默认模型"
+          value={String(settings.uvr_model ?? "UVR-MDX-NET-Inst_HQ_3")}
+          onChange={(value) => updateSetting("uvr_model", value)}
+        >
+          {modelPaths.map(([model]) => <option key={model} value={model}>{model}</option>)}
+        </SelectSettingRow>
+        <PathPickerRow
+          label="模型目录"
+          settingKey="uvr_model_dir"
+          value={String(settings.uvr_model_dir ?? "")}
+          onSave={updateSetting}
+          saving={saving}
+          saved={saved}
+          placeholder="UVR models 目录；留空时自动扫描"
+          title="选择 UVR 模型目录"
+          pickerLabel="选择文件夹"
+        />
+        <div className="flex flex-wrap items-center gap-3 pl-[6.75rem]">
+          <Button size="sm" variant="outline" onClick={detectLocalUvr} disabled={uvrDetecting} className="h-8">
+            {uvrDetecting ? "检查中..." : "检查本机 UVR"}
+          </Button>
+          {uvrDetection ? <span className="text-xs text-muted-foreground">{uvrDetection}</span> : null}
+        </div>
+        <AdvancedSettings label="模型专用路径">
+          {modelPaths.map(([model, settingKey]) => (
+            <PathPickerRow
+              key={settingKey}
+              label={model}
+              settingKey={settingKey}
+              value={String(settings[settingKey] ?? "")}
+              onSave={updateSetting}
+              saving={saving}
+              saved={saved}
+              placeholder="可选：指定模型文件或目录"
+              title={`选择 ${model} 模型`}
+              pickerLabel="选择路径"
+            />
+          ))}
+        </AdvancedSettings>
+      </SettingsSection>
+
+      <SettingsSection title="运行" description="配置人声分离使用的设备和长音频分段长度。">
+        <SelectSettingRow
+          label="运行设备"
+          value={String(settings.uvr_device ?? "cuda")}
+          onChange={(value) => updateSetting("uvr_device", value)}
+        >
+          <option value="cuda">CUDA</option>
+          <option value="cpu">CPU</option>
+        </SelectSettingRow>
+        <NumberSettingRow label="分段时长（秒）" settingKey="uvr_chunk_duration_sec" fallback={300} {...{ settings, updateSetting, saving, saved }} />
+      </SettingsSection>
+    </div>
+  )
+}
+
+function AsrSettingsControls({
+  settings,
+  updateSetting,
+  saving,
+  saved,
+  sherpaStatus,
+}: SharedSettingsProps & { sherpaStatus: LocalAsrModelsStatus | null }) {
+  const provider = String(settings.asr_provider ?? "sherpa_onnx")
+  const installedCount = sherpaStatus?.models.filter((model) => model.installed && model.compatible).length ?? 0
+
+  return (
+    <div>
+      <SettingsSection title="语音识别" description="配置默认 ASR 服务及本地 sherpa-onnx 模型。">
+        <SelectSettingRow
+          label="ASR 服务"
+          value={provider}
+          onChange={(value) => updateSetting("asr_provider", value)}
+        >
+          <option value="sherpa_onnx">Sherpa ONNX（本地）</option>
+          <option value="siliconflow">SiliconFlow</option>
+        </SelectSettingRow>
+
+        {provider === "sherpa_onnx" ? (
+          <>
+            <SelectSettingRow
+              label="默认模型"
+              value={String(settings.sherpa_model_id ?? "sensevoice-small-int8")}
+              onChange={(value) => updateSetting("sherpa_model_id", value)}
+            >
+              <option value="qwen3-asr-1.7b-onnx">Qwen3-ASR 1.7B INT8</option>
+              <option value="sensevoice-small-int8">SenseVoice Small INT8</option>
+              <option value="paraformer-zh-int8">Paraformer Chinese INT8</option>
+              <option value="whisper-small-multi-int8">Whisper Small Multilingual INT8</option>
+            </SelectSettingRow>
+            <div className="space-y-1 pl-[6.75rem] text-xs text-muted-foreground">
+              <p>{sherpaStatus ? `本地模型 ${installedCount}/${sherpaStatus.models.length} 可用` : "正在读取本地模型状态"}</p>
+              {sherpaStatus?.models.map((model) => (
+                <p key={model.id} className="flex items-center gap-2">
+                  <span className={model.installed && model.compatible ? "text-emerald-600" : "text-muted-foreground"}>
+                    {model.installed && model.compatible ? "●" : "○"}
+                  </span>
+                  <span>{model.display_name}</span>
+                  <span>{model.installed && model.compatible ? "可用" : model.error || "待安装"}</span>
+                </p>
+              ))}
+            </div>
+            <PathPickerRow
+              label="模型根目录"
+              settingKey="sherpa_model_root"
+              value={String(settings.sherpa_model_root ?? sherpaStatus?.model_root ?? "")}
+              onSave={updateSetting}
+              saving={saving}
+              saved={saved}
+              placeholder="sherpa-onnx 模型根目录"
+              title="选择 sherpa-onnx 模型根目录"
+              pickerLabel="选择文件夹"
+            />
+            <SelectSettingRow
+              label="运行设备"
+              value={String(settings.sherpa_device ?? "auto")}
+              onChange={(value) => updateSetting("sherpa_device", value)}
+            >
+              <option value="auto">自动</option>
+              <option value="cuda">CUDA</option>
+              <option value="cpu">CPU</option>
+            </SelectSettingRow>
+          </>
+        ) : (
+          <SettingRow
+            label="模型"
+            settingKey="siliconflow_asr_model"
+            value={String(settings.siliconflow_asr_model ?? "FunAudioLLM/SenseVoiceSmall")}
+            onSave={updateSetting}
+            saving={saving}
+            saved={saved}
+          />
+        )}
+      </SettingsSection>
+
+      {provider === "sherpa_onnx" ? (
+        <>
+          <SettingsSection title="时间戳" description="选择字幕时间戳来源。Qwen3 ForcedAligner 仅在强制对齐模式下加载。">
+            <SelectSettingRow
+              label="时间戳模式"
+              value={String(settings.asr_timestamp_mode ?? "auto")}
+              onChange={(value) => updateSetting("asr_timestamp_mode", value)}
+            >
+              <option value="auto">自动</option>
+              <option value="native">模型原生时间戳</option>
+              <option value="vad">VAD 分段时间戳</option>
+              <option value="qwen_forced">Qwen3 ForcedAligner</option>
+            </SelectSettingRow>
+            <PathPickerRow
+              label="VAD 模型"
+              settingKey="sherpa_vad_model_path"
+              value={String(settings.sherpa_vad_model_path ?? "")}
+              onSave={updateSetting}
+              saving={saving}
+              saved={saved}
+              placeholder="silero_vad.onnx"
+              title="选择 Silero VAD ONNX 模型"
+              pickerLabel="选择文件"
+            />
+            <PathPickerRow
+              label="对齐模型"
+              settingKey="qwen3_aligner_model_path"
+              value={String(settings.qwen3_aligner_model_path ?? "")}
+              onSave={updateSetting}
+              saving={saving}
+              saved={saved}
+              placeholder="Qwen3-ForcedAligner-0.6B 本地目录"
+              title="选择 Qwen3 ForcedAligner 模型目录"
+              pickerLabel="选择文件夹"
+            />
+            <AdvancedSettings>
+              <SelectSettingRow
+                label="切分策略"
+                value={String(settings.sherpa_chunk_strategy ?? "vad")}
+                onChange={(value) => updateSetting("sherpa_chunk_strategy", value)}
+              >
+                <option value="vad">VAD</option>
+                <option value="fixed">固定时长</option>
+              </SelectSettingRow>
+              <NumberSettingRow label="CPU 线程" settingKey="sherpa_num_threads" fallback={4} {...{ settings, updateSetting, saving, saved }} />
+              <NumberSettingRow label="最大分段（秒）" settingKey="sherpa_max_chunk_sec" fallback={30} {...{ settings, updateSetting, saving, saved }} />
+              <SwitchSettingRow
+                label="调试日志"
+                checked={Boolean(settings.sherpa_debug ?? false)}
+                onChange={(value) => updateSetting("sherpa_debug", value)}
+              />
+            </AdvancedSettings>
+          </SettingsSection>
+
+          <SettingsSection title="说话人模型" description="配置 pyannote 本地模型。开关位于音频流程页面。">
+            <PathPickerRow
+              label="Diarization"
+              settingKey="pyannote_model_path"
+              value={String(settings.pyannote_model_path ?? "")}
+              onSave={updateSetting}
+              saving={saving}
+              saved={saved}
+              placeholder="pyannote-speaker-diarization-3.1 本地目录"
+              title="选择 pyannote diarization 模型目录"
+              pickerLabel="选择文件夹"
+            />
+            <PathPickerRow
+              label="Segmentation"
+              settingKey="pyannote_segmentation_path"
+              value={String(settings.pyannote_segmentation_path ?? "")}
+              onSave={updateSetting}
+              saving={saving}
+              saved={saved}
+              placeholder="pyannote-segmentation-3.0 本地目录"
+              title="选择 pyannote segmentation 模型目录"
+              pickerLabel="选择文件夹"
+            />
+            <PathPickerRow
+              label="Embedding"
+              settingKey="pyannote_embedding_path"
+              value={String(settings.pyannote_embedding_path ?? "")}
+              onSave={updateSetting}
+              saving={saving}
+              saved={saved}
+              placeholder="pyannote_wespeaker-voxceleb-resnet34-LM 本地目录"
+              title="选择 pyannote embedding 模型目录"
+              pickerLabel="选择文件夹"
+            />
+            <AdvancedSettings>
+              <SettingRow label="HF Proxy" settingKey="hf_proxy" value={String(settings.hf_proxy ?? "")} onSave={updateSetting} saving={saving} saved={saved} masked placeholder="留空时使用系统代理" />
+              <SettingRow label="HF Token" settingKey="hf_token" value={String(settings.hf_token ?? "")} onSave={updateSetting} saving={saving} saved={saved} masked />
+              <NumberSettingRow label="分离批量" settingKey="diarization_batch_size" fallback={16} {...{ settings, updateSetting, saving, saved }} />
+            </AdvancedSettings>
+          </SettingsSection>
+        </>
+      ) : null}
+    </div>
+  )
+}
+
+function LocalLlmSettingsControls({ settings, updateSetting, saving, saved }: SharedSettingsProps) {
+  const engine = String(settings.local_llm_engine ?? "transformers")
+
+  return (
+    <div>
+      <SettingsSection title="运行时" description="选择本地 LLM 推理引擎、显示名称和运行设备。">
+        <SelectSettingRow label="推理引擎" value={engine} onChange={(value) => updateSetting("local_llm_engine", value)}>
+          <option value="llama_cpp">llama.cpp · GGUF</option>
+          <option value="transformers">Transformers · Hugging Face</option>
+        </SelectSettingRow>
+        <SettingRow label="名称" settingKey="local_llm_name" value={String(settings.local_llm_name ?? "Local LLM")} onSave={updateSetting} saving={saving} saved={saved} />
+        <SelectSettingRow label="运行设备" value={String(settings.local_llm_device ?? "auto")} onChange={(value) => updateSetting("local_llm_device", value)}>
+          <option value="auto">自动</option>
+          <option value="cuda">CUDA</option>
+          <option value="cpu">CPU</option>
+        </SelectSettingRow>
+        {engine === "llama_cpp" ? (
+          <div className="pl-[6.75rem]">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => updateSetting("runtime_model_bindings", {
+                ...getRuntimeModelBindings(settings),
+                vision: {
+                  provider_id: "local",
+                  model_id: String(settings.local_llm_name || "Local LLM"),
+                  capability: "vision",
+                },
+              })}
+              className="h-8"
+            >
+              设为图文理解
+            </Button>
+          </div>
+        ) : null}
+      </SettingsSection>
+
+      <SettingsSection title="模型文件" description="使用完整路径配置推理程序、模型和多模态 projector。">
+        {engine === "llama_cpp" ? (
+          <PathPickerRow label="llama.cpp" settingKey="llama_cpp_binary_path" value={String(settings.llama_cpp_binary_path ?? "")} onSave={updateSetting} saving={saving} saved={saved} placeholder="llama-server.exe" title="选择 llama.cpp 可执行文件" pickerLabel="选择文件" />
+        ) : null}
+        <PathPickerRow
+          label="模型路径"
+          settingKey="local_llm_model_path"
+          value={String(settings.local_llm_model_path ?? "")}
+          onSave={updateSetting}
+          saving={saving}
+          saved={saved}
+          placeholder={engine === "llama_cpp" ? "GGUF 模型文件" : "Hugging Face 模型目录"}
+          title={engine === "llama_cpp" ? "选择 GGUF 模型" : "选择 Hugging Face 模型目录"}
+          pickerLabel={engine === "llama_cpp" ? "选择文件" : "选择文件夹"}
+        />
+        {engine === "llama_cpp" ? (
+          <PathPickerRow label="mmproj" settingKey="local_llm_mmproj_path" value={String(settings.local_llm_mmproj_path ?? "")} onSave={updateSetting} saving={saving} saved={saved} placeholder="多模态 projector GGUF" title="选择多模态 projector" pickerLabel="选择文件" />
+        ) : (
+          <SelectSettingRow label="数据类型" value={String(settings.local_llm_dtype ?? "bfloat16")} onChange={(value) => updateSetting("local_llm_dtype", value)}>
+            <option value="auto">自动</option>
+            <option value="bfloat16">bfloat16</option>
+            <option value="float16">float16</option>
+            <option value="float32">float32</option>
+          </SelectSettingRow>
+        )}
+      </SettingsSection>
+
+      <SettingsSection title="高级设置" description="控制上下文、生成长度和模型进程保活时间。">
+        <NumberSettingRow label="Context" settingKey="local_llm_n_ctx" fallback={16384} {...{ settings, updateSetting, saving, saved }} />
+        {engine === "llama_cpp" ? <NumberSettingRow label="GPU 层" settingKey="local_llm_n_gpu_layers" fallback={-1} {...{ settings, updateSetting, saving, saved }} /> : null}
+        {engine === "llama_cpp" ? <NumberSettingRow label="Batch" settingKey="local_llm_n_batch" fallback={512} {...{ settings, updateSetting, saving, saved }} /> : null}
+        <NumberSettingRow label="并发" settingKey="local_llm_concurrency" fallback={2} {...{ settings, updateSetting, saving, saved }} />
+        <NumberSettingRow label="最大输出" settingKey="local_llm_max_new_tokens" fallback={4096} {...{ settings, updateSetting, saving, saved }} />
+        <NumberSettingRow label="超时（秒）" settingKey="local_llm_timeout_sec" fallback={300} {...{ settings, updateSetting, saving, saved }} />
+        <NumberSettingRow label="保活（秒）" settingKey="local_llm_keepalive_sec" fallback={600} {...{ settings, updateSetting, saving, saved }} />
+      </SettingsSection>
+    </div>
+  )
+}
+
+function SelectSettingRow({
+  label,
+  value,
+  onChange,
+  children,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void | Promise<void>
+  children: ReactNode
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <Label className="w-24 shrink-0 text-sm text-muted-foreground" htmlFor={`select-${label}`}>{label}</Label>
+      <select
+        id={`select-${label}`}
+        value={value}
+        onChange={(event) => void onChange(event.target.value)}
+        className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm sm:max-w-md"
+      >
+        {children}
+      </select>
+    </div>
+  )
+}
+
+function SwitchSettingRow({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string
+  checked: boolean
+  onChange: (checked: boolean) => void | Promise<void>
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 sm:max-w-md">
+      <Label className="text-sm text-muted-foreground" htmlFor={`switch-${label}`}>{label}</Label>
+      <Switch id={`switch-${label}`} checked={checked} onCheckedChange={(value) => void onChange(value)} />
+    </div>
+  )
+}
+
+function AdvancedSettings({ children, label = "高级设置" }: { children: ReactNode; label?: string }) {
+  return (
+    <details className="rounded-md border border-border/70 px-3 py-2">
+      <summary className="cursor-pointer select-none text-sm text-muted-foreground">{label}</summary>
+      <div className="mt-3 space-y-3">{children}</div>
+    </details>
+  )
+}
+
+function NumberSettingRow({
+  label,
+  settingKey,
+  fallback,
+  settings,
+  updateSetting,
+  saving,
+  saved,
+}: SharedSettingsProps & { label: string; settingKey: string; fallback: number }) {
+  return (
+    <SettingRow
+      label={label}
+      settingKey={settingKey}
+      value={String(settings[settingKey] ?? fallback)}
+      onSave={(key, value) => updateSetting(key, Number(value))}
+      saving={saving}
+      saved={saved}
+    />
   )
 }
 

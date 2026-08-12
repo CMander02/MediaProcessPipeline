@@ -196,8 +196,11 @@ class ArchiveService:
     ) -> dict[str, Any] | None:
         if not task_dir.is_dir():
             return None
-        if task_dir.name.startswith('.') or task_dir.name in (
-            'settings.json', 'history.json', 'uploads', 'manual_task',
+        if task_dir.name.startswith(".") or task_dir.name in (
+            "settings.json",
+            "history.json",
+            "uploads",
+            "manual_task",
         ):
             return None
 
@@ -213,9 +216,9 @@ class ArchiveService:
         metadata = self._read_json(task_dir / "metadata.json")
         analysis = {} if lite else self._read_json(task_dir / "analysis.json")
 
-        video_exts = {'.mp4', '.mkv', '.avi', '.webm', '.mov'}
-        audio_exts = {'.mp3', '.wav', '.flac', '.m4a', '.ogg'}
-        image_exts = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.avif'}
+        video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov"}
+        audio_exts = {".mp3", ".wav", ".flac", ".m4a", ".ogg"}
+        image_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"}
         has_video = False
         has_audio = False
         has_image = False
@@ -265,6 +268,7 @@ class ArchiveService:
             duration_seconds = self._duration_from_srt(task_dir)
 
         return {
+            "archive_id": metadata.get("archive_id") or task_id,
             "path": str(task_dir),
             "date": datetime.fromisoformat(created_at).strftime("%Y-%m-%d"),
             "created_at": created_at,
@@ -321,6 +325,7 @@ class ArchiveService:
             "content_subtype",
             "status",
             "task_id",
+            "archive_id",
         }
         lite = {key: metadata[key] for key in keys if key in metadata}
         extra = metadata.get("extra")
@@ -350,6 +355,7 @@ class ArchiveService:
     def _duration_from_srt(task_dir: Path) -> float | None:
         """Derive duration from the max end-time across all subtitle entries."""
         import re
+
         for name in ("transcript_polished.srt", "transcript.srt"):
             srt_path = task_dir / name
             if srt_path.exists():
@@ -424,7 +430,7 @@ async def archive_result(
         mindmap=mindmap,
         original_srt=original_srt,
         work_dir=work_dir,
-        analysis=analysis
+        analysis=analysis,
     )
 
 

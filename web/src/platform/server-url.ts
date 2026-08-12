@@ -20,6 +20,13 @@ export function normalizeServerUrl(value: string): string {
   return parsed.origin
 }
 
+export function bundledDefaultServerUrl(
+  value = import.meta.env.VITE_MPP_DEFAULT_SERVER_URL,
+): string {
+  const candidate = value?.trim()
+  return candidate ? normalizeServerUrl(candidate) : ""
+}
+
 function isDevelopmentHttpHost(hostname: string) {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, "")
   if (host === "localhost" || host === "::1" || host.startsWith("127.")) return true

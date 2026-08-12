@@ -92,12 +92,10 @@ def test_checkpoint_file_resolves_model_directory(tmp_path):
     ) == checkpoint.resolve()
 
 
-@pytest.mark.parametrize("provider", ["qwen3_gguf", "qwen3"])
 @pytest.mark.asyncio
 async def test_transcribe_audio_runs_global_diarization_on_original_audio(
     tmp_path,
     monkeypatch,
-    provider,
 ):
     asr_audio = tmp_path / "vocals.wav"
     original_audio = tmp_path / "original.wav"
@@ -105,12 +103,15 @@ async def test_transcribe_audio_runs_global_diarization_on_original_audio(
     original_audio.write_bytes(b"original")
 
     binding = SimpleNamespace(
-        provider=provider,
+        provider="sherpa_onnx",
         language="zh",
         diarize=True,
         num_speakers=2,
         chunk_strategy="silero_onnx",
         request_kwargs={},
+        configured=True,
+        reason="",
+        model="qwen3-asr-1.7b-onnx",
     )
     monkeypatch.setattr(
         "app.core.model_router.resolve_asr_binding",
@@ -152,7 +153,7 @@ async def test_transcribe_audio_runs_global_diarization_on_original_audio(
     result = await recognition.transcribe_audio(
         str(asr_audio),
         output_dir=tmp_path,
-        provider="qwen3_gguf",
+        provider="sherpa_onnx",
         num_speakers=2,
         min_speakers=1,
         max_speakers=3,
@@ -164,8 +165,7 @@ async def test_transcribe_audio_runs_global_diarization_on_original_audio(
     assert captured["kwargs"]["min_speakers"] == 1
     assert captured["kwargs"]["max_speakers"] == 3
     assert captured["kwargs"]["cache_path"] == tmp_path / "diarization.json"
-    if provider == "qwen3":
-        assert captured["asr_diarize"] is False
+    assert captured["asr_diarize"] is False
     assert result["segments"][0]["speaker"] == "SPEAKER_00"
     assert result["speaker_count"] == 1
     assert result["diarization"] == "pyannote"

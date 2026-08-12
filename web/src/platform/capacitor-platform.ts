@@ -9,7 +9,7 @@ import { Preferences } from "@capacitor/preferences"
 import { api, configureApiClient } from "@/lib/api"
 import { navigate } from "@/lib/router"
 import { applyAndroidCapabilities } from "@/platform/capabilities"
-import { normalizeServerUrl } from "@/platform/server-url"
+import { bundledDefaultServerUrl, normalizeServerUrl } from "@/platform/server-url"
 import type { ConnectInput, OfflineArchiveRecord, OfflineSyncStatus, PlatformAdapter } from "@/platform/types"
 
 const SERVER_URL_KEY = "mpp_server_url"
@@ -130,7 +130,7 @@ export function createCapacitorPlatform(): PlatformAdapter {
         Preferences.get({ key: SERVER_URL_KEY }),
         SecureCredentials.getToken(),
       ])
-      serverUrl = savedServer.value ?? ""
+      serverUrl = savedServer.value ?? bundledDefaultServerUrl()
       token = savedToken.token ?? ""
       applyApiConnection()
       await Promise.all([registerNativeListeners(), this.syncTheme(document.documentElement.classList.contains("dark"))])

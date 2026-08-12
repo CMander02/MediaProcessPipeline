@@ -19,21 +19,21 @@ describe("PathPickerRow", () => {
     render(
       <PathPickerRow
         label="模型路径"
-        settingKey="qwen3_asr_model_path"
+        settingKey="sherpa_model_root"
         value=""
         onSave={onSave}
         saving={{}}
         saved={{}}
-        title="选择 Qwen3-ASR 模型目录"
+        title="选择 sherpa-onnx 模型根目录"
       />,
     )
 
     fireEvent.click(screen.getByRole("button", { name: "选择" }))
 
     await waitFor(() => {
-      expect(prompt).toHaveBeenCalledWith("选择 Qwen3-ASR 模型目录", "")
+      expect(prompt).toHaveBeenCalledWith("选择 sherpa-onnx 模型根目录", "")
     })
-    expect(onSave).toHaveBeenCalledWith("qwen3_asr_model_path", "C:\\Models\\Qwen3")
+    expect(onSave).toHaveBeenCalledWith("sherpa_model_root", "C:\\Models\\Qwen3")
   })
 })
 

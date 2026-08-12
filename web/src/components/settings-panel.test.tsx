@@ -14,21 +14,19 @@ vi.mock("@/hooks/use-app-access-context", () => ({
 const { mockSettings } = vi.hoisted(() => ({
   mockSettings: {
     llm_provider: "deepseek",
-    asr_provider: "qwen3_gguf",
+    asr_provider: "sherpa_onnx",
     audio_processing_flow: "asr",
-    qwen3_asr_model_path: "",
-    qwen3_device: "cuda",
+    sherpa_model_id: "sensevoice-small-int8",
+    sherpa_model_root: "",
+    sherpa_device: "auto",
+    sherpa_num_threads: 4,
+    sherpa_chunk_strategy: "vad",
+    sherpa_max_chunk_sec: 30,
+    sherpa_vad_model_path: "",
+    sherpa_debug: false,
+    asr_timestamp_mode: "auto",
+    qwen3_aligner_model_path: "",
     llama_cpp_binary_path: "",
-    qwen3_gguf_model_path: "",
-    qwen3_gguf_mmproj_path: "",
-    qwen3_gguf_hf_repo: "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0",
-    qwen3_gguf_device: "auto",
-    qwen3_gguf_ctx: 4096,
-    qwen3_gguf_n_gpu_layers: 99,
-    qwen3_gguf_timeout_sec: 300,
-    qwen3_gguf_keepalive_sec: 300,
-    qwen3_gguf_chunk_strategy: "silero_onnx",
-    silero_onnx_model_path: "",
     local_llm_model_path: "",
     local_llm_n_gpu_layers: -1,
     local_llm_n_ctx: 16384,
@@ -139,6 +137,17 @@ vi.mock("@/lib/api", () => ({
         ...updates,
       })),
       detectLocalUvr: vi.fn().mockResolvedValue({ found: false, path: "", models: [] }),
+      localAsrModels: vi.fn().mockResolvedValue({
+        model_root: "C:/Models/sherpa-onnx",
+        selected_model_id: "sensevoice-small-int8",
+        runtime: null,
+        models: [
+          { id: "qwen3-asr-1.7b-onnx", display_name: "Qwen3-ASR 1.7B INT8", family: "qwen3_asr", directory: "C:/Models/sherpa-onnx/qwen3", installed: true, verified: true, compatible: true },
+          { id: "sensevoice-small-int8", display_name: "SenseVoice Small INT8", family: "sense_voice", directory: "C:/Models/sherpa-onnx/sensevoice", installed: true, verified: true, compatible: true },
+          { id: "paraformer-zh-int8", display_name: "Paraformer Chinese INT8", family: "paraformer", directory: "C:/Models/sherpa-onnx/paraformer", installed: true, verified: true, compatible: true },
+          { id: "whisper-small-multi-int8", display_name: "Whisper Small Multilingual INT8", family: "whisper", directory: "C:/Models/sherpa-onnx/whisper", installed: true, verified: true, compatible: true },
+        ],
+      }),
       fetchSiliconFlowModels: vi.fn().mockResolvedValue({
         models: [
           { id: "Qwen/Qwen3.5-8B", display_name: "Qwen/Qwen3.5-8B", model_type: "llm" },
@@ -449,23 +458,40 @@ describe("SettingsPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "本地模型" }))
 
-    expect(await screen.findByPlaceholderText("搜索本地模型...")).toBeInTheDocument()
-    expect(await screen.findByRole("heading", { name: "Qwen3-ASR GGUF" })).toBeInTheDocument()
-    expect(screen.queryByText("默认 ASR")).not.toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: /SiliconFlow ASR/ })).not.toBeInTheDocument()
-    expect(screen.getByText("音频流程")).toBeInTheDocument()
+    expect(await screen.findByRole("heading", { name: "音频流程" })).toBeInTheDocument()
+    const localModelNav = screen.getByRole("navigation", { name: "本地模型设置" })
+    expect(within(localModelNav).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "音频流程",
+      "人声分离",
+      "ASR",
+      "LLM",
+    ])
+    expect(screen.queryByPlaceholderText("搜索本地模型...")).not.toBeInTheDocument()
+    expect(screen.getByLabelText("默认处理方式")).toHaveValue("asr")
+    expect(screen.getByRole("option", { name: "标准语音识别" })).toBeInTheDocument()
+    expect(screen.getByRole("option", { name: "MOSS 一体化识别" })).toBeInTheDocument()
+    expect(screen.getByRole("switch", { name: "启用说话人分离" })).toBeChecked()
     expect(screen.queryByText("Local LLM Server")).not.toBeInTheDocument()
     expect(screen.queryByText("Voiceprint Purpose")).not.toBeInTheDocument()
+    expect(screen.queryByText("ASR + pyannote")).not.toBeInTheDocument()
+    expect(screen.queryByText("MOSS 一步转录")).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByText("音频流程"))
-    expect(screen.getByRole("heading", { name: "音频流程" })).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "ASR + pyannote" })).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "MOSS 一步转录" })).toBeInTheDocument()
-    expect(screen.queryByText("启用声纹识别")).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByText("UVR Server"))
-    expect(screen.getByRole("heading", { name: "UVR Server" })).toBeInTheDocument()
+    fireEvent.click(within(localModelNav).getByRole("button", { name: "人声分离" }))
+    expect(screen.getByRole("heading", { name: "人声分离" })).toBeInTheDocument()
+    expect(screen.getByLabelText("默认模型")).toHaveValue("UVR-MDX-NET-Inst_HQ_3")
     expect(screen.getByRole("button", { name: "检查本机 UVR" })).toBeInTheDocument()
-    expect(screen.queryByPlaceholderText("可选：直接指定当前模型文件所在目录")).not.toBeInTheDocument()
+    expect(screen.getAllByRole("button", { name: "选择文件夹" }).length).toBeGreaterThan(0)
+
+    fireEvent.click(within(localModelNav).getByRole("button", { name: "ASR" }))
+    expect(screen.getByRole("heading", { name: "ASR" })).toBeInTheDocument()
+    expect(screen.getByLabelText("ASR 服务")).toHaveValue("sherpa_onnx")
+    expect(await screen.findByText("本地模型 4/4 可用")).toBeInTheDocument()
+    expect(screen.getByLabelText("时间戳模式")).toHaveValue("auto")
+    expect(screen.getByPlaceholderText("Qwen3-ForcedAligner-0.6B 本地目录")).toBeInTheDocument()
+
+    fireEvent.click(within(localModelNav).getByRole("button", { name: "LLM" }))
+    expect(screen.getByRole("heading", { name: "LLM" })).toBeInTheDocument()
+    expect(screen.getByLabelText("推理引擎")).toHaveValue("transformers")
+    expect(screen.getByPlaceholderText("Hugging Face 模型目录")).toBeInTheDocument()
   })
 })

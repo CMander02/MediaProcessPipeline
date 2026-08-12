@@ -9,6 +9,7 @@ model can mirror the source's linguistic structure — including code-switched
 segments (e.g. Chinese with English technical terms).
 """
 
+from app.services.analysis.text_locale import language_script_instruction
 
 MINDMAP_SYSTEM_PROMPT = """You create a source-grounded timed content map.
 Canonical names and source chapter timestamps are read-only facts. Every chapter must
@@ -18,6 +19,7 @@ remain represented. Return only the requested indented list."""
 # ---------------------------------------------------------------------------
 # Shared clauses
 # ---------------------------------------------------------------------------
+
 
 def _language_clause(user_language: str | None) -> str:
     """Build the 'primary language + preserve code-switching' instruction block.
@@ -29,9 +31,11 @@ def _language_clause(user_language: str | None) -> str:
     language.
     """
     lang = (user_language or "").strip() or "auto-detect from transcript"
+    script_instruction = language_script_instruction(user_language)
     return f"""## Language policy (critical)
 - The transcript's primary language: {lang}.
 - Write the connective / narrative words of each node in that primary language.
+{script_instruction}
 - PRESERVE code-switched content verbatim. If the source mixes languages
   (for example Chinese narration with English technical terms, Japanese quotes,
   proper nouns, brand names, code identifiers, song titles), keep those tokens

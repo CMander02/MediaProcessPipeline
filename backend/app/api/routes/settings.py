@@ -522,6 +522,31 @@ async def list_siliconflow_models():
     return {"models": _siliconflow_models_from_payload(payload)}
 
 
+@router.get("/asr/models")
+def list_local_asr_models():
+    """Return install and validation status for the default sherpa model set."""
+    from app.services.recognition.sherpa_catalog import catalog_status, resolve_model_root
+    from app.services.recognition.sherpa_runtime import get_sherpa_runtime
+
+    settings = get_runtime_settings()
+    runtime_info = get_sherpa_runtime().info
+    return {
+        "model_root": str(resolve_model_root(settings.sherpa_model_root)),
+        "selected_model_id": settings.sherpa_model_id,
+        "models": catalog_status(settings.sherpa_model_root),
+        "runtime": (
+            {
+                "model_id": runtime_info.model_id,
+                "family": runtime_info.family,
+                "provider": runtime_info.provider,
+                "version": runtime_info.version,
+            }
+            if runtime_info
+            else None
+        ),
+    }
+
+
 def _model_type_capabilities(model_type: str) -> list[str]:
     if model_type == "vlm":
         return ["vlm", "chat", "vision", "json"]

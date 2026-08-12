@@ -14,7 +14,9 @@
 #>
 
 param(
-    [string]$Extra = ""
+    [string]$Extra = "",
+    [switch]$InstallSherpaModels,
+    [string]$SherpaModelRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,6 +47,26 @@ if ($Extra) {
 }
 Pop-Location
 Write-Success "Backend ready"
+
+if (($Extra -in @("local-asr", "local-models")) -and (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) {
+    Write-Status "Installing sherpa-onnx CUDA 12 runtime..."
+    Push-Location $BackendPath
+    uv pip install "sherpa-onnx==1.13.4+cuda12.cudnn9" -f https://k2-fsa.github.io/sherpa/onnx/cuda.html
+    Pop-Location
+    Write-Success "sherpa-onnx CUDA runtime ready"
+}
+
+if ($InstallSherpaModels) {
+    Write-Status "Installing default sherpa-onnx model set..."
+    Push-Location $ProjectRoot
+    if ($SherpaModelRoot) {
+        uv run python scripts/install_sherpa_models.py --model-root $SherpaModelRoot
+    } else {
+        uv run python scripts/install_sherpa_models.py
+    }
+    Pop-Location
+    Write-Success "Sherpa model set ready"
+}
 
 # Setup frontend
 $FrontendPath = Join-Path $ProjectRoot "web"

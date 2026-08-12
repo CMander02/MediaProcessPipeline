@@ -77,6 +77,7 @@ class TranscribeRequest(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     text: str
+    language: str | None = None
 
 
 class XiaohongshuLoginRequest(BaseModel):
@@ -367,7 +368,12 @@ async def summarize(req: AnalyzeRequest):
 async def mindmap(req: AnalyzeRequest):
     """Generate mindmap."""
     from app.services.analysis import generate_mindmap
-    return {"markdown": await generate_mindmap(req.text)}
+    return {
+        "markdown": await generate_mindmap(
+            req.text,
+            user_language=req.language,
+        )
+    }
 
 
 @router.get("/archives")
@@ -614,19 +620,19 @@ async def archive_thumbnail(path: str):
 
 
 @router.post("/cleanup/{task_id}")
-async def cleanup_task(task_id: str):
+async def cleanup_task(task_id: str, dry_run: bool = False):
     """Clean up files from a specific task."""
     from app.services.cleanup import cleanup_failed_task
-    return await cleanup_failed_task(task_id)
+    return await cleanup_failed_task(task_id, dry_run=dry_run)
 
 
 @router.post("/cleanup")
-async def cleanup_all(max_age_hours: int = 24):
+async def cleanup_all(max_age_hours: int = 24, dry_run: bool = False):
     """Clean up orphaned temporary files."""
     if max_age_hours < 1:
         raise HTTPException(400, "max_age_hours must be at least 1")
     from app.services.cleanup import cleanup_orphaned_files
-    return await cleanup_orphaned_files(max_age_hours)
+    return await cleanup_orphaned_files(max_age_hours, dry_run=dry_run)
 
 
 @router.get("/disk-usage")

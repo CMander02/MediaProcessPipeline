@@ -6,8 +6,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from app.core.settings import get_runtime_settings
 from app.core.database import get_task_store
+from app.core.settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,18 @@ class CleanupService:
         rt = get_runtime_settings()
         return Path(rt.data_root).resolve()
 
-    def cleanup_failed_task(self, task_id: str) -> dict[str, Any]:
+    @staticmethod
+    def _directory_size(path: Path) -> int:
+        total = 0
+        for item in path.rglob("*"):
+            if item.is_file():
+                try:
+                    total += item.stat().st_size
+                except OSError:
+                    continue
+        return total
+
+    def cleanup_failed_task(self, task_id: str, dry_run: bool = False) -> dict[str, Any]:
         """
         Clean up files from a failed task.
 
@@ -31,15 +42,47 @@ class CleanupService:
             Dict with cleanup results
         """
         cleaned = []
+        candidates: list[dict[str, Any]] = []
         errors = []
 
         # Find output_dir from task record
         from uuid import UUID
+
         store = get_task_store()
         task = store.get(UUID(task_id))
+        if task is None:
+            errors.append({"task_id": task_id, "error": "Task not found"})
+        elif str(task.status) not in {"failed", "cancelled"}:
+            errors.append(
+                {
+                    "task_id": task_id,
+                    "error": f"Task status {task.status} is not eligible for failed-task cleanup",
+                }
+            )
+            task = None
         if task and task.result and task.result.get("output_dir"):
-            task_dir = Path(task.result["output_dir"])
-            if task_dir.is_dir():
+            task_dir: Path | None = Path(task.result["output_dir"]).resolve()
+            try:
+                task_dir.relative_to(self.get_data_root())
+            except ValueError:
+                errors.append({"path": str(task_dir), "error": "Path is outside data_root"})
+                task_dir = None
+            if task_dir is not None and task_dir.is_dir():
+                candidates.append(
+                    {
+                        "path": str(task_dir),
+                        "bytes": self._directory_size(task_dir),
+                        "reason": f"task_{task.status}",
+                    }
+                )
+                if dry_run:
+                    return {
+                        "task_id": task_id,
+                        "dry_run": True,
+                        "candidates": candidates,
+                        "cleaned": [],
+                        "errors": [],
+                    }
                 try:
                     shutil.rmtree(task_dir)
                     cleaned.append(str(task_dir))
@@ -47,14 +90,22 @@ class CleanupService:
                 except Exception as e:
                     errors.append({"path": str(task_dir), "error": str(e)})
                     logger.error(f"Failed to clean up {task_dir}: {e}")
+            elif task_dir is not None:
+                errors.append({"path": str(task_dir), "error": "Output directory not found"})
+        elif task is not None:
+            errors.append({"task_id": task_id, "error": "Task has no output directory"})
 
         return {
             "task_id": task_id,
+            "dry_run": dry_run,
+            "candidates": candidates,
             "cleaned": cleaned,
             "errors": errors,
         }
 
-    def cleanup_orphaned_files(self, max_age_hours: int = 24) -> dict[str, Any]:
+    def cleanup_orphaned_files(
+        self, max_age_hours: int = 24, dry_run: bool = False
+    ) -> dict[str, Any]:
         """
         Clean up orphaned temporary files older than specified age.
 
@@ -74,6 +125,7 @@ class CleanupService:
         cutoff_time = datetime.now() - timedelta(hours=max_age_hours)
 
         cleaned = []
+        candidates: list[dict[str, Any]] = []
         errors = []
         skipped = []
 
@@ -88,7 +140,7 @@ class CleanupService:
             # Skip non-directories and system files
             if not item.is_dir():
                 continue
-            if item.name in ('settings.json', 'history.json') or item.name.startswith('.'):
+            if item.name in ("settings.json", "history.json") or item.name.startswith("."):
                 continue
 
             # Check if directory belongs to a known task
@@ -111,6 +163,15 @@ class CleanupService:
                 continue
 
             # Clean up orphaned directory
+            candidates.append(
+                {
+                    "path": str(item),
+                    "bytes": self._directory_size(item),
+                    "reason": f"orphan_older_than_{max_age_hours}h",
+                }
+            )
+            if dry_run:
+                continue
             try:
                 shutil.rmtree(item)
                 cleaned.append(str(item))
@@ -121,6 +182,8 @@ class CleanupService:
 
         return {
             "max_age_hours": max_age_hours,
+            "dry_run": dry_run,
+            "candidates": candidates,
             "cleaned": cleaned,
             "skipped": skipped,
             "errors": errors,
@@ -146,11 +209,11 @@ class CleanupService:
             "other": 0,
         }
 
-        video_exts = {'.mp4', '.mkv', '.avi', '.webm', '.mov'}
-        audio_exts = {'.mp3', '.wav', '.flac', '.m4a', '.ogg'}
-        transcript_exts = {'.srt', '.txt', '.md', '.json'}
+        video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov"}
+        audio_exts = {".mp3", ".wav", ".flac", ".m4a", ".ogg"}
+        transcript_exts = {".srt", ".txt", ".md", ".json"}
 
-        for item in data_root.rglob('*'):
+        for item in data_root.rglob("*"):
             if item.is_file():
                 file_count += 1
                 try:
@@ -188,8 +251,7 @@ class CleanupService:
             "file_count": file_count,
             "directory_count": dir_count,
             "by_type": {
-                k: {"bytes": v, "formatted": format_size(v)}
-                for k, v in type_sizes.items()
+                k: {"bytes": v, "formatted": format_size(v)} for k, v in type_sizes.items()
             },
         }
 
@@ -206,14 +268,14 @@ def get_cleanup_service() -> CleanupService:
     return _service
 
 
-async def cleanup_failed_task(task_id: str) -> dict[str, Any]:
+async def cleanup_failed_task(task_id: str, dry_run: bool = False) -> dict[str, Any]:
     """Clean up files from a failed task."""
-    return get_cleanup_service().cleanup_failed_task(task_id)
+    return get_cleanup_service().cleanup_failed_task(task_id, dry_run=dry_run)
 
 
-async def cleanup_orphaned_files(max_age_hours: int = 24) -> dict[str, Any]:
+async def cleanup_orphaned_files(max_age_hours: int = 24, dry_run: bool = False) -> dict[str, Any]:
     """Clean up orphaned temporary files."""
-    return get_cleanup_service().cleanup_orphaned_files(max_age_hours)
+    return get_cleanup_service().cleanup_orphaned_files(max_age_hours, dry_run=dry_run)
 
 
 async def get_disk_usage() -> dict[str, Any]:

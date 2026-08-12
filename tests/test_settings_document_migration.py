@@ -363,8 +363,8 @@ def test_flat_config_load_migrates_default_service_registry(isolated_settings_fi
         "capability": "llm",
     }
     assert data["runtime_model_bindings"]["asr"] == {
-        "provider_id": "qwen3_gguf",
-        "model_id": "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0",
+        "provider_id": "sherpa_onnx",
+        "model_id": "sensevoice-small-int8",
         "capability": "asr",
     }
 
@@ -618,6 +618,25 @@ def test_runtime_model_binding_patch_updates_flat_selection(isolated_settings_fi
     assert data["asr_provider"] == "siliconflow"
     assert data["siliconflow_asr_model"] == "SenseVoiceNew"
     assert data["deepseek_summary_model"] == "deepseek-bound-summary"
+
+
+def test_sherpa_model_patch_updates_runtime_binding(isolated_settings_file):
+    _write_config(
+        isolated_settings_file,
+        {
+            "asr_provider": "sherpa_onnx",
+            "sherpa_model_id": "qwen3-asr-1.7b-onnx",
+            "data_root": str(isolated_settings_file.parent / "data"),
+        },
+    )
+    core_settings._runtime_settings = core_settings._load_settings_from_file()
+
+    updated = core_settings.patch_runtime_settings(
+        {"sherpa_model_id": "sensevoice-small-int8"}
+    )
+
+    assert updated.sherpa_model_id == "sensevoice-small-int8"
+    assert updated.runtime_model_bindings["asr"].model_id == "sensevoice-small-int8"
 
 
 def test_settings_api_masks_and_restores_nested_service_connection_secrets():

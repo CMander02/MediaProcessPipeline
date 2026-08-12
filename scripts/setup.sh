@@ -8,7 +8,7 @@
 #
 # Extras:
 #   asr-api-vad          Silero ONNX VAD chunking for API ASR
-#   local-asr            local Qwen3-ASR + Pyannote
+#   local-asr            sherpa-onnx ASR + Pyannote
 #   uvr                  UVR vocal separation
 #   hf-local-inference   torch + accelerate for local HF inference
 #   local-models         full local model stack
@@ -52,6 +52,12 @@ if [ -n "$EXTRA" ]; then
     uv sync --extra "$EXTRA"
 else
     uv sync
+fi
+
+if { [ "$EXTRA" = "local-asr" ] || [ "$EXTRA" = "local-models" ]; } \
+    && command -v nvidia-smi >/dev/null 2>&1; then
+    uv pip install "sherpa-onnx==1.13.4+cuda12.cudnn9" \
+        -f https://k2-fsa.github.io/sherpa/onnx/cuda.html
 fi
 echo -e "${GREEN}Backend dependencies installed${NC}"
 

@@ -72,7 +72,10 @@ def _ensure_http_url(value: str) -> str:
 
 
 def _is_bilibili_short_url(value: str) -> bool:
-    parsed = urlparse(_ensure_http_url(value))
+    try:
+        parsed = urlparse(_ensure_http_url(value))
+    except ValueError:
+        return False
     host = (parsed.hostname or "").lower()
     return host == "b23.tv" or host.endswith(".b23.tv")
 

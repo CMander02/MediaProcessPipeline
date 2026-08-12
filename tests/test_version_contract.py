@@ -18,7 +18,7 @@ def test_python_api_and_project_share_version():
     with (ROOT / "pyproject.toml").open("rb") as file:
         project_version = tomllib.load(file)["project"]["version"]
 
-    assert __version__ == "0.5.0"
+    assert __version__ == "0.6.0"
     assert get_settings().api_version == project_version == __version__
 
 

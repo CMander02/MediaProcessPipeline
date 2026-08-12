@@ -146,19 +146,17 @@ export interface Settings extends RuntimeSettings {
   llm_provider: string
   asr_provider: string
   audio_processing_flow: string
-  qwen3_asr_model_path: string
-  qwen3_device: string
+  sherpa_model_id: string
+  sherpa_model_root: string
+  sherpa_device: string
+  sherpa_num_threads: number
+  sherpa_chunk_strategy: string
+  sherpa_max_chunk_sec: number
+  sherpa_vad_model_path: string
+  sherpa_debug: boolean
+  asr_timestamp_mode: string
+  qwen3_aligner_model_path: string
   llama_cpp_binary_path: string
-  qwen3_gguf_model_path: string
-  qwen3_gguf_mmproj_path: string
-  qwen3_gguf_hf_repo: string
-  qwen3_gguf_device: string
-  qwen3_gguf_ctx: number
-  qwen3_gguf_n_gpu_layers: number
-  qwen3_gguf_timeout_sec: number
-  qwen3_gguf_keepalive_sec: number
-  qwen3_gguf_chunk_strategy: string
-  silero_onnx_model_path: string
   uvr_model: string
   uvr_device: "cuda" | "cpu"
   uvr_model_dir: string
@@ -222,6 +220,31 @@ export interface ProviderOAuthStatus {
   current_model: string
   models: string[]
   message: string
+}
+
+export interface SherpaModelStatus {
+  id: string
+  display_name: string
+  family: string
+  directory: string
+  installed: boolean
+  verified: boolean
+  compatible: boolean
+  size_bytes?: number
+  license?: string
+  error?: string
+}
+
+export interface LocalAsrModelsStatus {
+  model_root: string
+  selected_model_id: string
+  models: SherpaModelStatus[]
+  runtime: {
+    model_id: string
+    family: string
+    provider: string
+    version: string
+  } | null
 }
 
 export interface TwitterAuthStatus {
@@ -509,6 +532,7 @@ export const api = {
       return updated
     },
     detectLocalUvr: () => get<{ found: boolean; path: string; models: string[] }>("/api/settings/uvr/local"),
+    localAsrModels: () => get<LocalAsrModelsStatus>("/api/settings/asr/models"),
     fetchSiliconFlowModels: () =>
       get<{ models: ProviderModelListItem[] }>("/api/settings/providers/siliconflow/models"),
     fetchProviderModels: (providerId: string, capability?: string) => {
