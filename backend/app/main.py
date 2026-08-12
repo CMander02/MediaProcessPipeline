@@ -57,6 +57,40 @@ async def lifespan(app: FastAPI):
         logger.info(f"  Custom Model: {rt.custom_model}")
         logger.info(f"  Custom API Base: {rt.custom_api_base}")
 
+    # sherpa-onnx and onnxruntime-gpu ship separate ONNX Runtime DLL sets on
+    # Windows. Load the selected sherpa CUDA runtime first so a later import of
+    # onnxruntime (for VAD or other CPU sessions) cannot claim the provider DLL
+    # names and make Qwen3-ASR fail with Windows error 1114.
+    if (
+        sys.platform == "win32"
+        and rt.asr_provider == "sherpa_onnx"
+        and rt.sherpa_device in {"auto", "cuda"}
+    ):
+        try:
+            from app.services.recognition.sherpa_catalog import resolve_model
+            from app.services.recognition.sherpa_runtime import (
+                SherpaRuntimeOptions,
+                get_sherpa_runtime,
+            )
+
+            spec = resolve_model(rt.sherpa_model_id, rt.sherpa_model_root)
+            _, runtime_info = await asyncio.to_thread(
+                get_sherpa_runtime().get,
+                spec,
+                SherpaRuntimeOptions(
+                    device=rt.sherpa_device,
+                    num_threads=rt.sherpa_num_threads,
+                    debug=rt.sherpa_debug,
+                ),
+            )
+            logger.info(
+                "Preloaded sherpa model %s with provider=%s before ONNX Runtime consumers",
+                runtime_info.model_id,
+                runtime_info.provider,
+            )
+        except Exception as exc:
+            logger.warning("Sherpa runtime preload failed: %s", exc)
+
     from app.services.ingestion.ytdlp_version import auto_update_on_startup, warn_if_stale
     if rt.ytdlp_auto_update:
         await asyncio.to_thread(auto_update_on_startup, True)
