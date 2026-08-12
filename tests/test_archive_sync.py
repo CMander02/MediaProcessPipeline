@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import sys
+import zipfile
 from pathlib import Path
 from uuid import uuid4
 
@@ -17,8 +18,13 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.api.routes import sync as sync_route  # noqa: E402
 from app.core import database  # noqa: E402
 from app.core import settings as settings_module  # noqa: E402
-from app.core.archive_sync import get_archive_sync_service  # noqa: E402
+from app.core.archive_sync import (  # noqa: E402
+    build_archive_zip,
+    get_archive_sync_service,
+    safe_extract_zip,
+)
 from app.core.settings import RuntimeSettings  # noqa: E402
+from app.models import Task, TaskStatus, TaskType  # noqa: E402
 
 
 def _client(tmp_path: Path, monkeypatch) -> TestClient:
@@ -229,3 +235,61 @@ def test_sync_preserves_id_on_move_and_repairs_copied_id(tmp_path, monkeypatch):
     assert len(copied_ids) == 1
     copied_metadata = json.loads((copied / "metadata.json").read_text(encoding="utf-8"))
     assert copied_metadata["archive_id"] in copied_ids
+
+
+def test_completed_archive_import_is_idempotent_and_excludes_media(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    source = _archive(tmp_path, "local-source", "本地结果")
+    (source / "transcript.srt").write_text("字幕", encoding="utf-8")
+    (source / "source.mp4").write_bytes(b"video")
+    zip_path = tmp_path / "portable.zip"
+    build_archive_zip(source, zip_path, include_media=False)
+    sha256 = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    task = Task(
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.COMPLETED,
+        source="https://example.com/video",
+        progress=1.0,
+        result={"metadata": {"title": "本地结果"}},
+    )
+
+    def upload():
+        with zip_path.open("rb") as archive:
+            return client.post(
+                "/api/sync/import",
+                data={
+                    "task_json": task.model_dump_json(),
+                    "archive_name": "来自本地",
+                    "archive_sha256": sha256,
+                    "worker_id": "desktop-test",
+                },
+                files={"archive": ("archive.zip", archive, "application/zip")},
+            )
+
+    response = upload()
+    assert response.status_code == 200
+    assert response.json()["already_synced"] is False
+    imported = database.get_task_store().get(task.id)
+    destination = Path(imported.result["output_dir"])
+    assert (destination / "metadata.json").is_file()
+    assert (destination / "transcript.srt").is_file()
+    assert not (destination / "source.mp4").exists()
+    assert imported.result["remote_sync"]["archive_sha256"] == sha256
+
+    repeated = upload()
+    assert repeated.status_code == 200
+    assert repeated.json()["already_synced"] is True
+
+
+def test_portable_archive_rejects_path_traversal(tmp_path):
+    zip_path = tmp_path / "unsafe.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("../outside.txt", "outside")
+        archive.writestr("metadata.json", "{}")
+
+    try:
+        safe_extract_zip(zip_path, tmp_path / "extract")
+    except ValueError as exc:
+        assert "unsafe archive member path" in str(exc)
+    else:
+        raise AssertionError("unsafe ZIP member was accepted")

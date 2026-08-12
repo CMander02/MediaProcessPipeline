@@ -109,6 +109,11 @@ async def lifespan(app: FastAPI):
     queue.set_pipeline(process_task)
     await queue.start()
 
+    from app.services.remote_archive_upload import get_remote_archive_upload_service
+
+    remote_archive_upload = get_remote_archive_upload_service()
+    await remote_archive_upload.start()
+
     # Sweep stale upload staging dirs (>24h old, never confirmed by user)
     try:
         from app.api.routes.pipeline import sweep_stale_staging
@@ -125,6 +130,7 @@ async def lifespan(app: FastAPI):
         # closing the database. The desktop process job remains the hard-stop
         # fallback for interrupted Windows exits.
         try:
+            await remote_archive_upload.stop()
             await queue.stop()
         finally:
             try:

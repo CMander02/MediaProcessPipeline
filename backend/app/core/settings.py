@@ -335,8 +335,27 @@ class RuntimeSettings(BaseModel):
     api_token: str = ""  # Bearer token for API auth; empty = auth disabled
     allow_remote_filesystem: bool = False
 
+    # Remote archive synchronization. A desktop daemon uploads each completed
+    # local archive once; the remote daemon accepts it into its own data_root.
+    remote_sync_enabled: bool = False
+    remote_server_url: str = ""
+    remote_api_token: str = ""
+    remote_worker_id: str = ""
+    remote_worker_name: str = ""
+    remote_sync_interval_sec: float = 15.0
+    remote_sync_upload_results: bool = True
+    remote_sync_download_results: bool = True
+    remote_sync_include_media: bool = False
+
     # Paths
     data_root: str = "D:/Video/MediaProcessPipeline"
+
+    @field_validator("remote_sync_interval_sec")
+    @classmethod
+    def _validate_remote_sync_interval(cls, value: float) -> float:
+        if value < 5:
+            raise ValueError("remote_sync_interval_sec must be at least 5 seconds")
+        return value
 
     @field_validator("asr_provider")
     @classmethod
