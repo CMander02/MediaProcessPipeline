@@ -2,7 +2,7 @@ export const DEEPSEEK_STAGES = ["analyze", "polish", "summary", "mindmap"] as co
 
 export type DeepSeekStage = (typeof DEEPSEEK_STAGES)[number]
 export type LlmProvider = "local" | "deepseek" | "custom" | "anthropic" | "openai"
-export type AsrProvider = "moss_cpp" | "qwen3" | "qwen3_gguf" | "siliconflow"
+export type AsrProvider = "moss_cpp" | "sherpa_onnx" | "siliconflow"
 export type AudioProcessingFlow = "asr" | "moss"
 export type DeviceValue = "cuda" | "cpu" | "auto"
 export type ModelCapability = "llm" | "vlm" | "chat" | "fast" | "thinking" | "reasoning" | "vision" | "asr" | "embedding" | "rerank" | "local" | "json"
@@ -113,20 +113,17 @@ export interface RuntimeSettings {
   deepseek_mindmap_thinking?: string
   deepseek_mindmap_effort?: string
 
-  qwen3_asr_model_path?: string
+  sherpa_model_id?: string
+  sherpa_model_root?: string
+  sherpa_device?: DeviceValue | string
+  sherpa_num_threads?: number
+  sherpa_chunk_strategy?: "vad" | "fixed" | string
+  sherpa_max_chunk_sec?: number
+  sherpa_vad_model_path?: string
+  sherpa_debug?: boolean
+  asr_timestamp_mode?: "auto" | "native" | "vad" | "qwen_forced" | string
   qwen3_aligner_model_path?: string
-  qwen3_device?: DeviceValue | string
   llama_cpp_binary_path?: string
-  qwen3_gguf_model_path?: string
-  qwen3_gguf_mmproj_path?: string
-  qwen3_gguf_hf_repo?: string
-  qwen3_gguf_device?: DeviceValue | string
-  qwen3_gguf_ctx?: number
-  qwen3_gguf_n_gpu_layers?: number
-  qwen3_gguf_timeout_sec?: number
-  qwen3_gguf_keepalive_sec?: number
-  qwen3_gguf_chunk_strategy?: string
-  silero_onnx_model_path?: string
   uvr_model?: string
   uvr_device?: Exclude<DeviceValue, "auto"> | string
   uvr_model_dir?: string

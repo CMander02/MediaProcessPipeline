@@ -196,8 +196,11 @@ class ArchiveService:
     ) -> dict[str, Any] | None:
         if not task_dir.is_dir():
             return None
-        if task_dir.name.startswith('.') or task_dir.name in (
-            'settings.json', 'history.json', 'uploads', 'manual_task',
+        if task_dir.name.startswith(".") or task_dir.name in (
+            "settings.json",
+            "history.json",
+            "uploads",
+            "manual_task",
         ):
             return None
 
@@ -213,9 +216,9 @@ class ArchiveService:
         metadata = self._read_json(task_dir / "metadata.json")
         analysis = {} if lite else self._read_json(task_dir / "analysis.json")
 
-        video_exts = {'.mp4', '.mkv', '.avi', '.webm', '.mov'}
-        audio_exts = {'.mp3', '.wav', '.flac', '.m4a', '.ogg'}
-        image_exts = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.avif'}
+        video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov"}
+        audio_exts = {".mp3", ".wav", ".flac", ".m4a", ".ogg"}
+        image_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"}
         has_video = False
         has_audio = False
         has_image = False
@@ -243,6 +246,23 @@ class ArchiveService:
             ):
                 has_image = True
 
+        # Portable synchronization omits media files by default. Preserve the
+        # task's declared video/audio category from metadata in that case.
+        declared_media_type = str(metadata.get("media_type") or "").casefold()
+        declared_subtype = str(metadata.get("content_subtype") or "").casefold()
+        if not has_video and (
+            declared_media_type == "video"
+            or declared_subtype in {"video", "local_video"}
+        ):
+            has_video = True
+            media_is_external = media_file is None
+        if not has_video and not has_audio and (
+            declared_media_type in {"audio", "podcast", "meeting"}
+            or declared_subtype in {"audio", "podcast_episode", "local_audio"}
+        ):
+            has_audio = True
+            media_is_external = media_file is None
+
         meta_status = metadata.get("status", "completed")
         processing = meta_status in ("queued", "processing", "paused")
         task_info = dir_to_task.get(str(task_dir.resolve()), {})
@@ -265,6 +285,7 @@ class ArchiveService:
             duration_seconds = self._duration_from_srt(task_dir)
 
         return {
+            "archive_id": metadata.get("archive_id") or task_id,
             "path": str(task_dir),
             "date": datetime.fromisoformat(created_at).strftime("%Y-%m-%d"),
             "created_at": created_at,
@@ -321,6 +342,7 @@ class ArchiveService:
             "content_subtype",
             "status",
             "task_id",
+            "archive_id",
         }
         lite = {key: metadata[key] for key in keys if key in metadata}
         extra = metadata.get("extra")
@@ -350,6 +372,7 @@ class ArchiveService:
     def _duration_from_srt(task_dir: Path) -> float | None:
         """Derive duration from the max end-time across all subtitle entries."""
         import re
+
         for name in ("transcript_polished.srt", "transcript.srt"):
             srt_path = task_dir / name
             if srt_path.exists():
@@ -424,7 +447,7 @@ async def archive_result(
         mindmap=mindmap,
         original_srt=original_srt,
         work_dir=work_dir,
-        analysis=analysis
+        analysis=analysis,
     )
 
 

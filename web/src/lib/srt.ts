@@ -26,12 +26,16 @@ export interface TranscriptMarkdownHeader {
   task_id?: string | null
 }
 
+function normalizeSRTLineEndings(content: string): string {
+  return content.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n")
+}
+
 /**
  * Parse SRT content into Subtitle array
  */
 export function parseSRT(content: string): Subtitle[] {
   const subtitles: Subtitle[] = []
-  const blocks = content.trim().split(/\n\n+/)
+  const blocks = normalizeSRTLineEndings(content).trim().split(/\n\s*\n+/)
 
   for (const block of blocks) {
     const lines = block.trim().split("\n")
@@ -83,7 +87,7 @@ export function parseSRT(content: string): Subtitle[] {
 export function srtToVTT(srt: string): string {
   // Parse into cues, shrink endTime by 1ms to prevent boundary overlap,
   // strip speaker tags, and emit WebVTT.
-  const blocks = srt.trim().split(/\n\n+/)
+  const blocks = normalizeSRTLineEndings(srt).trim().split(/\n\s*\n+/)
   const cues: string[] = []
 
   for (const block of blocks) {

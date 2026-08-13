@@ -5,11 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import os
+import re
+import shutil
+import stat
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 from uuid import UUID, uuid4
+
+from fastapi import HTTPException, UploadFile
 
 from app.core.database import _db_lock, _get_conn
 from app.core.settings import get_runtime_settings
@@ -26,6 +33,19 @@ _ROOT_IMAGE_STEMS = {"cover", "thumbnail"}
 _TEXT_DIRECTORIES = {"descriptions"}
 _IMAGE_DIRECTORIES = {"images"}
 _IGNORED_NAMES = {".lock", "lock", "tmp", "temp"}
+
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024
+MAX_MEMBER_BYTES = 10 * 1024 * 1024 * 1024
+MAX_EXTRACTED_BYTES = 20 * 1024 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 20_000
+MAX_COMPRESSION_RATIO = 200
+_COMPRESSION_RATIO_ALLOWANCE = 10 * 1024 * 1024
+_MAX_STRUCTURED_JSON_BYTES = 16 * 1024 * 1024
+_BOUNDED_JSON_FILENAMES = {"metadata.json", "analysis.json"}
+_SKIP_ARCHIVE_SUFFIXES = {".part", ".tmp", ".zip"}
+_WINDOWS_RESERVED = re.compile(
+    r"^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\..*)?$", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True)
@@ -400,3 +420,231 @@ def get_archive_sync_service() -> ArchiveSyncService:
     if _sync_service is None:
         _sync_service = ArchiveSyncService()
     return _sync_service
+
+
+async def stream_upload_to_path(
+    upload: UploadFile,
+    destination: Path,
+    *,
+    max_bytes: int = MAX_UPLOAD_BYTES,
+) -> tuple[int, str]:
+    """Stream an uploaded ZIP to disk with a hard size limit and checksum."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    digest = hashlib.sha256()
+    try:
+        with destination.open("wb") as output:
+            while chunk := await upload.read(8 * 1024 * 1024):
+                written += len(chunk)
+                if written > max_bytes:
+                    raise HTTPException(413, "Archive upload exceeds the 10 GB limit")
+                digest.update(chunk)
+                output.write(chunk)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    finally:
+        await upload.close()
+    return written, digest.hexdigest()
+
+
+def _safe_member_path(raw_name: str) -> PurePosixPath:
+    normalized = raw_name.replace("\\", "/")
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or re.match(r"^[A-Za-z]:", normalized)
+        or "\x00" in normalized
+        or any(ord(char) < 32 for char in normalized)
+    ):
+        raise ValueError(f"unsafe archive member path: {raw_name!r}")
+    path = PurePosixPath(normalized)
+    if not path.parts or any(part in {"", ".", ".."} for part in path.parts):
+        raise ValueError(f"unsafe archive member path: {raw_name!r}")
+    for part in path.parts:
+        if ":" in part or part.endswith((" ", ".")) or _WINDOWS_RESERVED.match(part):
+            raise ValueError(f"unsafe archive member path: {raw_name!r}")
+    return path
+
+
+def _zip_member_is_symlink(info: zipfile.ZipInfo) -> bool:
+    unix_mode = (info.external_attr >> 16) & 0xFFFF
+    return stat.S_IFMT(unix_mode) == stat.S_IFLNK
+
+
+def safe_extract_zip(zip_path: Path, extraction_dir: Path) -> Path:
+    """Validate and extract a portable archive without path traversal."""
+    extraction_dir.mkdir(parents=True, exist_ok=False)
+    extracted_total = 0
+    seen: set[str] = set()
+    try:
+        with zipfile.ZipFile(zip_path, "r") as archive:
+            infos = archive.infolist()
+            if not infos or len(infos) > MAX_ARCHIVE_MEMBERS:
+                raise ValueError("archive has an invalid number of members")
+            validated: list[tuple[zipfile.ZipInfo, PurePosixPath]] = []
+            for info in infos:
+                member_path = _safe_member_path(info.filename)
+                collision_key = member_path.as_posix().casefold()
+                if collision_key in seen:
+                    raise ValueError(f"duplicate archive member: {info.filename!r}")
+                seen.add(collision_key)
+                if info.flag_bits & 0x1:
+                    raise ValueError("encrypted ZIP members are unsupported")
+                if _zip_member_is_symlink(info):
+                    raise ValueError(f"symbolic links are unsupported: {info.filename!r}")
+                if info.file_size < 0 or info.file_size > MAX_MEMBER_BYTES:
+                    raise ValueError(f"archive member is too large: {info.filename!r}")
+                if (
+                    member_path.name.casefold() in _BOUNDED_JSON_FILENAMES
+                    and info.file_size > _MAX_STRUCTURED_JSON_BYTES
+                ):
+                    raise ValueError(f"structured JSON member is too large: {info.filename!r}")
+                extracted_total += info.file_size
+                if extracted_total > MAX_EXTRACTED_BYTES:
+                    raise ValueError("archive expands beyond the 20 GB limit")
+                if (
+                    not info.is_dir()
+                    and info.file_size > _COMPRESSION_RATIO_ALLOWANCE
+                    and info.file_size
+                    > info.compress_size * MAX_COMPRESSION_RATIO + _COMPRESSION_RATIO_ALLOWANCE
+                ):
+                    raise ValueError(f"suspicious ZIP compression ratio: {info.filename!r}")
+                validated.append((info, member_path))
+
+            root = extraction_dir.resolve()
+            actual_total = 0
+            for info, member_path in validated:
+                target = (root / Path(*member_path.parts)).resolve()
+                target.relative_to(root)
+                if info.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                member_written = 0
+                with archive.open(info, "r") as source, target.open("xb") as output:
+                    while chunk := source.read(1024 * 1024):
+                        member_written += len(chunk)
+                        actual_total += len(chunk)
+                        if member_written > info.file_size or actual_total > MAX_EXTRACTED_BYTES:
+                            raise ValueError("archive expanded beyond its declared size")
+                        output.write(chunk)
+                if member_written != info.file_size:
+                    raise ValueError(f"archive member size mismatch: {info.filename!r}")
+
+        if (extraction_dir / "metadata.json").is_file():
+            return extraction_dir
+        children = list(extraction_dir.iterdir())
+        if (
+            len(children) == 1
+            and children[0].is_dir()
+            and (children[0] / "metadata.json").is_file()
+        ):
+            return children[0]
+        raise ValueError("archive must contain metadata.json at its root")
+    except Exception:
+        shutil.rmtree(extraction_dir, ignore_errors=True)
+        raise
+
+
+def publish_archive(extracted_root: Path, destination: Path, data_root: Path) -> None:
+    """Atomically publish a synchronized archive under data_root."""
+    root = data_root.resolve()
+    target = destination.resolve()
+    target.relative_to(root)
+    if target == root:
+        raise ValueError("archive destination cannot be data_root")
+    backup = target.parent / f".{target.name}.sync-backup-{uuid4().hex}"
+    moved_existing = False
+    try:
+        if target.exists():
+            os.replace(target, backup)
+            moved_existing = True
+        os.replace(extracted_root, target)
+    except Exception:
+        if target.exists() and not moved_existing:
+            shutil.rmtree(target, ignore_errors=True)
+        if moved_existing and backup.exists() and not target.exists():
+            os.replace(backup, target)
+        raise
+    else:
+        if backup.exists():
+            shutil.rmtree(backup, ignore_errors=True)
+
+
+def archive_file_manifest(archive_dir: Path) -> dict[str, str]:
+    """Map portable relative file names to published absolute paths."""
+    return {
+        path.relative_to(archive_dir).as_posix(): str(path.resolve())
+        for path in sorted(archive_dir.rglob("*"))
+        if path.is_file() and not path.is_symlink()
+    }
+
+
+def build_archive_zip(
+    archive_dir: Path,
+    destination: Path,
+    *,
+    include_media: bool = False,
+) -> dict[str, Any]:
+    """Create a portable archive ZIP and embed a checksum manifest."""
+    archive_root = archive_dir.resolve()
+    if not (archive_root / "metadata.json").is_file():
+        raise ValueError("archive directory is missing metadata.json")
+    candidates: list[tuple[Path, str]] = []
+    for path in sorted(archive_root.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"archive contains a symbolic link: {path}")
+        if not path.is_file():
+            continue
+        relative = _safe_member_path(path.relative_to(archive_root).as_posix()).as_posix()
+        if relative == "_sync_manifest.json" or path.suffix.casefold() in _SKIP_ARCHIVE_SUFFIXES:
+            continue
+        if not include_media and path.suffix.casefold() in _MEDIA_EXTENSIONS:
+            continue
+        candidates.append((path, relative))
+    if len(candidates) + 1 > MAX_ARCHIVE_MEMBERS:
+        raise ValueError("archive has too many files")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    manifest_files: list[dict[str, Any]] = []
+    try:
+        with zipfile.ZipFile(
+            destination,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+            compresslevel=6,
+            allowZip64=True,
+        ) as archive:
+            for source_path, relative in candidates:
+                digest = hashlib.sha256()
+                size = 0
+                with source_path.open("rb") as source, archive.open(
+                    relative, "w", force_zip64=True
+                ) as output:
+                    while chunk := source.read(1024 * 1024):
+                        size += len(chunk)
+                        if size > MAX_MEMBER_BYTES:
+                            raise ValueError(f"archive member is too large: {relative}")
+                        digest.update(chunk)
+                        output.write(chunk)
+                manifest_files.append(
+                    {"path": relative, "size": size, "sha256": digest.hexdigest()}
+                )
+            manifest = {
+                "version": 1,
+                "include_media": include_media,
+                "files": manifest_files,
+            }
+            archive.writestr(
+                "_sync_manifest.json",
+                json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+            )
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    return {
+        "include_media": include_media,
+        "file_count": len(manifest_files),
+        "files": manifest_files,
+    }

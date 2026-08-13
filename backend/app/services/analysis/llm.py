@@ -19,14 +19,15 @@ from app.services.analysis.prompts import (
     POLISH_SYSTEM_PROMPT,
     SUMMARY_SYSTEM_PROMPT,
     get_analyze_prompt,
+    get_detail_prompt,
+    get_mindmap_map_prompt,
+    get_mindmap_prompt,
+    get_mindmap_reduce_prompt,
     get_polish_prompt,
     get_simple_polish_prompt,
     get_summarize_prompt,
-    get_detail_prompt,
-    get_mindmap_prompt,
-    get_mindmap_map_prompt,
-    get_mindmap_reduce_prompt,
 )
+from app.services.analysis.text_locale import normalize_chinese_script
 
 logger = logging.getLogger(__name__)
 
@@ -1675,32 +1676,42 @@ class LLMService:
         if metadata:
             chapters = metadata.get("chapters")
             if chapters:
-                return await self._mindmap_map_reduce(
+                result = await self._mindmap_map_reduce(
                     text,
                     metadata,
                     chapters,
                     user_language=user_language,
                     provider_override=provider_override,
                 )
+                return normalize_chinese_script(
+                    result,
+                    user_language,
+                    source_text=text,
+                )
         # Rough threshold: ~15k chars ≈ 30min of Chinese transcript
         if len(text) > 15000 and metadata:
             # No source chapters: split by segment count.
-            return await self._mindmap_map_reduce_auto(
+            result = await self._mindmap_map_reduce_auto(
                 text,
                 metadata,
                 user_language=user_language,
                 provider_override=provider_override,
             )
-
-        # Short content: single-pass
-        prompt = get_mindmap_prompt(text, user_language=user_language)
-        resp = await self._call(
-            prompt,
-            provider_override=provider_override,
-            stage="mindmap",
-            system_prompt=MINDMAP_SYSTEM_PROMPT,
+        else:
+            # Short content: single-pass
+            prompt = get_mindmap_prompt(text, user_language=user_language)
+            resp = await self._call(
+                prompt,
+                provider_override=provider_override,
+                stage="mindmap",
+                system_prompt=MINDMAP_SYSTEM_PROMPT,
+            )
+            result = self._filter_mindmap_lines(resp)
+        return normalize_chinese_script(
+            result,
+            user_language,
+            source_text=text,
         )
-        return self._filter_mindmap_lines(resp)
 
     async def _mindmap_map_reduce(
         self,

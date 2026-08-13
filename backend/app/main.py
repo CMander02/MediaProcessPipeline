@@ -57,6 +57,40 @@ async def lifespan(app: FastAPI):
         logger.info(f"  Custom Model: {rt.custom_model}")
         logger.info(f"  Custom API Base: {rt.custom_api_base}")
 
+    # sherpa-onnx and onnxruntime-gpu ship separate ONNX Runtime DLL sets on
+    # Windows. Load the selected sherpa CUDA runtime first so a later import of
+    # onnxruntime (for VAD or other CPU sessions) cannot claim the provider DLL
+    # names and make Qwen3-ASR fail with Windows error 1114.
+    if (
+        sys.platform == "win32"
+        and rt.asr_provider == "sherpa_onnx"
+        and rt.sherpa_device in {"auto", "cuda"}
+    ):
+        try:
+            from app.services.recognition.sherpa_catalog import resolve_model
+            from app.services.recognition.sherpa_runtime import (
+                SherpaRuntimeOptions,
+                get_sherpa_runtime,
+            )
+
+            spec = resolve_model(rt.sherpa_model_id, rt.sherpa_model_root)
+            _, runtime_info = await asyncio.to_thread(
+                get_sherpa_runtime().get,
+                spec,
+                SherpaRuntimeOptions(
+                    device=rt.sherpa_device,
+                    num_threads=rt.sherpa_num_threads,
+                    debug=rt.sherpa_debug,
+                ),
+            )
+            logger.info(
+                "Preloaded sherpa model %s with provider=%s before ONNX Runtime consumers",
+                runtime_info.model_id,
+                runtime_info.provider,
+            )
+        except Exception as exc:
+            logger.warning("Sherpa runtime preload failed: %s", exc)
+
     from app.services.ingestion.ytdlp_version import auto_update_on_startup, warn_if_stale
     if rt.ytdlp_auto_update:
         await asyncio.to_thread(auto_update_on_startup, True)
@@ -75,6 +109,11 @@ async def lifespan(app: FastAPI):
     queue.set_pipeline(process_task)
     await queue.start()
 
+    from app.services.remote_archive_upload import get_remote_archive_upload_service
+
+    remote_archive_upload = get_remote_archive_upload_service()
+    await remote_archive_upload.start()
+
     # Sweep stale upload staging dirs (>24h old, never confirmed by user)
     try:
         from app.api.routes.pipeline import sweep_stale_staging
@@ -91,6 +130,7 @@ async def lifespan(app: FastAPI):
         # closing the database. The desktop process job remains the hard-stop
         # fallback for interrupted Windows exits.
         try:
+            await remote_archive_upload.stop()
             await queue.stop()
         finally:
             try:
@@ -142,7 +182,7 @@ async def auth_middleware(request: Request, call_next):
         # Bearer token auth (optional — only when api_token is configured)
         rt = get_runtime_settings()
         token = rt.api_token
-        if token and path not in _AUTH_EXEMPT_PATHS:
+        if token and request.method != "OPTIONS" and path not in _AUTH_EXEMPT_PATHS:
             if not request_is_authenticated(request, token):
                 return JSONResponse(
                     status_code=401,

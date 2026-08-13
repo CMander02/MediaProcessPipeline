@@ -9,7 +9,7 @@ import { Preferences } from "@capacitor/preferences"
 import { api, configureApiClient } from "@/lib/api"
 import { navigate } from "@/lib/router"
 import { applyAndroidCapabilities } from "@/platform/capabilities"
-import { normalizeServerUrl } from "@/platform/server-url"
+import { bundledDefaultServerUrl, normalizeServerUrl } from "@/platform/server-url"
 import type { ConnectInput, OfflineArchiveRecord, OfflineSyncStatus, PlatformAdapter } from "@/platform/types"
 
 const SERVER_URL_KEY = "mpp_server_url"
@@ -55,6 +55,7 @@ let serverUrl = ""
 let token = ""
 let pendingSharedText: string | null = null
 let initialized = false
+let lastOfflineArchiveCount: number | null = null
 
 function applyApiConnection() {
   configureApiClient({
@@ -115,6 +116,10 @@ async function registerNativeListeners() {
   })
   await OfflineArchive.addListener("syncProgress", (status) => {
     window.dispatchEvent(new CustomEvent("mpp:offline-sync-change", { detail: status }))
+    if (lastOfflineArchiveCount !== status.archiveCount) {
+      lastOfflineArchiveCount = status.archiveCount
+      window.dispatchEvent(new Event("mpp:offline-library-change"))
+    }
   })
   applySharedText((await ShareTarget.getPendingShare()).text)
 }
@@ -130,7 +135,7 @@ export function createCapacitorPlatform(): PlatformAdapter {
         Preferences.get({ key: SERVER_URL_KEY }),
         SecureCredentials.getToken(),
       ])
-      serverUrl = savedServer.value ?? ""
+      serverUrl = savedServer.value ?? bundledDefaultServerUrl()
       token = savedToken.token ?? ""
       applyApiConnection()
       await Promise.all([registerNativeListeners(), this.syncTheme(document.documentElement.classList.contains("dark"))])

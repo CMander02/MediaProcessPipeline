@@ -140,28 +140,23 @@ class RuntimeSettings(BaseModel):
     audio_processing_flow: str = "asr"
 
     # ASR
-    asr_provider: str = "qwen3_gguf"
+    asr_provider: str = "sherpa_onnx"
 
-    # Qwen3-ASR Settings
-    qwen3_asr_model_path: str = ""  # Local path, empty = use HuggingFace
-    qwen3_aligner_model_path: str = ""  # ForcedAligner path for timestamps
-    qwen3_enable_timestamps: bool = True
-    qwen3_batch_size: int = 32
-    qwen3_max_new_tokens: int = 4096
-    qwen3_device: str = "cuda"
+    # Unified local ASR through sherpa-onnx
+    sherpa_model_id: str = "sensevoice-small-int8"
+    sherpa_model_root: str = ""
+    sherpa_device: str = "auto"  # auto | cuda | cpu
+    sherpa_num_threads: int = 4
+    sherpa_chunk_strategy: str = "vad"  # vad | fixed
+    sherpa_max_chunk_sec: float = 30.0
+    sherpa_vad_model_path: str = ""
+    sherpa_debug: bool = False
+    asr_timestamp_mode: str = "auto"  # auto | native | vad | qwen_forced
+    # Optional Safetensors model used as a postprocessor for any sherpa transcript.
+    qwen3_aligner_model_path: str = ""
 
-    # Qwen3-ASR GGUF through llama.cpp
+    # Shared llama.cpp binary remains available to local LLM and VLM services.
     llama_cpp_binary_path: str = ""
-    qwen3_gguf_model_path: str = ""
-    qwen3_gguf_mmproj_path: str = ""
-    qwen3_gguf_hf_repo: str = "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0"
-    qwen3_gguf_device: str = "auto"  # auto | cuda | cpu
-    qwen3_gguf_ctx: int = 4096
-    qwen3_gguf_n_gpu_layers: int = 99
-    qwen3_gguf_timeout_sec: float = 300.0
-    qwen3_gguf_keepalive_sec: float = 300.0
-    qwen3_gguf_chunk_strategy: str = "ffmpeg"  # ffmpeg | silero_onnx | silero_torch
-    silero_onnx_model_path: str = ""
 
     # MOSS-Transcribe-Diarize through moss-transcribe.cpp
     moss_cpp_binary_path: str = ""
@@ -340,15 +335,36 @@ class RuntimeSettings(BaseModel):
     api_token: str = ""  # Bearer token for API auth; empty = auth disabled
     allow_remote_filesystem: bool = False
 
+    # Remote archive synchronization. A desktop daemon uploads each completed
+    # local archive once; the remote daemon accepts it into its own data_root.
+    remote_sync_enabled: bool = False
+    remote_server_url: str = ""
+    remote_api_token: str = ""
+    remote_worker_id: str = ""
+    remote_worker_name: str = ""
+    remote_sync_interval_sec: float = 15.0
+    remote_sync_upload_results: bool = True
+    remote_sync_download_results: bool = True
+    remote_sync_include_media: bool = False
+
     # Paths
     data_root: str = "D:/Video/MediaProcessPipeline"
+
+    @field_validator("remote_sync_interval_sec")
+    @classmethod
+    def _validate_remote_sync_interval(cls, value: float) -> float:
+        if value < 5:
+            raise ValueError("remote_sync_interval_sec must be at least 5 seconds")
+        return value
 
     @field_validator("asr_provider")
     @classmethod
     def _validate_asr_provider(cls, value: str) -> str:
         provider = value.strip().lower()
-        if provider not in {"qwen3", "qwen3_gguf", "siliconflow"}:
-            raise ValueError("asr_provider must be one of: qwen3, qwen3_gguf, siliconflow")
+        if provider in {"qwen3", "qwen3_gguf"}:
+            return "sherpa_onnx"
+        if provider not in {"sherpa_onnx", "siliconflow"}:
+            raise ValueError("asr_provider must be one of: sherpa_onnx, siliconflow")
         return provider
 
     @field_validator("audio_processing_flow")
@@ -388,12 +404,12 @@ class RuntimeSettings(BaseModel):
             raise ValueError("moss_cpp_chunk_overlap_sec must be non-negative")
         return value
 
-    @field_validator("qwen3_gguf_device")
+    @field_validator("sherpa_device")
     @classmethod
-    def _validate_qwen3_gguf_device(cls, value: str) -> str:
+    def _validate_sherpa_device(cls, value: str) -> str:
         device = value.strip().lower()
         if device not in {"auto", "cuda", "cpu"}:
-            raise ValueError("qwen3_gguf_device must be one of: auto, cuda, cpu")
+            raise ValueError("sherpa_device must be one of: auto, cuda, cpu")
         return device
 
     @field_validator("uvr_device")
@@ -404,13 +420,39 @@ class RuntimeSettings(BaseModel):
             raise ValueError("uvr_device must be one of: cuda, cpu")
         return device
 
-    @field_validator("qwen3_gguf_chunk_strategy")
+    @field_validator("sherpa_chunk_strategy")
     @classmethod
-    def _validate_qwen3_gguf_chunk_strategy(cls, value: str) -> str:
+    def _validate_sherpa_chunk_strategy(cls, value: str) -> str:
         strategy = value.strip().lower()
-        if strategy not in {"silero_onnx", "silero_torch", "ffmpeg"}:
-            raise ValueError("qwen3_gguf_chunk_strategy must be one of: ffmpeg, silero_onnx, silero_torch")
+        aliases = {"ffmpeg": "fixed", "silero_onnx": "vad", "silero_torch": "vad"}
+        strategy = aliases.get(strategy, strategy)
+        if strategy not in {"vad", "fixed"}:
+            raise ValueError("sherpa_chunk_strategy must be one of: vad, fixed")
         return strategy
+
+    @field_validator("sherpa_num_threads")
+    @classmethod
+    def _validate_sherpa_num_threads(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("sherpa_num_threads must be at least 1")
+        return value
+
+    @field_validator("sherpa_max_chunk_sec")
+    @classmethod
+    def _validate_sherpa_max_chunk_sec(cls, value: float) -> float:
+        if value < 1:
+            raise ValueError("sherpa_max_chunk_sec must be at least 1 second")
+        return value
+
+    @field_validator("asr_timestamp_mode")
+    @classmethod
+    def _validate_asr_timestamp_mode(cls, value: str) -> str:
+        mode = value.strip().lower()
+        if mode not in {"auto", "native", "vad", "qwen_forced"}:
+            raise ValueError(
+                "asr_timestamp_mode must be one of: auto, native, vad, qwen_forced"
+            )
+        return mode
 
     @field_validator("siliconflow_asr_chunk_strategy")
     @classmethod
@@ -701,7 +743,7 @@ _RUNTIME_BINDING_SPECS: dict[str, tuple[str, str, str]] = {
     "analyze": ("deepseek", "deepseek_analyze_model", "llm"),
     "summary": ("deepseek", "deepseek_summary_model", "llm"),
     "mindmap": ("deepseek", "deepseek_mindmap_model", "llm"),
-    "asr": ("qwen3_gguf", "", "asr"),
+    "asr": ("sherpa_onnx", "sherpa_model_id", "asr"),
     "vision": ("custom-vision-default", "vlm_model", "vlm"),
     "embedding": ("custom-embedding-default", "kb_embedding_model", "embedding"),
 }
@@ -1719,14 +1761,15 @@ def _default_runtime_model_bindings(data: dict[str, Any]) -> dict[str, dict[str,
             provider_id = _canonical_provider_id(data.get("asr_provider") or fallback_provider)
 
         model_id = _str_value(data.get(model_field)).strip() if model_field else ""
-        if provider_id == "qwen3_gguf":
+        if provider_id in {"qwen3", "qwen3_gguf"}:
+            provider_id = "sherpa_onnx"
             model_id = _str_value(
-                data.get("qwen3_gguf_model_path")
-                or data.get("qwen3_gguf_hf_repo")
-                or "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0"
+                data.get("sherpa_model_id") or "qwen3-asr-1.7b-onnx"
             ).strip()
-        elif provider_id == "qwen3":
-            model_id = _str_value(data.get("qwen3_asr_model_path") or "Qwen/Qwen3-ASR").strip()
+        elif provider_id == "sherpa_onnx":
+            model_id = _str_value(
+                data.get("sherpa_model_id") or model_id or "sensevoice-small-int8"
+            ).strip()
         elif provider_id == "siliconflow" and key == "asr":
             model_id = _str_value(data.get("siliconflow_asr_model")).strip()
         elif provider_id.startswith("custom-") and capability == "llm":
@@ -1770,11 +1813,12 @@ def _normalize_runtime_model_bindings(data: dict[str, Any]) -> None:
                 continue
             spec = _RUNTIME_BINDING_SPECS.get(key)
             capability = _str_value(value.get("capability") or (spec[2] if spec else "llm"))
-            normalized[key] = _binding_record(
-                value.get("provider_id"),
-                value.get("model_id"),
-                capability,
-            )
+            provider_id = value.get("provider_id")
+            model_id = value.get("model_id")
+            if key == "asr" and _canonical_provider_id(provider_id) in {"qwen3", "qwen3_gguf"}:
+                provider_id = "sherpa_onnx"
+                model_id = data.get("sherpa_model_id") or "qwen3-asr-1.7b-onnx"
+            normalized[key] = _binding_record(provider_id, model_id, capability)
     data["runtime_model_bindings"] = normalized
 
 
@@ -1811,9 +1855,11 @@ def _sync_flat_from_runtime_model_bindings(data: dict[str, Any]) -> None:
             data["custom_active_profile_id"] = llm_provider.removeprefix("custom-")
 
     asr = binding("asr")
-    if asr.get("provider_id") in {"qwen3", "qwen3_gguf", "siliconflow"}:
+    if asr.get("provider_id") in {"sherpa_onnx", "siliconflow"}:
         data["asr_provider"] = asr["provider_id"]
-        if asr["provider_id"] == "siliconflow" and asr.get("model_id"):
+        if asr["provider_id"] == "sherpa_onnx" and asr.get("model_id"):
+            data["sherpa_model_id"] = asr["model_id"]
+        elif asr["provider_id"] == "siliconflow" and asr.get("model_id"):
             data["siliconflow_asr_model"] = asr["model_id"]
 
     vision = binding("vision")
@@ -1932,6 +1978,47 @@ def _normalize_settings_document_state(
     *,
     sync_flat_keys: set[str] | None = None,
 ) -> None:
+    legacy_asr_provider = _str_value(data.get("asr_provider")).strip().lower()
+    if legacy_asr_provider in {"qwen3", "qwen3_gguf"}:
+        data["asr_provider"] = "sherpa_onnx"
+    default_sherpa_model = (
+        "qwen3-asr-1.7b-onnx"
+        if legacy_asr_provider in {"qwen3", "qwen3_gguf"}
+        else "sensevoice-small-int8"
+    )
+    data.setdefault("sherpa_model_id", default_sherpa_model)
+    data.setdefault("sherpa_model_root", "")
+    data.setdefault("sherpa_device", data.get("qwen3_gguf_device") or data.get("qwen3_device") or "auto")
+    data.setdefault("sherpa_num_threads", 4)
+    legacy_chunk_strategy = _str_value(data.get("qwen3_gguf_chunk_strategy")).strip().lower()
+    data.setdefault("sherpa_chunk_strategy", "fixed" if legacy_chunk_strategy == "ffmpeg" else "vad")
+    data.setdefault("sherpa_max_chunk_sec", 30.0)
+    data.setdefault(
+        "sherpa_vad_model_path",
+        _str_value(data.get("silero_onnx_model_path")),
+    )
+    data.setdefault("sherpa_debug", False)
+    data.setdefault("asr_timestamp_mode", "auto")
+
+    for legacy_key in (
+        "qwen3_asr_model_path",
+        "qwen3_enable_timestamps",
+        "qwen3_batch_size",
+        "qwen3_max_new_tokens",
+        "qwen3_device",
+        "qwen3_gguf_model_path",
+        "qwen3_gguf_mmproj_path",
+        "qwen3_gguf_hf_repo",
+        "qwen3_gguf_device",
+        "qwen3_gguf_ctx",
+        "qwen3_gguf_n_gpu_layers",
+        "qwen3_gguf_timeout_sec",
+        "qwen3_gguf_keepalive_sec",
+        "qwen3_gguf_chunk_strategy",
+        "silero_onnx_model_path",
+    ):
+        data.pop(legacy_key, None)
+
     legacy_moss_chunk_config = "moss_cpp_chunk_duration_sec" not in data
     data.setdefault("moss_cpp_chunk_duration_sec", 1200.0)
     data.setdefault("moss_cpp_chunk_overlap_sec", 60.0)
@@ -1956,6 +2043,20 @@ def _normalize_settings_document_state(
         _sync_service_connections_from_flat(data, set(_FLAT_CONNECTION_FIELDS))
 
     _normalize_runtime_model_bindings(data)
+    if sync_flat_keys and "runtime_model_bindings" not in sync_flat_keys:
+        asr_binding_keys = {"asr_provider", "sherpa_model_id", "siliconflow_asr_model"}
+        if sync_flat_keys & asr_binding_keys:
+            provider_id = _canonical_provider_id(data.get("asr_provider"))
+            model_id = (
+                data.get("sherpa_model_id")
+                if provider_id == "sherpa_onnx"
+                else data.get("siliconflow_asr_model")
+            )
+            data["runtime_model_bindings"]["asr"] = _binding_record(
+                provider_id,
+                model_id,
+                "asr",
+            )
     if sync_flat_keys and "runtime_model_bindings" in sync_flat_keys:
         _sync_flat_from_runtime_model_bindings(data)
         _ensure_providers(data)

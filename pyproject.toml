@@ -1,6 +1,6 @@
 [project]
 name = "MediaProcessPipeline"
-version = "0.5.0"
+version = "0.6.4"
 description = "Omni-Media Processing Pipeline - Convert audio/video to structured knowledge"
 requires-python = ">=3.11,<3.13"
 dependencies = [
@@ -15,9 +15,14 @@ dependencies = [
     "transformers>=4.45.0",
     "python-multipart>=0.0.21",
     "numpy>=1.26.0",
+    # Deterministic Simplified/Traditional Chinese normalization for generated artifacts.
+    "opencc>=1.4.0,<2",
+    # Unified local ASR runtime. CUDA wheels installed by setup keep this version identity.
+    "sherpa-onnx==1.13.4",
     # CLI
     "typer>=0.15.0",
     "rich>=13.0.0",
+    "psutil>=6.0.0",
     "youtube-transcript-api>=1.2.4",
     "sqlite-vec>=0.1.6",
     # Media pipeline runtime dependencies
@@ -45,19 +50,23 @@ uvr = [
     "torchaudio~=2.8.0",
     # 音频处理 (UVR5 人声分离)
     "audio-separator[gpu]>=0.41.0",
+    # CUDA 12 + cuDNN 9; newer Windows wheels target CUDA 13.
+    "onnxruntime-gpu==1.22.0",
 ]
 local-asr = [
     "torch~=2.8.0",
     "torchaudio~=2.8.0",
-    # Qwen3-ASR (支持本地模型)
-    "qwen-asr>=0.0.6",
     # 说话人分离 / 声纹
     "pyannote-audio>=3.4.0,<4",
     "soundfile>=0.12.1",
     "numba>=0.61.2",
 ]
+forced-alignment = [
+    # Optional Safetensors postprocessor for asr_timestamp_mode=qwen_forced.
+    "qwen-asr>=0.0.6",
+]
 diarization = [
-    # 独立于 Python ASR 模型，可与 Qwen3 GGUF / API ASR 组合使用。
+    # 独立于 Python ASR 模型，可与 sherpa-onnx / API ASR 组合使用。
     "torch~=2.8.0",
     "torchaudio~=2.8.0",
     "pyannote-audio>=3.4.0,<4",
@@ -78,6 +87,8 @@ local-models = [
     # audio-separator[gpu] provides onnxruntime-gpu, which also includes the CPU provider.
     # Installing onnxruntime alongside it overwrites the shared Python module on Windows.
     "audio-separator[gpu]>=0.41.0",
+    "onnxruntime-gpu==1.22.0",
+    # Qwen3-ASR inference is handled by sherpa-onnx; qwen-asr supplies ForcedAligner only.
     "qwen-asr>=0.0.6",
     "pyannote-audio>=3.4.0,<4",
     "numba>=0.61.2",

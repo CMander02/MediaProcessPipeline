@@ -6,7 +6,7 @@ import type {
   ServiceModelType,
 } from "./settings-schema"
 
-export type ModelProvider = LlmProvider | "siliconflow" | "qwen3" | "qwen3_gguf" | "vlm" | "kb_embedding"
+export type ModelProvider = LlmProvider | "siliconflow" | "sherpa_onnx" | "vlm" | "kb_embedding"
 
 export interface ModelRegistryEntry {
   value: string
@@ -107,16 +107,30 @@ export const MODEL_REGISTRY: ModelRegistryEntry[] = [
     stages: ["asr"],
   },
   {
-    value: "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0",
-    label: "Qwen3-ASR GGUF",
-    provider: "qwen3_gguf",
+    value: "qwen3-asr-1.7b-onnx",
+    label: "Qwen3-ASR 1.7B INT8",
+    provider: "sherpa_onnx",
     capabilities: ["asr", "local"],
     stages: ["asr"],
   },
   {
-    value: "Qwen/Qwen3-ASR",
-    label: "Qwen3-ASR",
-    provider: "qwen3",
+    value: "sensevoice-small-int8",
+    label: "SenseVoice Small INT8",
+    provider: "sherpa_onnx",
+    capabilities: ["asr", "fast", "local"],
+    stages: ["asr"],
+  },
+  {
+    value: "paraformer-zh-int8",
+    label: "Paraformer Chinese INT8",
+    provider: "sherpa_onnx",
+    capabilities: ["asr", "fast", "local"],
+    stages: ["asr"],
+  },
+  {
+    value: "whisper-small-multi-int8",
+    label: "Whisper Small Multilingual INT8",
+    provider: "sherpa_onnx",
     capabilities: ["asr", "local"],
     stages: ["asr"],
   },
@@ -142,8 +156,7 @@ const FREE_TEXT_PROVIDERS = new Set<ModelProvider>([
   "custom",
   "local",
   "siliconflow",
-  "qwen3",
-  "qwen3_gguf",
+  "sherpa_onnx",
   "vlm",
   "kb_embedding",
 ])

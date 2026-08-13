@@ -437,9 +437,88 @@ async def separate_vocals(
     progress_callback: UVRProgressCallback | None = None,
 ) -> dict[str, Any]:
     import asyncio
+
+    rt = get_runtime_settings()
+    if os.name == "nt" and str(rt.uvr_device).lower() == "cuda":
+        return await asyncio.to_thread(
+            _separate_vocals_in_subprocess,
+            audio_path,
+            output_dir,
+            progress_callback,
+        )
     return await asyncio.to_thread(
         get_uvr_service().separate,
         audio_path,
         output_dir=output_dir,
         progress_callback=progress_callback,
     )
+
+
+def _separate_vocals_in_subprocess(
+    audio_path: str,
+    output_dir: Path | None,
+    progress_callback: UVRProgressCallback | None,
+) -> dict[str, Any]:
+    """Run Windows GPU UVR in a short process so its ORT DLLs unload before ASR."""
+    import json
+    import subprocess
+    import sys
+    import tempfile
+
+    target_dir = (
+        Path(output_dir).resolve()
+        if output_dir
+        else Path(get_runtime_settings().data_root)
+    )
+    target_dir.mkdir(parents=True, exist_ok=True)
+    _notify_progress(
+        progress_callback,
+        {
+            "phase": "starting",
+            "current_chunk": 0,
+            "completed_chunks": 0,
+            "total_chunks": 0,
+            "progress": 0.0,
+            "message": "准备在独立 GPU 进程中分离人声",
+        },
+    )
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as handle:
+        result_path = Path(handle.name)
+    command = [
+        sys.executable,
+        "-m",
+        "app.services.preprocessing.uvr_worker",
+        "--audio",
+        str(Path(audio_path).resolve()),
+        "--output-dir",
+        str(target_dir),
+        "--result",
+        str(result_path),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(Path(__file__).resolve().parents[3]),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if completed.returncode != 0:
+            details = (completed.stderr or completed.stdout or "").strip()[-4000:]
+            raise RuntimeError(
+                f"UVR worker exited with code {completed.returncode}: {details}"
+            )
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        _notify_progress(
+            progress_callback,
+            {
+                "phase": "completed",
+                "progress": 1.0,
+                "message": "人声分离完成",
+            },
+        )
+        return result
+    finally:
+        result_path.unlink(missing_ok=True)

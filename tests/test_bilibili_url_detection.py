@@ -87,6 +87,12 @@ def test_bilibili_short_url_to_opus_routes_as_image_note(monkeypatch):
     assert ytdlp._extract_bilibili_bvid(short_url) is None
 
 
+def test_bilibili_normalization_preserves_unicode_windows_path():
+    source = r"D:\Video\MediaProcessPipeline\为什么数学会进步？\样本.mp4"
+
+    assert ytdlp.normalize_bilibili_source_url(source) == source
+
+
 def test_bilibili_short_url_uses_first_redirect_location(monkeypatch):
     short_url = "https://b23.tv/9obruXU"
     resolved_url = "https://www.bilibili.com/video/BV1eERyBnEBZ?p=1"

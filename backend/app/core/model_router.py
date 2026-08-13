@@ -13,11 +13,9 @@ from typing import Any
 from app.core.settings import RuntimeSettings
 
 LLM_STAGES = {"analyze", "polish", "summary", "mindmap"}
-ASR_PROVIDERS = {"moss_cpp", "qwen3", "qwen3_gguf", "siliconflow"}
+ASR_PROVIDERS = {"moss_cpp", "sherpa_onnx", "siliconflow"}
 
-_DEFAULT_QWEN3_ASR_MODEL = "Qwen/Qwen3-ASR-1.7B"
-_DEFAULT_QWEN3_GGUF_REPO = "ggml-org/Qwen3-ASR-1.7B-GGUF:Q8_0"
-_DEFAULT_QWEN3_GGUF_ALIAS = "Qwen3-ASR-1.7B"
+_DEFAULT_SHERPA_MODEL = "sensevoice-small-int8"
 _DEFAULT_DEEPSEEK_API_BASE = "https://api.deepseek.com"
 _DEFAULT_SILICONFLOW_VLM_MODEL = "Qwen/Qwen3.5-4B"
 _LEGACY_VLM_DEFAULT_MODELS = {"qwen2.5-vl-7b-instruct"}
@@ -231,7 +229,10 @@ def resolve_deepseek_llm_binding(rt: RuntimeSettings, stage: str = "polish") -> 
     normalized_stage = _normalize_stage(stage)
     model, thinking, effort = _deepseek_stage_values(rt, normalized_stage)
     stage_binding = _stage_runtime_binding(rt, normalized_stage)
-    if _canonical_provider_id(stage_binding.get("provider_id")) == "deepseek" and stage_binding.get("model_id"):
+    if (
+        _canonical_provider_id(stage_binding.get("provider_id")) == "deepseek"
+        and stage_binding.get("model_id")
+    ):
         model = stage_binding["model_id"]
     thinking_type = "enabled" if _normalize_provider(thinking) == "enabled" else "disabled"
     api_base = _clean_text(rt.deepseek_api_base) or _DEFAULT_DEEPSEEK_API_BASE
@@ -494,7 +495,9 @@ def _stage_runtime_binding(rt: RuntimeSettings, stage: str) -> dict[str, str]:
 
 def _provider_models(provider: dict[str, Any]) -> list[dict[str, Any]]:
     models = provider.get("models")
-    return [model for model in models if isinstance(model, dict)] if isinstance(models, list) else []
+    if not isinstance(models, list):
+        return []
+    return [model for model in models if isinstance(model, dict)]
 
 
 def _find_provider(rt: RuntimeSettings, provider_id: str) -> dict[str, Any] | None:
@@ -572,7 +575,11 @@ def resolve_provider_model_binding(
     model_type = _model_type_from_capabilities(model.get("model_type"), model.get("capabilities"))
     api_base = _base_with_optional_v1(_clean_text(provider.get("api_base")))
     api_key = _openai_compatible_api_key(_clean_text(provider.get("api_key")))
-    endpoint = _endpoint_for_model_type(api_base, model_type, _clean_text(model.get("endpoint_path")))
+    endpoint = _endpoint_for_model_type(
+        api_base,
+        model_type,
+        _clean_text(model.get("endpoint_path")),
+    )
     enabled = bool(provider.get("enabled", True) and model.get("enabled", True))
     resolved_model = _clean_text(model.get("model_id"))
     cli_oauth = provider_type in {"codex_oauth", "agy_oauth"}
@@ -593,9 +600,19 @@ def resolve_provider_model_binding(
             "api_kind": _MODEL_TYPE_API_KINDS.get(model_type, "chat"),
             "endpoint_path": _clean_text(model.get("endpoint_path"))
             or _MODEL_TYPE_ENDPOINT_PATHS.get(model_type, "/chat/completions"),
-            "headers": provider.get("headers") if isinstance(provider.get("headers"), dict) else {},
-            "extra_body": provider.get("extra_body") if isinstance(provider.get("extra_body"), dict) else {},
-            "default_params": model.get("default_params") if isinstance(model.get("default_params"), dict) else {},
+            "headers": (
+                provider.get("headers") if isinstance(provider.get("headers"), dict) else {}
+            ),
+            "extra_body": (
+                provider.get("extra_body")
+                if isinstance(provider.get("extra_body"), dict)
+                else {}
+            ),
+            "default_params": (
+                model.get("default_params")
+                if isinstance(model.get("default_params"), dict)
+                else {}
+            ),
             "cli_path": _clean_text(provider.get("cli_path")),
             "timeout_sec": provider.get("timeout_sec", 600),
             "cli_model_name": _clean_text(model.get("cli_model_name")),
@@ -734,7 +751,11 @@ def resolve_service_model_binding(
             "model": requested_model,
             "api_kind": _MODEL_TYPE_API_KINDS.get(model_type, "chat"),
             "endpoint_path": _MODEL_TYPE_ENDPOINT_PATHS.get(model_type, "/chat/completions"),
-            "default_params": model.get("default_params") if isinstance(model.get("default_params"), dict) else {},
+            "default_params": (
+                model.get("default_params")
+                if isinstance(model.get("default_params"), dict)
+                else {}
+            ),
         },
     )
 
@@ -807,54 +828,26 @@ def resolve_asr_binding(
             },
         )
 
-    if provider == "qwen3":
-        model = rt.qwen3_asr_model_path or _DEFAULT_QWEN3_ASR_MODEL
-        diarize = bool(
-            rt.enable_diarization
-            and rt.pyannote_model_path
-            and not options.get("disable_diarization", False)
-        )
-        return ASRBinding(
-            provider="qwen3",
-            source=source,
-            model=model,
-            language=language,
-            diarize=diarize,
-            num_speakers=num_speakers,
-            configured=True,
-            request_kwargs={
-                "model_path": model,
-                "aligner_model_path": rt.qwen3_aligner_model_path or None,
-                "enable_timestamps": rt.qwen3_enable_timestamps,
-                "batch_size": rt.qwen3_batch_size,
-                "max_new_tokens": rt.qwen3_max_new_tokens,
-                "device": rt.qwen3_device,
-                "language": language,
-                "diarize": diarize,
-                "num_speakers": num_speakers,
-            },
-        )
-
-    if provider == "qwen3_gguf":
+    if provider == "sherpa_onnx":
         bound_model = _clean_text(asr_runtime_binding.get("model_id"))
-        model_path = _clean_text(rt.qwen3_gguf_model_path)
-        mmproj_path = _clean_text(rt.qwen3_gguf_mmproj_path)
-        hf_repo = _clean_text(rt.qwen3_gguf_hf_repo) or _DEFAULT_QWEN3_GGUF_REPO
-        if bound_model and not model_path and bound_model != _DEFAULT_QWEN3_GGUF_ALIAS:
-            if _looks_like_gguf_path(bound_model):
-                model_path = bound_model
-            else:
-                hf_repo = bound_model
-        has_local_pair = bool(model_path and mmproj_path)
-        has_partial_local = bool(model_path) != bool(mmproj_path)
-        configured = has_local_pair or (not has_partial_local and bool(hf_repo))
+        model_id = (
+            _clean_text(options.get("asr_model"))
+            or bound_model
+            or rt.sherpa_model_id
+            or _DEFAULT_SHERPA_MODEL
+        )
+        model_root = _clean_text(rt.sherpa_model_root)
+        configured = True
         reason = ""
-        if has_partial_local:
-            reason = "qwen3_gguf_model_path and qwen3_gguf_mmproj_path must be set together"
-        elif not configured:
-            reason = "qwen3_gguf_hf_repo is empty"
+        try:
+            from app.services.recognition.sherpa_catalog import resolve_model
+
+            resolve_model(model_id, model_root)
+        except (FileNotFoundError, RuntimeError, ValueError) as exc:
+            configured = False
+            reason = str(exc)
         chunk_strategy = _normalize_provider(
-            options.get("asr_chunk_strategy") or rt.qwen3_gguf_chunk_strategy
+            options.get("asr_chunk_strategy") or rt.sherpa_chunk_strategy
         )
         diarize = bool(
             rt.enable_diarization
@@ -862,9 +855,9 @@ def resolve_asr_binding(
             and not options.get("disable_diarization", False)
         )
         return ASRBinding(
-            provider="qwen3_gguf",
+            provider="sherpa_onnx",
             source=source,
-            model=model_path or hf_repo,
+            model=model_id,
             language=language,
             diarize=diarize,
             num_speakers=num_speakers,
@@ -872,21 +865,20 @@ def resolve_asr_binding(
             configured=configured,
             reason=reason,
             request_kwargs={
-                "binary_path": rt.llama_cpp_binary_path,
-                "model_path": model_path,
-                "mmproj_path": mmproj_path,
-                "hf_repo": hf_repo,
-                "device": rt.qwen3_gguf_device,
-                "ctx": rt.qwen3_gguf_ctx,
-                "n_gpu_layers": rt.qwen3_gguf_n_gpu_layers,
-                "timeout_sec": rt.qwen3_gguf_timeout_sec,
-                "keepalive_sec": rt.qwen3_gguf_keepalive_sec,
+                "model_id": model_id,
+                "model_root": model_root,
+                "device": rt.sherpa_device,
+                "num_threads": rt.sherpa_num_threads,
+                "debug": rt.sherpa_debug,
                 "chunk_strategy": chunk_strategy,
-                "max_chunk_sec": 30.0,
-                "silero_onnx_model_path": rt.silero_onnx_model_path,
+                "max_chunk_sec": rt.sherpa_max_chunk_sec,
+                "vad_model_path": rt.sherpa_vad_model_path,
+                "timestamp_mode": _clean_text(
+                    options.get("asr_timestamp_mode") or rt.asr_timestamp_mode
+                ).lower(),
+                "aligner_model_path": rt.qwen3_aligner_model_path,
                 "diarize": diarize,
                 "num_speakers": num_speakers,
-                "alias": _DEFAULT_QWEN3_GGUF_ALIAS,
             },
         )
 
@@ -902,7 +894,11 @@ def resolve_asr_binding(
             "asr",
         )
 
-    api_base = provider_binding.api_base if provider_binding else _normalize_siliconflow_base(rt.siliconflow_api_base)
+    api_base = (
+        provider_binding.api_base
+        if provider_binding
+        else _normalize_siliconflow_base(rt.siliconflow_api_base)
+    )
     api_key = provider_binding.api_key if provider_binding else rt.siliconflow_api_key
     lang_hint = language or rt.siliconflow_asr_language or None
     chunk_strategy = _normalize_provider(
@@ -964,7 +960,11 @@ def resolve_vlm_binding(rt: RuntimeSettings) -> EndpointBinding:
         engine = _clean_text(rt.local_llm_engine).lower() or "transformers"
         model_path = _clean_text(rt.local_llm_model_path)
         mmproj_path = _clean_text(rt.local_llm_mmproj_path)
-        model = _clean_text(vision_binding.get("model_id")) or _clean_text(rt.local_llm_name) or "Local LLM"
+        model = (
+            _clean_text(vision_binding.get("model_id"))
+            or _clean_text(rt.local_llm_name)
+            or "Local LLM"
+        )
         configured = bool(engine == "llama_cpp" and model_path and mmproj_path)
         reason = "" if configured else (
             "local vision requires llama_cpp, local_llm_model_path, and local_llm_mmproj_path"
@@ -1138,7 +1138,9 @@ def resolve_pipeline_model_bindings(
 
     if subtype in {"image_note", "text_note"}:
         run_vlm = subtype == "image_note" and has_images and vlm.configured
-        note_llm_provider = "deepseek" if resolve_deepseek_llm_binding(rt, "summary").configured else ""
+        note_llm_provider = (
+            "deepseek" if resolve_deepseek_llm_binding(rt, "summary").configured else ""
+        )
         return PipelineModelBindings(
             branch=subtype,
             transcript_source="note",

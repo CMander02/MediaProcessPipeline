@@ -170,7 +170,7 @@ export function DeviceChoice({
 
 export function PathPickerRow({
   ...props
-}: SettingRowProps & { title?: string }) {
+}: SettingRowProps & { title?: string; pickerLabel?: string }) {
   return <PathPickerRowEditor key={`${props.settingKey}:${props.value}`} {...props} />
 }
 
@@ -183,7 +183,8 @@ function PathPickerRowEditor({
   saved,
   placeholder,
   title,
-}: SettingRowProps & { title?: string }) {
+  pickerLabel = "选择",
+}: SettingRowProps & { title?: string; pickerLabel?: string }) {
   const [editValue, setEditValue] = useState(value)
 
   const pickDirectory = async () => {
@@ -211,7 +212,7 @@ function PathPickerRowEditor({
       />
       <Button size="sm" variant="ghost" onClick={pickDirectory} className="h-8 gap-1.5 px-2">
         <HugeiconsIcon icon={FolderOpenIcon} className="h-3.5 w-3.5" />
-        选择
+        {pickerLabel}
       </Button>
       {isDirty && (
         <Button

@@ -68,6 +68,132 @@ class ASRChunker:
             start = end
         return chunks or [AudioChunk(0.0, round(duration, 3))]
 
+    def sherpa_vad_chunks(
+        self,
+        audio_path: str | Path,
+        *,
+        model_path: str | Path,
+        max_duration: float = 30.0,
+        min_silence_duration: float = 0.4,
+    ) -> list[AudioChunk]:
+        """Stream decoded PCM through sherpa VAD with bounded memory usage."""
+        import numpy as np
+
+        try:
+            import sherpa_onnx
+        except ImportError as exc:
+            raise RuntimeError("sherpa-onnx is required for VAD chunking") from exc
+
+        vad_model = Path(model_path).expanduser().resolve()
+        if not vad_model.is_file():
+            raise FileNotFoundError(f"Sherpa VAD model not found: {vad_model}")
+
+        sample_rate = 16000
+        config = sherpa_onnx.VadModelConfig()
+        config.silero_vad.model = str(vad_model)
+        config.silero_vad.threshold = 0.5
+        config.silero_vad.min_silence_duration = min_silence_duration
+        config.silero_vad.min_speech_duration = 0.2
+        config.silero_vad.max_speech_duration = max_duration
+        config.sample_rate = sample_rate
+        config.num_threads = 1
+        config.provider = "cpu"
+        if not config.validate():
+            raise RuntimeError(f"Invalid sherpa VAD configuration for {vad_model}")
+
+        window_size = int(config.silero_vad.window_size)
+        vad = sherpa_onnx.VoiceActivityDetector(
+            config,
+            buffer_size_in_seconds=max(60.0, max_duration * 3.0),
+        )
+        command = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(Path(audio_path)),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            str(sample_rate),
+            "-f",
+            "f32le",
+            "pipe:1",
+        ]
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError("ffmpeg not found in PATH; install FFmpeg for ASR chunking") from exc
+
+        chunks: list[AudioChunk] = []
+        remainder = np.empty(0, dtype=np.float32)
+
+        def drain() -> None:
+            while not vad.empty():
+                segment = vad.front
+                start = float(segment.start) / sample_rate
+                end = start + len(segment.samples) / sample_rate
+                chunks.append(AudioChunk(round(start, 3), round(end, 3)))
+                vad.pop()
+
+        assert process.stdout is not None
+        try:
+            while True:
+                raw = process.stdout.read(window_size * 4 * 64)
+                if not raw:
+                    break
+                samples = np.frombuffer(raw, dtype=np.float32).copy()
+                remainder = np.concatenate((remainder, samples))
+                offset = 0
+                while len(remainder) - offset >= window_size:
+                    vad.accept_waveform(remainder[offset : offset + window_size])
+                    offset += window_size
+                    drain()
+                remainder = remainder[offset:]
+            if len(remainder):
+                padded = np.zeros(window_size, dtype=np.float32)
+                padded[: len(remainder)] = remainder
+                vad.accept_waveform(padded)
+            vad.flush()
+            drain()
+            stderr = process.stderr.read() if process.stderr is not None else b""
+            return_code = process.wait()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
+        if return_code != 0:
+            message = stderr.decode(errors="replace")[:500]
+            raise RuntimeError(f"ffmpeg failed while streaming audio to sherpa VAD: {message}")
+        if not chunks:
+            return self.fixed_chunks(audio_path, max_duration)
+        return self._merge_vad_chunks(chunks, max_duration)
+
+    @staticmethod
+    def _merge_vad_chunks(chunks: list[AudioChunk], max_duration: float) -> list[AudioChunk]:
+        merged: list[AudioChunk] = []
+        for chunk in chunks:
+            if not merged:
+                merged.append(chunk)
+                continue
+            previous = merged[-1]
+            combined_duration = chunk.end - previous.start
+            if chunk.start - previous.end <= 0.5 and combined_duration <= max_duration:
+                merged[-1] = AudioChunk(previous.start, chunk.end)
+            else:
+                merged.append(chunk)
+        result: list[AudioChunk] = []
+        for chunk in merged:
+            result.extend(ASRChunker._split_evenly(chunk, max_duration))
+        return result
+
     def export_wav(self, audio_path: str | Path, chunk: AudioChunk, wav_path: str | Path) -> None:
         duration = max(0.0, chunk.end - chunk.start)
         cmd = [

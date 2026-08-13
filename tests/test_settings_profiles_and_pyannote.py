@@ -12,7 +12,7 @@ from app.core.settings import (  # noqa: E402
     RuntimeSettings,
     _normalize_custom_profile_state,
 )
-from app.services.recognition.qwen3_asr import Qwen3ASRService  # noqa: E402
+from app.services.recognition.diarization import DiarizationService  # noqa: E402
 
 
 def test_custom_profile_state_normalizes_active_profile():
@@ -104,7 +104,7 @@ def test_settings_api_masks_and_restores_nested_profile_secrets():
     assert restored["custom_llm_profiles"][0]["api_key"] == "profile-secret"
 
 
-def test_pyannote_config_rewrites_hub_ids_to_local_paths(tmp_path):
+def test_pyannote_config_rewrites_hub_ids_to_local_paths(tmp_path, monkeypatch):
     pytest.importorskip("yaml")
     import yaml
 
@@ -114,6 +114,8 @@ def test_pyannote_config_rewrites_hub_ids_to_local_paths(tmp_path):
     diarization_dir.mkdir()
     segmentation_dir.mkdir()
     embedding_dir.mkdir()
+    (segmentation_dir / "pytorch_model.bin").write_bytes(b"weights")
+    (embedding_dir / "pytorch_model.bin").write_bytes(b"weights")
 
     config_file = diarization_dir / "config.yaml"
     config_file.write_text(
@@ -131,17 +133,20 @@ def test_pyannote_config_rewrites_hub_ids_to_local_paths(tmp_path):
         encoding="utf-8",
     )
 
-    service = Qwen3ASRService()
+    service = DiarizationService()
     rt = RuntimeSettings(
         data_root=str(tmp_path / "data"),
         pyannote_segmentation_path=str(segmentation_dir),
         pyannote_embedding_path=str(embedding_dir),
     )
 
-    resolved_config, local_dependencies = service._prepare_pyannote_config(str(config_file), rt)
+    monkeypatch.setattr(
+        "app.services.recognition.diarization.get_runtime_settings",
+        lambda: rt,
+    )
+    resolved_config = service._prepare_model_config(str(config_file))
 
-    assert local_dependencies is True
     data = yaml.safe_load(Path(resolved_config).read_text(encoding="utf-8"))
     params = data["pipeline"]["params"]
-    assert params["segmentation"] == str(segmentation_dir.resolve())
-    assert params["embedding"] == str(embedding_dir.resolve())
+    assert params["segmentation"] == str((segmentation_dir / "pytorch_model.bin").resolve())
+    assert params["embedding"] == str((embedding_dir / "pytorch_model.bin").resolve())

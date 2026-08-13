@@ -23,8 +23,13 @@ from fastapi.responses import StreamingResponse
 from app.core.database import get_task_store
 from app.core.events import get_event_bus
 from app.core.pipeline import (
-    PIPELINE_STEPS, PipelineStep, pipeline_steps_schema, _detect_source_type, _looks_like_local_path,
-    _clean_source_path, create_task_dir, write_metadata_json,
+    PIPELINE_STEPS,
+    PipelineStep,
+    _clean_source_path,
+    _looks_like_local_path,
+    create_task_dir,
+    pipeline_steps_schema,
+    write_metadata_json,
 )
 from app.core.queue import get_task_queue
 from app.core.security import filesystem_access_allowed
@@ -77,6 +82,7 @@ def _validate_public_http_url(url: str) -> None:
 # Fixed-path routes (BEFORE /{task_id} to avoid route conflicts)
 # ---------------------------------------------------------------------------
 
+
 @router.post("", response_model=Task)
 async def create_task(task_create: TaskCreate, request: Request):
     """Create a new processing task and submit it to the queue."""
@@ -108,7 +114,11 @@ async def create_task(task_create: TaskCreate, request: Request):
 
     if _looks_like_local_path(source):
         title = Path(source).stem
-        media_type = "video" if Path(source).suffix.lower() in {".mp4", ".mkv", ".avi", ".webm", ".mov"} else "audio"
+        media_type = (
+            "video"
+            if Path(source).suffix.lower() in {".mp4", ".mkv", ".avi", ".webm", ".mov"}
+            else "audio"
+        )
     else:
         title = str(task.id)
         media_type = "unknown"
@@ -124,15 +134,19 @@ async def create_task(task_create: TaskCreate, request: Request):
     task.content_subtype = source_flow.content_subtype
 
     task_dir = create_task_dir(task.id, title)
-    write_metadata_json(task_dir, {
-        "title": title,
-        "source_url": source,
-        "source_type": source_flow.source_type,
-        "platform": source_flow.platform,
-        "content_subtype": source_flow.content_subtype,
-        "flow_id": source_flow.flow_id,
-        "media_type": media_type,
-    }, status="queued")
+    write_metadata_json(
+        task_dir,
+        {
+            "title": title,
+            "source_url": source,
+            "source_type": source_flow.source_type,
+            "platform": source_flow.platform,
+            "content_subtype": source_flow.content_subtype,
+            "flow_id": source_flow.flow_id,
+            "media_type": media_type,
+        },
+        status="queued",
+    )
 
     task.result = {"output_dir": str(task_dir)}
 
@@ -151,8 +165,7 @@ async def create_tasks_batch(batch_create: TaskBatchCreate, request: Request):
     from app.services.ingestion.ytdlp import normalize_bilibili_source_url
 
     normalized_sources = [
-        normalize_bilibili_source_url(_clean_source_path(source))
-        for source in batch_create.sources
+        normalize_bilibili_source_url(_clean_source_path(source)) for source in batch_create.sources
     ]
     for source in normalized_sources:
         if source.startswith(("http://", "https://")):
@@ -160,20 +173,46 @@ async def create_tasks_batch(batch_create: TaskBatchCreate, request: Request):
 
     tasks_created: list[Task] = []
     for source in normalized_sources:
-        tasks_created.append(await create_task(TaskCreate(
-            task_type=batch_create.task_type,
-            source=source,
-            options=batch_create.options,
-            webhook_url=batch_create.webhook_url,
-        ), request))
+        tasks_created.append(
+            await create_task(
+                TaskCreate(
+                    task_type=batch_create.task_type,
+                    source=source,
+                    options=batch_create.options,
+                    webhook_url=batch_create.webhook_url,
+                ),
+                request,
+            )
+        )
     return tasks_created
 
 
 @router.get("", response_model=list[Task])
-async def list_tasks(status: TaskStatus | None = None, limit: int = 50):
+async def list_tasks(
+    status: TaskStatus | None = None,
+    statuses: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
     """List tasks with optional filtering."""
+    if limit < 1 or limit > 10000:
+        raise HTTPException(400, "limit must be between 1 and 10000")
+    if offset < 0:
+        raise HTTPException(400, "offset must be non-negative")
+    parsed_statuses: list[str] | None = None
+    if statuses:
+        parsed_statuses = [item.strip() for item in statuses.split(",") if item.strip()]
+        valid = {item.value for item in TaskStatus}
+        unknown = [item for item in parsed_statuses if item not in valid]
+        if unknown:
+            raise HTTPException(400, f"Unknown task statuses: {', '.join(unknown)}")
     store = get_task_store()
-    return store.list(status=status, limit=limit)
+    return store.list(
+        status=status.value if status else None,
+        statuses=parsed_statuses,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/stats")
@@ -260,6 +299,7 @@ async def get_task_timeline(task_id: UUID, limit: int = 1000):
 # ---------------------------------------------------------------------------
 # Dynamic-path routes (/{task_id} AFTER all fixed paths)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/{task_id}", response_model=Task)
 async def get_task(task_id: UUID):
@@ -355,20 +395,23 @@ async def stream_task_events(task_id: UUID):
             # when the user navigates away from the result page and back during
             # processing — otherwise pipeline step state appears to "reset"
             # until the next step transition fires.
-            snapshot = json.dumps({
-                "task_id": str(task_id),
-                "type": "snapshot",
-                "timestamp": datetime.now().isoformat(),
-                "data": {
-                    "status": task.status,
-                    "progress": task.progress,
-                    "message": task.message or "",
-                    "current_step": task.current_step,
-                    "completed_steps": task.completed_steps,
-                    "flow": task.flow,
-                    "error": task.error,
+            snapshot = json.dumps(
+                {
+                    "task_id": str(task_id),
+                    "type": "snapshot",
+                    "timestamp": datetime.now().isoformat(),
+                    "data": {
+                        "status": task.status,
+                        "progress": task.progress,
+                        "message": task.message or "",
+                        "current_step": task.current_step,
+                        "completed_steps": task.completed_steps,
+                        "flow": task.flow,
+                        "error": task.error,
+                    },
                 },
-            }, ensure_ascii=False)
+                ensure_ascii=False,
+            )
             yield f"data: {snapshot}\n\n"
 
             while True:

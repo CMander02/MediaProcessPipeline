@@ -575,9 +575,9 @@ def _looks_like_local_path(source: str) -> bool:
 # The model gets plain names (no codes) so the language-policy clause in
 # the prompt reads naturally and handles mixed / unknown cases gracefully.
 _LANG_NAME = {
-    "zh": "Chinese",
-    "zh-cn": "Chinese",
-    "zh-hans": "Chinese",
+    "zh": "Simplified Chinese",
+    "zh-cn": "Simplified Chinese",
+    "zh-hans": "Simplified Chinese",
     "zh-hant": "Traditional Chinese",
     "zh-tw": "Traditional Chinese",
     "en": "English",
@@ -1445,6 +1445,13 @@ async def _run_subtitle_fast_path(
     summary = results[0]
     mindmap = results[1]
     mindmap = canonicalize_text(mindmap, source_context)
+    from app.services.analysis.text_locale import normalize_chinese_script
+
+    mindmap = normalize_chinese_script(
+        mindmap,
+        user_language,
+        source_text=mindmap_text,
+    )
     detail = canonicalize_text(results[2], source_context) if len(results) > 2 else ""
     await _raise_if_cancelled(task.id)
 
@@ -3403,8 +3410,10 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                                 min_speakers=min_speakers,
                                 max_speakers=max_speakers,
                                 provider=asr_provider,
+                                model=task.options.get("asr_model"),
                                 diarize=not task.options.get("disable_diarization", False),
                                 chunk_strategy=task.options.get("asr_chunk_strategy"),
+                                timestamp_mode=task.options.get("asr_timestamp_mode"),
                                 hotwords=asr_hotwords,
                                 audio_processing_flow=task.options.get("audio_processing_flow"),
                                 diarization_audio_path=audio_path,
@@ -3485,6 +3494,11 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                     metadata.extra["audio_processing"] = {
                         "flow": recognition.get("audio_processing_flow", "asr"),
                         "provider": recognition.get("provider", asr_provider or "settings"),
+                        "model": recognition.get("model"),
+                        "runtime_provider": recognition.get("runtime_provider"),
+                        "runtime_version": recognition.get("runtime_version"),
+                        "timestamp_source": recognition.get("timestamp_source"),
+                        "asr_metadata": recognition.get("asr_metadata", {}),
                         "diarization": recognition.get("diarization", "none"),
                     }
                     resolved_speakers = sorted(
@@ -3682,6 +3696,13 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         summary = results[0]
         mindmap = results[1]
         mindmap = canonicalize_text(mindmap, source_context)
+        from app.services.analysis.text_locale import normalize_chinese_script
+
+        mindmap = normalize_chinese_script(
+            mindmap,
+            user_language,
+            source_text=mindmap_text,
+        )
         detail = canonicalize_text(results[2], source_context) if len(results) > 2 else ""
         await _raise_if_cancelled(task.id)
 
@@ -3799,7 +3820,15 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
         elif task.task_type == TaskType.PREPROCESSING:
             task.result = await separate_vocals(task.source)
         elif task.task_type == TaskType.RECOGNITION:
-            task.result = await transcribe_audio(task.source)
+            task.result = await transcribe_audio(
+                task.source,
+                provider=task.options.get("asr_provider"),
+                model=task.options.get("asr_model"),
+                diarize=not task.options.get("disable_diarization", False),
+                chunk_strategy=task.options.get("asr_chunk_strategy"),
+                timestamp_mode=task.options.get("asr_timestamp_mode"),
+                hotwords=task.options.get("hotwords"),
+            )
         elif task.task_type == TaskType.ANALYSIS:
             polished = await polish_text(task.source)
             summary = await summarize_text(task.source)

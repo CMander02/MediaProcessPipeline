@@ -59,7 +59,7 @@ class SiliconFlowASRService:
     ) -> tuple[list[dict[str, float]], Any, int]:
         """Return list of {start, end} chunks (sec), waveform tensor, sample_rate.
 
-        Mirrors qwen3_asr._transcribe_with_vad_chunks segmenting strategy: merge
+        Uses the shared ASR chunking strategy: merge
         small gaps, split overlong chunks at the largest internal gap, then
         force-split anything still over the cap into equal slices.
         """

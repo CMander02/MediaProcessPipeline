@@ -8,6 +8,7 @@ import socket
 import sys
 import threading
 import time
+
 import uvicorn
 
 from app.core.security import is_loopback_host
@@ -122,7 +123,7 @@ def _port_in_use(host: str, port: int) -> bool:
             return True
 
 
-def run_server(host: str = "127.0.0.1", port: int = 18000, reload: bool = False) -> None:
+def run_server(host: str = "localhost", port: int = 18000, reload: bool = False) -> None:
     """Start the FastAPI daemon."""
     # Force UTF-8 on Windows
     if sys.platform == "win32":
@@ -145,8 +146,11 @@ def run_server(host: str = "127.0.0.1", port: int = 18000, reload: bool = False)
     # Check if port is already in use
     if _port_in_use(host, port):
         console.print(f"[red bold]端口 {port} 已被占用[/red bold]")
-        console.print(f"可能已有 daemon 在运行。检查: [cyan]mpp status[/cyan]")
-        console.print(f"或手动关闭: [cyan]taskkill /F /PID $(netstat -ano | findstr :{port})[/cyan]")
+        console.print("可能已有 daemon 在运行。检查: [cyan]mpp status[/cyan]")
+        console.print(
+            f"或手动关闭: [cyan]taskkill /F /PID "
+            f"$(netstat -ano | findstr :{port})[/cyan]"
+        )
         raise SystemExit(1)
 
     console.print(f"\n[bold]MediaProcessPipeline[/bold]  :{port}")
@@ -188,7 +192,11 @@ _bg_thread: threading.Thread | None = None
 _bg_started_by_cli: bool = False  # True if we launched it (so Ctrl+C can offer to stop it)
 
 
-def start_daemon_background(host: str = "127.0.0.1", port: int = 18000, timeout: float = 15.0) -> bool:
+def start_daemon_background(
+    host: str = "localhost",
+    port: int = 18000,
+    timeout: float = 15.0,
+) -> bool:
     """Start uvicorn in a daemon thread. Returns True when /health is reachable.
 
     Safe to call if the daemon is already running — detects and skips.

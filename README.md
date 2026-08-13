@@ -8,7 +8,7 @@
 - **本地文件处理**: 支持直接处理本地音视频文件
 - **平台字幕优先**: 自动下载平台字幕，LLM 补充说话人标注和标点
 - **人声分离**: UVR5 (audio-separator) 分离人声和背景音乐
-- **语音转录**: 支持 API ASR、Qwen3-ASR GGUF/llama.cpp、本地 Qwen3-ASR
+- **语音转录**: sherpa-onnx 统一运行 Qwen3-ASR、SenseVoice、Paraformer、Whisper ONNX，并保留 SiliconFlow API 与 MOSS 本地链路
 - **智能润色**: LLM 滑动窗口润色，修正错字、添加标点
 - **内容分析**: 自动提取关键信息、生成摘要和思维导图（支持 map-reduce 长文本）
 - **统一 Web/PWA/Android**: 同一 React 界面服务本机 PC、服务器浏览器和 Capacitor Android
@@ -27,7 +27,7 @@ MediaProcessPipeline/
 │   │   └── services/           # 业务逻辑
 │   │       ├── ingestion/      # yt-dlp 下载
 │   │       ├── preprocessing/  # UVR5 人声分离, VAD 切分
-│   │       ├── recognition/    # Qwen3-ASR 转录
+│   │       ├── recognition/    # sherpa-onnx 统一 ASR 与说话人分离
 │   │       ├── analysis/       # LLM 润色/摘要/思维导图
 │   │       └── archiving/      # 结果归档
 │   └── run.py
@@ -53,7 +53,7 @@ MediaProcessPipeline/
 - [uv](https://docs.astral.sh/uv/) (Python 包管理)
 - Node.js 18+
 - FFmpeg (必须在 PATH 中)
-- CUDA (可选，用于本地 Qwen3-ASR / UVR / HF 本地推理)
+- CUDA (可选，用于 sherpa-onnx ASR / UVR / HF 本地推理)
 
 ### 安装
 
@@ -61,14 +61,20 @@ MediaProcessPipeline/
 git clone <repo-url>
 cd MediaProcessPipeline
 
-# Python 依赖（默认是轻量 API/CLI 环境，保留 transformers，不安装 torch/UVR/Qwen/Pyannote/ONNX）
+# Python 依赖（包含 sherpa-onnx CPU 运行时）
 uv sync
 
 # 可选：API ASR 使用 Silero ONNX VAD 切片
 uv sync --extra asr-api-vad
 
-# 可选：本地 Qwen3-ASR + Pyannote
+# 可选：Pyannote 与本地 ASR 配套依赖；此命令保留 sherpa-onnx CPU wheel
 uv sync --extra local-asr
+
+# Windows + NVIDIA：安装 CUDA 12 / cuDNN 9 wheel
+uv pip install "sherpa-onnx==1.13.4+cuda12.cudnn9" -f https://k2-fsa.github.io/sherpa/onnx/cuda.html
+
+# 安装并校验默认的四套 ONNX ASR 模型与 Silero VAD
+uv run python scripts/install_sherpa_models.py --model-root C:/Models/sherpa-onnx
 
 # 可选：UVR 人声分离
 uv sync --extra uvr
@@ -76,8 +82,11 @@ uv sync --extra uvr
 # 可选：HF Transformers 本地推理（torch + accelerate；transformers 在 base 中）
 uv sync --extra hf-local-inference
 
-# 可选：完整本地模型链路（ONNX VAD、UVR、本地 Qwen-ASR、Pyannote、HF local LLM）
+# 可选：完整本地模型链路（sherpa-onnx、UVR、Pyannote、HF local LLM）
 uv sync --extra local-models
+
+# Windows 一次完成完整本地依赖、CUDA wheel 和四模型安装
+./scripts/setup.ps1 -Extra local-models -InstallSherpaModels -SherpaModelRoot C:/Models/sherpa-onnx
 
 # 前端依赖 + 构建
 cd web && npm install && npm run build && cd ..
@@ -91,7 +100,6 @@ cd web && npm install && npm run build && cd ..
 uv sync
 uv run python -m app.cli config asr_provider siliconflow
 uv run python -m app.cli config siliconflow_asr_chunk_strategy ffmpeg
-uv run python -m app.cli config qwen3_gguf_chunk_strategy ffmpeg
 uv run python -m app.cli config enable_diarization false
 uv run python -m app.cli config enable_voiceprint false
 ```
@@ -151,19 +159,24 @@ Release APK 输出到 `web/android/app/build/outputs/apk/release/`。Debug APK �
 
 ```bash
 # PowerShell
-.\scripts\mpp.ps1 serve            # 启动 daemon
-.\scripts\mpp.ps1 run <url>        # 提交任务
-.\scripts\mpp.ps1 list             # 查看任务列表
-.\scripts\mpp.ps1 status           # daemon 状态
+.\scripts\mpp.ps1 server start     # 启动独立后台 daemon
+.\scripts\mpp.ps1 run <url-or-file> # 提交并等待
+.\scripts\mpp.ps1 submit .\media\ --recursive # 批量提交
+.\scripts\mpp.ps1 status           # 任务统计与活跃任务
 
 # bash
-./scripts/mpp serve
+./scripts/mpp server start
 ./scripts/mpp run <url>
 
-# 纯 CLI / 纯 API 一次性流程：不启动 daemon，不打开前端
+# 远程 daemon、Bearer token 与 JSON 输出
+./scripts/mpp --server https://mpp.example --token-env MPP_TOKEN --json task list
+
+# 当前进程内的一次性 CLI / API 流程
 ./scripts/mpp config preset api-flow
 ./scripts/mpp run --direct --api-flow <url-or-file>
 ```
+
+CLI 已覆盖任务生命周期、归档与字幕、Provider/模型/flow、来源认证、知识库、声纹、日志、存储、服务端文件系统和移动端同步。完整命令见 [CLI 使用参考](docs/cli.md)。`mpp serve` 保留为前台调试入口。
 
 ### 开发模式
 

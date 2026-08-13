@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { normalizeServerUrl } from "@/platform/server-url"
+import { bundledDefaultServerUrl, normalizeServerUrl } from "@/platform/server-url"
 
 describe("Android server URL", () => {
   it.each([
@@ -19,5 +19,12 @@ describe("Android server URL", () => {
     "https://token@mpp.example.com",
   ])("rejects unsafe or ambiguous address %s", (input) => {
     expect(() => normalizeServerUrl(input)).toThrow()
+  })
+
+  it("normalizes a bundled default while keeping an empty build setting optional", () => {
+    expect(bundledDefaultServerUrl("https://mpp.cmander02.com/")).toBe(
+      "https://mpp.cmander02.com",
+    )
+    expect(bundledDefaultServerUrl(" ")).toBe("")
   })
 })

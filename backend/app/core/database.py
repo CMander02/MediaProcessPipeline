@@ -250,10 +250,18 @@ class TaskStore:
         status: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        statuses: list[str] | None = None,
     ) -> list[Task]:
         """List tasks with optional status filter, newest first."""
         conn = _get_conn()
-        if status:
+        if statuses:
+            placeholders = ", ".join("?" for _ in statuses)
+            cur = conn.execute(
+                f"SELECT * FROM tasks WHERE status IN ({placeholders}) "
+                "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (*statuses, limit, offset),
+            )
+        elif status:
             cur = conn.execute(
                 "SELECT * FROM tasks WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
                 (status, limit, offset),

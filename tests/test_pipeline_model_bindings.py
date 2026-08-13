@@ -15,8 +15,8 @@ def _settings() -> RuntimeSettings:
         deepseek_api_key="sk-deepseek",
         polish_provider="local",
         local_llm_model_path="D:/models/local-polish",
-        asr_provider="qwen3",
-        qwen3_asr_model_path="D:/models/qwen3-asr",
+        asr_provider="sherpa_onnx",
+        sherpa_model_root="D:/models/sherpa-onnx",
         vlm_api_base="https://vlm.example/v1",
         vlm_api_key="vlm-key",
         kb_enabled=True,
@@ -46,7 +46,7 @@ def test_pipeline_binding_without_subtitle_uses_asr_and_polish_provider():
     assert binding.run_separation is True
     assert binding.run_asr is True
     assert binding.run_subtitle_processor is False
-    assert binding.asr.provider == "qwen3"
+    assert binding.asr.provider == "sherpa_onnx"
     assert binding.polish.provider == "local"
 
 

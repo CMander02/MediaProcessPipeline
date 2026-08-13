@@ -147,7 +147,8 @@ class DiarizationService:
         model_path = str(rt.pyannote_model_path or "")
         if not model_path:
             raise RuntimeError("Pyannote diarization is enabled but pyannote_model_path is empty")
-        device = str(getattr(rt, "qwen3_device", "cuda") or "cuda")
+        configured_device = str(getattr(rt, "sherpa_device", "auto") or "auto")
+        device = "cuda" if configured_device == "auto" else configured_device
         batch_size = max(1, int(getattr(rt, "diarization_batch_size", 16) or 16))
         key = (
             model_path,

@@ -1,15 +1,64 @@
-from app.core.settings import RuntimeSettings
-from app.services.analysis.llm import (
+import asyncio
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "backend"))
+
+from app.core.settings import RuntimeSettings  # noqa: E402
+from app.services.analysis.llm import (  # noqa: E402
     LLMService,
-    mindmap_markdown_without_timestamps,
     mindmap_markdown_to_timed_tree,
+    mindmap_markdown_without_timestamps,
 )
+from app.services.analysis.prompts.mindmap import get_mindmap_prompt  # noqa: E402
+from app.services.analysis.text_locale import normalize_chinese_script  # noqa: E402
 
 
 def test_runtime_settings_can_disable_video_detail_generation():
     settings = RuntimeSettings(generate_video_detail=False)
 
     assert settings.generate_video_detail is False
+
+
+def test_simplified_chinese_mindmap_prompt_specifies_script():
+    prompt = get_mindmap_prompt("数学推动文明进步", user_language="Simplified Chinese")
+
+    assert "Use Simplified Chinese characters" in prompt
+
+
+def test_mindmap_output_is_normalized_to_simplified_chinese():
+    text = "- 人類大腦的優勢與局限\n  - 幫助祖先創造文明\n  - OpenAI 推動數學進步"
+
+    assert normalize_chinese_script(text, "zh-CN") == (
+        "- 人类大脑的优势与局限\n"
+        "  - 帮助祖先创造文明\n"
+        "  - OpenAI 推动数学进步"
+    )
+
+
+def test_mindmap_script_can_be_inferred_from_simplified_source():
+    source = "数学进步依赖计算机辅助证明，人类使用工具创造现代文明。"
+    generated = "- 數學進步\n  - 計算機輔助證明\n  - 人類創造現代文明"
+
+    assert normalize_chinese_script(generated, None, source_text=source) == (
+        "- 数学进步\n  - 计算机辅助证明\n  - 人类创造现代文明"
+    )
+
+
+def test_mindmap_service_normalizes_model_output(monkeypatch):
+    service = LLMService()
+
+    async def fake_call(*args, **kwargs):
+        return "- 人類大腦的優勢與局限\n  - 幫助祖先創造文明"
+
+    monkeypatch.setattr(service, "_call", fake_call)
+
+    result = asyncio.run(
+        service.mindmap("人类大脑使用工具创造文明。", user_language="zh-CN")
+    )
+
+    assert result == "- 人类大脑的优势与局限\n  - 帮助祖先创造文明"
 
 
 def test_mindmap_markdown_export_removes_inline_timestamps():

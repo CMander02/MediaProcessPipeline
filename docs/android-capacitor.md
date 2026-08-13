@@ -38,6 +38,8 @@ App 的服务器地址填写 `http://localhost:18000`。局域网设备可填写
 
 Debug 构建允许 localhost 与局域网 HTTP，Release 构建要求 HTTPS。服务器需要在防火墙和反向代理中开放对应入口。
 
+构建时可通过 `VITE_MPP_DEFAULT_SERVER_URL` 预填首次启动的服务器地址。用户保存过的地址优先；API Token 继续由用户输入并写入 Android Keystore。
+
 ## Android 行为
 
 - 服务器地址保存在 Capacitor Preferences。

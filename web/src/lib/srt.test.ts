@@ -1,5 +1,44 @@
 import { describe, expect, it } from "vitest"
-import { subtitlesToMarkdown, type Subtitle } from "./srt"
+import { parseSRT, srtToVTT, subtitlesToMarkdown, type Subtitle } from "./srt"
+
+describe("SRT parsing", () => {
+  const windowsSrt = [
+    "1",
+    "00:00:30,000 --> 00:00:39,333",
+    "[Unknown-57b4] 第一段字幕",
+    "",
+    "2",
+    "00:00:39,552 --> 00:00:40,058",
+    "[Unknown-b735] 第二段字幕",
+  ].join("\r\n")
+
+  it("keeps Windows CRLF cues separate", () => {
+    expect(parseSRT(windowsSrt)).toEqual([
+      {
+        index: 1,
+        startTime: 30000,
+        endTime: 39333,
+        text: "第一段字幕",
+        speaker: "Unknown-57b4",
+      },
+      {
+        index: 2,
+        startTime: 39552,
+        endTime: 40058,
+        text: "第二段字幕",
+        speaker: "Unknown-b735",
+      },
+    ])
+  })
+
+  it("converts Windows CRLF cues to separate WebVTT cues", () => {
+    expect(srtToVTT(windowsSrt)).toBe(
+      "WEBVTT\n\n" +
+      "00:00:30.000 --> 00:00:39.332\n第一段字幕\n\n" +
+      "00:00:39.552 --> 00:00:40.057\n第二段字幕",
+    )
+  })
+})
 
 describe("subtitlesToMarkdown", () => {
   it("exports detailed YAML frontmatter and speaker paragraphs", () => {
