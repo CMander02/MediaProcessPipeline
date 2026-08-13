@@ -113,6 +113,29 @@ def test_main_cors_allows_capacitor_https_origin(tmp_path, monkeypatch):
     assert response.headers["access-control-allow-credentials"] == "true"
 
 
+def test_main_cors_preflight_bypasses_api_token_for_protected_route(tmp_path, monkeypatch):
+    from app import main as app_main
+
+    runtime = _settings(tmp_path, api_token="secret-token")
+    monkeypatch.setattr(settings_module, "_runtime_settings", runtime)
+    monkeypatch.setattr(app_main, "get_runtime_settings", lambda: runtime)
+
+    client = TestClient(app_main.app)
+    response = client.options(
+        "/api/tasks?limit=1",
+        headers={
+            "Origin": "http://localhost",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization,x-requested-with",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost"
+    assert "authorization" in response.headers["access-control-allow-headers"].lower()
+    assert client.get("/api/tasks?limit=1").status_code == 401
+
+
 def test_remote_capabilities_and_filesystem_boundary(tmp_path, monkeypatch):
     runtime = _settings(tmp_path, allow_remote_filesystem=False)
     monkeypatch.setattr(auth_route, "get_runtime_settings", lambda: runtime)

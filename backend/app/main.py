@@ -182,7 +182,7 @@ async def auth_middleware(request: Request, call_next):
         # Bearer token auth (optional — only when api_token is configured)
         rt = get_runtime_settings()
         token = rt.api_token
-        if token and path not in _AUTH_EXEMPT_PATHS:
+        if token and request.method != "OPTIONS" and path not in _AUTH_EXEMPT_PATHS:
             if not request_is_authenticated(request, token):
                 return JSONResponse(
                     status_code=401,
