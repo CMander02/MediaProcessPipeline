@@ -51,14 +51,17 @@ public class OfflineArchivePlugin extends Plugin {
     private volatile long completedBytes;
     private volatile long totalBytes;
     private volatile String lastError = "";
+    private ExecutorService syncExecutor;
 
     @Override
     public void load() {
         database = new ArchiveDatabase();
+        syncExecutor = Executors.newSingleThreadExecutor();
     }
 
     @Override
     protected void handleOnDestroy() {
+        if (syncExecutor != null) syncExecutor.shutdownNow();
         if (database != null) database.close();
     }
 
@@ -128,7 +131,7 @@ public class OfflineArchivePlugin extends Plugin {
         completedBytes = 0;
         totalBytes = 0;
         emitProgress("正在读取同步索引");
-        getBridge().execute(() -> {
+        syncExecutor.execute(() -> {
             try {
                 performSync(serverUrl, token);
                 syncing = false;
@@ -198,32 +201,39 @@ public class OfflineArchivePlugin extends Plugin {
             );
             JSONArray changes = response.optJSONArray("changes");
             if (changes == null) changes = new JSONArray();
-            List<PreparedChange> prepared = new ArrayList<>();
             for (int index = 0; index < changes.length(); index++) {
                 JSONObject change = changes.getJSONObject(index);
                 String operation = change.optString("operation");
                 String archiveId = normalizeArchiveId(change.optString("archive_id"));
                 long revision = change.optLong("revision");
+                PreparedChange prepared = null;
                 if ("delete".equals(operation)) {
-                    prepared.add(PreparedChange.delete(archiveId, revision));
+                    prepared = PreparedChange.delete(archiveId, revision);
                 } else if ("upsert".equals(operation)) {
                     JSONObject snapshot = change.optJSONObject("archive");
                     if (snapshot == null) throw new IOException("同步记录缺少归档内容");
                     try {
-                        prepared.add(prepareArchive(serverUrl, token, archiveId, revision, snapshot));
+                        prepared = prepareArchive(serverUrl, token, archiveId, revision, snapshot);
                     } catch (SyncException error) {
                         if (error.status != 404) throw error;
                         // A newer tombstone can make an older upsert unavailable while paging.
                     }
                 }
+                List<PreparedChange> preparedChanges = new ArrayList<>();
+                if (prepared != null) preparedChanges.add(prepared);
+                database.applyChanges(preparedChanges, revision);
+                if (prepared != null && prepared.deleted) {
+                    deleteTree(archiveDirectory(prepared.archiveId));
+                }
+                cursor = revision;
+                emitProgress("已保存离线资料");
             }
 
             long nextCursor = response.optLong("next_cursor", cursor);
-            database.applyChanges(prepared, nextCursor);
-            for (PreparedChange change : prepared) {
-                if (change.deleted) deleteTree(archiveDirectory(change.archiveId));
+            if (nextCursor > cursor) {
+                database.applyChanges(new ArrayList<>(), nextCursor);
+                cursor = nextCursor;
             }
-            cursor = nextCursor;
             hasMore = response.optBoolean("has_more", false);
             emitProgress(hasMore ? "继续同步资料" : "正在完成同步");
         }
@@ -259,9 +269,7 @@ public class OfflineArchivePlugin extends Plugin {
 
         File finalDirectory = archiveDirectory(archiveId);
         File stageDirectory = new File(tempRoot(), archiveId + "/" + revision);
-        if (!stageDirectory.exists() && !stageDirectory.mkdirs()) {
-            throw new IOException("无法创建同步临时目录");
-        }
+        ensureDirectory(stageDirectory, "无法创建同步临时目录");
 
         ExecutorService executor = Executors.newFixedThreadPool(DOWNLOAD_WORKERS);
         List<Future<?>> futures = new ArrayList<>();
@@ -272,15 +280,24 @@ public class OfflineArchivePlugin extends Plugin {
             }));
         }
         executor.shutdown();
+        Exception firstError = null;
         try {
-            for (Future<?> future : futures) future.get();
-        } catch (ExecutionException error) {
-            Throwable cause = error.getCause();
-            if (cause instanceof Exception) throw (Exception) cause;
-            throw new IOException("同步文件失败", cause);
+            for (Future<?> future : futures) {
+                try {
+                    future.get();
+                } catch (ExecutionException error) {
+                    Throwable cause = error.getCause();
+                    if (firstError == null) {
+                        firstError = cause instanceof Exception
+                            ? (Exception) cause
+                            : new IOException("同步文件失败", cause);
+                    }
+                }
+            }
         } finally {
             executor.shutdownNow();
         }
+        if (firstError != null) throw firstError;
 
         replaceDirectory(stageDirectory, finalDirectory);
         JSONObject enriched = new JSONObject(snapshot.toString());
@@ -328,9 +345,7 @@ public class OfflineArchivePlugin extends Plugin {
 
     private void downloadFile(String url, String token, File destination, String expectedHash) throws Exception {
         File parent = destination.getParentFile();
-        if (parent != null && !parent.exists() && !parent.mkdirs()) {
-            throw new IOException("无法创建离线文件目录");
-        }
+        ensureDirectory(parent, "无法创建离线文件目录");
         File partial = new File(destination.getPath() + ".part");
         HttpURLConnection connection = openConnection(url, token);
         int status = connection.getResponseCode();
@@ -454,9 +469,7 @@ public class OfflineArchivePlugin extends Plugin {
 
     private static void replaceDirectory(File staged, File destination) throws IOException {
         File parent = destination.getParentFile();
-        if (parent != null && !parent.exists() && !parent.mkdirs()) {
-            throw new IOException("无法创建离线资料目录");
-        }
+        ensureDirectory(parent, "无法创建离线资料目录");
         File backup = new File(destination.getPath() + ".previous");
         deleteTree(backup);
         if (destination.exists() && !destination.renameTo(backup)) {
@@ -471,9 +484,7 @@ public class OfflineArchivePlugin extends Plugin {
 
     private static void copyVerified(File source, File destination) throws IOException {
         File parent = destination.getParentFile();
-        if (parent != null && !parent.exists() && !parent.mkdirs()) {
-            throw new IOException("无法创建离线目录");
-        }
+        ensureDirectory(parent, "无法创建离线目录");
         try (
             InputStream input = new BufferedInputStream(new FileInputStream(source));
             BufferedOutputStream output = new BufferedOutputStream(new FileOutputStream(destination))
@@ -481,6 +492,13 @@ public class OfflineArchivePlugin extends Plugin {
             byte[] buffer = new byte[BUFFER_SIZE];
             int length;
             while ((length = input.read(buffer)) >= 0) output.write(buffer, 0, length);
+        }
+    }
+
+    static void ensureDirectory(File directory, String errorMessage) throws IOException {
+        if (directory == null || directory.isDirectory()) return;
+        if (!directory.mkdirs() && !directory.isDirectory()) {
+            throw new IOException(errorMessage);
         }
     }
 

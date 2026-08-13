@@ -55,6 +55,7 @@ let serverUrl = ""
 let token = ""
 let pendingSharedText: string | null = null
 let initialized = false
+let lastOfflineArchiveCount: number | null = null
 
 function applyApiConnection() {
   configureApiClient({
@@ -115,6 +116,10 @@ async function registerNativeListeners() {
   })
   await OfflineArchive.addListener("syncProgress", (status) => {
     window.dispatchEvent(new CustomEvent("mpp:offline-sync-change", { detail: status }))
+    if (lastOfflineArchiveCount !== status.archiveCount) {
+      lastOfflineArchiveCount = status.archiveCount
+      window.dispatchEvent(new Event("mpp:offline-library-change"))
+    }
   })
   applySharedText((await ShareTarget.getPendingShare()).text)
 }
