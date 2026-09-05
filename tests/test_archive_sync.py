@@ -253,6 +253,11 @@ def test_completed_archive_import_is_idempotent_and_excludes_media(tmp_path, mon
         progress=1.0,
         result={"metadata": {"title": "本地结果"}},
     )
+    store = database.get_task_store()
+    store.save(task)
+    store.save_artifact(task.id, "operator-notes.md", "Keep the existing review")
+    store.add_event(task.id, "queued", message="Original task history")
+    original_event_id = store.list_events(task.id)[0]["id"]
 
     def upload():
         with zip_path.open("rb") as archive:
@@ -276,10 +281,14 @@ def test_completed_archive_import_is_idempotent_and_excludes_media(tmp_path, mon
     assert (destination / "transcript.srt").is_file()
     assert not (destination / "source.mp4").exists()
     assert imported.result["remote_sync"]["archive_sha256"] == sha256
+    assert store.get_artifact(task.id, "operator-notes.md")["content"] == "Keep the existing review"
+    first_events = store.list_events(task.id)
+    assert any(event["id"] == original_event_id for event in first_events)
 
     repeated = upload()
     assert repeated.status_code == 200
     assert repeated.json()["already_synced"] is True
+    assert store.list_events(task.id) == first_events
 
 
 def test_portable_archive_rejects_path_traversal(tmp_path):

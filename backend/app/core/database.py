@@ -226,17 +226,21 @@ class TaskStore:
     """SQLite-backed task persistence."""
 
     def save(self, task: Task) -> None:
-        """Insert or replace a task."""
+        """Insert or update a task while preserving its identity and child records."""
         conn = _get_conn()
         row = _task_to_row(task)
         cols = ", ".join(row.keys())
         placeholders = ", ".join(f":{k}" for k in row.keys())
-        with _db_lock:
+        updates = ", ".join(
+            f"{column} = excluded.{column}"
+            for column in row if column not in {"id", "created_at"}
+        )
+        with _db_lock, conn:
             conn.execute(
-                f"INSERT OR REPLACE INTO tasks ({cols}) VALUES ({placeholders})",
+                f"INSERT INTO tasks ({cols}) VALUES ({placeholders}) "
+                f"ON CONFLICT(id) DO UPDATE SET {updates}",
                 row,
             )
-            conn.commit()
 
     def get(self, task_id: UUID) -> Task | None:
         """Get a single task by ID."""
