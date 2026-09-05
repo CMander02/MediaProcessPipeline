@@ -7,6 +7,7 @@ This module is imported by all services; the API route layer is a thin wrapper.
 import json
 import logging
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.core.logging_setup import log_event
 
 logger = logging.getLogger(__name__)
+_settings_lock = threading.RLock()
 
 # Settings file path - stored in project root
 # __file__ = backend/app/core/settings.py
@@ -506,14 +508,12 @@ def _load_settings_from_file() -> RuntimeSettings:
 def _save_settings_to_file(settings: RuntimeSettings) -> None:
     """Save settings to JSON file."""
     try:
-        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SETTINGS_FILE.write_text(
-            json.dumps(settings.model_dump(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        from app.core.atomic_file import atomic_write_text
+        atomic_write_text(SETTINGS_FILE, json.dumps(settings.model_dump(), indent=2, ensure_ascii=False))
         log_event(logger, logging.INFO, "settings.saved", path=SETTINGS_FILE)
     except Exception as e:
         log_event(logger, logging.WARNING, "settings.save_failed", path=SETTINGS_FILE, error=e)
+        raise
 
 
 def get_runtime_settings() -> RuntimeSettings:
@@ -2100,36 +2100,38 @@ def _apply_dot_path_updates(
 
 def update_runtime_settings(new_settings: RuntimeSettings) -> RuntimeSettings:
     """Replace all runtime settings and persist."""
-    global _runtime_settings
-    data = new_settings.model_dump()
-    _normalize_custom_profile_state(data, prefer_profiles=True)
-    _normalize_settings_document_state(data)
-    candidate = RuntimeSettings(**data)
-    _validate_data_root(candidate.data_root)
-    _runtime_settings = candidate
-    _save_settings_to_file(_runtime_settings)
-    return _runtime_settings
+    with _settings_lock:
+        global _runtime_settings
+        data = new_settings.model_dump()
+        _normalize_custom_profile_state(data, prefer_profiles=True)
+        _normalize_settings_document_state(data)
+        candidate = RuntimeSettings(**data)
+        _validate_data_root(candidate.data_root)
+        _save_settings_to_file(candidate)
+        _runtime_settings = candidate
+        return _runtime_settings
 
 
 def patch_runtime_settings(updates: dict[str, Any]) -> RuntimeSettings:
     """Partially update runtime settings and persist."""
-    global _runtime_settings
-    if _runtime_settings is None:
-        _runtime_settings = _load_settings_from_file()
-    current = _runtime_settings.model_dump()
-    direct_updates, mirrored_flat_keys = _apply_dot_path_updates(current, updates)
-    current.update(direct_updates)
-    sync_flat_keys = set(direct_updates) | mirrored_flat_keys
-    prefer_profiles = any(
-        key in direct_updates for key in ("custom_llm_profiles", "custom_active_profile_id")
-    )
-    _normalize_custom_profile_state(current, prefer_profiles=prefer_profiles)
-    _normalize_settings_document_state(current, sync_flat_keys=sync_flat_keys)
-    candidate = RuntimeSettings(**current)
-    _validate_data_root(candidate.data_root)
-    _runtime_settings = candidate
-    _save_settings_to_file(_runtime_settings)
-    return _runtime_settings
+    with _settings_lock:
+        global _runtime_settings
+        if _runtime_settings is None:
+            _runtime_settings = _load_settings_from_file()
+        current = _runtime_settings.model_dump()
+        direct_updates, mirrored_flat_keys = _apply_dot_path_updates(current, updates)
+        current.update(direct_updates)
+        sync_flat_keys = set(direct_updates) | mirrored_flat_keys
+        prefer_profiles = any(
+            key in direct_updates for key in ("custom_llm_profiles", "custom_active_profile_id")
+        )
+        _normalize_custom_profile_state(current, prefer_profiles=prefer_profiles)
+        _normalize_settings_document_state(current, sync_flat_keys=sync_flat_keys)
+        candidate = RuntimeSettings(**current)
+        _validate_data_root(candidate.data_root)
+        _save_settings_to_file(candidate)
+        _runtime_settings = candidate
+        return _runtime_settings
 
 
 def replace_runtime_settings_for_process(settings: RuntimeSettings) -> RuntimeSettings:
