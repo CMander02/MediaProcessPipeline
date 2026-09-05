@@ -8,12 +8,17 @@ import sys
 from email.utils import formatdate
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Query, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from app.core.security import require_filesystem_access
+from app.core.artifacts import ArtifactMirrorError, TEXT_SUFFIXES, get_artifact_store
+from app.core.atomic_file import atomic_write_text
+from app.core.paths import managed_child, task_output_paths
+from app.core.database import get_task_store
 from app.core.settings import get_runtime_settings
 
 router = APIRouter(prefix="/filesystem", tags=["filesystem"])
@@ -22,6 +27,7 @@ router = APIRouter(prefix="/filesystem", tags=["filesystem"])
 class WriteFileRequest(BaseModel):
     path: str
     content: str
+    task_id: UUID | None = None
 
 
 class OpenFolderRequest(BaseModel):
@@ -147,81 +153,96 @@ async def open_folder(req: OpenFolderRequest, request: Request):
         raise HTTPException(500, "Failed to open folder") from e
 
 
+def _artifact_owner(file_path: Path, task_id: UUID | None = None):
+    store = get_task_store()
+    data_root = Path(get_runtime_settings().data_root).resolve()
+    if task_id is not None:
+        task = store.get(task_id)
+        if task is None:
+            raise ValueError("Task not found")
+        for output_dir in task_output_paths(task):
+            if output_dir in file_path.parents:
+                return task.id, output_dir, file_path.relative_to(output_dir).as_posix()
+        raise ValueError("File does not belong to this task")
+    for parent in file_path.parents:
+        if parent == data_root:
+            break
+        task = store.find_task_by_output_dir(parent)
+        if task:
+            return task.id, parent, file_path.relative_to(parent).as_posix()
+    return None, file_path.parent, file_path.name
+
+
 @router.get("/read")
-async def read_file(
-    path: str = Query(..., description="File path to read"),
-):
-    """Read a text file and return its content. Only allows files under data/."""
+async def read_file(path: str = Query(...), task_id: UUID | None = None):
+    """Read the primary file, falling back to its SQLite copy when missing."""
     try:
-        file_path = Path(path).resolve()
-
-        # Security: only allow reading files under the data root
-        from app.core.settings import get_runtime_settings
-        data_root = Path(get_runtime_settings().data_root).resolve()
-        try:
-            file_path.relative_to(data_root)
-        except ValueError:
-            return {"success": False, "error": "Access denied: path outside data directory"}
-
-        if not file_path.exists():
-            try:
-                from app.core.database import get_task_store
-                artifact = get_task_store().get_artifact_by_output_dir(file_path.parent, file_path.name)
-                if artifact:
-                    return {
-                        "success": True,
-                        "content": artifact["content"],
-                        "path": str(file_path),
-                        "source": "sqlite",
-                    }
-            except Exception as e:
-                logging.getLogger(__name__).warning(f"sqlite artifact fallback failed: {e}")
-            return {"success": False, "error": f"File not found: {path}"}
-        if not file_path.is_file():
-            return {"success": False, "error": f"Not a file: {path}"}
-
-        content = file_path.read_text(encoding="utf-8")
-        return {"success": True, "content": content, "path": str(file_path)}
-    except UnicodeDecodeError:
-        return {"success": False, "error": "File is not valid UTF-8 text"}
-    except Exception as e:
-        logging.getLogger(__name__).warning(f"read_file error: {e}")
-        return {"success": False, "error": "Failed to read file"}
+        file_path = managed_child(path, get_runtime_settings().data_root)
+        if file_path.suffix.lower() in TEXT_SUFFIXES:
+            owner, directory, filename = _artifact_owner(file_path, task_id)
+            return {"success": True, **get_artifact_store().read(owner, directory, filename)}
+        return {"success": True, "content": file_path.read_text(encoding="utf-8"),
+                "path": str(file_path), "source": "file"}
+    except (OSError, ValueError, UnicodeError) as exc:
+        return {"success": False, "error": str(exc)}
 
 
 @router.post("/write")
 async def write_file(req: WriteFileRequest):
-    """Write text content to a file. Only allows files under data_root."""
+    """Save the file atomically and report the state of its SQLite copy."""
     try:
-        file_path = Path(req.path).resolve()
+        file_path = managed_child(req.path, get_runtime_settings().data_root)
+        owner = None
+        if file_path.suffix.lower() in TEXT_SUFFIXES:
+            owner, directory, filename = _artifact_owner(file_path, req.task_id)
+            get_artifact_store().write(owner, directory, filename, req.content)
+        else:
+            atomic_write_text(file_path, req.content)
+        return {"success": True, "path": str(file_path), "file_saved": True,
+                "mirror_saved": owner is not None}
+    except ArtifactMirrorError as exc:
+        return {"success": False, "error": str(exc), "path": str(exc.path),
+                "file_saved": True, "mirror_saved": False, "repair_needed": True}
+    except (OSError, ValueError, UnicodeError) as exc:
+        return {"success": False, "error": str(exc), "file_saved": False}
 
-        from app.core.settings import get_runtime_settings
-        data_root = Path(get_runtime_settings().data_root).resolve()
-        try:
-            file_path.relative_to(data_root)
-        except ValueError:
-            return {"success": False, "error": "Access denied: path outside data directory"}
 
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(req.content, encoding="utf-8")
+class RepairArtifactsRequest(BaseModel):
+    task_id: UUID
+    filename: str | None = None
+    action: Literal["mirror", "restore-file"] = "mirror"
+
+
+def _task_artifact_directory(task_id: UUID) -> Path:
+    task = get_task_store().get(task_id)
+    if task is None:
+        raise HTTPException(404, "Task not found")
+    directories = task_output_paths(task)
+    if not directories:
+        raise HTTPException(404, "Task has no output directory")
+    return managed_child(directories[-1], get_runtime_settings().data_root)
+
+
+@router.get("/artifacts/status")
+async def artifact_status(task_id: UUID):
+    directory = _task_artifact_directory(task_id)
+    return {"task_id": str(task_id), "artifacts": get_artifact_store().inspect(task_id, directory)}
+
+
+@router.post("/artifacts/repair")
+async def repair_artifacts(req: RepairArtifactsRequest):
+    directory = _task_artifact_directory(req.task_id)
+    artifacts = get_artifact_store()
+    if req.action == "restore-file":
+        if not req.filename:
+            raise HTTPException(400, "filename is required to restore a file")
         try:
-            from app.core.database import get_task_store
-            from app.core.pipeline import _artifact_content_type
-            store = get_task_store()
-            existing = store.get_artifact_by_output_dir(file_path.parent, file_path.name)
-            if existing:
-                store.save_artifact(
-                    existing["task_id"],
-                    file_path.name,
-                    req.content,
-                    content_type=_artifact_content_type(file_path.name),
-                )
-        except Exception as e:
-            logging.getLogger(__name__).warning(f"sqlite artifact write-through failed: {e}")
-        return {"success": True, "path": str(file_path)}
-    except Exception as e:
-        logging.getLogger(__name__).warning(f"write_file error: {e}")
-        return {"success": False, "error": "Failed to write file"}
+            path = artifacts.restore_file(req.task_id, directory, req.filename)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {"success": True, "path": str(path)}
+    report = artifacts.repair(req.task_id, directory, req.filename)
+    return {"success": all(item["state"] == "synced" for item in report), "artifacts": report}
 
 
 def _ensure_browser_playable(file_path: Path) -> tuple[Path, str]:

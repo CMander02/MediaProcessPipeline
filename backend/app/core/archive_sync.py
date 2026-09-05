@@ -72,6 +72,16 @@ class ArchiveSyncService:
 
     def __init__(self) -> None:
         self._reconcile_lock = threading.Lock()
+        self._dirty_paths: set[str] = set()
+
+    def mark_changed(self, archive_dir: Path | str) -> None:
+        """Collect artifact changes for the incremental archive index."""
+        from app.core.paths import archive_directory
+        try:
+            directory = archive_directory(archive_dir, get_runtime_settings().data_root)
+        except ValueError:
+            return
+        self._dirty_paths.add(str(directory))
 
     @uses_workspace
     def reconcile(self) -> int:
@@ -242,10 +252,11 @@ class ArchiveSyncService:
 
         if metadata.get("archive_id") != archive_id:
             metadata["archive_id"] = archive_id
-            metadata_path.write_text(
-                json.dumps(metadata, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            from app.core.artifacts import get_artifact_store
+            from app.core.database import get_task_store
+            owner = get_task_store().find_task_by_output_dir(archive_dir)
+            get_artifact_store().write(owner.id if owner else None, archive_dir, "metadata.json",
+                                       json.dumps(metadata, indent=2, ensure_ascii=False))
         return archive_id
 
     def _upsert_if_changed(

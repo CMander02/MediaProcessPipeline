@@ -22,6 +22,8 @@ from uuid import UUID
 
 from app.core.workspace_lifecycle import run_in_thread
 
+from app.core.artifacts import get_artifact_store
+
 from app.core.database import get_task_store
 from app.core.events import TaskEvent, get_event_bus
 from app.core.logging_setup import log_event
@@ -271,15 +273,13 @@ def write_metadata_json(
     data["status"] = status
     if task_id:
         data["task_id"] = task_id
-    elif meta_path.exists():
-        # Preserve existing task_id on update
-        try:
-            existing = json.loads(meta_path.read_text(encoding="utf-8"))
-            if existing.get("task_id"):
-                data["task_id"] = existing["task_id"]
-        except Exception:
-            pass
-    meta_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    if meta_path.exists():
+        existing = json.loads(meta_path.read_text(encoding="utf-8"))
+        for key in ("task_id", "archive_id"):
+            if existing.get(key) and not data.get(key):
+                data[key] = existing[key]
+    get_artifact_store().write(data.get("task_id"), task_dir, "metadata.json",
+                               json.dumps(data, indent=2, ensure_ascii=False))
     return meta_path
 
 
@@ -303,7 +303,8 @@ def update_metadata_status(task_dir: Path | None, status: str) -> None:
     try:
         data = json.loads(meta_path.read_text(encoding="utf-8"))
         data["status"] = status
-        meta_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        get_artifact_store().write(data.get("task_id"), task_dir, "metadata.json",
+                                   json.dumps(data, indent=2, ensure_ascii=False))
     except Exception:
         log_event(logger, logging.DEBUG, "metadata_status.update_failed", status=status, path=meta_path, exc_info=True)
 
@@ -328,13 +329,11 @@ async def _write_summary_files(
     summary: dict[str, Any],
 ) -> None:
     """Persist structured and rendered summary outputs."""
-    summary_json_path = task_dir / "summary.json"
-    summary_json_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
-    await _emit_file_ready(task, "summary.json", str(summary_json_path))
+    await _write_text_artifact(task, task_dir, "summary.json",
+                               json.dumps(summary, indent=2, ensure_ascii=False))
 
     from app.services.archiving.archive import SUMMARY_TEMPLATE, get_archive_service
     _svc = get_archive_service()
-    sum_path = task_dir / "summary.md"
     sum_content = SUMMARY_TEMPLATE.format(
         title=metadata.title,
         source_url=metadata.source_url or "",
@@ -342,8 +341,7 @@ async def _write_summary_files(
         tldr=summary.get("tldr", ""),
         key_facts=_svc._fmt_list(summary.get("key_facts", [])),
     )
-    sum_path.write_text(sum_content, encoding="utf-8")
-    await _emit_file_ready(task, "summary.md", str(sum_path))
+    await _write_text_artifact(task, task_dir, "summary.md", sum_content)
 
 
 async def _emit_file_ready(task: Task, filename: str, file_path: str) -> None:
@@ -355,32 +353,9 @@ async def _emit_file_ready(task: Task, filename: str, file_path: str) -> None:
     }))
 
 
-def _artifact_content_type(filename: str) -> str:
-    suffix = Path(filename).suffix.lower()
-    if suffix == ".json":
-        return "application/json"
-    if suffix == ".md":
-        return "text/markdown"
-    if suffix == ".srt":
-        return "application/x-subrip"
-    return "text/plain"
-
-
-def _persist_text_artifact(task: Task, filename: str, content: str) -> None:
-    """Save a generated text artifact into SQLite alongside file output."""
-    get_task_store().save_artifact(
-        task.id,
-        filename,
-        content,
-        content_type=_artifact_content_type(filename),
-    )
-
-
 async def _write_text_artifact(task: Task, task_dir: Path, filename: str, content: str) -> Path:
     """Write text artifact to disk, mirror it to SQLite, then emit file_ready."""
-    artifact_path = task_dir / filename
-    artifact_path.write_text(content, encoding="utf-8")
-    _persist_text_artifact(task, filename, content)
+    artifact_path = get_artifact_store().write(task.id, task_dir, filename, content)
     await _emit_file_ready(task, filename, str(artifact_path))
     return artifact_path
 
@@ -1429,9 +1404,8 @@ async def _run_subtitle_fast_path(
     # Write analysis first so the frontend can surface language/topics early
     import json as _json
     if analysis:
-        analysis_path = task_dir / "analysis.json"
-        analysis_path.write_text(_json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
-        await _emit_file_ready(task, "analysis.json", str(analysis_path))
+        await _write_text_artifact(task, task_dir, "analysis.json",
+                                   _json.dumps(analysis, indent=2, ensure_ascii=False))
 
     tasks = [
         summarize_text(
@@ -2176,11 +2150,11 @@ async def _process_image_note(
     for d in descriptions:
         desc_path = desc_dir / f"{d['index']:02d}.md"
         if d.get("text"):
-            desc_path.write_text(d["text"], encoding="utf-8")
+            await _write_text_artifact(task, task_dir, desc_path.relative_to(task_dir).as_posix(), d["text"])
         elif d.get("status") == "failed":
-            desc_path.write_text(f"VLM caption 失败：{d.get('error') or 'unknown error'}\n", encoding="utf-8")
+            await _write_text_artifact(task, task_dir, desc_path.relative_to(task_dir).as_posix(), f"VLM caption 失败：{d.get('error') or 'unknown error'}\n")
         elif d.get("status") == "skipped":
-            desc_path.write_text(f"VLM caption 跳过：{d.get('error') or 'not configured'}\n", encoding="utf-8")
+            await _write_text_artifact(task, task_dir, desc_path.relative_to(task_dir).as_posix(), f"VLM caption 跳过：{d.get('error') or 'not configured'}\n")
 
     # Combine all descriptions into a pseudo-transcript
     combined_parts = []
@@ -2194,7 +2168,7 @@ async def _process_image_note(
     combined_text = "\n\n".join(combined_parts)
     if combined_text:
         combined_path = desc_dir / "combined.md"
-        combined_path.write_text(combined_text, encoding="utf-8")
+        await _write_text_artifact(task, task_dir, combined_path.relative_to(task_dir).as_posix(), combined_text)
 
     # Write descriptions/ into task result early
     task.result = task.result or {}
@@ -2359,6 +2333,7 @@ async def _process_image_note(
         summary=summary,
         mindmap=mindmap,
         work_dir=task_dir,
+        task_id=str(task.id),
         analysis=analysis,
     )
     write_metadata_json(task_dir, metadata, status="completed")
@@ -2642,6 +2617,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 mindmap=mindmap,
                 original_srt=srt,
                 work_dir=task_dir,
+                task_id=str(task.id),
                 analysis=analysis,
             )
             write_metadata_json(task_dir, metadata, status="completed")
@@ -2948,6 +2924,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         mindmap=text_result.get("mindmap", ""),
                         original_srt=text_result.get("srt", ""),
                         work_dir=task_dir,
+                        task_id=str(task.id),
                         analysis=text_result.get("analysis", {}),
                     )
                     write_metadata_json(task_dir, metadata, status="completed")
@@ -3582,6 +3559,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             mindmap="",
             original_srt=srt,
             work_dir=task_dir,
+            task_id=str(task.id),
             analysis=empty_analysis,
         )
         write_metadata_json(task_dir, metadata, status="completed")
@@ -3680,9 +3658,8 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
         import json as _json
         if analysis:
-            analysis_path = task_dir / "analysis.json"
-            analysis_path.write_text(_json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
-            await _emit_file_ready(task, "analysis.json", str(analysis_path))
+            await _write_text_artifact(task, task_dir, "analysis.json",
+                                       _json.dumps(analysis, indent=2, ensure_ascii=False))
 
         tasks = [
             summarize_text(
@@ -3728,6 +3705,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
         mindmap=mindmap,
         original_srt=srt,
         work_dir=task_dir,
+        task_id=str(task.id),
         analysis=analysis,
     )
 

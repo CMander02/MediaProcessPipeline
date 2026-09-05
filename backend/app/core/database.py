@@ -404,7 +404,7 @@ class TaskStore:
         """
         conn = _get_conn()
         now = datetime.now().isoformat()
-        with _db_lock:
+        with _db_lock, conn:
             conn.execute(
                 """
                 INSERT INTO task_artifacts
@@ -433,18 +433,27 @@ class TaskStore:
         row = cur.fetchone()
         return dict(row) if row else None
 
+    def list_artifacts(self, task_id: UUID | str) -> list[dict[str, Any]]:
+        return [dict(row) for row in _get_conn().execute(
+            "SELECT * FROM task_artifacts WHERE task_id = ? ORDER BY filename", (str(task_id),)
+        ).fetchall()]
+
+    def find_task_by_output_dir(self, output_dir: Path | str) -> Task | None:
+        """Resolve stored output paths directly without loading thousands of task models."""
+        import os
+        target = Path(output_dir).resolve().as_posix().rstrip("/")
+        collation = " COLLATE NOCASE" if os.name == "nt" else ""
+        row = _get_conn().execute(
+            "SELECT * FROM tasks WHERE "
+            "rtrim(replace(json_extract(result, '$.output_dir'), char(92), '/'), '/') = ?" + collation +
+            " OR rtrim(replace(json_extract(result, '$.archive.output_dir'), char(92), '/'), '/') = ?" + collation +
+            " ORDER BY updated_at DESC LIMIT 1", (target, target)
+        ).fetchone()
+        return _row_to_task(row) if row else None
+
     def get_artifact_by_output_dir(self, output_dir: Path | str, filename: str) -> dict[str, Any] | None:
-        """Resolve a task by its result output_dir/archive.output_dir and return an artifact."""
-        target = str(Path(output_dir).resolve())
-        for task in self.list(limit=10000):
-            result = task.result or {}
-            candidates = [
-                result.get("output_dir"),
-                (result.get("archive") or {}).get("output_dir") if isinstance(result.get("archive"), dict) else None,
-            ]
-            if any(candidate and str(Path(candidate).resolve()) == target for candidate in candidates):
-                return self.get_artifact(task.id, filename)
-        return None
+        task = self.find_task_by_output_dir(output_dir)
+        return self.get_artifact(task.id, filename) if task else None
 
     def delete(self, task_id: UUID) -> bool:
         """Delete a task."""

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.settings import get_runtime_settings
+from app.core.artifacts import get_artifact_store
 from app.models import MediaMetadata
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ class ArchiveService:
         original_srt: str | None = None,
         work_dir: Path | None = None,
         analysis: dict[str, Any] | None = None,
+        task_id: str | None = None,
     ) -> dict[str, Any]:
         from app.services.analysis import srt_to_markdown
 
@@ -54,48 +56,49 @@ class ArchiveService:
 
         files: dict[str, str] = {}
 
-        # Metadata
+        artifacts = get_artifact_store()
+        # Preserve stable identity while refreshing media metadata.
         meta_path = output_dir / "metadata.json"
-        meta_path.write_text(
-            json.dumps(metadata.model_dump(mode="json"), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        data = metadata.model_dump(mode="json")
+        if meta_path.exists():
+            previous = json.loads(meta_path.read_text(encoding="utf-8"))
+            for key in ("task_id", "archive_id", "status"):
+                if previous.get(key):
+                    data[key] = previous[key]
+        if task_id:
+            data["task_id"] = task_id
+        artifacts.write(task_id, output_dir, "metadata.json",
+                        json.dumps(data, indent=2, ensure_ascii=False))
         files["metadata"] = str(meta_path)
 
         # Analysis (LLM extracted metadata)
         if analysis:
             analysis_path = output_dir / "analysis.json"
-            analysis_path.write_text(
-                json.dumps(analysis, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            artifacts.write(task_id, output_dir, analysis_path.name, json.dumps(analysis, indent=2, ensure_ascii=False))
             files["analysis"] = str(analysis_path)
 
         # Original SRT (raw transcription)
         if original_srt:
             srt_path = output_dir / "transcript.srt"
-            srt_path.write_text(original_srt, encoding="utf-8")
+            artifacts.write(task_id, output_dir, srt_path.name, original_srt)
             files["srt"] = str(srt_path)
 
         # Polished SRT (after LLM processing)
         if polished_srt:
             polished_srt_path = output_dir / "transcript_polished.srt"
-            polished_srt_path.write_text(polished_srt, encoding="utf-8")
+            artifacts.write(task_id, output_dir, polished_srt_path.name, polished_srt)
             files["polished_srt"] = str(polished_srt_path)
 
             # Generate clean Markdown document from polished SRT
             markdown_content = srt_to_markdown(polished_srt, metadata.title)
             md_path = output_dir / "transcript_polished.md"
-            md_path.write_text(markdown_content, encoding="utf-8")
+            artifacts.write(task_id, output_dir, md_path.name, markdown_content)
             files["polished_md"] = str(md_path)
 
         # Summary (without mindmap)
         if summary:
             summary_json_path = output_dir / "summary.json"
-            summary_json_path.write_text(
-                json.dumps(summary, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            artifacts.write(task_id, output_dir, summary_json_path.name, json.dumps(summary, indent=2, ensure_ascii=False))
             files["summary_json"] = str(summary_json_path)
 
             sum_path = output_dir / "summary.md"
@@ -106,7 +109,7 @@ class ArchiveService:
                 tldr=summary.get("tldr", "") if summary else "",
                 key_facts=self._fmt_list(summary.get("key_facts", []) if summary else []),
             )
-            sum_path.write_text(content, encoding="utf-8")
+            artifacts.write(task_id, output_dir, sum_path.name, content)
             files["summary"] = str(sum_path)
 
         # Mindmap (separate file): mindmap.md is export-friendly Markdown with
@@ -119,14 +122,11 @@ class ArchiveService:
 
             export_markdown = mindmap_markdown_without_timestamps(mindmap) or mindmap
             mm_path = output_dir / "mindmap.md"
-            mm_path.write_text(export_markdown, encoding="utf-8")
+            artifacts.write(task_id, output_dir, mm_path.name, export_markdown)
             files["mindmap"] = str(mm_path)
 
             tree_path = output_dir / "mindmap.json"
-            tree_path.write_text(
-                json.dumps(mindmap_markdown_to_timed_tree(mindmap), indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            artifacts.write(task_id, output_dir, tree_path.name, json.dumps(mindmap_markdown_to_timed_tree(mindmap), indent=2, ensure_ascii=False))
             files["mindmap_json"] = str(tree_path)
 
         logger.info(f"Archived to: {output_dir}")
@@ -439,6 +439,7 @@ async def archive_result(
     original_srt: str | None = None,
     work_dir: Path | None = None,
     analysis: dict[str, Any] | None = None,
+    task_id: str | None = None,
 ) -> dict[str, Any]:
     return get_archive_service().archive(
         metadata,
@@ -448,6 +449,7 @@ async def archive_result(
         original_srt=original_srt,
         work_dir=work_dir,
         analysis=analysis,
+        task_id=task_id,
     )
 
 

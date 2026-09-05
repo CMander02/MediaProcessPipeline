@@ -281,6 +281,10 @@ def test_completed_archive_import_is_idempotent_and_excludes_media(tmp_path, mon
     assert (destination / "transcript.srt").is_file()
     assert not (destination / "source.mp4").exists()
     assert imported.result["remote_sync"]["archive_sha256"] == sha256
+    assert store.get_artifact(task.id, "transcript.srt")["content"] == "字幕"
+    assert store.get_artifact(task.id, "metadata.json")["content"] == (
+        destination / "metadata.json"
+    ).read_text(encoding="utf-8")
     assert store.get_artifact(task.id, "operator-notes.md")["content"] == "Keep the existing review"
     first_events = store.list_events(task.id)
     assert any(event["id"] == original_event_id for event in first_events)

@@ -451,12 +451,18 @@ async def rename_archive(req: ArchiveRenameRequest):
     meta = {}
     if meta_path.exists():
         try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+            meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+            if not isinstance(meta, dict):
+                raise ValueError("Expected an object")
+        except (ValueError, UnicodeError) as exc:
+            raise HTTPException(409, "Archive metadata is invalid; original file preserved") from exc
 
     meta["title"] = new_title
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    from app.core.artifacts import get_artifact_store
+    from app.core.database import get_task_store
+    task = get_task_store().find_task_by_output_dir(archive_dir)
+    get_artifact_store().write(task.id if task else None, archive_dir, "metadata.json",
+                               json.dumps(meta, ensure_ascii=False, indent=2))
 
     return {"success": True, "title": new_title}
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.database import get_task_store
+from app.core.artifacts import ArtifactStore
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,7 @@ def sync_speaker_artifacts(
     if not archive_dir.is_dir():
         return []
 
-    task_store = get_task_store()
+    artifacts = ArtifactStore(get_task_store())
     changed: list[str] = []
     for filename in SPEAKER_ARTIFACTS:
         path = archive_dir / filename
@@ -91,11 +92,7 @@ def sync_speaker_artifacts(
         if updated is None:
             continue
 
-        path.write_text(updated, encoding="utf-8")
-        content_type = "application/json" if path.suffix.lower() == ".json" else "text/markdown"
-        if path.suffix.lower() == ".srt":
-            content_type = "application/x-subrip"
-        task_store.save_artifact(task_id, filename, updated, content_type)
+        artifacts.write(task_id, archive_dir, filename, updated)
         changed.append(filename)
 
     return changed

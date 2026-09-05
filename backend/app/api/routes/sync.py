@@ -214,6 +214,8 @@ async def import_completed_archive(
     if expected_sha256 and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
         raise HTTPException(400, "Invalid archive SHA-256")
 
+    from app.core.artifacts import get_artifact_store
+    artifacts = get_artifact_store()
     store = get_task_store()
     existing = store.get(task.id)
     existing_sync = (existing.result or {}).get("remote_sync") if existing else None
@@ -223,7 +225,10 @@ async def import_completed_archive(
         and existing_sync.get("archive_sha256") == expected_sha256
     ):
         await archive.close()
+        output_dir = (existing.result or {}).get("output_dir")
+        repairs = artifacts.repair(task.id, output_dir) if output_dir else []
         return {
+            "artifacts": repairs,
             "ok": True,
             "task_id": str(task.id),
             "already_synced": True,
@@ -248,10 +253,8 @@ async def import_completed_archive(
 
         metadata["task_id"] = str(task.id)
         metadata.setdefault("archive_id", str(task.id))
-        (extracted_root / "metadata.json").write_text(
-            json.dumps(metadata, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        artifacts.write(None, extracted_root, "metadata.json",
+                        json.dumps(metadata, ensure_ascii=False, indent=2))
         destination = _destination_for(data_root, archive_name, str(task.id))
         publish_archive(extracted_root, destination, data_root)
 
@@ -276,6 +279,8 @@ async def import_completed_archive(
         task.updated_at = datetime.now()
         task.completed_at = task.completed_at or datetime.now()
         store.save(task)
+        repairs = artifacts.repair(task.id, destination)
+        artifacts._changed(destination)
         store.add_event(
             task.id,
             "remote_archive_imported",
@@ -288,6 +293,7 @@ async def import_completed_archive(
             "ok": True,
             "task_id": str(task.id),
             "already_synced": False,
+            "artifacts": repairs,
             "sync": sync_info,
         }
     finally:
