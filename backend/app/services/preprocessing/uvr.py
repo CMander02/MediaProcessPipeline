@@ -408,6 +408,8 @@ class UVRService:
                 f"Outputs: {output_files}"
             )
 
+        from app.core.media_retention import record_media
+        record_media(output_dir_abs, vocals_path, "separated", regenerate_from=audio_path)
         return {
             "input_path": audio_path,
             "vocals_path": vocals_path,

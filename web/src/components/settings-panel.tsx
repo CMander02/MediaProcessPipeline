@@ -20,6 +20,7 @@ import { OfflineSyncStatus } from "@/components/offline-sync-status"
 import { usePlatform } from "@/platform/use-platform"
 import { getThemePreference, setThemePreference, type ThemePreference } from "@/lib/theme"
 import { useAppAccess } from "@/hooks/use-app-access-context"
+import { mediaPolicies } from "@/lib/media-retention"
 
 // --- Tab definitions ---
 
@@ -428,6 +429,16 @@ export function SettingsPanel() {
                     saved={saved}
                     placeholder="绝对路径，如 C:\data\mpp"
                   />
+                  <label className="block space-y-2 text-sm">
+                    <span>默认媒体保留策略</span>
+                    <select aria-label="默认媒体保留策略" value={String(settings.media_retention_policy ?? "all")}
+                      disabled={saving.media_retention_policy}
+                      className="h-10 w-full rounded-md border bg-background px-3"
+                      onChange={event => void updateSetting("media_retention_policy", event.target.value)}>
+                      {Object.entries(mediaPolicies).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                    </select>
+                  </label>
+                  <p className="text-xs text-muted-foreground">用于下次媒体清理预览。文件页右键归档可预览并执行。</p>
                 </CardContent>
               </Card>
 

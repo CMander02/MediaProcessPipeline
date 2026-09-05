@@ -248,13 +248,13 @@ class ArchiveService:
         # task's declared video/audio category from metadata in that case.
         declared_media_type = str(metadata.get("media_type") or "").casefold()
         declared_subtype = str(metadata.get("content_subtype") or "").casefold()
-        if not has_video and (
+        if not metadata.get("media_retention_applied") and not has_video and (
             declared_media_type == "video"
             or declared_subtype in {"video", "local_video"}
         ):
             has_video = True
             media_is_external = media_file is None
-        if not has_video and not has_audio and (
+        if not metadata.get("media_retention_applied") and not has_video and not has_audio and (
             declared_media_type in {"audio", "podcast", "meeting"}
             or declared_subtype in {"audio", "podcast_episode", "local_audio"}
         ):

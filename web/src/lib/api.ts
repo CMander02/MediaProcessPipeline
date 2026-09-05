@@ -557,6 +557,12 @@ export const api = {
     upgradeYtdlp: () => post<YtdlpUpgradeResult>("/api/settings/ytdlp/upgrade"),
   },
 
+  mediaRetention: {
+    preview: (path: string, policy?: import("@/lib/media-retention").MediaPolicy) =>
+      post<import("@/lib/media-retention").MediaRetentionPreview>("/api/pipeline/media-retention/preview", { path, policy }),
+    apply: (path: string, policy: import("@/lib/media-retention").MediaPolicy, files: string[]) =>
+      post<import("@/lib/media-retention").MediaRetentionPreview>("/api/pipeline/media-retention/apply", { path, policy, files }),
+  },
   archives: {
     page: (query: ArchiveQuery) => {
       const params = new URLSearchParams({ ...Object.fromEntries(

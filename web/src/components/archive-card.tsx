@@ -19,6 +19,7 @@ interface ArchiveCardProps {
   archive: ArchiveItem
   onClick: () => void
   onDelete?: () => void
+  onMediaRetention?: () => void
   onRenamed?: (newTitle: string) => void
   onRerun?: () => void
   onCheckpointRerun?: () => void
@@ -34,6 +35,7 @@ export function ArchiveCard({
   archive,
   onClick,
   onDelete,
+  onMediaRetention,
   onRenamed,
   onRerun,
   onCheckpointRerun,
@@ -50,7 +52,7 @@ export function ArchiveCard({
     ? archive.metadata.content_subtype
     : null
   const isImageNote = archive.has_image || contentSubtype === "image_note"
-  const isTextNote = contentSubtype === "text_note"
+  const isTextNote = contentSubtype === "text_note" || (archive.metadata.media_removed === true && !archive.has_image)
   const mediaLabel = archive.has_video ? "视频" : isImageNote ? "图文" : isTextNote ? "正文" : "音频"
   const metadataStatus = typeof archive.metadata?.status === "string" ? archive.metadata.status : null
   const canPause = archive.processing && metadataStatus !== "paused" && Boolean(onPause)
@@ -190,6 +192,7 @@ export function ArchiveCard({
             重命名
           </ContextMenuItem>
         )}
+        {onMediaRetention && <ContextMenuItem onClick={onMediaRetention}>媒体保留…</ContextMenuItem>}
         {onDelete && (
           <ContextMenuItem variant="destructive" onClick={onDelete}>
             <HugeiconsIcon icon={Delete01Icon} className="h-4 w-4" />

@@ -724,42 +724,6 @@ def _save_all_tracks_as_transcripts(tracks: list[dict], task_dir: Path) -> list[
     return manifest
 
 
-def _cleanup_vocals(task_dir: Path, audio_path: str | None, vocals_path: str | None) -> None:
-    """Clean up UVR vocals and ASR segment files after transcription.
-
-    Called right after TRANSCRIBE completes — these large WAVs are no longer
-    needed once ASR is done.
-    """
-    cleaned_files = []
-    cleaned_size = 0
-
-    # Delete UVR vocals output (only if it's a separate file from the source audio)
-    if vocals_path and vocals_path != audio_path:
-        vocals_file = Path(vocals_path)
-        if vocals_file.exists():
-            size = vocals_file.stat().st_size
-            vocals_file.unlink()
-            cleaned_files.append(vocals_file.name)
-            cleaned_size += size
-
-    # Delete ASR segment files
-    for segment_file in task_dir.glob("segment_*.wav"):
-        size = segment_file.stat().st_size
-        segment_file.unlink()
-        cleaned_files.append(segment_file.name)
-        cleaned_size += size
-
-    if cleaned_files:
-        size_mb = cleaned_size / (1024 * 1024)
-        log_event(
-            logger,
-            logging.INFO,
-            "cleanup.vocals.done",
-            files=len(cleaned_files),
-            size_mb=round(size_mb, 1),
-        )
-
-
 def _release_uvr_gpu_resources() -> None:
     """Unload UVR before ASR/local LLM steps that need the same GPU memory."""
     import gc
@@ -803,53 +767,6 @@ def _require_audio_file(path: str | None, *, stage: str) -> str:
     if not audio_file.is_file():
         raise ValueError(f"{stage} audio path is not a file: {path}")
     return str(audio_file)
-
-
-def _cleanup_extracted_audio(task_dir: Path, audio_path: str | None, media_type: str | None) -> None:
-    """Clean up the working WAV when a compressed source is preserved.
-
-    Two cases:
-    1. Video sources — pipeline always extracts a WAV for ASR; the source mp4
-       is kept, so the WAV is disposable.
-    2. Podcast / audio sources where the platform downloader saved both the
-       original compressed file (.m4a/.mp3/...) and a derived working WAV.
-       The original is the canonical media — delete the WAV.
-
-    A bare .wav source (no sibling compressed file) is the only copy of the
-    media and must be kept.
-    """
-    if not audio_path:
-        return
-    audio_file = Path(audio_path)
-    if not audio_file.exists() or audio_file.suffix.lower() != ".wav":
-        return
-
-    # Always safe to delete the WAV when we came from a video source.
-    can_delete = media_type == "video"
-
-    # For audio sources, only delete the WAV if a sibling compressed source
-    # exists in the same archive dir (same stem, lossy/lossless container).
-    if not can_delete:
-        sibling_exts = {".m4a", ".mp3", ".flac", ".ogg", ".opus", ".aac"}
-        stem = audio_file.stem
-        parent = audio_file.parent
-        if any((parent / f"{stem}{ext}").exists() for ext in sibling_exts):
-            can_delete = True
-
-    if not can_delete:
-        return
-
-    size = audio_file.stat().st_size
-    audio_file.unlink()
-    log_event(
-        logger,
-        logging.INFO,
-        "cleanup.working_audio.done",
-        file=audio_file.name,
-        size_mb=round(size / (1024 * 1024), 1),
-    )
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -2622,7 +2539,6 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 analysis=analysis,
             )
             write_metadata_json(task_dir, metadata, status="completed")
-            _cleanup_extracted_audio(task_dir, audio_path, metadata.media_type if metadata else None)
             await _update_step(task, PipelineStep.ARCHIVE, completed=True)
 
             task.result = {
@@ -2676,6 +2592,8 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 else:
                     shutil.copy2(str(source_path), str(dest_source))
 
+            from app.core.media_retention import record_media
+            record_media(task_dir, dest_source, "source", playback=True, regenerate_from=source_path)
             title = dest_source.stem
             video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov"}
             audio_exts = {".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac", ".opus", ".wma"}
@@ -2683,6 +2601,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             if dest_source.suffix.lower() in video_exts:
                 audio_path = task_dir / f"{title}.wav"
                 await run_in_thread(_extract_audio_from_video, dest_source, audio_path)
+                record_media(task_dir, audio_path, "working", regenerate_from=dest_source)
                 await _raise_if_cancelled(task.id)
                 audio_path = str(audio_path)
                 metadata = MediaMetadata(
@@ -2925,7 +2844,6 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                         analysis=text_result.get("analysis", {}),
                     )
                     write_metadata_json(task_dir, metadata, status="completed")
-                    _cleanup_extracted_audio(task_dir, audio_path, metadata.media_type if metadata else None)
                     await _update_step(task, PipelineStep.ARCHIVE, completed=True)
 
                     task.result = {
@@ -3533,10 +3451,6 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
         # end async with gpu_sem
 
-    # Clean up UVR vocals and segment files immediately after ASR is done —
-    # these large WAVs are no longer needed and can free significant disk space.
-    _cleanup_vocals(task_dir, audio_path, vocals_path)
-
     # end if SEPARATE+TRANSCRIBE not both done
 
     # Guard: skip LLM if transcript is empty or trivially short
@@ -3560,7 +3474,6 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
             analysis=empty_analysis,
         )
         write_metadata_json(task_dir, metadata, status="completed")
-        _cleanup_extracted_audio(task_dir, audio_path, metadata.media_type if metadata else None)
         await _update_step(task, PipelineStep.ARCHIVE, completed=True)
 
         task.result = {
@@ -3710,7 +3623,6 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
     meta_path = write_metadata_json(task_dir, metadata, status="completed")
     await _emit_file_ready(task, "metadata.json", str(meta_path))
 
-    _cleanup_extracted_audio(task_dir, audio_path, metadata.media_type if metadata else None)
 
     await _update_step(task, PipelineStep.ARCHIVE, completed=True)
 

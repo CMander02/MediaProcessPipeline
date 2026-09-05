@@ -9,7 +9,7 @@ import logging
 import re
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -352,6 +352,7 @@ class RuntimeSettings(BaseModel):
 
     # Paths
     data_root: str = "D:/Video/MediaProcessPipeline"
+    media_retention_policy: Literal["all", "playback", "text"] = "all"
 
     @field_validator("remote_sync_interval_sec")
     @classmethod

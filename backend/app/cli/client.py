@@ -459,6 +459,12 @@ class MppClient:
     def disk_usage(self) -> dict[str, Any]:
         return self.request("GET", "/api/pipeline/disk-usage")
 
+    def media_retention(self, path: str, policy: str | None = None,
+                        files: list[str] | None = None) -> dict[str, Any]:
+        action = "preview" if files is None else "apply"
+        return self.request("POST", f"/api/pipeline/media-retention/{action}",
+                            json_body={"path": path, "policy": policy, "files": files})
+
     def cleanup_task(self, task_id: str, dry_run: bool = False) -> dict[str, Any]:
         return self.request(
             "POST",

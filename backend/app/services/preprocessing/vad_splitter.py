@@ -203,6 +203,8 @@ class VADSplitter:
             # Save segment
             segment_path = output_dir / f"segment_{i:03d}.wav"
             torchaudio.save(str(segment_path), segment_waveform, sr)
+            from app.core.media_retention import record_media
+            record_media(output_dir, segment_path, "segment", regenerate_from=audio_path)
 
             segments.append({
                 'path': str(segment_path),

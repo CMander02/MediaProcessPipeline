@@ -611,6 +611,33 @@ async def disk_usage():
     return await get_disk_usage()
 
 
+class MediaRetentionRequest(BaseModel):
+    path: str
+    policy: Literal["all", "playback", "text"] | None = None
+    files: list[str] | None = None
+
+
+@router.post("/media-retention/preview")
+async def preview_media_retention(request: MediaRetentionRequest):
+    from app.core.media_retention import get_media_retention_service
+    try:
+        return await run_in_thread(get_media_retention_service().preview, request.path, request.policy)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/media-retention/apply")
+async def apply_media_retention(request: MediaRetentionRequest):
+    from app.core.media_retention import get_media_retention_service
+    if request.files is None:
+        raise HTTPException(400, "Choose files from a media retention preview first")
+    try:
+        return await run_in_thread(get_media_retention_service().apply, request.path, request.policy,
+                                   files=request.files)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.get("/bilibili/status")
 async def bilibili_login_status():
     """Check Bilibili login status using auth.py (settings or BBDown.data fallback)."""

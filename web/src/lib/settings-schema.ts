@@ -177,6 +177,7 @@ export interface RuntimeSettings {
   api_token?: string
   allow_remote_filesystem?: boolean
   data_root?: string
+  media_retention_policy?: "all" | "playback" | "text"
   network_proxy?: string
   ytdlp_auto_update?: boolean
 

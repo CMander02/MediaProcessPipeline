@@ -8,6 +8,7 @@ import { type ArchiveSort, type MediaFilter, type SourceFilter } from "@/lib/arc
 import type { ArchiveItem } from "@/hooks/use-archives"
 import { ArchiveCard } from "@/components/archive-card"
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
+import { MediaRetentionDialog } from "@/components/media-retention-dialog"
 import {
   Pagination,
   PaginationContent,
@@ -49,6 +50,7 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
   const [checking, setChecking] = useState(false)
   const [paginationRangeSize, setPaginationRangeSize] = useState(7)
   const [deleteTarget, setDeleteTarget] = useState<{ title: string; path: string; taskId?: string; taskDelete?: boolean } | null>(null)
+  const [retentionTarget, setRetentionTarget] = useState<{ title: string; path: string } | null>(null)
   const [rerunningPath, setRerunningPath] = useState<string | null>(null)
   const [checkpointRerunningPath, setCheckpointRerunningPath] = useState<string | null>(null)
   const [taskActionPath, setTaskActionPath] = useState<string | null>(null)
@@ -206,7 +208,7 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
 
   const pageItems = getPaginationItems(safePage, totalPages, paginationRangeSize)
 
-  if (loading) {
+  if (loading && !retentionTarget) {
     return <LoadingState title="正在加载文件" className="h-full" />
   }
 
@@ -236,6 +238,8 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
                 taskDelete: Boolean(a.processing && a.task_id),
               }) : undefined}
               onRenamed={capabilities.archive_mutation ? () => refresh(true) : undefined}
+              onMediaRetention={capabilities.archive_mutation && !platform.isNative
+                ? () => setRetentionTarget(a) : undefined}
               onRerun={online ? () => handleRerun(a) : undefined}
               onCheckpointRerun={online && a.task_id ? () => handleCheckpointRerun(a) : undefined}
               onPause={online && a.task_id ? () => handleTaskAction(a, "pause") : undefined}
@@ -307,6 +311,8 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
       </div>
 
       {/* Delete confirmation dialog */}
+      {retentionTarget && <MediaRetentionDialog archive={retentionTarget}
+        onClose={() => setRetentionTarget(null)} onApplied={() => void refresh(true)} />}
       {deleteTarget && (
         <DeleteConfirmDialog
           open={!!deleteTarget}

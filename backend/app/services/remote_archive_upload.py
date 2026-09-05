@@ -127,7 +127,9 @@ class RemoteArchiveUploadService:
             output_dir = self._archive_dir(task, data_root)
             if output_dir is None or self._already_uploaded(task, server_url):
                 continue
-            await self._upload(task, output_dir, server_url, settings, store)
+            from app.core.media_retention import uploading_media
+            with uploading_media(output_dir):
+                await self._upload(task, output_dir, server_url, settings, store)
             return True
         return False
 

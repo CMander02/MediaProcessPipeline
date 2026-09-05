@@ -337,6 +337,28 @@ def storage_usage():
     emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
 
 
+@storage_app.command("media")
+def storage_media(
+    path: str = typer.Argument(..., help="归档目录"),
+    policy: Optional[str] = typer.Option(None, "--policy", help="all / playback / text"),
+    apply: bool = typer.Option(False, "--apply"),
+    yes: bool = typer.Option(False, "--yes"),
+):
+    """预览媒体用途与回收空间，并对选定归档执行保留策略。"""
+    if policy is not None and policy not in {"all", "playback", "text"}:
+        emit_error("invalid_policy", "Choose all, playback, or text.", exit_code=2)
+    api = client()
+    result = api_call(lambda: api.media_retention(path, policy))
+    emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
+    files = [item["path"] for item in result["entries"] if item["delete"]]
+    if apply and files:
+        confirm_action("Delete the media files shown in this preview?", explicit_yes=yes)
+        result = api_call(lambda: api.media_retention(path, result["policy"], files))
+        emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
+        if result.get("errors"):
+            raise typer.Exit(5)
+
+
 @storage_app.command("clean")
 def storage_clean(
     task: Optional[str] = typer.Option(None, "--task"),

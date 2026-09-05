@@ -2341,6 +2341,14 @@ async def download_media(url: str, output_dir: Path | None = None) -> dict[str, 
     import asyncio
     service = get_ytdlp_service()
     result = await asyncio.to_thread(service.download, url, output_dir=output_dir)
+    from app.core.media_retention import record_media
+    playback = result.get("video_path") or result.get("source_audio_path") or result.get("file_path")
+    if playback:
+        directory = Path(playback).parent
+        record_media(directory, playback, "source", playback=True, regenerate_from=url)
+        audio = result.get("file_path")
+        if audio and audio != playback:
+            record_media(directory, audio, "working", regenerate_from=playback)
     metadata = service.extract_metadata(result["info"], result.get("file_path"))
     return {
         "file_path": result.get("file_path"),
