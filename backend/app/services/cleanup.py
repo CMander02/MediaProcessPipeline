@@ -1,12 +1,22 @@
 """Cleanup service for managing temporary files."""
 
 import logging
+import os
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from app.core.database import get_task_store
+from app.core.paths import (
+    ACTIVE_STATUSES,
+    SYSTEM_DIRECTORIES,
+    archive_directory,
+    is_directory_link,
+    managed_child,
+    task_output_paths,
+    task_uses_directory,
+)
 from app.core.settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
@@ -23,12 +33,12 @@ class CleanupService:
     @staticmethod
     def _directory_size(path: Path) -> int:
         total = 0
-        for item in path.rglob("*"):
-            if item.is_file():
-                try:
+        for directory, dirs, files in os.walk(path, followlinks=False):
+            dirs[:] = [name for name in dirs if not is_directory_link(Path(directory) / name)]
+            for name in files:
+                item = Path(directory) / name
+                if not item.is_symlink():
                     total += item.stat().st_size
-                except OSError:
-                    continue
         return total
 
     def cleanup_failed_task(self, task_id: str, dry_run: bool = False) -> dict[str, Any]:
@@ -49,7 +59,10 @@ class CleanupService:
         from uuid import UUID
 
         store = get_task_store()
-        task = store.get(UUID(task_id))
+        try:
+            task = store.get(UUID(task_id))
+        except ValueError:
+            task = None
         if task is None:
             errors.append({"task_id": task_id, "error": "Task not found"})
         elif str(task.status) not in {"failed", "cancelled"}:
@@ -60,12 +73,23 @@ class CleanupService:
                 }
             )
             task = None
-        if task and task.result and task.result.get("output_dir"):
-            task_dir: Path | None = Path(task.result["output_dir"]).resolve()
+        result = (task.result or {}) if task else {}
+        archive = result.get("archive")
+        output = result.get("output_dir") or (
+            archive.get("output_dir") if isinstance(archive, dict) else None
+        )
+        if task and output:
+            task_dir: Path | None = Path(output)
             try:
-                task_dir.relative_to(self.get_data_root())
-            except ValueError:
-                errors.append({"path": str(task_dir), "error": "Path is outside data_root"})
+                task_dir = archive_directory(task_dir, self.get_data_root())
+                if any(
+                    other.id != task.id and other.status in ACTIVE_STATUSES
+                    and task_uses_directory(other, task_dir)
+                    for other in store.list(limit=-1)
+                ):
+                    raise ValueError("Directory is used by an active task")
+            except ValueError as exc:
+                errors.append({"path": str(task_dir), "error": str(exc)})
                 task_dir = None
             if task_dir is not None and task_dir.is_dir():
                 candidates.append(
@@ -84,6 +108,16 @@ class CleanupService:
                         "errors": [],
                     }
                 try:
+                    current = store.get(task.id)
+                    if current is None or current.status not in {"failed", "cancelled"}:
+                        raise ValueError("Task is no longer eligible for cleanup")
+                    archive_directory(output, self.get_data_root())
+                    if task_dir not in task_output_paths(current) or any(
+                        other.id != task.id and other.status in ACTIVE_STATUSES
+                        and task_uses_directory(other, task_dir)
+                        for other in store.list(limit=-1)
+                    ):
+                        raise ValueError("Directory ownership changed during cleanup")
                     shutil.rmtree(task_dir)
                     cleaned.append(str(task_dir))
                     logger.info(f"Cleaned up task directory: {task_dir}")
@@ -106,20 +140,7 @@ class CleanupService:
     def cleanup_orphaned_files(
         self, max_age_hours: int = 24, dry_run: bool = False
     ) -> dict[str, Any]:
-        """
-        Clean up orphaned temporary files older than specified age.
-
-        This removes:
-        - Directories without metadata.json (incomplete processing)
-        - Directories not in history
-        - Old temporary segment files
-
-        Args:
-            max_age_hours: Maximum age in hours for orphaned files
-
-        Returns:
-            Dict with cleanup results
-        """
+        """Clean unreferenced staging uploads; report other unclassified directories."""
         data_root = self.get_data_root()
         store = get_task_store()
         cutoff_time = datetime.now() - timedelta(hours=max_age_hours)
@@ -129,56 +150,41 @@ class CleanupService:
         errors = []
         skipped = []
 
-        # Collect all known output_dir paths from task records
-        all_tasks = store.list(limit=1000)
-        known_dirs = set()
-        for t in all_tasks:
-            if t.result and t.result.get("output_dir"):
-                known_dirs.add(str(Path(t.result["output_dir"]).resolve()))
+        all_tasks = store.list(limit=-1)
+        known_dirs = {path for task in all_tasks for path in task_output_paths(task)}
+        unclassified = []
+        for item in data_root.iterdir() if data_root.exists() else []:
+            if item.is_dir() and item.name.casefold() not in SYSTEM_DIRECTORIES:
+                if not item.name.startswith(".") and item.resolve() not in known_dirs:
+                    if not (item / "metadata.json").exists():
+                        unclassified.append(str(item))
 
-        for item in data_root.iterdir():
-            # Skip non-directories and system files
-            if not item.is_dir():
-                continue
-            if item.name in ("settings.json", "history.json") or item.name.startswith("."):
-                continue
-
-            # Check if directory belongs to a known task
-            if str(item.resolve()) in known_dirs:
-                skipped.append(str(item))
-                continue
-
-            # Check age
+        staging = data_root / "_staging"
+        if staging.exists():
             try:
-                mtime = datetime.fromtimestamp(item.stat().st_mtime)
-                if mtime > cutoff_time:
-                    skipped.append(str(item))
-                    continue
-            except OSError:
-                continue
-
-            # Check if it has metadata (completed task)
-            if (item / "metadata.json").exists():
-                skipped.append(str(item))
-                continue
-
-            # Clean up orphaned directory
-            candidates.append(
-                {
-                    "path": str(item),
-                    "bytes": self._directory_size(item),
-                    "reason": f"orphan_older_than_{max_age_hours}h",
-                }
-            )
-            if dry_run:
-                continue
-            try:
-                shutil.rmtree(item)
-                cleaned.append(str(item))
-                logger.info(f"Cleaned up orphaned directory: {item}")
-            except Exception as e:
-                errors.append({"path": str(item), "error": str(e)})
-                logger.error(f"Failed to clean up {item}: {e}")
+                managed_child(staging, data_root)
+                for item in staging.iterdir():
+                    try:
+                        managed_child(item, data_root)
+                        if not item.is_dir():
+                            continue
+                        if any(task_uses_directory(task, item) for task in all_tasks):
+                            skipped.append(str(item))
+                            continue
+                        if datetime.fromtimestamp(item.stat().st_mtime) > cutoff_time:
+                            skipped.append(str(item))
+                            continue
+                        candidates.append({
+                            "path": str(item), "bytes": self._directory_size(item),
+                            "reason": f"unreferenced_upload_older_than_{max_age_hours}h",
+                        })
+                        if not dry_run:
+                            self.delete_staged_directory(item)
+                            cleaned.append(str(item))
+                    except (OSError, ValueError) as exc:
+                        errors.append({"path": str(item), "error": str(exc)})
+            except (OSError, ValueError) as exc:
+                errors.append({"path": str(staging), "error": str(exc)})
 
         return {
             "max_age_hours": max_age_hours,
@@ -187,7 +193,18 @@ class CleanupService:
             "cleaned": cleaned,
             "skipped": skipped,
             "errors": errors,
+            "unclassified": unclassified,
         }
+
+    def delete_staged_directory(self, path: Path) -> None:
+        root = self.get_data_root()
+        target = managed_child(path, root)
+        if target.parent != root / "_staging":
+            raise ValueError("Expected one staging upload directory")
+        if any(task_uses_directory(task, target) for task in get_task_store().list(limit=-1)):
+            raise ValueError("Staged upload is referenced by a task")
+        if target.exists():
+            shutil.rmtree(target)
 
     def get_disk_usage(self) -> dict[str, Any]:
         """

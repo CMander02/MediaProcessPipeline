@@ -181,10 +181,12 @@ def _resolve_staging_dir(staging_id: str) -> Path:
     """Resolve a staging dir path and verify it stays inside the staging root."""
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", staging_id):
         raise HTTPException(400, "invalid staging_id")
-    root = _staging_root().resolve()
-    candidate = (root / staging_id).resolve()
+    from app.core.paths import managed_child
+
+    root = _staging_root()
+    candidate = root / staging_id
     try:
-        candidate.relative_to(root)
+        managed_child(candidate, Path(get_runtime_settings().data_root))
     except ValueError:
         raise HTTPException(400, "invalid staging_id")
     return candidate
@@ -246,27 +248,21 @@ async def stage_file(file: UploadFile = File(...)):
 async def delete_staged(staging_id: str):
     """Delete a staged file directory (called when user removes a queued file)."""
     staging_dir = _resolve_staging_dir(staging_id)
-    if staging_dir.exists():
-        shutil.rmtree(staging_dir, ignore_errors=True)
+    from app.services.cleanup import get_cleanup_service
+
+    try:
+        get_cleanup_service().delete_staged_directory(staging_dir)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     return {"deleted": True}
 
 
 def sweep_stale_staging(max_age_hours: float = 24.0) -> int:
     """Remove staging directories older than max_age_hours. Called at daemon startup."""
-    import time
-    root = _staging_root()
-    if not root.exists():
-        return 0
-    cutoff = time.time() - max_age_hours * 3600
-    removed = 0
-    for entry in root.iterdir():
-        try:
-            if entry.is_dir() and entry.stat().st_mtime < cutoff:
-                shutil.rmtree(entry, ignore_errors=True)
-                removed += 1
-        except OSError:
-            continue
-    return removed
+    from app.services.cleanup import get_cleanup_service
+
+    result = get_cleanup_service().cleanup_orphaned_files(max_age_hours=max_age_hours)
+    return len(result["cleaned"])
 
 
 @router.get("/probe")
@@ -416,36 +412,37 @@ async def delete_archive(req: ArchiveDeleteRequest):
     if not archive_dir.is_dir():
         raise HTTPException(404, "Archive directory not found")
 
-    # Safety: only allow deleting within data_root
+    from app.core.paths import (
+        ACTIVE_STATUSES,
+        archive_directory,
+        task_output_paths,
+        task_uses_directory,
+    )
+
     rt = get_runtime_settings()
     data_root = Path(rt.data_root).resolve()
     try:
-        archive_dir.resolve().relative_to(data_root)
-    except ValueError:
-        raise HTTPException(403, "Cannot delete paths outside data directory")
+        archive_dir = archive_directory(archive_dir, data_root)
+    except ValueError as exc:
+        raise HTTPException(403, str(exc)) from exc
 
     # Try to find and delete the associated task record by matching output_dir
     task_deleted = False
-    from uuid import UUID
-    from app.core.database import get_task_store, _get_conn
+    from app.core.database import get_task_store
     store = get_task_store()
-    conn = _get_conn()
-    archive_dir_str = str(archive_dir.resolve())
-    # Search for task whose result JSON contains this output_dir path
-    rows = conn.execute("SELECT id, status, result FROM tasks WHERE result IS NOT NULL").fetchall()
-    for row in rows:
-        try:
-            result = json.loads(row["result"]) if isinstance(row["result"], str) else row["result"]
-            if result and str(Path(result.get("output_dir", "")).resolve()) == archive_dir_str:
-                if str(row["status"]) in {"queued", "processing"}:
-                    raise HTTPException(409, "Archive directory is used by an active task")
-                store.delete(UUID(row["id"]))
-                task_deleted = True
-                break
-        except HTTPException:
-            raise
-        except (json.JSONDecodeError, TypeError, ValueError):
-            continue
+    all_tasks = store.list(limit=-1)
+    if any(
+        task.status in ACTIVE_STATUSES and task_uses_directory(task, archive_dir)
+        for task in all_tasks
+    ):
+        raise HTTPException(409, "Archive directory is used by an active task")
+    matching = [task for task in all_tasks if archive_dir in task_output_paths(task)]
+    metadata = _read_archive_metadata(archive_dir)
+    if not matching and not any(metadata.get(key) for key in ("title", "task_id", "archive_id")):
+        raise HTTPException(400, "Directory is not a recognized archive")
+    for task in matching:
+        store.delete(task.id)
+        task_deleted = True
 
     # Delete the archive directory (with Windows file-lock retry)
     import time
