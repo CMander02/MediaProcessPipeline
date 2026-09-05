@@ -1,5 +1,18 @@
 # MediaProcessPipeline 执行流程详解
 
+## 管线代码职责
+
+公开入口保留在 `backend/app/core/pipeline.py`，按下载准备、转写、后处理的顺序调用 `pipeline_steps`，集中处理任务完成、失败、暂停和取消。阶段之间使用 `PipelineContext` 传递任务、设置、目录及转写结果。
+
+- `download.py`：来源识别、下载或复制、恢复下载 checkpoint，以及交给 GPU 队列。
+- `transcription.py`：平台字幕、UVR 和 ASR；`subtitle_fast_path.py` 处理字幕已有时的产出。
+- `postprocess.py`：润色、分析、摘要、导图及最终归档。
+- `notes.py`：图文来源、图片说明与图文归档流程。
+- `context.py`：阶段共享状态及 checkpoint 恢复；`state.py`：步骤、进度、流程事件和取消检查。
+- `artifacts.py`：通过 ArtifactStore 保存正文、元数据和归档；`sources.py`、`transcript.py` 提供来源与字幕辅助函数。
+
+`tests/test_pipeline_stages.py` 使用临时资料库和模拟模型服务验证阶段交接、平台字幕、暂停取消、图文输入及 UVR 失败后的资源释放。
+
 ## 1. 输入方式
 
 系统支持三种输入方式：
