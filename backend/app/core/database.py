@@ -1,7 +1,7 @@
 """SQLite-backed task store.
 
 Replaces in-memory _tasks dict and JSON-based HistoryService with a single
-SQLite database at data/tasks.db.
+SQLite database resolved through app.core.paths for the selected library.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 # DB path - resolved at init time from settings
 _db_path: Path | None = None
+_db_root: Path | None = None
 _connection: sqlite3.Connection | None = None
 _db_lock = threading.Lock()  # Serialize all DB writes
 
@@ -117,6 +118,8 @@ CREATE INDEX IF NOT EXISTS idx_archive_sync_changes_archive ON archive_sync_chan
 
 # Columns added after initial schema — applied idempotently via ALTER TABLE
 _MIGRATIONS = [
+    "ALTER TABLE tasks ADD COLUMN path_fields TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE tasks ADD COLUMN external_source INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE tasks ADD COLUMN platform TEXT",
     "ALTER TABLE tasks ADD COLUMN uploader_id TEXT",
     "ALTER TABLE tasks ADD COLUMN content_subtype TEXT",
@@ -125,13 +128,20 @@ _MIGRATIONS = [
 ]
 
 
+def _database_root() -> Path:
+    if _db_root is not None:
+        return _db_root
+    from app.core.settings import get_runtime_settings
+    return Path(get_runtime_settings().data_root).expanduser().resolve()
+
+
 def _get_db_path() -> Path:
-    """Get the database path, resolving from settings if needed."""
     global _db_path
     if _db_path is None:
-        from app.core.settings import get_runtime_settings
-        rt = get_runtime_settings()
-        _db_path = Path(rt.data_root).resolve() / "tasks.db"
+        from app.core.paths import get_workspace_paths
+        paths = get_workspace_paths(_database_root())
+        paths.ensure()
+        _db_path = paths.tasks_db
     return _db_path
 
 
@@ -178,15 +188,24 @@ def _task_to_row(task: Task) -> dict:
         if content_subtype is None:
             content_subtype = meta.get("content_subtype")
 
+    from app.core.paths import encode_workspace_paths, is_absolute_file_path
+    root = _database_root()
+    payload, path_fields = encode_workspace_paths({
+        "source": task.source, "options": task.options, "result": task.result, "flow": task.flow,
+    }, root)
+    external_source = is_absolute_file_path(task.source) and ["source"] not in path_fields
+
     return {
         "id": str(task.id),
         "task_type": task.task_type,
         "status": task.status,
-        "source": task.source,
-        "options": json.dumps(task.options, ensure_ascii=False),
+        "source": payload["source"],
+        "path_fields": json.dumps(path_fields),
+        "external_source": int(external_source),
+        "options": json.dumps(payload["options"], ensure_ascii=False),
         "progress": task.progress,
         "message": task.message,
-        "result": json.dumps(task.result, ensure_ascii=False) if task.result else None,
+        "result": json.dumps(payload["result"], ensure_ascii=False) if task.result else None,
         "error": task.error,
         "webhook_url": task.webhook_url,
         "created_at": task.created_at.isoformat(),
@@ -195,7 +214,7 @@ def _task_to_row(task: Task) -> dict:
         "current_step": task.current_step,
         "steps": json.dumps(task.steps, ensure_ascii=False),
         "completed_steps": json.dumps(task.completed_steps, ensure_ascii=False),
-        "flow": json.dumps(task.flow, ensure_ascii=False) if task.flow else None,
+        "flow": json.dumps(payload["flow"], ensure_ascii=False) if task.flow else None,
         "platform": platform,
         "uploader_id": uploader_id,
         "content_subtype": content_subtype,
@@ -205,15 +224,22 @@ def _task_to_row(task: Task) -> dict:
 def _row_to_task(row: sqlite3.Row) -> Task:
     """Convert a database row to a Task model."""
     keys = row.keys()
+    from app.core.paths import decode_workspace_paths
+    payload = {"source": row["source"], "options": json.loads(row["options"]),
+               "result": json.loads(row["result"]) if row["result"] else None,
+               "flow": json.loads(row["flow"]) if "flow" in keys and row["flow"] else None}
+    fields = json.loads(row["path_fields"]) if "path_fields" in keys else []
+    payload = decode_workspace_paths(payload, fields, _database_root())
     return Task(
         id=UUID(row["id"]),
         task_type=TaskType(row["task_type"]),
         status=TaskStatus(row["status"]),
-        source=row["source"],
-        options=json.loads(row["options"]),
+        source=payload["source"],
+        external_source=bool(row["external_source"]) if "external_source" in keys else False,
+        options=payload["options"],
         progress=row["progress"],
         message=row["message"],
-        result=json.loads(row["result"]) if row["result"] else None,
+        result=payload["result"],
         error=row["error"],
         webhook_url=row["webhook_url"],
         created_at=datetime.fromisoformat(row["created_at"]),
@@ -222,7 +248,7 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         current_step=row["current_step"],
         steps=json.loads(row["steps"]),
         completed_steps=json.loads(row["completed_steps"]),
-        flow=json.loads(row["flow"]) if "flow" in keys and row["flow"] else None,
+        flow=payload["flow"],
         platform=row["platform"] if "platform" in keys else None,
         uploader_id=row["uploader_id"] if "uploader_id" in keys else None,
         content_subtype=row["content_subtype"] if "content_subtype" in keys else None,
@@ -305,13 +331,17 @@ class TaskStore:
         sets = ["status = ?", "updated_at = ?"]
         vals: list[Any] = [status, datetime.now().isoformat()]
 
+        changed_path_fields = {}
         for key, value in kwargs.items():
             if key in ("progress", "message", "error", "current_step", "uploader_id", "platform", "content_subtype"):
                 sets.append(f"{key} = ?")
                 vals.append(value)
             elif key == "result":
                 sets.append("result = ?")
-                vals.append(json.dumps(value, ensure_ascii=False) if value else None)
+                from app.core.paths import encode_workspace_paths
+                encoded, fields = encode_workspace_paths({key: value}, _database_root())
+                changed_path_fields[key] = fields
+                vals.append(json.dumps(encoded[key], ensure_ascii=False) if value else None)
             elif key == "completed_at":
                 sets.append("completed_at = ?")
                 vals.append(value.isoformat() if value else None)
@@ -320,10 +350,20 @@ class TaskStore:
                 vals.append(json.dumps(value, ensure_ascii=False))
             elif key == "flow":
                 sets.append("flow = ?")
-                vals.append(json.dumps(value, ensure_ascii=False) if value else None)
+                from app.core.paths import encode_workspace_paths
+                encoded, fields = encode_workspace_paths({key: value}, _database_root())
+                changed_path_fields[key] = fields
+                vals.append(json.dumps(encoded[key], ensure_ascii=False) if value else None)
 
         vals.append(str(task_id))
-        with _db_lock:
+        with _db_lock, conn:
+            if changed_path_fields:
+                row = conn.execute("SELECT path_fields FROM tasks WHERE id = ?", (str(task_id),)).fetchone()
+                previous = json.loads(row[0]) if row else []
+                fields = [field for field in previous if field[0] not in changed_path_fields]
+                fields.extend(field for changed in changed_path_fields.values() for field in changed)
+                sets.append("path_fields = ?")
+                vals.insert(-1, json.dumps(fields))
             conn.execute(
                 f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?",
                 vals,
@@ -442,12 +482,16 @@ class TaskStore:
         """Resolve stored output paths directly without loading thousands of task models."""
         import os
         target = Path(output_dir).resolve().as_posix().rstrip("/")
+        try:
+            relative = Path(output_dir).resolve().relative_to(_database_root()).as_posix()
+        except ValueError:
+            relative = target
         collation = " COLLATE NOCASE" if os.name == "nt" else ""
         row = _get_conn().execute(
             "SELECT * FROM tasks WHERE "
-            "rtrim(replace(json_extract(result, '$.output_dir'), char(92), '/'), '/') = ?" + collation +
-            " OR rtrim(replace(json_extract(result, '$.archive.output_dir'), char(92), '/'), '/') = ?" + collation +
-            " ORDER BY updated_at DESC LIMIT 1", (target, target)
+            "rtrim(replace(json_extract(result, '$.output_dir'), char(92), '/'), '/')" + collation + " IN (?, ?)" +
+            " OR rtrim(replace(json_extract(result, '$.archive.output_dir'), char(92), '/'), '/')" + collation + " IN (?, ?)" +
+            " ORDER BY updated_at DESC LIMIT 1", (target, relative, target, relative)
         ).fetchone()
         return _row_to_task(row) if row else None
 
@@ -495,9 +539,8 @@ def get_task_store() -> TaskStore:
 
 def init_db(data_root: Path | None = None) -> None:
     """Initialize the database (call during app startup)."""
-    global _db_path
-    if data_root:
-        _db_path = Path(data_root).resolve() / "tasks.db"
+    if data_root and Path(data_root).resolve() != _database_root():
+        reset_db_path(data_root)
     # Force connection creation + schema init
     _get_conn()
     log_event(logger, logging.INFO, "database.initialized", path=_get_db_path())
@@ -514,6 +557,9 @@ def close_db() -> None:
 
 def reset_db_path(data_root: Path | None = None) -> None:
     """Close the current connection and make the next access resolve a fresh DB path."""
-    global _db_path
+    global _db_path, _db_root
+    from app.core.paths import reset_workspace_paths
     close_db()
-    _db_path = Path(data_root).resolve() / "tasks.db" if data_root else None
+    _db_root = Path(data_root).resolve() if data_root else None
+    _db_path = None
+    reset_workspace_paths()

@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.core.database import get_task_store
+from app.core.paths import get_workspace_paths
 from app.core.events import get_event_bus
 from app.core.pipeline import (
     PIPELINE_STEPS,
@@ -43,18 +44,17 @@ logger = logging.getLogger(__name__)
 
 def _is_managed_staging_source(source: str, data_root: str) -> bool:
     """Allow remote tasks to consume files created by the upload endpoint."""
-    try:
-        staging_root = (Path(data_root) / "_staging").resolve()
-        candidate = Path(source).expanduser().resolve()
-        relative = candidate.relative_to(staging_root)
-    except (OSError, ValueError):
-        return False
-
-    return (
-        len(relative.parts) == 2
-        and re.fullmatch(r"[0-9a-f]{32}", relative.parts[0]) is not None
-        and candidate.is_file()
-    )
+    candidate = Path(source).expanduser().resolve()
+    for staging_root in get_workspace_paths(data_root).staging_roots:
+        try:
+            relative = candidate.relative_to(staging_root)
+        except (OSError, ValueError):
+            continue
+        if (len(relative.parts) == 2
+                and re.fullmatch(r"[0-9a-f]{32}", relative.parts[0]) is not None
+                and candidate.is_file()):
+            return True
+    return False
 
 
 def _validate_public_http_url(url: str) -> None:

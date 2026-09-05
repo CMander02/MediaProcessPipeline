@@ -25,6 +25,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from app.core.paths import get_workspace_paths
+
 from app.core.network import runtime_proxy_url, urllib_urlopen
 from app.core.settings import get_runtime_settings
 
@@ -945,7 +947,7 @@ def _storage_state_path() -> Path:
     configured = str(getattr(rt, "xiaohongshu_storage_state_path", "") or "").strip()
     if configured:
         return Path(configured).expanduser()
-    return Path(rt.data_root).resolve() / "auth" / "xiaohongshu_storage_state.json"
+    return get_workspace_paths(rt.data_root).auth / "xiaohongshu_storage_state.json"
 
 
 def _storage_state_cookie_header() -> str:

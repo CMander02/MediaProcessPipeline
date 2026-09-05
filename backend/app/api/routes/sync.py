@@ -16,6 +16,8 @@ from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadF
 from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
+from app.core.paths import get_workspace_paths
+
 from app.core.workspace_lifecycle import run_in_thread
 
 from app.core.archive_sync import (
@@ -63,8 +65,15 @@ def _read_metadata(archive_root: Path) -> dict[str, Any]:
 
 
 def _destination_for(data_root: Path, archive_name: str, task_id: str) -> Path:
+    # Reuse the existing task archive across a layout upgrade.
+    existing = get_task_store().get(UUID(task_id))
+    if existing and (existing.result or {}).get("output_dir"):
+        path = Path(existing.result["output_dir"])
+        if path.is_dir() and data_root in path.resolve().parents:
+            return path
+    archive_root = get_workspace_paths(data_root).archives
     base_name = _safe_archive_name(archive_name)
-    candidate = data_root / base_name
+    candidate = archive_root / base_name
     suffix = 2
     while candidate.exists():
         try:
@@ -73,7 +82,7 @@ def _destination_for(data_root: Path, archive_name: str, task_id: str) -> Path:
             metadata = {}
         if str(metadata.get("task_id") or "") == task_id:
             return candidate
-        candidate = data_root / f"{base_name} ({suffix})"
+        candidate = archive_root / f"{base_name} ({suffix})"
         suffix += 1
     return candidate
 
@@ -164,7 +173,7 @@ async def export_completed_archive(
         raise HTTPException(409, "Only completed tasks can be transferred")
     data_root = Path(get_runtime_settings().data_root).resolve()
     archive_dir = _task_archive_dir(task, data_root)
-    staging_dir = data_root / "_sync_downloads" / f"{task_id}-{uuid4().hex}"
+    staging_dir = get_workspace_paths(data_root).temporary("sync_downloads") / f"{task_id}-{uuid4().hex}"
     zip_path = staging_dir / "archive.zip"
     staging_dir.mkdir(parents=True, exist_ok=False)
     try:
@@ -237,7 +246,7 @@ async def import_completed_archive(
 
     data_root = Path(get_runtime_settings().data_root).resolve()
     data_root.mkdir(parents=True, exist_ok=True)
-    staging_dir = data_root / "_remote_sync" / f"{task.id}-{uuid4().hex}"
+    staging_dir = get_workspace_paths(data_root).temporary("remote_sync") / f"{task.id}-{uuid4().hex}"
     zip_path = staging_dir / "archive.zip"
     extraction_dir = staging_dir / "extracted"
     staging_dir.mkdir(parents=True, exist_ok=False)

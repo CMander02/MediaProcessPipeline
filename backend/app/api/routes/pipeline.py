@@ -22,6 +22,8 @@ _WIN_RESERVED = re.compile(
 import ipaddress
 from urllib.parse import urlparse
 
+from app.core.paths import get_workspace_paths
+
 from app.core.workspace_lifecycle import run_in_thread
 
 from app.core.settings import get_runtime_settings
@@ -176,7 +178,7 @@ def _sanitize_upload_name(raw_name: str) -> str:
 
 def _staging_root() -> Path:
     rt = get_runtime_settings()
-    return Path(rt.data_root) / "_staging"
+    return get_workspace_paths(rt.data_root).temporary("staging")
 
 
 def _resolve_staging_dir(staging_id: str) -> Path:
@@ -186,7 +188,8 @@ def _resolve_staging_dir(staging_id: str) -> Path:
     from app.core.paths import managed_child
 
     root = _staging_root()
-    candidate = root / staging_id
+    candidate = next((base / staging_id for base in get_workspace_paths().staging_roots
+                      if (base / staging_id).exists()), root / staging_id)
     try:
         managed_child(candidate, Path(get_runtime_settings().data_root))
     except ValueError:

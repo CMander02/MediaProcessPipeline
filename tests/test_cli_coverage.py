@@ -98,7 +98,7 @@ def test_every_public_leaf_command_renders_help():
 
     collect(root, [])
 
-    assert len(leaves) == 122
+    assert len(leaves) == 123
     failures = []
     for path in leaves:
         result = runner.invoke(app, ["--skip-version-check", "--plain", *path, "--help"])

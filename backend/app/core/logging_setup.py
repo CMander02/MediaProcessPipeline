@@ -303,3 +303,28 @@ def setup_logging(log_dir: Path | None = None) -> Path | None:
 def get_current_log_file() -> Path | None:
     """Return the log file owned by the current backend process."""
     return _current_log_file
+
+
+def relocate_log_file(log_dir: Path) -> None:
+    """Move the active file handler when the selected workspace changes."""
+    global _current_log_file
+    current = _current_log_file
+    if current is None or current.parent == log_dir:
+        return
+    handlers = [handler for handler in logging.root.handlers
+                if isinstance(handler, RotatingFileHandler)
+                and Path(handler.baseFilename) == current]
+    if not handlers:
+        return
+    log_dir.mkdir(parents=True, exist_ok=True)
+    destination = log_dir / current.name
+    replacement = RotatingFileHandler(destination, maxBytes=10 * 1024 * 1024,
+                                      backupCount=5, encoding="utf-8")
+    replacement.setFormatter(handlers[0].formatter)
+    for context_filter in handlers[0].filters:
+        replacement.addFilter(context_filter)
+    logging.root.addHandler(replacement)
+    for handler in handlers:
+        logging.root.removeHandler(handler)
+        handler.close()
+    _current_log_file = destination

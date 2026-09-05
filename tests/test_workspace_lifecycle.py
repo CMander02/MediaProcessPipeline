@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from app.core import database, settings
+from app.core.paths import get_workspace_paths
 from app.core.workspace_lifecycle import (
     WorkspaceBusyError,
     drain_workspace_threads,
@@ -50,9 +51,9 @@ def test_switch_reopens_all_three_stores(workspace):
     person = old_voice.create_person("保留人物")
     settings.patch_runtime_settings({"data_root": str(new)})
     assert database.get_task_store().count() == 0
-    assert kb.get_kb_store()._db_path == new / "kb.db"
+    assert kb.get_kb_store()._db_path == get_workspace_paths(new).kb_db
     assert kb.get_kb_store().chunk_count() == 0
-    assert voice.get_voiceprint_store().db_path == new / "voiceprints" / "library.db"
+    assert voice.get_voiceprint_store().db_path == get_workspace_paths(new).voiceprints / "library.db"
     assert voice.get_voiceprint_store().get_person(person.id) is None
     assert old_kb._conn is None
     assert old_voice._conn is None
@@ -69,7 +70,7 @@ def test_invalid_database_rolls_back_config_and_live_store(workspace):
         settings.patch_runtime_settings({"data_root": str(new)})
     assert settings.get_runtime_settings().data_root == str(old)
     assert json.loads(settings.SETTINGS_FILE.read_text(encoding="utf-8"))["data_root"] == str(old)
-    assert database._get_db_path() == old / "tasks.db"
+    assert database._get_db_path() == get_workspace_paths(old).tasks_db
     assert database.get_task_store().count() == 0
 
 
@@ -139,4 +140,4 @@ def test_api_and_offline_core_share_busy_switch_behavior(workspace):
     with TestClient(app) as client:
         response = client.patch("/api/settings", json={"data_root": str(new)})
         assert response.status_code == 200
-    assert database._get_db_path() == new / "tasks.db"
+    assert database._get_db_path() == get_workspace_paths(new).tasks_db

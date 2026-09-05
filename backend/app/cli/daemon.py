@@ -18,11 +18,10 @@ from app.cli.context import DEFAULT_SERVER_URL, normalize_server_url
 
 
 def _state_path() -> Path:
-    from app.core.settings import get_runtime_settings
-
-    root = Path(get_runtime_settings().data_root).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    return root / ".mpp-daemon.json"
+    from app.core.paths import get_workspace_paths
+    paths = get_workspace_paths()
+    paths.state.mkdir(parents=True, exist_ok=True)
+    return paths.state / ".mpp-daemon.json"
 
 
 def _read_state() -> dict[str, Any] | None:
@@ -130,7 +129,8 @@ def start_daemon(
     host = "localhost"
     port = int(parsed.port or (443 if parsed.scheme == "https" else 80))
     state_path = _state_path()
-    log_dir = state_path.parent / "logs"
+    from app.core.paths import get_workspace_paths
+    log_dir = get_workspace_paths().logs
     log_dir.mkdir(parents=True, exist_ok=True)
     stdout_path = log_dir / "mpp-daemon-stdout.log"
     stderr_path = log_dir / "mpp-daemon-stderr.log"

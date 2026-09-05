@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from app.core.paths import get_workspace_paths
+
 from app.core.network import urllib_urlopen
 from app.core.settings import get_runtime_settings
 
@@ -29,7 +31,7 @@ def storage_state_path() -> Path:
     configured = str(getattr(rt, "twitter_storage_state_path", "") or "").strip()
     if configured:
         return Path(configured).expanduser()
-    return Path(rt.data_root).resolve() / "auth" / "twitter_storage_state.json"
+    return get_workspace_paths(rt.data_root).auth / "twitter_storage_state.json"
 
 
 def auth_state_status() -> dict[str, Any]:

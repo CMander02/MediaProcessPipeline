@@ -9,7 +9,7 @@ CLI (mpp) / HTTP
         ↓
   FastAPI Daemon (:18000)  ← 同时 serve 前端静态文件
   ├─ TaskQueue    asyncio.Queue, 单 worker (GPU 瓶颈)
-  ├─ TaskStore    SQLite (data/tasks.db)
+  ├─ TaskStore    SQLite (由 core.paths 解析 data_root 内的布局)
   ├─ EventBus    in-process pub/sub → SSE
   └─ Services    ASR, UVR, LLM (不变)
 
@@ -65,9 +65,11 @@ CLI (mpp) / HTTP
 
 ### 数据持久化
 
-- 任务存 SQLite `data/tasks.db`（active + history 统一存储）
-- Settings 存 `data/settings.json`
-- 任务产出存 `data/{title}/`（同名加 `(2)` 后缀）
+- Runtime settings 存项目根目录 `config.json`，由 `app.core.paths.CONFIG_FILE` 定位。
+- 全新资料库采用 `data_root/state/tasks.db`、`state/kb.db`、`state/voiceprints/`、`state/auth/`；归档为 `archives/{title}/`，同名加 `(2)` 后缀。
+- 现有混合布局继续使用 `data_root/tasks.db` 和原归档路径。路径统一通过 `get_workspace_paths()` 解析；避免拼接固定布局。
+- 临时工作目录为 `tmp/<用途>/`，日志为 `logs/`，迁移备份为 `backups/`。
+- `mpp storage migrate` 默认预览；停止 daemon 后用 `--apply` 执行或继续，用 `--rollback` 恢复。操作步骤见 `docs/storage-migration.md`。
 
 ## Git 提交规范
 

@@ -236,7 +236,7 @@ cd web && npm run dev              # :5173
 
 ## 配置
 
-> ⚠️ **任务数据库实际位置**：`tasks.db` 不在仓库里的 `data/`，而在 `settings.data_root` 指向的目录下，例如本机 `D:/Video/MediaProcessPipeline/tasks.db`。仓库下的 `data/tasks.db` 是历史遗留的 0 字节文件，不要去查它。需要直连 SQLite 调试时，认准 `data_root`。
+运行时配置保存在项目根目录 `config.json`。任务数据库由 `data_root` 和资料库布局决定：旧库使用 `tasks.db`，新库使用 `state/tasks.db`；新归档位于 `archives/<title>/`。现有库保持原路径，可用 `mpp storage migrate` 预览目录整理，详见[资料库迁移与恢复](docs/storage-migration.md)。
 
 在前端设置页面或根目录 `config.json` 中配置：
 

@@ -87,6 +87,7 @@ class Task(BaseModel):
     task_type: TaskType
     status: TaskStatus = TaskStatus.PENDING
     source: str
+    external_source: bool = False
     options: dict[str, Any] = Field(default_factory=dict)
     progress: float = 0.0
     message: str | None = None

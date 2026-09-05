@@ -14,6 +14,7 @@ from app.core.paths import (
     archive_directory,
     is_directory_link,
     managed_child,
+    get_workspace_paths,
     task_output_paths,
     task_uses_directory,
 )
@@ -154,37 +155,37 @@ class CleanupService:
         known_dirs = {path for task in all_tasks for path in task_output_paths(task)}
         unclassified = []
         for item in data_root.iterdir() if data_root.exists() else []:
-            if item.is_dir() and item.name.casefold() not in SYSTEM_DIRECTORIES:
+            if item.is_dir() and item.name.casefold() not in SYSTEM_DIRECTORIES and item.name != "archives":
                 if not item.name.startswith(".") and item.resolve() not in known_dirs:
                     if not (item / "metadata.json").exists():
                         unclassified.append(str(item))
 
-        staging = data_root / "_staging"
-        if staging.exists():
-            try:
-                managed_child(staging, data_root)
-                for item in staging.iterdir():
-                    try:
-                        managed_child(item, data_root)
-                        if not item.is_dir():
-                            continue
-                        if any(task_uses_directory(task, item) for task in all_tasks):
-                            skipped.append(str(item))
-                            continue
-                        if datetime.fromtimestamp(item.stat().st_mtime) > cutoff_time:
-                            skipped.append(str(item))
-                            continue
-                        candidates.append({
-                            "path": str(item), "bytes": self._directory_size(item),
-                            "reason": f"unreferenced_upload_older_than_{max_age_hours}h",
-                        })
-                        if not dry_run:
-                            self.delete_staged_directory(item)
-                            cleaned.append(str(item))
-                    except (OSError, ValueError) as exc:
-                        errors.append({"path": str(item), "error": str(exc)})
-            except (OSError, ValueError) as exc:
-                errors.append({"path": str(staging), "error": str(exc)})
+        for staging in get_workspace_paths(data_root).staging_roots:
+            if staging.exists():
+                try:
+                    managed_child(staging, data_root)
+                    for item in staging.iterdir():
+                        try:
+                            managed_child(item, data_root)
+                            if not item.is_dir():
+                                continue
+                            if any(task_uses_directory(task, item) for task in all_tasks):
+                                skipped.append(str(item))
+                                continue
+                            if datetime.fromtimestamp(item.stat().st_mtime) > cutoff_time:
+                                skipped.append(str(item))
+                                continue
+                            candidates.append({
+                                "path": str(item), "bytes": self._directory_size(item),
+                                "reason": f"unreferenced_upload_older_than_{max_age_hours}h",
+                            })
+                            if not dry_run:
+                                self.delete_staged_directory(item)
+                                cleaned.append(str(item))
+                        except (OSError, ValueError) as exc:
+                            errors.append({"path": str(item), "error": str(exc)})
+                except (OSError, ValueError) as exc:
+                    errors.append({"path": str(staging), "error": str(exc)})
 
         return {
             "max_age_hours": max_age_hours,
@@ -199,7 +200,7 @@ class CleanupService:
     def delete_staged_directory(self, path: Path) -> None:
         root = self.get_data_root()
         target = managed_child(path, root)
-        if target.parent != root / "_staging":
+        if target.parent not in get_workspace_paths(root).staging_roots:
             raise ValueError("Expected one staging upload directory")
         if any(task_uses_directory(task, target) for task in get_task_store().list(limit=-1)):
             raise ValueError("Staged upload is referenced by a task")

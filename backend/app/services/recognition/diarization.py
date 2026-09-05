@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from app.core.paths import get_workspace_paths
+
 from app.core.network import runtime_proxy_url
 from app.core.settings import get_runtime_settings
 
@@ -115,7 +117,7 @@ class DiarizationService:
         digest = hashlib.sha1(
             (str(config_file.resolve()) + "\n" + rendered).encode("utf-8")
         ).hexdigest()[:12]
-        cache_dir = Path(str(rt.data_root)) / ".cache" / "pyannote"
+        cache_dir = get_workspace_paths(rt.data_root).temporary("pyannote")
         cache_dir.mkdir(parents=True, exist_ok=True)
         resolved_config = cache_dir / f"{config_file.stem}-{digest}.yaml"
         resolved_config.write_text(rendered, encoding="utf-8")

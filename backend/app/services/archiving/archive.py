@@ -8,6 +8,7 @@ from typing import Any
 
 from app.core.settings import get_runtime_settings
 from app.core.artifacts import get_artifact_store
+from app.core.paths import get_workspace_paths, iter_archive_directories
 from app.models import MediaMetadata
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ class ArchiveService:
             output_dir = Path(work_dir)
         else:
             rt = get_runtime_settings()
-            output_dir = Path(rt.data_root).resolve() / f"{date_str}_{title_safe}"
+            output_dir = get_workspace_paths(rt.data_root).archives / f"{date_str}_{title_safe}"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         files: dict[str, str] = {}
@@ -143,7 +144,7 @@ class ArchiveService:
         dir_to_task = self._archive_task_map()
 
         archives = []
-        for task_dir in data_root.iterdir():
+        for task_dir in iter_archive_directories(data_root):
             item = self._archive_item(task_dir, dir_to_task, lite=lite)
             if not item:
                 continue

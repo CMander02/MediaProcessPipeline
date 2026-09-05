@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from app.core.paths import get_workspace_paths
+
 from app.core.config import get_settings
 from app.core.logging_setup import log_event
 from app.core.network import runtime_proxy_url as shared_runtime_proxy_url
@@ -795,7 +797,7 @@ class YtdlpService:
         url = normalize_bilibili_source_url(url)
         if output_dir is None:
             rt = get_runtime_settings()
-            output_dir = Path(rt.data_root).resolve()
+            output_dir = get_workspace_paths(rt.data_root).temporary("download")
         output_dir.mkdir(parents=True, exist_ok=True)
 
         if _is_bilibili_article_url(url):

@@ -20,6 +20,7 @@ import httpx
 from app.core.workspace_lifecycle import run_in_thread, uses_workspace
 
 from app.core.archive_sync import build_archive_zip
+from app.core.paths import get_workspace_paths
 from app.core.database import TaskStore, get_task_store
 from app.core.logging_setup import log_event
 from app.core.network import httpx_client_kwargs
@@ -166,8 +167,7 @@ class RemoteArchiveUploadService:
         store: TaskStore,
     ) -> None:
         staging_dir = (
-            Path(settings.data_root).resolve()
-            / "_remote_sync_client"
+            get_workspace_paths(settings.data_root).temporary("remote_sync_client")
             / f"upload-{task.id}-{uuid4().hex}"
         )
         zip_path = staging_dir / "archive.zip"

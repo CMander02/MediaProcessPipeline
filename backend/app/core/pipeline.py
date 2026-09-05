@@ -23,6 +23,7 @@ from uuid import UUID
 from app.core.workspace_lifecycle import run_in_thread
 
 from app.core.artifacts import get_artifact_store
+from app.core.paths import get_workspace_paths
 
 from app.core.database import get_task_store
 from app.core.events import TaskEvent, get_event_bus
@@ -228,7 +229,7 @@ def _unique_child_dir(parent: Path, dir_name: str, current_dir: Path | None = No
 def create_task_dir(task_id: UUID, title: str | None = None) -> Path:
     """Create a dedicated directory for this task under data/{title}/."""
     settings = get_runtime_settings()
-    data_root = Path(settings.data_root).resolve()
+    data_root = get_workspace_paths(settings.data_root).archives
 
     if title:
         dir_name = _sanitize_filename(title) or str(task_id)[:8]
@@ -2664,12 +2665,8 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                 # If the source lives in the upload staging area, move it
                 # (cheap on same volume) and drop the empty staging dir.
                 # Otherwise copy so user's original file is preserved.
-                staging_root = (Path(get_runtime_settings().data_root) / "_staging").resolve()
-                try:
-                    source_path.resolve().relative_to(staging_root)
-                    is_staged = True
-                except ValueError:
-                    is_staged = False
+                is_staged = any(root in source_path.resolve().parents
+                                for root in get_workspace_paths().staging_roots)
                 if is_staged:
                     shutil.move(str(source_path), str(dest_source))
                     try:

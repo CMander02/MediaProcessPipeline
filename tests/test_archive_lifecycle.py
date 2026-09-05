@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from app.core import database, settings
 from app.core.archive_lifecycle import ArchiveBusyError, ArchiveLifecycle
 from app.core.archive_sync import get_archive_sync_service
+from app.core.paths import get_workspace_paths
 from app.models import Task, TaskStatus, TaskType
 
 
@@ -88,7 +89,7 @@ def test_interruption_recovers_after_database_reopen(archive, monkeypatch, failu
     assert lifecycle.recover() == []
     assert not pending()
     assert database.get_task_store().get(task.id) is None
-    assert list((directory.parent / "_deleting").iterdir()) == []
+    assert list(get_workspace_paths(directory.parent).temporary("deleting").iterdir()) == []
     assert lifecycle.recover() == []
 
 
@@ -144,7 +145,7 @@ def test_delete_clears_kb_and_preserves_named_voice_samples(archive):
         )
         library = voice.get_voiceprint_store()
         person = library.create_person("用户命名的人物")
-        clip = directory.parent / "voiceprints" / "clips" / "keep.wav"
+        clip = library.clips_dir / "keep.wav"
         clip.parent.mkdir(parents=True, exist_ok=True)
         clip.write_bytes(b"voice sample")
         sample = library.add_sample(person.id, np.ones(256), str(task.id), 2.0, 0.9, str(clip))

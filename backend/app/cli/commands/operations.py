@@ -31,6 +31,35 @@ sync_app = typer.Typer(help="端间任务传输与移动端归档同步", no_arg
 pipeline_app = typer.Typer(help="原子媒体处理操作", no_args_is_help=True)
 
 
+@storage_app.command("migrate")
+def storage_migrate(
+    source: Optional[Path] = typer.Option(None, "--source", help="本地资料库；默认使用 data_root"),
+    target: Optional[Path] = typer.Option(None, "--target", help="复制到指定目录；省略则原地整理"),
+    original_root: Optional[Path] = typer.Option(None, "--original-root", help="副本中旧绝对路径的原始根目录"),
+    apply: bool = typer.Option(False, "--apply", help="执行或继续迁移"),
+    rollback: bool = typer.Option(False, "--rollback", help="从迁移备份恢复旧布局"),
+):
+    """预览新版目录迁移；执行和恢复需先停止本地 daemon。"""
+    from app.core.settings import get_runtime_settings
+    from app.core.storage_migration import StorageMigration
+
+    if apply and rollback:
+        emit_error("invalid_options", "Choose --apply or --rollback", exit_code=2)
+    if apply or rollback:
+        local = MppClient(base_url="http://localhost:18000", timeout=2)
+        try:
+            if local.ping():
+                emit_error("daemon_running", "Stop the local daemon before migrating storage", exit_code=4)
+        finally:
+            local.close()
+    try:
+        migration = StorageMigration(source or get_runtime_settings().data_root, target, original_root)
+        result = migration.rollback() if rollback else migration.apply() if apply else migration.preview()
+    except (OSError, ValueError) as exc:
+        emit_error("storage_migration_failed", str(exc), exit_code=2)
+    emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
+
+
 @server_app.command("status")
 def server_status():
     """显示 daemon 健康状态与 CLI 管理的 PID。"""

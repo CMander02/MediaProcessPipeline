@@ -9,10 +9,11 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 
 from app.core.logging_setup import get_current_log_file
+from app.core.paths import get_workspace_paths
 
 router = APIRouter(prefix="/logs", tags=["logs"])
 
-LOG_DIR = Path(__file__).resolve().parents[4] / "logs"
+LOG_DIR: Path | None = None
 MAX_READ_BYTES = 10 * 1024 * 1024
 
 _HEADER_RE = re.compile(
@@ -30,10 +31,11 @@ _EVENT_FIELD_RE = re.compile(r"\bevent=(?P<value>\S+)")
 
 
 def _available_log_files() -> list[Path]:
-    if not LOG_DIR.is_dir():
+    log_dir = LOG_DIR or get_workspace_paths().logs
+    if not log_dir.is_dir():
         return []
     return sorted(
-        (path for path in LOG_DIR.glob("mpp_*.log*") if path.is_file()),
+        (path for path in log_dir.glob("mpp_*.log*") if path.is_file()),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )

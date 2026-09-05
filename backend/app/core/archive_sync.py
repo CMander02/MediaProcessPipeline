@@ -22,6 +22,7 @@ from fastapi import HTTPException, UploadFile
 from app.core.workspace_lifecycle import uses_workspace
 
 from app.core.database import _db_lock, _get_conn
+from app.core.paths import iter_archive_directories, encode_workspace_paths, decode_workspace_paths
 from app.core.settings import get_runtime_settings
 from app.services.archiving.archive import get_archive_service
 
@@ -96,7 +97,7 @@ class ArchiveSyncService:
         task_map = archive_service._archive_task_map()
         current_ids: set[str] = set()
 
-        for archive_dir in sorted(data_root.iterdir(), key=lambda item: item.name.casefold()):
+        for archive_dir in sorted(iter_archive_directories(data_root), key=lambda item: item.name.casefold()):
             item = archive_service._archive_item(archive_dir, task_map, lite=True)
             if not item:
                 continue
@@ -148,7 +149,7 @@ class ArchiveSyncService:
                 "changed_at": str(row["changed_at"]),
             }
             if row["snapshot"]:
-                change["archive"] = json.loads(row["snapshot"])
+                change["archive"] = self.decode_snapshot(json.loads(row["snapshot"]))
             changes.append(change)
         next_cursor = int(page[-1]["revision"]) if page else cursor
         return {
@@ -246,7 +247,7 @@ class ArchiveSyncService:
             (archive_id,),
         ).fetchone()
         if existing:
-            existing_path = Path(str(existing["archive_path"]))
+            existing_path = Path(get_runtime_settings().data_root).resolve() / str(existing["archive_path"])
             if existing_path.exists() and existing_path.resolve() != archive_dir.resolve():
                 archive_id = str(uuid4())
 
@@ -272,12 +273,13 @@ class ArchiveSyncService:
             "FROM archive_sync_index WHERE archive_id = ?",
             (archive_id,),
         ).fetchone()
-        archive_path = str(archive_dir.resolve())
+        root = Path(get_runtime_settings().data_root).resolve()
+        archive_path = archive_dir.resolve().relative_to(root).as_posix()
         if (
             row
             and not int(row["deleted"])
             and str(row["fingerprint"]) == fingerprint
-            and str(row["archive_path"]) == archive_path
+            and (root / str(row["archive_path"])).resolve() == archive_dir.resolve()
         ):
             return
 
@@ -287,7 +289,9 @@ class ArchiveSyncService:
             snapshot = dict(item)
             snapshot["archive_id"] = archive_id
             snapshot["revision"] = revision
-            snapshot_json = json.dumps(snapshot, ensure_ascii=False)
+            encoded, fields = encode_workspace_paths(snapshot, root)
+            encoded["_path_fields"] = fields
+            snapshot_json = json.dumps(encoded, ensure_ascii=False)
             conn.execute(
                 """
                 INSERT INTO archive_sync_index
@@ -355,12 +359,17 @@ class ArchiveSyncService:
         return revision
 
     @staticmethod
+    def decode_snapshot(snapshot: dict) -> dict:
+        fields = snapshot.pop("_path_fields", [])
+        return decode_workspace_paths(snapshot, fields, Path(get_runtime_settings().data_root).resolve())
+
+    @staticmethod
     def _active_record(archive_id: str):
         try:
             normalized_id = str(UUID(archive_id))
         except ValueError:
             return None
-        return _get_conn().execute(
+        row = _get_conn().execute(
             """
             SELECT archive_id, archive_path, revision, snapshot
             FROM archive_sync_index
@@ -368,6 +377,12 @@ class ArchiveSyncService:
             """,
             (normalized_id,),
         ).fetchone()
+        if row is None:
+            return None
+        record = dict(row)
+        record["archive_path"] = str(Path(get_runtime_settings().data_root).resolve() / record["archive_path"])
+        return record
+
 
     def _fingerprint(self, archive_dir: Path) -> str:
         digest = hashlib.sha256()

@@ -15,6 +15,7 @@ from app.api.routes import auth, filesystem, logs, pipeline, sync, tasks, voicep
 from app.api.routes import kb as kb_router
 from app.api.routes import settings as settings_router
 from app.core.config import get_settings
+from app.core.paths import get_workspace_paths
 from app.core.database import close_db, init_db
 from app.core.logging_setup import setup_logging
 from app.core.pipeline import process_task
@@ -28,7 +29,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-_log_dir = Path(__file__).resolve().parent.parent.parent / "logs"
+_log_dir = get_workspace_paths().logs
 _log_file = setup_logging(_log_dir)
 
 logger = logging.getLogger(__name__)

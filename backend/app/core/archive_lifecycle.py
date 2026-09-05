@@ -8,6 +8,8 @@ import shutil
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from app.core.paths import get_workspace_paths
+
 from app.core.database import _db_lock, _get_conn, get_task_store
 from app.core.paths import (
     ACTIVE_STATUSES,
@@ -71,8 +73,8 @@ class ArchiveLifecycle:
         archive_ids = [
             r[0]
             for r in conn.execute(
-                "SELECT archive_id FROM archive_sync_index WHERE archive_path = ? AND deleted = 0",
-                (str(target),),
+                "SELECT archive_id FROM archive_sync_index WHERE archive_path IN (?, ?) AND deleted = 0",
+                (str(target), target.relative_to(get_workspace_paths().root).as_posix()),
             ).fetchall()
         ]
         entry = dict(
@@ -115,7 +117,7 @@ class ArchiveLifecycle:
         name = entry["staging_name"]
         if len(name) != 32 or any(c not in "0123456789abcdef" for c in name):
             raise ValueError("Invalid deletion staging name")
-        staged = managed_child(root / "_deleting" / name, root)
+        staged = managed_child(get_workspace_paths(root).temporary("deleting") / name, root)
         if target.exists():
             if staged.exists():
                 raise FileExistsError("Both archive and deletion staging directory exist")
@@ -186,11 +188,11 @@ class ArchiveLifecycle:
 
     @staticmethod
     def _clear_references(root: Path, task_id: str) -> None:
-        if (root / "kb.db").exists():
+        if get_workspace_paths(root).kb_db.exists():
             from app.services.kb.store import get_kb_store
 
             get_kb_store().delete_task(task_id)
-        if (root / "voiceprints" / "library.db").exists():
+        if (get_workspace_paths(root).voiceprints / "library.db").exists():
             from app.services.voiceprint.store import get_voiceprint_store
 
             get_voiceprint_store().detach_task(task_id)

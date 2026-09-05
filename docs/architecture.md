@@ -1,163 +1,34 @@
-全能媒体处理管线 (Omni-Media Processing Pipeline) v2.0 - 架构设计文档
+# MediaProcessPipeline 架构
 
-1. 项目概述
+CLI（mpp）、网页和移动端通过 FastAPI daemon 使用媒体处理能力。daemon 固定端口 18000，同时提供 web/dist/ 静态网页。前端为 Vite、React 19 与 shadcn/ui，源码修改后在 web/ 运行 npm run build。
 
-本项目旨在构建一个全自动、本地优先的媒体处理管线。其核心目标是将非结构化的音视频数据（YouTube 视频、播客、会议录音）转化为结构化、可检索的知识（逐字稿、摘要、思维导图），并自动归档至个人知识库（如 Obsidian）。
+## 处理与调度
 
-v2.0 版本引入了 UVR5 人声分离作为前置处理，并使用 WhisperX 替换原有的 whisper.cpp，以解决背景音干扰和说话人区分（Diarization）的问题。
+app.core.queue 管理下载、转写和后处理。下载使用可配置并发；GPU 阶段优先完成已就绪的转写，再处理 LLM 分析、润色、摘要和思维导图。重启依据已完成步骤恢复任务，切换阶段时释放对应 GPU 模型及本地 LLM 运行时。
 
-2. 系统架构图
+app.core.pipeline 编排输入识别、媒体下载、音频准备、转写、LLM 后处理与归档。ASR、UVR、LLM 等服务通过 singleton getter 获取。ASR 按运行时配置选择后端；UVR 保留为可选的人声分离步骤。模型绑定与各阶段参数由运行时配置和 model router 决定。
 
-核心逻辑流：采集 -> 清洗 -> 识别 -> 分析 -> 归档
+## 存储契约
 
-(参考 pipeline_v2.mermaid)
+app.core.paths 统一解析配置与资料库路径。项目根目录 config.json 保存运行时设置，data_root 指向资料库。新库使用 archives/、state/、tmp/、logs/、backups/；现有混合目录按原布局继续运行。迁移由显式 CLI 命令执行，详见[资料库迁移与恢复](storage-migration.md)。
 
-3. 模块详细说明
+- TaskStore 在 SQLite 保存活动任务、历史、事件、文本产物和同步状态。重复保存任务保留关联记录。
+- ArtifactStore 为受支持的正文和 JSON 写入提供文件与数据库副本更新入口；文件更新成功后同步 SQLite，并支持修复副本。
+- 归档保留可读标题目录，archive_id 维持多端身份。任务和索引中的受管路径可相对资料库存储，API 解析为可用路径。
+- 知识库使用 SQLite 与 sqlite-vec 保存文本分块及向量；声纹库保存人物、样本、任务说话人关联和音频片段。
 
-阶段 1: 获取与元数据 (Ingestion & Metadata)
+ArchiveLifecycle 协调归档目录、任务、知识库、声纹关联与同步删除记录。删除先将目录移到受管临时位置，持久化进度后逐项完成；失败操作可重试。全局人物及声纹样本保留。
 
-此阶段负责统一输入源，并提取必要的元数据供后续归档使用。
+workspace_lifecycle 协调目录切换与文件/数据库操作。切换时检查活动任务和后台工作，重置存储连接；异步线程工作在取消和退出时等待真实线程结束后释放资源。配置采用临时文件与原子替换，保存失败保留此前运行设置。
 
-组件 A: 网络下载器 (yt-dlp)
+## 接口与同步
 
-功能: 下载 YouTube/Bilibili 等平台视频。
+HTTP 路由调用核心与服务模块。任务事件通过全局 /api/tasks/events 和单任务 /api/tasks/{id}/events SSE 推送；单任务 GET 查询保留兼容。
 
-关键配置:
+归档同步维护归档索引、revision、变更记录和删除记录。manifest 提供可传输文件清单；导入复用归档 ID。远程上传服务按配置发送已完成归档，并处理离线退避。完整性校验字段属于传输协议。
 
---write-info-json: 必须开启，用于提取 title, uploader, upload_date, webpage_url。
+## 启动与开发
 
---extract-audio: 如果不需要画面（默认配置不需要画面），直接转为 m4a/wav 以节省存储。
+在 backend/ 运行 uv run python -m app.cli serve，或运行 uv run python run.py --reload。本地网页统一访问 http://localhost:18000。CLI 的离线设置和任务查询复用核心路径与存储逻辑。
 
-组件 B: 本地扫描器 (Local Watcher)
-
-功能: 监控 inbox_audio/ 文件夹。
-
-逻辑: 计算文件 SHA256 哈希值与 index.json 比对，防止重复处理。
-
-阶段 2: 前置信号处理 (Pre-processing)
-
-此阶段决定了转写的质量上限。通过移除背景音乐（BGM）和噪音，大幅降低 Whisper 的幻觉率。
-
-组件: UVR5 (通过 audio-separator CLI)
-
-推荐模型: Kim_Vocal_2 (MDX-Net 架构)
-
-理由: 在保留人声细节和去除背景音之间取得了最佳平衡，且推理速度快于 Ensemble 模式。
-
-处理逻辑:
-
-检测音频是否需要降噪（可通过元数据标签或默认开启）。
-
-运行分离：Input -> [Vocals.wav] + [Instrumental.wav]。
-
-丢弃 Instrumental 轨道，仅将 Vocals 传递给 WhisperX。
-
-Python 库: pip install audio-separator
-
-阶段 3: 核心识别引擎 (Core Recognition)
-
-心脏模块，负责将音频转换为带有精确时间轴和角色标签的文本。
-
-组件: WhisperX
-
-技术栈: Faster-Whisper (ASR) + Wav2Vec2 (对齐) + Pyannote.audio (说话人分离)。
-
-工作流:
-
-VAD (Voice Activity Detection): 过滤静音片段，避免对空气转写。
-
-Transcription: 使用 large-v2 或 large-v3 模型进行快速转写（Batch Inference）。
-
-Forced Alignment: 强制将文本与音频音素对齐，将时间轴精度从“句子级”提升到“单词级”。
-
-Diarization: 调用 Pyannote 模型聚类声纹，分配 SPEAKER_00, SPEAKER_01 标签。
-
-关键配置:
-
---compute_type float16: 开启半精度加速。
-
---hf_token: 必须配置 HuggingFace Token 才能下载 Pyannote 模型。当然也可以通过其他方式/其他的源下载好 Pyannote 模型以绕过 Huggingface
-
-阶段 4: AI 深度分析 (AI Processing)
-
-纯文本处理层，由 LLM (Large Language Model) 驱动。
-
-任务链:
-
-Polish (润色):
-
-输入: 带有口癖（嗯、啊）和 ASR 错误的原始文本。
-
-目标: 修复错误，但不改变原意。
-
-Summary (摘要):
-
-输入: 润色后的文本。
-
-输出: JSON 格式的结构化摘要（TLDR、关键事实、行动项）。
-
-MindMap (思维导图):
-
-输入: 摘要数据。
-
-输出: Markmap 兼容的 Markdown 格式。
-
-提示词策略: "Generate a markdown list suitable for markmap visualization, using specific indentation."
-
-阶段 5: 分发与归档 (Archiving)
-
-目标系统: Obsidian / 静态网站
-
-文件结构:
-
-生成 Markdown 文件，包含 YAML Frontmatter。
-
-将生成的思维导图代码块嵌入 Markdown 中。
-
-将 .srt 字幕文件和原始/处理后的音频移动到归档目录。
-
-4. 推荐目录结构
-
-project_root/
-├── inbox/                  # [输入] 待处理的音视频文件
-├── processing/             # [临时] 中间产物 (Vocals.wav, temp.json)
-├── archive/                # [归档] 处理完的源文件 (按日期归档)
-├── outputs/                # [输出] 最终产物
-│   └── 2023-10-27(YYYY-MM-DD)/
-│       ├── video_title/
-│       │   ├── transcript.srt          # 字幕文件
-│       │   ├── transcript_polished.md  # 润色文稿
-│       │   ├── summary.md              # 包含思维导图的笔记
-│       │   └── metadata.json           # 原始元数据
-│       └── ...
-├── models/                 # 本地模型缓存 (Whisper, UVR5)
-├── logs/                   # 日志储存
-└── frontend/               # 前端页面
-
-5. 配置与硬件要求
-
-硬件建议
-
-由于引入了 UVR5 和 WhisperX Large 模型，建议配置独立显卡。
-
-GPU: NVIDIA RTX 3060 (12GB VRAM) 及以上推荐。
-
-最低要求: 8GB VRAM (可运行 Whisper Medium + UVR5)。
-
-CPU: 对 PyTorch 预处理有影响，建议多核。
-
-RAM: 16GB+。
-
-软件依赖
-
-Python: 3.10 (推荐，兼容性最好)。
-
-FFmpeg: 必须安装并加入系统 PATH。
-
-CUDA Toolkit: 11.8 或 12.x (取决于 PyTorch 版本)。
-
-环境变量 (.env)
-
-OPENAI_API_KEY=sk-...       # 用于 LLM 润色 (如果使用 GPT)
-# 或者
-OLLAMA_HOST=http://localhost:11434 # 如果使用本地 LLM
+业务回归测试位于 tests/，前端行为测试随组件存放。开发分析与实施证据位于 agentspace/。旧 HistoryService 作为历史文件兼容代码保留，当前任务查询以 SQLite 为准。

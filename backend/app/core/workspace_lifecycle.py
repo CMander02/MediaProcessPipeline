@@ -79,7 +79,7 @@ async def drain_workspace_threads() -> None:
 
 
 @contextmanager
-def workspace_change():
+def workspace_change(*, check_tasks: bool = True):
     global _switching
     with _lock:
         if _switching or _active:
@@ -92,13 +92,21 @@ def workspace_change():
         from app.core.queue import get_task_queue
         from app.models import TaskStatus
 
-        if get_task_queue().active_task_ids or get_task_store().list_by_statuses(
-            [
-                TaskStatus.PENDING,
-                TaskStatus.QUEUED,
-                TaskStatus.PROCESSING,
-                TaskStatus.PAUSED,
-            ]
+        queue = get_task_queue()
+        if (
+            queue.active_task_ids
+            or queue.pending_count
+            or (
+                check_tasks
+                and get_task_store().list_by_statuses(
+                    [
+                        TaskStatus.PENDING,
+                        TaskStatus.QUEUED,
+                        TaskStatus.PROCESSING,
+                        TaskStatus.PAUSED,
+                    ]
+                )
+            )
         ):
             raise WorkspaceBusyError("Cannot change data_root while active tasks exist")
         yield
@@ -111,11 +119,32 @@ def reset_workspace_stores(root: Path) -> None:
     from app.core.database import init_db, reset_db_path
     from app.services.kb.store import reset_kb_store
     from app.services.voiceprint.store import reset_voiceprint_store
+    from app.core.logging_setup import relocate_log_file
+    from app.core.paths import get_workspace_paths
 
     reset_kb_store()
     reset_voiceprint_store()
     reset_db_path(root)
     init_db(root)
+    relocate_log_file(get_workspace_paths(root).logs)
+
+
+def relocate_daemon_state(old_root: Path, new_root: Path) -> None:
+    """Keep CLI stop/status attached to this daemon after a library switch."""
+    import json
+    import os
+    from app.core.atomic_file import atomic_write_text
+    from app.core.paths import get_workspace_paths
+
+    old = get_workspace_paths(old_root).state / ".mpp-daemon.json"
+    if not old.exists():
+        return
+    state = json.loads(old.read_text(encoding="utf-8"))
+    if state.get("pid") != os.getpid():
+        return
+    new = get_workspace_paths(new_root).state / old.name
+    atomic_write_text(new, json.dumps(state, ensure_ascii=False, indent=2))
+    old.unlink()
 
 
 class WorkspaceActivityMiddleware:

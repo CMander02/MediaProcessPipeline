@@ -10,6 +10,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from app.core.paths import get_workspace_paths
+
 logger = logging.getLogger(__name__)
 
 _db_lock = threading.Lock()
@@ -32,8 +34,9 @@ class KBStore:
       vec_chunks — virtual table with float embeddings (tied by rowid)
     """
 
-    def __init__(self, db_path: Path, dim: int) -> None:
+    def __init__(self, db_path: Path, dim: int, data_root: Path | None = None) -> None:
         self._db_path = db_path
+        self._data_root = data_root or db_path.parent
         self._dim = dim
         self._conn: sqlite3.Connection | None = None
 
@@ -92,12 +95,17 @@ class KBStore:
                 conn.execute(f"DELETE FROM kb_chunks WHERE task_id = ?", (task_id,))
 
             for c in chunks:
+                archive_path = Path(c["archive_path"])
+                try:
+                    stored_path = archive_path.resolve().relative_to(self._data_root).as_posix()
+                except ValueError:
+                    stored_path = str(archive_path)
                 cur = conn.execute(
                     "INSERT INTO kb_chunks (task_id, archive_path, source_type, chunk_index, start_ts, end_ts, text) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         task_id,
-                        c["archive_path"],
+                        stored_path,
                         c["source_type"],
                         c["chunk_index"],
                         c.get("start_ts"),
@@ -161,7 +169,7 @@ class KBStore:
             results.append({
                 "rowid": row["id"],
                 "task_id": row["task_id"],
-                "archive_path": row["archive_path"],
+                "archive_path": str(self._data_root / row["archive_path"]),
                 "source_type": row["source_type"],
                 "chunk_index": row["chunk_index"],
                 "start_ts": row["start_ts"],
@@ -208,8 +216,8 @@ def get_kb_store() -> KBStore:
     if _store is None:
         from app.core.settings import get_runtime_settings
         rt = get_runtime_settings()
-        db_path = Path(rt.data_root).resolve() / "kb.db"
-        _store = KBStore(db_path, rt.kb_embedding_dim)
+        db_path = get_workspace_paths(rt.data_root).kb_db
+        _store = KBStore(db_path, rt.kb_embedding_dim, get_workspace_paths(rt.data_root).root)
     return _store
 
 

@@ -14,6 +14,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.logging_setup import log_event
+from app.core.paths import CONFIG_FILE
 
 logger = logging.getLogger(__name__)
 _settings_lock = threading.RLock()
@@ -21,7 +22,7 @@ _settings_lock = threading.RLock()
 # Settings file path - stored in project root
 # __file__ = backend/app/core/settings.py
 # parent x4 = project root
-SETTINGS_FILE = Path(__file__).parent.parent.parent.parent / "config.json"
+SETTINGS_FILE = CONFIG_FILE
 
 
 class CustomLLMProfile(BaseModel):
@@ -2108,12 +2109,13 @@ def _persist_candidate(candidate: RuntimeSettings) -> RuntimeSettings:
         _runtime_settings = candidate
         return candidate
 
-    from app.core.workspace_lifecycle import workspace_change, reset_workspace_stores
+    from app.core.workspace_lifecycle import workspace_change, reset_workspace_stores, relocate_daemon_state
     with workspace_change():
         new_root.mkdir(parents=True, exist_ok=True)
         _save_settings_to_file(candidate)
         try:
             reset_workspace_stores(new_root)
+            relocate_daemon_state(old_root, new_root)
         except Exception:
             _save_settings_to_file(previous)
             reset_workspace_stores(old_root)

@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
+from app.core.paths import get_workspace_paths
+
 from app.core.settings import RuntimeSettings, get_runtime_settings
 
 logger = logging.getLogger(__name__)
@@ -330,7 +332,7 @@ class UVRService:
             raise FileNotFoundError(f"File not found: {audio_path}")
 
         if output_dir is None:
-            output_dir = Path(rt.data_root).resolve()
+            output_dir = get_workspace_paths(rt.data_root).temporary("uvr")
         output_dir.mkdir(parents=True, exist_ok=True)
 
         if self._separator is None:
@@ -468,7 +470,7 @@ def _separate_vocals_in_subprocess(
     target_dir = (
         Path(output_dir).resolve()
         if output_dir
-        else Path(get_runtime_settings().data_root)
+        else get_workspace_paths().temporary("uvr")
     )
     target_dir.mkdir(parents=True, exist_ok=True)
     _notify_progress(

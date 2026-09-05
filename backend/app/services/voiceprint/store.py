@@ -24,6 +24,8 @@ from typing import Any
 
 import numpy as np
 
+from app.core.paths import get_workspace_paths
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_EMBEDDING_DIM = 256
@@ -275,6 +277,9 @@ class VoiceprintStore:
             conn.execute("UPDATE persons SET name = ? WHERE id = ?", (new_name, person_id))
             conn.commit()
 
+    def _resolve_clip_path(self, value: str) -> Path:
+        return self.clips_dir / value
+
     def delete_person(self, person_id: str) -> None:
         """Delete person, its samples, and all task mappings."""
         conn = self._get_conn()
@@ -287,7 +292,7 @@ class VoiceprintStore:
                 conn.execute("DELETE FROM voiceprint_samples WHERE rowid = ?", (r["rowid"],))
                 if r["audio_clip_path"]:
                     try:
-                        Path(r["audio_clip_path"]).unlink(missing_ok=True)
+                        self._resolve_clip_path(r["audio_clip_path"]).unlink(missing_ok=True)
                     except Exception:
                         pass
             conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
@@ -330,6 +335,11 @@ class VoiceprintStore:
         vec = _normalize(embedding)
         sample_id = _gen_sample_id()
         now = datetime.now().isoformat()
+        if audio_clip_path:
+            try:
+                audio_clip_path = Path(audio_clip_path).resolve().relative_to(self.clips_dir.resolve()).as_posix()
+            except ValueError:
+                pass
         conn = self._get_conn()
         with self._lock:
             cur = conn.execute(
@@ -358,7 +368,7 @@ class VoiceprintStore:
                 conn.execute("DELETE FROM sample_meta WHERE sample_id = ?", (sample_id,))
                 if row["audio_clip_path"]:
                     try:
-                        Path(row["audio_clip_path"]).unlink(missing_ok=True)
+                        self._resolve_clip_path(row["audio_clip_path"]).unlink(missing_ok=True)
                     except Exception:
                         pass
                 conn.commit()
@@ -453,7 +463,7 @@ class VoiceprintStore:
             "SELECT audio_clip_path FROM sample_meta WHERE sample_id = ?",
             (sample_id,),
         ).fetchone()
-        return row["audio_clip_path"] if row else None
+        return str(self._resolve_clip_path(row["audio_clip_path"])) if row and row["audio_clip_path"] else None
 
 
 # ---- Singleton ----
@@ -466,7 +476,7 @@ def get_voiceprint_store() -> VoiceprintStore:
     if _store is None:
         from app.core.settings import get_runtime_settings
         rt = get_runtime_settings()
-        root = Path(rt.data_root).resolve() / "voiceprints"
+        root = get_workspace_paths(rt.data_root).voiceprints
         _store = VoiceprintStore(db_path=root / "library.db", clips_dir=root / "clips")
     return _store
 
