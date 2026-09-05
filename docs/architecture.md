@@ -10,6 +10,8 @@ app.core.pipeline 编排输入识别、媒体下载、音频准备、转写、LL
 
 下载入口 `services/ingestion/ytdlp.py` 负责服务调度与媒体下载。来源识别位于 `platform/source_urls.py`，Twitter 内容字段整理位于 `platform/twitter/payload.py`，代理、认证和下载日志参数位于 `ytdlp_options.py`。`subtitles.py` 管理通用字幕下载与语言选择，Bilibili 字幕实现位于 `platform/bilibili/subtitle_download.py`，继续通过原 YtdlpService 方法调用。
 
+`services/analysis/llm.py` 保留模型调用和分析阶段编排。字幕解析、说话人合并及润色约束由 transcript_outputs 处理，导图层级和章节组织由 mindmap_outputs 处理，分析采样与摘要 JSON 解析由 response_parsing 处理；LLMService 的方法签名继续兼容。
+
 ## 存储契约
 
 `app.core.settings` 保留运行时单例、原子保存、配置更新及公开类型导出。`app.core.configuration` 按职责组织字段模型（models）、旧自定义端点（profiles）、provider 与服务模型注册表（registry）、阶段模型绑定（bindings）、旧文档迁移与点路径更新（document），共享字段映射位于 constants。规范化函数仅处理传入的配置文档，保存成功后才更新运行时单例。
@@ -37,4 +39,4 @@ HTTP 路由调用核心与服务模块。任务事件通过全局 /api/tasks/eve
 
 在 backend/ 运行 uv run python -m app.cli serve，或运行 uv run python run.py --reload。本地网页统一访问 http://localhost:18000。CLI 的离线设置和任务查询复用核心路径与存储逻辑。
 
-业务回归测试位于 tests/，前端行为测试随组件存放。开发分析与实施证据位于 agentspace/。旧 HistoryService 作为历史文件兼容代码保留，当前任务查询以 SQLite 为准。
+业务回归测试位于 tests/，前端行为测试随组件存放。开发分析与实施证据位于 agentspace/。任务历史以 SQLite 为准；旧 history.json 文件继续作为历史资料保留，归档扫描和目录布局识别保持兼容。

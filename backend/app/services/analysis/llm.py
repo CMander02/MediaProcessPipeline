@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import time
 from typing import Any
 
@@ -13,6 +12,17 @@ os.environ.setdefault("LITELLM_LOG", "WARNING")
 from app.core.config import get_settings
 from app.core.logging_setup import log_event
 from app.core.settings import get_runtime_settings
+from app.services.analysis import mindmap_outputs as _mindmap_outputs
+from app.services.analysis import response_parsing as _response_parsing
+from app.services.analysis import transcript_outputs as _transcript_outputs
+from app.services.analysis.mindmap_outputs import _TIMESTAMP_RE as _TIMESTAMP_RE
+from app.services.analysis.mindmap_outputs import _split_mindmap_line as _split_mindmap_line
+from app.services.analysis.mindmap_outputs import (
+    mindmap_markdown_to_timed_tree as mindmap_markdown_to_timed_tree,
+)
+from app.services.analysis.mindmap_outputs import (
+    mindmap_markdown_without_timestamps as mindmap_markdown_without_timestamps,
+)
 from app.services.analysis.prompts import (
     ANALYZE_SYSTEM_PROMPT,
     MINDMAP_SYSTEM_PROMPT,
@@ -28,16 +38,15 @@ from app.services.analysis.prompts import (
     get_summarize_prompt,
 )
 from app.services.analysis.text_locale import normalize_chinese_script
+from app.services.analysis.transcript_outputs import _SENTENCE_END_RE as _SENTENCE_END_RE
+from app.services.analysis.transcript_outputs import _SENTENCE_SPLIT_RE as _SENTENCE_SPLIT_RE
+from app.services.analysis.transcript_outputs import _SPEAKER_PREFIX_RE as _SPEAKER_PREFIX_RE
+from app.services.analysis.transcript_outputs import (
+    _seconds_to_srt_timestamp as _seconds_to_srt_timestamp,
+)
+from app.services.analysis.transcript_outputs import _timestamp_to_seconds as _timestamp_to_seconds
 
 logger = logging.getLogger(__name__)
-
-_TIMESTAMP_RE = re.compile(
-    r"\s*\[(\d{1,2}:\d{2}(?::\d{2})?(?:[,.]\d{1,3})?)"
-    r"(?:\s*-\s*(\d{1,2}:\d{2}(?::\d{2})?(?:[,.]\d{1,3})?))?\]\s*$"
-)
-_SPEAKER_PREFIX_RE = re.compile(r"^\s*\[([^\]]+)\]\s*(.*)$", re.DOTALL)
-_SENTENCE_SPLIT_RE = re.compile(r"[^。！？!?；;\n]+[。！？!?；;]*[”’）】》」』]*")
-_SENTENCE_END_RE = re.compile(r"(?:[。！？!?；;]|(?<!\d)\.)[\"'”’）】》」』]*$")
 
 
 def _is_retryable_llm_error(error: BaseException) -> bool:
@@ -66,100 +75,12 @@ def _is_retryable_llm_error(error: BaseException) -> bool:
     return False
 
 
-def _timestamp_to_seconds(value: str | None) -> float | None:
-    if not value:
-        return None
-    parts = value.replace(",", ".").split(":")
-    try:
-        if len(parts) == 3:
-            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
-        if len(parts) == 2:
-            return int(parts[0]) * 60 + float(parts[1])
-        return float(parts[0])
-    except (TypeError, ValueError):
-        return None
-
-
-def _seconds_to_srt_timestamp(seconds: float) -> str:
-    seconds = max(0.0, seconds)
-    total_ms = int(round(seconds * 1000))
-    ms = total_ms % 1000
-    total_s = total_ms // 1000
-    s = total_s % 60
-    total_m = total_s // 60
-    m = total_m % 60
-    h = total_m // 60
-    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-
-
-def _split_mindmap_line(line: str) -> tuple[int, str, float | None, float | None] | None:
-    stripped = line.rstrip()
-    marker = re.match(r"^(\s*)[-*]\s+(.+?)\s*$", stripped)
-    heading = re.match(r"^(#{2,6})\s+(.+?)\s*$", stripped)
-    if marker:
-        depth = len(marker.group(1).replace("\t", "  ")) // 2
-        title = marker.group(2).strip()
-    elif heading:
-        depth = len(heading.group(1)) - 2
-        title = heading.group(2).strip()
-    else:
-        return None
-    start = end = None
-    ts_match = _TIMESTAMP_RE.search(title)
-    if ts_match:
-        start = _timestamp_to_seconds(ts_match.group(1))
-        end = _timestamp_to_seconds(ts_match.group(2))
-        title = title[: ts_match.start()].strip()
-    return depth, title, start, end
-
-
-def mindmap_markdown_without_timestamps(markdown: str) -> str:
-    """Export a timed mindmap as an H2-H6 document hierarchy."""
-    lines: list[str] = []
-    for raw in markdown.splitlines():
-        parsed = _split_mindmap_line(raw)
-        if not parsed:
-            continue
-        depth, title, _start, _end = parsed
-        heading_level = min(6, depth + 2)
-        lines.append(f"{'#' * heading_level} {title}")
-    return "\n".join(lines)
-
-
-def mindmap_markdown_to_timed_tree(markdown: str) -> dict[str, Any]:
-    """Parse `- node [start - end]` markdown into a frontend-friendly tree."""
-    roots: list[dict[str, Any]] = []
-    stack: list[tuple[int, dict[str, Any]]] = []
-    for raw in markdown.splitlines():
-        parsed = _split_mindmap_line(raw)
-        if not parsed:
-            continue
-        depth, title, start, end = parsed
-        node: dict[str, Any] = {"title": title, "children": []}
-        if start is not None:
-            node["start"] = start
-        if end is not None:
-            node["end"] = end
-        while stack and stack[-1][0] >= depth:
-            stack.pop()
-        if stack:
-            stack[-1][1]["children"].append(node)
-        else:
-            roots.append(node)
-        stack.append((depth, node))
-    if not roots:
-        return {"title": "Mindmap", "children": []}
-    if len(roots) == 1:
-        return roots[0]
-    return {"title": "Mindmap", "children": roots}
-
-
 # ---------------------------------------------------------------------------
 # Local HuggingFace model singleton — transformers + safetensors backend.
 # Loaded on first use, offloaded after task ends.
 # ---------------------------------------------------------------------------
-_local_llm: Any = None           # dict: {"model": ..., "tokenizer": ...}
-_local_llm_path: str = ""        # path that was used to load the model
+_local_llm: Any = None  # dict: {"model": ..., "tokenizer": ...}
+_local_llm_path: str = ""  # path that was used to load the model
 _local_llm_lock: asyncio.Lock | None = None
 _local_llm_infer_lock: asyncio.Lock | None = None
 
@@ -181,6 +102,7 @@ def _get_local_llm_infer_lock() -> asyncio.Lock:
 def _resolve_dtype(name: str):
     """Map a string dtype to a torch dtype. Unknown/empty → bfloat16."""
     import torch
+
     mapping = {
         "bfloat16": torch.bfloat16,
         "bf16": torch.bfloat16,
@@ -206,11 +128,17 @@ def _load_local_llm(model_path: str, device: str = "cuda", dtype: str = "bfloat1
         from transformers.utils import logging as hf_logging
     except ImportError as e:
         raise RuntimeError(
-            "transformers/torch not installed. Sync the project environment first: "
-            "uv sync"
+            "transformers/torch not installed. Sync the project environment first: uv sync"
         ) from e
 
-    log_event(logger, logging.INFO, "llm.local.load_started", model_path=model_path, device=device, dtype=dtype)
+    log_event(
+        logger,
+        logging.INFO,
+        "llm.local.load_started",
+        model_path=model_path,
+        device=device,
+        dtype=dtype,
+    )
     # tqdm can fail when the daemon is launched by the desktop shell with hidden stdio on Windows.
     hf_logging.disable_progress_bar()
 
@@ -227,12 +155,15 @@ def _load_local_llm(model_path: str, device: str = "cuda", dtype: str = "bfloat1
     if is_vl:
         try:
             from transformers import AutoModelForImageTextToText
+
             ModelCls = AutoModelForImageTextToText
         except ImportError:
             from transformers import AutoModelForCausalLM
+
             ModelCls = AutoModelForCausalLM
     else:
         from transformers import AutoModelForCausalLM
+
         ModelCls = AutoModelForCausalLM
 
     device_map = device if device else "auto"
@@ -243,7 +174,13 @@ def _load_local_llm(model_path: str, device: str = "cuda", dtype: str = "bfloat1
         trust_remote_code=True,
     )
     model.eval()
-    log_event(logger, logging.INFO, "llm.local.load_completed", model_class=model.__class__.__name__, device=device)
+    log_event(
+        logger,
+        logging.INFO,
+        "llm.local.load_completed",
+        model_class=model.__class__.__name__,
+        device=device,
+    )
     return {"model": model, "tokenizer": tokenizer, "is_vl": is_vl}
 
 
@@ -256,8 +193,10 @@ def offload_local_llm() -> None:
         _local_llm_path = ""
         try:
             import gc
+
             gc.collect()
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except Exception:
@@ -275,7 +214,9 @@ def _get_deepseek_params(stage: str = "polish") -> dict[str, Any] | None:
     return dict(binding.request_kwargs)
 
 
-def _get_litellm_params(provider_override: str = "", stage: str = "polish") -> dict[str, Any] | None:
+def _get_litellm_params(
+    provider_override: str = "", stage: str = "polish"
+) -> dict[str, Any] | None:
     """Build litellm.acompletion kwargs from runtime settings.
 
     Returns None if provider is not configured or is the local HF path.
@@ -296,7 +237,11 @@ def _get_litellm_params(provider_override: str = "", stage: str = "polish") -> d
         return None
 
     params = dict(binding.request_kwargs)
-    if binding.provider == "deepseek" and params.get("model") and not str(params["model"]).startswith("openai/"):
+    if (
+        binding.provider == "deepseek"
+        and params.get("model")
+        and not str(params["model"]).startswith("openai/")
+    ):
         params["model"] = f"openai/{params['model']}"
     return params
 
@@ -346,6 +291,7 @@ class LLMService:
 
         def _infer() -> str:
             import torch
+
             model = state["model"]
             tokenizer = state["tokenizer"]
 
@@ -354,7 +300,9 @@ class LLMService:
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
             text = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True,
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
             )
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             input_len = inputs["input_ids"].shape[1]
@@ -384,7 +332,6 @@ class LLMService:
     ) -> str:
         """Call a managed local llama.cpp OpenAI-compatible endpoint."""
         import httpx
-
         from app.services.analysis._openai_client import make_async_openai_client
         from app.services.analysis.local_llm_runtime import get_local_llm_runtime
 
@@ -508,6 +455,7 @@ class LLMService:
             return content
 
         import litellm
+
         params = _get_litellm_params(provider_override=provider_override, stage=stage)
         if params is None:
             log_event(logger, logging.WARNING, "llm.not_configured", provider=provider)
@@ -521,7 +469,9 @@ class LLMService:
 
         model = params.get("model")
         t0 = time.perf_counter()
-        log_event(logger, logging.INFO, "llm.call.started", provider=provider, model=model, stage=stage)
+        log_event(
+            logger, logging.INFO, "llm.call.started", provider=provider, model=model, stage=stage
+        )
         try:
             response = await litellm.acompletion(**params)
             content = response.choices[0].message.content or ""
@@ -564,7 +514,6 @@ class LLMService:
             return "[LLM not configured]"
 
         import httpx
-
         from app.services.analysis._openai_client import make_async_openai_client
 
         timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
@@ -625,20 +574,7 @@ class LLMService:
 
     @staticmethod
     def _sample_analysis_text(text: str, limit: int = 8000) -> str:
-        """Sample opening, closing, and evenly spaced body regions."""
-        if len(text) <= limit:
-            return text
-        window = 1000
-        samples = [text[:2000]]
-        body_start = 2000
-        body_end = max(body_start, len(text) - 1000)
-        slots = 5
-        for index in range(slots):
-            ratio = index / max(1, slots - 1)
-            start = int(body_start + (body_end - body_start - window) * ratio)
-            samples.append(text[max(body_start, start):max(body_start, start) + window])
-        samples.append(text[-1000:])
-        return "\n\n--- transcript sample ---\n\n".join(samples)[:limit]
+        return _response_parsing._sample_analysis_text(text, limit)
 
     async def analyze_content(
         self,
@@ -696,159 +632,42 @@ class LLMService:
             "keywords": [],
             "proper_nouns": [],
             "speakers_detected": 1,
-            "tone": "unknown"
+            "tone": "unknown",
         }
 
     def _parse_srt(self, srt_content: str) -> list[dict]:
-        """Parse SRT content into segments."""
-        segments = []
-        blocks = re.split(r'\n\n+', srt_content.strip())
-
-        for block in blocks:
-            lines = block.strip().split('\n')
-            if len(lines) >= 3:
-                try:
-                    index = int(lines[0])
-                    timestamp = lines[1]
-                    text = '\n'.join(lines[2:])
-                    segments.append({
-                        'index': index,
-                        'timestamp': timestamp,
-                        'text': text
-                    })
-                except (ValueError, IndexError):
-                    continue
-
-        return segments
+        return _transcript_outputs._parse_srt(srt_content)
 
     def _segments_to_srt(self, segments: list[dict]) -> str:
-        """Convert segments back to SRT format."""
-        result = []
-        for seg in segments:
-            result.append(f"{seg['index']}\n{seg['timestamp']}\n{seg['text']}")
-        return '\n\n'.join(result)
+        return _transcript_outputs._segments_to_srt(segments)
 
     @staticmethod
     def _split_speaker_prefix(text: str) -> tuple[str | None, str]:
-        """Return (speaker, body) for text starting with a [speaker] tag."""
-        match = _SPEAKER_PREFIX_RE.match(text.strip())
-        if not match:
-            return None, text.strip()
-        return match.group(1).strip(), match.group(2).strip()
+        return _transcript_outputs._split_speaker_prefix(text)
 
     @staticmethod
     def _timestamp_bounds(timestamp: str) -> tuple[str, str]:
-        if "-->" not in timestamp:
-            ts = timestamp.strip()
-            return ts, ts
-        start, end = timestamp.split("-->", 1)
-        return start.strip(), end.strip()
+        return _transcript_outputs._timestamp_bounds(timestamp)
 
     @staticmethod
     def _join_turn_text(existing: str, new_text: str) -> str:
-        """Join cue text fragments without inserting noisy spaces in Chinese."""
-        existing = existing.strip()
-        new_text = new_text.strip()
-        if not existing:
-            return new_text
-        if not new_text:
-            return existing
-        prev_core = existing.rstrip("\"'”’）】》」』")
-        prev = prev_core[-1] if prev_core else existing[-1]
-        nxt = new_text[0]
-        if (
-            prev.isascii()
-            and nxt.isascii()
-            and (prev.isalnum() or prev in ".,!?;:)]}\"'")
-            and (nxt.isalnum() or nxt in "([{\"'")
-        ):
-            return f"{existing} {new_text}"
-        return f"{existing}{new_text}"
+        return _transcript_outputs._join_turn_text(existing, new_text)
 
     @staticmethod
     def _split_sentence_like(text: str) -> list[str]:
-        """Split Chinese and English transcript text at likely sentence endings."""
-        closers = "\"'”’）】》」』"
-        pieces: list[str] = []
-        start = 0
-        i = 0
-        while i < len(text):
-            ch = text[i]
-            boundary = ch in "。！？!?；;"
-            if ch == ".":
-                prev = text[i - 1] if i > 0 else ""
-                nxt = text[i + 1] if i + 1 < len(text) else ""
-                if not (prev.isdigit() and nxt.isdigit()):
-                    j = i + 1
-                    while j < len(text) and text[j] in closers:
-                        j += 1
-                    boundary = j >= len(text) or text[j].isspace()
-            if boundary:
-                end = i + 1
-                while end < len(text) and text[end] in closers:
-                    end += 1
-                piece = text[start:end].strip()
-                if piece:
-                    pieces.append(piece)
-                start = end
-                i = end
-                continue
-            i += 1
-
-        tail = text[start:].strip()
-        if tail:
-            pieces.append(tail)
-        return pieces
+        return _transcript_outputs._split_sentence_like(text)
 
     @staticmethod
     def _split_text_for_readable_turns(text: str, max_chars: int) -> list[str]:
-        """Split text into sentence-ish pieces, with a comma/length fallback."""
-        normalized = re.sub(r"\s+", " ", text.strip())
-        normalized = re.sub(
-            r"((?<!\d)[.!?][\"'”’）】》」』]*)(?=[A-Z])",
-            r"\1 ",
-            normalized,
-        )
-        if not normalized:
-            return []
-
-        pieces = LLMService._split_sentence_like(normalized) or [normalized]
-
-        result: list[str] = []
-        hard_limit = max(max_chars, 80)
-        soft_limit = max(80, min(hard_limit, max_chars))
-        for piece in pieces:
-            if len(piece) <= hard_limit:
-                result.append(piece)
-                continue
-            comma_parts = [
-                part.strip()
-                for part in re.split(r"(?<=[，,、：:])", piece)
-                if part.strip()
-            ]
-            current = ""
-            for part in comma_parts or [piece]:
-                if current and len(current) + len(part) > soft_limit:
-                    result.append(current)
-                    current = part
-                else:
-                    current = current + part
-            if current:
-                while len(current) > hard_limit:
-                    result.append(current[:hard_limit])
-                    current = current[hard_limit:]
-                if current:
-                    result.append(current)
-        return result
+        return _transcript_outputs._split_text_for_readable_turns(text, max_chars)
 
     @staticmethod
     def _sentence_count(text: str) -> int:
-        count = len(re.findall(r"[。！？!?；;]|(?<!\d)\.(?=\s|$|[\"'”’）】》」』])", text))
-        return max(1, count) if text.strip() else 0
+        return _transcript_outputs._sentence_count(text)
 
     @staticmethod
     def _ends_sentence(text: str) -> bool:
-        return bool(_SENTENCE_END_RE.search(text.strip()))
+        return _transcript_outputs._ends_sentence(text)
 
     def _segment_to_readable_events(
         self,
@@ -856,44 +675,7 @@ class LLMService:
         *,
         max_chars: int,
     ) -> list[dict[str, Any]]:
-        speaker, body = self._split_speaker_prefix(str(seg.get("text", "")))
-        pieces = self._split_text_for_readable_turns(body, max_chars=max_chars)
-        if not pieces:
-            return []
-
-        start_ts, end_ts = self._timestamp_bounds(str(seg.get("timestamp", "")))
-        start_s = _timestamp_to_seconds(start_ts)
-        end_s = _timestamp_to_seconds(end_ts)
-        if start_s is None or end_s is None or end_s <= start_s or len(pieces) == 1:
-            return [
-                {
-                    "speaker": speaker,
-                    "start": start_ts,
-                    "end": end_ts,
-                    "start_s": start_s,
-                    "end_s": end_s,
-                    "text": pieces[0] if len(pieces) == 1 else "".join(pieces),
-                }
-            ]
-
-        total_chars = max(1, sum(len(piece) for piece in pieces))
-        cursor_chars = 0
-        events: list[dict[str, Any]] = []
-        for piece in pieces:
-            piece_start_s = start_s + (end_s - start_s) * (cursor_chars / total_chars)
-            cursor_chars += len(piece)
-            piece_end_s = start_s + (end_s - start_s) * (cursor_chars / total_chars)
-            events.append(
-                {
-                    "speaker": speaker,
-                    "start": _seconds_to_srt_timestamp(piece_start_s),
-                    "end": _seconds_to_srt_timestamp(piece_end_s),
-                    "start_s": piece_start_s,
-                    "end_s": piece_end_s,
-                    "text": piece,
-                }
-            )
-        return events
+        return _transcript_outputs._segment_to_readable_events(seg, max_chars=max_chars)
 
     def merge_consecutive_speaker_segments(
         self,
@@ -904,210 +686,19 @@ class LLMService:
         max_sentences: int = 3,
         max_gap: float = 2.0,
     ) -> str:
-        """Merge adjacent SRT cues by speaker, then split into readable turns.
-
-        The LLM polishing step intentionally preserves cue count while it fixes
-        words and punctuation. This deterministic pass converts those polished
-        cues into dialogue turns: adjacent same-speaker cues are combined, but
-        the result is cut at sentence boundaries when a turn gets too long.
-        Empty speaker-only cues are ignored so they do not split a turn.
-        """
-        segments = self._parse_srt(srt_content)
-        if not segments:
-            return srt_content
-
-        events: list[dict[str, Any]] = []
-        for seg in segments:
-            events.extend(self._segment_to_readable_events(seg, max_chars=max_chars))
-        if not events:
-            return srt_content
-
-        readable: list[dict[str, Any]] = []
-        current: dict[str, Any] | None = None
-
-        def flush_current() -> None:
-            nonlocal current
-            if current is not None and str(current.get("text", "")).strip():
-                readable.append(current)
-            current = None
-
-        def duration_with(event: dict[str, Any]) -> float:
-            if current is None:
-                return 0.0
-            start_s = current.get("start_s")
-            end_s = event.get("end_s")
-            if start_s is None or end_s is None:
-                return 0.0
-            return float(end_s) - float(start_s)
-
-        for event in events:
-            speaker = event.get("speaker")
-            if not speaker:
-                flush_current()
-                readable.append(event)
-                continue
-            if (
-                current is not None
-                and (
-                    speaker != current.get("speaker")
-                    or (
-                        event.get("start_s") is not None
-                        and current.get("end_s") is not None
-                        and float(event["start_s"]) - float(current["end_s"]) > max_gap
-                    )
-                )
-            ):
-                flush_current()
-
-            if current is not None:
-                projected = self._join_turn_text(str(current["text"]), str(event["text"]))
-                current_can_end = self._ends_sentence(str(current["text"]))
-                projected_duration = duration_with(event)
-                hard_split = len(projected) > max_chars or projected_duration > max_duration
-                sentence_split = current_can_end and (
-                    int(current.get("sentences", 0)) >= max_sentences
-                    or hard_split
-                )
-                should_split = hard_split or sentence_split
-                if should_split:
-                    flush_current()
-
-            if current is None:
-                current = {
-                    "speaker": speaker,
-                    "start": event["start"],
-                    "end": event["end"],
-                    "start_s": event.get("start_s"),
-                    "end_s": event.get("end_s"),
-                    "text": str(event["text"]).strip(),
-                    "sentences": self._sentence_count(str(event["text"])),
-                }
-            else:
-                current["end"] = event["end"]
-                current["end_s"] = event.get("end_s")
-                current["text"] = self._join_turn_text(
-                    str(current["text"]),
-                    str(event["text"]),
-                )
-                current["sentences"] = int(current.get("sentences", 0)) + self._sentence_count(
-                    str(event["text"])
-                )
-
-            current_duration = 0.0
-            if current.get("start_s") is not None and current.get("end_s") is not None:
-                current_duration = float(current["end_s"]) - float(current["start_s"])
-            if self._ends_sentence(str(current["text"])) and (
-                int(current.get("sentences", 0)) >= max_sentences
-                or len(str(current["text"])) >= max_chars
-                or current_duration >= max_duration
-            ):
-                flush_current()
-
-        flush_current()
-
-        if not readable:
-            return srt_content
-
-        output_segments: list[dict[str, Any]] = []
-        for index, item in enumerate(readable, 1):
-            speaker = item.get("speaker")
-            text = str(item["text"]).strip()
-            if speaker:
-                text = f"[{speaker}] {text}"
-            output_segments.append(
-                {
-                    "index": index,
-                    "timestamp": f"{item['start']} --> {item['end']}",
-                    "text": text,
-                }
-            )
-        return self._segments_to_srt(output_segments)
-
-    def _parse_polish_response(
-        self, response: str, fallback_segments: list[dict]
-    ) -> list[dict]:
-        """Parse an LLM polish response into segments.
-
-        Tries, in order:
-        1. JSON array of {index, timestamp, text} (the prompt-requested format),
-           tolerating markdown fences and leading/trailing prose.
-        2. Raw SRT blocks (legacy / when the model insists on SRT).
-        3. Empty list — caller will align/fallback to input segments.
-        """
-        # Strip markdown code fences first
-        text = response.strip()
-        fence_match = re.match(
-            r"^```(?:json|JSON)?\s*\n(.*?)\n```\s*$",
-            text,
-            flags=re.DOTALL,
+        return _transcript_outputs.merge_consecutive_speaker_segments(
+            srt_content,
+            max_chars=max_chars,
+            max_duration=max_duration,
+            max_sentences=max_sentences,
+            max_gap=max_gap,
         )
-        if fence_match:
-            text = fence_match.group(1).strip()
 
-        # Try JSON: find the first '[' and the matching last ']' so we
-        # tolerate leading/trailing junk like "好的，这是结果："
-        try:
-            start = text.find("[")
-            end = text.rfind("]")
-            if start >= 0 and end > start:
-                arr = json.loads(text[start : end + 1])
-                if isinstance(arr, list):
-                    segs: list[dict] = []
-                    for item in arr:
-                        if not isinstance(item, dict):
-                            continue
-                        idx = item.get("index")
-                        ts = item.get("timestamp")
-                        txt = item.get("text")
-                        if idx is None or not ts or txt is None:
-                            continue
-                        segs.append(
-                            {
-                                "index": int(idx),
-                                "timestamp": str(ts).strip(),
-                                "text": str(txt).strip(),
-                            }
-                        )
-                    if segs:
-                        return segs
-        except (json.JSONDecodeError, ValueError, TypeError) as e:
-            log_event(logger, logging.DEBUG, "llm.polish.parse_json_failed", error=e)
+    def _parse_polish_response(self, response: str, fallback_segments: list[dict]) -> list[dict]:
+        return _transcript_outputs._parse_polish_response(response, fallback_segments)
 
-        # Fall back to SRT block parse
-        srt_segs = self._parse_srt(text)
-        if srt_segs:
-            return srt_segs
-
-        # Nothing usable
-        return []
-
-    def _align_polished_to_input(
-        self, polished: list[dict], original: list[dict]
-    ) -> list[dict]:
-        """Align polished segments back to the original cue list.
-
-        Guarantees one output per input cue, preserving every original
-        index+timestamp. For each input cue, picks the polished segment with
-        the matching timestamp if present, else matching index, else falls
-        back to the original text. This way we never lose cues even if the
-        LLM dropped or duplicated some.
-        """
-        by_ts = {seg.get("timestamp"): seg for seg in polished if seg.get("timestamp")}
-        by_idx = {seg.get("index"): seg for seg in polished if seg.get("index") is not None}
-        aligned: list[dict] = []
-        for orig in original:
-            match = by_ts.get(orig["timestamp"]) or by_idx.get(orig["index"])
-            if match and match.get("text"):
-                aligned.append(
-                    {
-                        "index": orig["index"],
-                        "timestamp": orig["timestamp"],
-                        "text": match["text"],
-                    }
-                )
-            else:
-                aligned.append(dict(orig))
-        return aligned
+    def _align_polished_to_input(self, polished: list[dict], original: list[dict]) -> list[dict]:
+        return _transcript_outputs._align_polished_to_input(polished, original)
 
     def _enforce_polish_constraints(
         self,
@@ -1115,55 +706,14 @@ class LLMService:
         original: list[dict],
         context: dict[str, Any],
     ) -> list[dict]:
-        """Restore read-only cue fields and canonical source spellings."""
-        from app.services.analysis.source_context import canonicalize_text
-
-        aligned = self._align_polished_to_input(polished, original)
-        constrained: list[dict] = []
-        for output, source in zip(aligned, original, strict=True):
-            source_speaker, _source_body = self._split_speaker_prefix(
-                str(source.get("text") or "")
-            )
-            _output_speaker, output_body = self._split_speaker_prefix(
-                str(output.get("text") or "")
-            )
-            body = canonicalize_text(output_body, context)
-            text = f"[{source_speaker}] {body}" if source_speaker else body
-            constrained.append(
-                {
-                    "index": source["index"],
-                    "timestamp": source["timestamp"],
-                    "text": text.strip(),
-                }
-            )
-        return constrained
+        return _transcript_outputs._enforce_polish_constraints(polished, original, context)
 
     def _polish_timeline_context(
         self,
         context: dict[str, Any],
         chunk_segments: list[dict],
     ) -> str:
-        timeline = context.get("timeline") or []
-        if not timeline or not chunk_segments:
-            return ""
-        start_ts, end_ts = self._timestamp_bounds(str(chunk_segments[0].get("timestamp") or ""))
-        chunk_start = _timestamp_to_seconds(start_ts)
-        _last_start, last_end = self._timestamp_bounds(
-            str(chunk_segments[-1].get("timestamp") or "")
-        )
-        chunk_end = _timestamp_to_seconds(last_end)
-        if chunk_start is None:
-            return ""
-        labels: list[str] = []
-        for index, item in enumerate(timeline):
-            try:
-                item_start = float(item.get("start") or 0)
-            except (AttributeError, TypeError, ValueError):
-                continue
-            next_start = float(timeline[index + 1].get("start") or 1e18) if index + 1 < len(timeline) else 1e18
-            if item_start <= (chunk_end if chunk_end is not None else chunk_start) and next_start > chunk_start:
-                labels.append(f"{item_start:g}s {item.get('title', '')}")
-        return " / ".join(labels)
+        return _transcript_outputs._polish_timeline_context(context, chunk_segments)
 
     async def polish_with_context_parallel(
         self,
@@ -1394,7 +944,7 @@ class LLMService:
 
         # Re-index segments
         for idx, seg in enumerate(polished_segments, 1):
-            seg['index'] = idx
+            seg["index"] = idx
 
         log_event(
             logger,
@@ -1442,40 +992,7 @@ class LLMService:
         )
 
     def srt_to_markdown(self, srt_content: str, title: str = "") -> str:
-        """
-        Convert polished SRT to a clean Markdown document.
-        Preserves SRT cue boundaries as readable paragraphs.
-        """
-        segments = self._parse_srt(srt_content)
-        if not segments:
-            return srt_content
-
-        paragraphs: list[dict[str, str | None]] = []
-        for seg in segments:
-            text = seg['text'].strip()
-            speaker, text = self._split_speaker_prefix(text)
-            if text:
-                paragraphs.append({"speaker": speaker, "text": text})
-
-        # Build markdown
-        lines = []
-        if title:
-            lines.append(f"# {title}")
-            lines.append("")
-
-        # Check if there are multiple speakers
-        speakers = set(p['speaker'] for p in paragraphs if p['speaker'])
-        multi_speaker = len(speakers) > 1
-
-        for para in paragraphs:
-            if multi_speaker and para['speaker']:
-                # Show speaker label for multi-speaker content
-                lines.append(f"**[{para['speaker']}]** {para['text']}")
-            else:
-                lines.append(para['text'])
-            lines.append("")
-
-        return '\n'.join(lines)
+        return _transcript_outputs.srt_to_markdown(srt_content, title)
 
     async def summarize(
         self,
@@ -1538,14 +1055,7 @@ class LLMService:
 
     @staticmethod
     def _parse_summary_json(response: str) -> dict[str, Any] | None:
-        start, end = response.find("{"), response.rfind("}") + 1
-        if start < 0 or end <= start:
-            return None
-        try:
-            value = json.loads(response[start:end])
-        except (json.JSONDecodeError, TypeError, ValueError):
-            return None
-        return value if isinstance(value, dict) else None
+        return _response_parsing._parse_summary_json(response)
 
     async def _summarize_by_timeline(
         self,
@@ -1564,8 +1074,7 @@ class LLMService:
             if isinstance(item, dict) and item.get("title")
         ]
         chapters = [
-            {"title": item["title"], "start_time": item.get("start", 0)}
-            for item in timeline
+            {"title": item["title"], "start_time": item.get("start", 0)} for item in timeline
         ]
         blocks = self._split_segments_by_chapters(self._parse_srt(text), chapters)
         semaphore = asyncio.Semaphore(6)
@@ -1601,9 +1110,7 @@ class LLMService:
                 }
             return canonicalize_json(parsed, source_context)
 
-        chapter_results = await asyncio.gather(
-            *(summarize_chapter(item) for item in timeline)
-        )
+        chapter_results = await asyncio.gather(*(summarize_chapter(item) for item in timeline))
         digest_lines = []
         for item, result in zip(timeline, chapter_results, strict=True):
             digest_lines.append(
@@ -1635,9 +1142,7 @@ class LLMService:
         ]
         if not reduced.get("key_facts"):
             reduced["key_facts"] = [
-                fact
-                for result in chapter_results
-                for fact in list(result.get("key_facts") or [])
+                fact for result in chapter_results for fact in list(result.get("key_facts") or [])
             ][:10]
         if not reduced.get("action_items"):
             reduced["action_items"] = [
@@ -1734,14 +1239,19 @@ class LLMService:
         global_context = self._build_global_context(metadata, chapters)
 
         # --- Map phase: parallel ---
-        log_event(logger, logging.INFO, "llm.mindmap.map_reduce_started", chapters=len(chapter_texts))
+        log_event(
+            logger, logging.INFO, "llm.mindmap.map_reduce_started", chapters=len(chapter_texts)
+        )
         map_concurrency = 1 if self._effective_provider(provider_override) == "local" else 8
         semaphore = asyncio.Semaphore(map_concurrency)
 
         async def map_one(title: str, content: str) -> tuple[str, str]:
             async with semaphore:
                 prompt = get_mindmap_map_prompt(
-                    title, content, global_context, user_language=user_language,
+                    title,
+                    content,
+                    global_context,
+                    user_language=user_language,
                 )
                 resp = await self._call(
                     prompt,
@@ -1751,11 +1261,13 @@ class LLMService:
                 )
                 return title, resp
 
-        map_results = await asyncio.gather(*[
-            map_one(title, content)
-            for title, content in chapter_texts.items()
-            if content.strip()
-        ])
+        map_results = await asyncio.gather(
+            *[
+                map_one(title, content)
+                for title, content in chapter_texts.items()
+                if content.strip()
+            ]
+        )
         chapter_summaries = dict(map_results)
         log_event(
             logger,
@@ -1772,23 +1284,7 @@ class LLMService:
         chapters: list[dict],
         chapter_summaries: dict[str, str],
     ) -> str:
-        """Use source chapters as immutable top-level mindmap nodes."""
-        lines: list[str] = []
-        for chapter in chapters:
-            title = str(chapter.get("title") or "").strip()
-            if not title:
-                continue
-            try:
-                start = float(chapter.get("start_time") or 0)
-            except (TypeError, ValueError):
-                start = 0
-            timestamp = _seconds_to_srt_timestamp(start).split(",", 1)[0]
-            lines.append(f"- {title} [{timestamp}]")
-            summary = self._filter_mindmap_lines(chapter_summaries.get(title, ""))
-            for raw_line in summary.splitlines():
-                if raw_line.strip():
-                    lines.append(f"  {raw_line}")
-        return "\n".join(lines)
+        return _mindmap_outputs._compose_chapter_mindmap(chapters, chapter_summaries)
 
     async def _mindmap_map_reduce_auto(
         self,
@@ -1805,26 +1301,33 @@ class LLMService:
             chunk_size = min(120, max(80, len(segments) // 8))
             chapter_texts = {}
             for i in range(0, len(segments), chunk_size):
-                batch = segments[i:i + chunk_size]
-                label = f"Part {i // chunk_size + 1} ({batch[0]['timestamp'].split('-->')[0].strip()})"
+                batch = segments[i : i + chunk_size]
+                label = (
+                    f"Part {i // chunk_size + 1} ({batch[0]['timestamp'].split('-->')[0].strip()})"
+                )
                 chapter_texts[label] = "\n".join(seg["text"] for seg in batch)
         else:
             # Plain text — split by char count
             chunk_chars = max(10000, len(text) // 10)
             chapter_texts = {}
             for i in range(0, len(text), chunk_chars):
-                chapter_texts[f"Part {i // chunk_chars + 1}"] = text[i:i + chunk_chars]
+                chapter_texts[f"Part {i // chunk_chars + 1}"] = text[i : i + chunk_chars]
 
         global_context = self._build_global_context(metadata, [])
 
-        log_event(logger, logging.INFO, "llm.mindmap.auto_map_reduce_started", chunks=len(chapter_texts))
+        log_event(
+            logger, logging.INFO, "llm.mindmap.auto_map_reduce_started", chunks=len(chapter_texts)
+        )
         map_concurrency = 1 if self._effective_provider(provider_override) == "local" else 8
         semaphore = asyncio.Semaphore(map_concurrency)
 
         async def map_one(title: str, content: str) -> tuple[str, str]:
             async with semaphore:
                 prompt = get_mindmap_map_prompt(
-                    title, content, global_context, user_language=user_language,
+                    title,
+                    content,
+                    global_context,
+                    user_language=user_language,
                 )
                 resp = await self._call(
                     prompt,
@@ -1834,9 +1337,9 @@ class LLMService:
                 )
                 return title, resp
 
-        map_results = await asyncio.gather(*[
-            map_one(t, c) for t, c in chapter_texts.items() if c.strip()
-        ])
+        map_results = await asyncio.gather(
+            *[map_one(t, c) for t, c in chapter_texts.items() if c.strip()]
+        )
         chapter_summaries = dict(map_results)
 
         return await self._mindmap_reduce(
@@ -1858,11 +1361,17 @@ class LLMService:
         batch_size = max(2, min(4, len(names) // 4 + 1))
         groups: list[tuple[str, list[str]]] = []
         for i in range(0, len(names), batch_size):
-            batch_names = names[i:i + batch_size]
+            batch_names = names[i : i + batch_size]
             label = f"{batch_names[0]} ~ {batch_names[-1]}"
             groups.append((label, batch_names))
 
-        log_event(logger, logging.INFO, "llm.mindmap.reduce_started", groups=len(groups), chapters=len(names))
+        log_event(
+            logger,
+            logging.INFO,
+            "llm.mindmap.reduce_started",
+            groups=len(groups),
+            chapters=len(names),
+        )
 
         # Reduce each group (can be parallel for small groups)
         reduce_concurrency = 1 if self._effective_provider(provider_override) == "local" else 4
@@ -1874,7 +1383,9 @@ class LLMService:
                 for name in batch_names:
                     summaries += f"\n### {name}\n{chapter_summaries[name]}\n"
                 prompt = get_mindmap_reduce_prompt(
-                    label, summaries, user_language=user_language,
+                    label,
+                    summaries,
+                    user_language=user_language,
                 )
                 resp = await self._call(
                     prompt,
@@ -1884,10 +1395,9 @@ class LLMService:
                 )
                 return self._filter_mindmap_lines(resp)
 
-        results = await asyncio.gather(*[
-            reduce_one(label, batch_names)
-            for label, batch_names in groups
-        ])
+        results = await asyncio.gather(
+            *[reduce_one(label, batch_names) for label, batch_names in groups]
+        )
 
         final = "\n".join(results)
         log_event(logger, logging.INFO, "llm.mindmap.reduce_completed", chars=len(final))
@@ -1898,104 +1408,25 @@ class LLMService:
         segments: list[dict],
         chapters: list[dict],
     ) -> dict[str, str]:
-        """Split SRT segments into chapter-keyed text blocks."""
-        def ts_to_seconds(ts_str: str) -> float:
-            """Parse HH:MM:SS or MM:SS or seconds to float."""
-            ts_str = str(ts_str).strip()
-            parts = ts_str.replace(",", ".").split(":")
-            if len(parts) == 3:
-                return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
-            elif len(parts) == 2:
-                return int(parts[0]) * 60 + float(parts[1])
-            return float(ts_str)
-
-        def seg_start_seconds(seg: dict) -> float:
-            ts_line = seg["timestamp"]
-            start = ts_line.split("-->")[0].strip()
-            return ts_to_seconds(start)
-
-        seg_starts = [
-            (
-                seg_start_seconds(seg),
-                f"[{seg['timestamp']}] {seg['text']}",
-            )
-            for seg in segments
-        ]
-
-        chapter_texts: dict[str, str] = {}
-        for i, ch in enumerate(chapters):
-            start_s = ts_to_seconds(ch.get("start_time", 0))
-            end_s = ts_to_seconds(chapters[i + 1]["start_time"]) if i + 1 < len(chapters) else 1e9
-            texts = [text for s, text in seg_starts if start_s <= s < end_s]
-            chapter_texts[ch["title"]] = "\n".join(texts)
-
-        return chapter_texts
+        return _mindmap_outputs._split_segments_by_chapters(segments, chapters)
 
     def _split_plain_by_chapters(
         self,
         text: str,
         chapters: list[dict],
     ) -> dict[str, str]:
-        """Rough split of plain text by chapter proportion."""
-        total_len = len(text)
-        n = len(chapters)
-        chunk = total_len // max(n, 1)
-        result: dict[str, str] = {}
-        for i, ch in enumerate(chapters):
-            start = i * chunk
-            end = (i + 1) * chunk if i + 1 < n else total_len
-            result[ch["title"]] = text[start:end]
-        return result
+        return _mindmap_outputs._split_plain_by_chapters(text, chapters)
 
     def _build_global_context(
         self,
         metadata: dict[str, Any],
         chapters: list[dict],
     ) -> str:
-        """Build a concise global context string from metadata."""
-        parts = []
-        if metadata.get("title"):
-            parts.append(f"标题: {metadata['title']}")
-        if metadata.get("uploader"):
-            parts.append(f"作者: {metadata['uploader']}")
-        if chapters:
-            ch_list = " / ".join(
-                f"{ch.get('start_time', 0)}s {ch.get('title', '')}"
-                for ch in chapters
-            )
-            parts.append(f"章节: {ch_list}")
-        desc = metadata.get("description", "")
-        if desc:
-            parts.append(f"简介: {desc[:300]}")
-        source_context = metadata.get("source_context") or {}
-        entities = source_context.get("entities") or []
-        if entities:
-            parts.append(
-                "规范实体: "
-                + " / ".join(
-                    str(item.get("canonical") or "")
-                    for item in entities
-                    if isinstance(item, dict) and item.get("canonical")
-                )
-            )
-        return "\n".join(parts)
+        return _mindmap_outputs._build_global_context(metadata, chapters)
 
     @staticmethod
     def _filter_mindmap_lines(resp: str) -> str:
-        """Filter response to plain text list lines, strip any markdown formatting."""
-        lines = [l for l in resp.strip().split("\n") if l.strip().startswith("-") or l.strip().startswith("*")]
-        # Normalize * to -
-        lines = [l.replace("* ", "- ", 1) if l.lstrip().startswith("* ") else l for l in lines]
-        # Strip markdown formatting: bold, italic, code, links
-        cleaned = []
-        for l in lines:
-            l = l.replace("**", "").replace("__", "")  # bold
-            l = l.replace("*", "").replace("_", "")  # italic (careful: only standalone)
-            l = re.sub(r'`([^`]*)`', r'\1', l)  # inline code
-            l = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', l)  # links
-            l = re.sub(r'^(\s*- )#+\s*', r'\1', l)  # heading markers after bullet
-            cleaned.append(l)
-        return "\n".join(cleaned) if cleaned else resp
+        return _mindmap_outputs._filter_mindmap_lines(resp)
 
 
 _service: LLMService | None = None

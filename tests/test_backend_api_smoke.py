@@ -206,7 +206,10 @@ def test_create_task_normalizes_schemeless_bilibili_opus(tmp_path, monkeypatch):
 
 def test_create_task_resolves_bilibili_short_opus(tmp_path, monkeypatch):
     resolved_url = "https://m.bilibili.com/opus/1222911198638374913?share_source=COPY"
-    monkeypatch.setattr(ytdlp, "_resolve_bilibili_short_url", lambda url: resolved_url)
+    monkeypatch.setattr(
+        "app.services.ingestion.platform.source_urls._resolve_bilibili_short_url",
+        lambda url: resolved_url,
+    )
     client, queue = _client(tmp_path, monkeypatch)
 
     task = client.post(
