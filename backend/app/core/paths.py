@@ -9,7 +9,7 @@ from app.models.task import Task
 
 SYSTEM_DIRECTORIES = frozenset({
     "auth", "voiceprints", "logs", "uploads", "manual_task", "state", "tmp", "backups",
-    "_staging", "_sync_downloads", "_remote_sync_client", "_deleting",
+    "_staging", "_sync_downloads", "_remote_sync", "_remote_sync_client", "_deleting",
 })
 ACTIVE_STATUSES = frozenset({"pending", "queued", "processing", "paused"})
 

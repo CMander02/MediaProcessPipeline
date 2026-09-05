@@ -371,7 +371,15 @@ async def checkpoint_rerun_task(task_id: UUID):
 async def delete_task(task_id: UUID):
     """Delete a task and its output directory when it is under data_root."""
     queue = get_task_queue()
-    result = await queue.delete(task_id)
+    from app.core.archive_lifecycle import ArchiveBusyError
+    try:
+        result = await queue.delete(task_id)
+    except ArchiveBusyError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(500, f"Task deletion pending: {exc}") from exc
     if result is not None:
         return {"message": "Deleted", "task_id": str(task_id), **result}
     raise HTTPException(404, "Task not found")
@@ -440,8 +448,5 @@ async def stream_task_events(task_id: UUID):
 
 @router.delete("/history/{task_id}")
 async def delete_history_entry(task_id: str):
-    """Delete a history entry."""
-    store = get_task_store()
-    if store.delete(UUID(task_id)):
-        return {"message": "Deleted", "task_id": task_id}
-    raise HTTPException(404, "History entry not found")
+    """Use the same removal semantics as the task endpoint."""
+    return await delete_task(UUID(task_id))

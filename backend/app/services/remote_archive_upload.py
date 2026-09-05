@@ -17,6 +17,8 @@ from uuid import uuid4
 
 import httpx
 
+from app.core.workspace_lifecycle import run_in_thread, uses_workspace
+
 from app.core.archive_sync import build_archive_zip
 from app.core.database import TaskStore, get_task_store
 from app.core.logging_setup import log_event
@@ -113,6 +115,7 @@ class RemoteArchiveUploadService:
                     )
             await asyncio.sleep(interval)
 
+    @uses_workspace
     async def sync_once(self, settings: RuntimeSettings | None = None) -> bool:
         """Upload the newest completed task that has no marker for this server."""
         settings = settings or self._settings_getter()
@@ -170,13 +173,13 @@ class RemoteArchiveUploadService:
         zip_path = staging_dir / "archive.zip"
         staging_dir.mkdir(parents=True, exist_ok=False)
         try:
-            await asyncio.to_thread(
+            await run_in_thread(
                 build_archive_zip,
                 output_dir,
                 zip_path,
                 include_media=bool(settings.remote_sync_include_media),
             )
-            archive_sha256 = await asyncio.to_thread(_sha256, zip_path)
+            archive_sha256 = await run_in_thread(_sha256, zip_path)
             task_payload = task.model_dump(mode="json")
             task_payload["result"] = _portable_result(task.result)
             worker_id = (
@@ -233,7 +236,7 @@ class RemoteArchiveUploadService:
                 server_url=server_url,
             )
         finally:
-            await asyncio.to_thread(shutil.rmtree, staging_dir, True)
+            await run_in_thread(shutil.rmtree, staging_dir, True)
 
 
 _service: RemoteArchiveUploadService | None = None

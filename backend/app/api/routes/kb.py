@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+
+from app.core.workspace_lifecycle import run_in_thread
 
 router = APIRouter(prefix="/kb", tags=["kb"])
 
@@ -34,7 +35,7 @@ async def search_kb(
 
     emb_service = get_embedding_service()
     try:
-        query_vec = await asyncio.to_thread(emb_service.embed_one, q)
+        query_vec = await run_in_thread(emb_service.embed_one, q)
     except Exception as e:
         raise HTTPException(500, f"Embedding failed: {e}")
 
@@ -45,7 +46,7 @@ async def search_kb(
         filters["uploader_id"] = uploader_id
 
     try:
-        results = await asyncio.to_thread(get_kb_store().search, query_vec, top_k, filters or None)
+        results = await run_in_thread(get_kb_store().search, query_vec, top_k, filters or None)
     except Exception as e:
         raise HTTPException(500, f"Search failed: {e}")
 
@@ -83,7 +84,7 @@ async def reindex_kb() -> dict[str, Any]:
 
     from app.services.kb.indexer import reindex_all
     try:
-        count = await asyncio.to_thread(reindex_all)
+        count = await run_in_thread(reindex_all)
     except Exception as e:
         raise HTTPException(500, f"Reindex failed: {e}")
 

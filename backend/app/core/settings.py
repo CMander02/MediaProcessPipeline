@@ -2098,6 +2098,30 @@ def _apply_dot_path_updates(
     return direct_updates, mirrored_flat_keys
 
 
+def _persist_candidate(candidate: RuntimeSettings) -> RuntimeSettings:
+    global _runtime_settings
+    previous = get_runtime_settings()
+    old_root = Path(previous.data_root).resolve()
+    new_root = Path(candidate.data_root).resolve()
+    if old_root == new_root:
+        _save_settings_to_file(candidate)
+        _runtime_settings = candidate
+        return candidate
+
+    from app.core.workspace_lifecycle import workspace_change, reset_workspace_stores
+    with workspace_change():
+        new_root.mkdir(parents=True, exist_ok=True)
+        _save_settings_to_file(candidate)
+        try:
+            reset_workspace_stores(new_root)
+        except Exception:
+            _save_settings_to_file(previous)
+            reset_workspace_stores(old_root)
+            raise
+        _runtime_settings = candidate
+    return candidate
+
+
 def update_runtime_settings(new_settings: RuntimeSettings) -> RuntimeSettings:
     """Replace all runtime settings and persist."""
     with _settings_lock:
@@ -2107,9 +2131,7 @@ def update_runtime_settings(new_settings: RuntimeSettings) -> RuntimeSettings:
         _normalize_settings_document_state(data)
         candidate = RuntimeSettings(**data)
         _validate_data_root(candidate.data_root)
-        _save_settings_to_file(candidate)
-        _runtime_settings = candidate
-        return _runtime_settings
+        return _persist_candidate(candidate)
 
 
 def patch_runtime_settings(updates: dict[str, Any]) -> RuntimeSettings:
@@ -2129,9 +2151,7 @@ def patch_runtime_settings(updates: dict[str, Any]) -> RuntimeSettings:
         _normalize_settings_document_state(current, sync_flat_keys=sync_flat_keys)
         candidate = RuntimeSettings(**current)
         _validate_data_root(candidate.data_root)
-        _save_settings_to_file(candidate)
-        _runtime_settings = candidate
-        return _runtime_settings
+        return _persist_candidate(candidate)
 
 
 def replace_runtime_settings_for_process(settings: RuntimeSettings) -> RuntimeSettings:

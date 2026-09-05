@@ -22,6 +22,8 @@ _WIN_RESERVED = re.compile(
 import ipaddress
 from urllib.parse import urlparse
 
+from app.core.workspace_lifecycle import run_in_thread
+
 from app.core.settings import get_runtime_settings
 from app.core.pipeline import pipeline_steps_schema
 from app.core.source_normalization import normalize_source_input
@@ -289,7 +291,7 @@ async def probe_url(url: str):
             logger.warning(f"Probe failed for {url}: {e}")
             return {}
 
-    result = await asyncio.to_thread(_probe, url)
+    result = await run_in_thread(_probe, url)
     if not result:
         raise HTTPException(status_code=404, detail="无法获取视频信息")
     return result
@@ -307,7 +309,7 @@ async def inspect_bilibili_collection_url(url: str):
     from app.services.ingestion.platform.bilibili.collection import inspect_bilibili_collection
 
     try:
-        return await asyncio.to_thread(inspect_bilibili_collection, url)
+        return await run_in_thread(inspect_bilibili_collection, url)
     except Exception as e:
         logger.warning("Bilibili collection inspection failed for %s: %s", url, e)
         raise HTTPException(status_code=502, detail="无法读取哔哩哔哩合集信息") from e
@@ -407,85 +409,19 @@ class ArchiveDeleteRequest(BaseModel):
 
 @router.delete("/archives")
 async def delete_archive(req: ArchiveDeleteRequest):
-    """Delete an archive directory and its associated task record."""
-    archive_dir = Path(req.path)
-    if not archive_dir.is_dir():
-        raise HTTPException(404, "Archive directory not found")
+    """Delete an archive and recover interrupted removals on retry."""
+    from app.core.archive_lifecycle import ArchiveBusyError, get_archive_lifecycle
 
-    from app.core.paths import (
-        ACTIVE_STATUSES,
-        archive_directory,
-        task_output_paths,
-        task_uses_directory,
-    )
-
-    rt = get_runtime_settings()
-    data_root = Path(rt.data_root).resolve()
     try:
-        archive_dir = archive_directory(archive_dir, data_root)
+        return await run_in_thread(get_archive_lifecycle().delete, req.path)
+    except ArchiveBusyError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(403, str(exc)) from exc
-
-    # Try to find and delete the associated task record by matching output_dir
-    task_deleted = False
-    from app.core.database import get_task_store
-    store = get_task_store()
-    all_tasks = store.list(limit=-1)
-    if any(
-        task.status in ACTIVE_STATUSES and task_uses_directory(task, archive_dir)
-        for task in all_tasks
-    ):
-        raise HTTPException(409, "Archive directory is used by an active task")
-    matching = [task for task in all_tasks if archive_dir in task_output_paths(task)]
-    metadata = _read_archive_metadata(archive_dir)
-    if not matching and not any(metadata.get(key) for key in ("title", "task_id", "archive_id")):
-        raise HTTPException(400, "Directory is not a recognized archive")
-    for task in matching:
-        store.delete(task.id)
-        task_deleted = True
-
-    # Delete the archive directory (with Windows file-lock retry)
-    import time
-
-    def _onerror_retry(func, path, exc_info):
-        """Retry handler for shutil.rmtree on Windows PermissionError."""
-        import stat
-        if isinstance(exc_info[1], PermissionError):
-            os.chmod(path, stat.S_IWRITE)
-            try:
-                func(path)
-            except Exception:
-                pass  # Will be caught by outer retry
-        else:
-            raise exc_info[1]
-
-    import os
-    last_err = None
-    for attempt in range(3):
-        try:
-            shutil.rmtree(archive_dir, onerror=_onerror_retry)
-            break
-        except Exception as e:
-            last_err = e
-            if attempt < 2:
-                time.sleep(0.5)
-    else:
-        # If folder still exists but is now empty, that's ok
-        if archive_dir.exists() and any(archive_dir.iterdir()):
-            raise HTTPException(500, f"Failed to delete archive: {last_err}")
-        # Empty dir or gone — try final rmdir
-        try:
-            archive_dir.rmdir()
-        except Exception:
-            pass
-
-    logger.info(f"Deleted archive: {archive_dir} (task={task_deleted})")
-
-    return {
-        "message": "Deleted",
-        "path": str(archive_dir),
-        "task_deleted": task_deleted,
-    }
+    except OSError as exc:
+        raise HTTPException(500, f"Archive deletion pending: {exc}") from exc
 
 
 class ArchiveRenameRequest(BaseModel):
@@ -706,7 +642,7 @@ async def xiaohongshu_auth_login(request: XiaohongshuLoginRequest):
     from app.services.ingestion.platform.xiaohongshu.api import interactive_login
 
     try:
-        return await asyncio.to_thread(interactive_login, request.timeout_sec)
+        return await run_in_thread(interactive_login, request.timeout_sec)
     except Exception as e:
         raise HTTPException(500, str(e)) from e
 
@@ -725,7 +661,7 @@ async def twitter_auth_login(request: XiaohongshuLoginRequest):
     from app.services.ingestion.platform.twitter.api import interactive_login
 
     try:
-        return await asyncio.to_thread(interactive_login, request.timeout_sec)
+        return await run_in_thread(interactive_login, request.timeout_sec)
     except Exception as e:
         raise HTTPException(500, str(e)) from e
 

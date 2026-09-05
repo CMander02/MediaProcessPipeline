@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import stat
+import threading
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,6 +18,8 @@ from typing import Any, Iterable
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException, UploadFile
+
+from app.core.workspace_lifecycle import uses_workspace
 
 from app.core.database import _db_lock, _get_conn
 from app.core.settings import get_runtime_settings
@@ -67,8 +70,16 @@ class SyncFile:
 class ArchiveSyncService:
     """Build and persist a server-owned, monotonically revisioned archive view."""
 
+    def __init__(self) -> None:
+        self._reconcile_lock = threading.Lock()
+
+    @uses_workspace
     def reconcile(self) -> int:
         """Index current archives and create tombstones for removed archives."""
+        with self._reconcile_lock:
+            return self._reconcile()
+
+    def _reconcile(self) -> int:
         data_root = Path(get_runtime_settings().data_root).resolve()
         data_root.mkdir(parents=True, exist_ok=True)
         archive_service = get_archive_service()
@@ -95,12 +106,14 @@ class ArchiveSyncService:
 
         return self.current_revision()
 
+    @uses_workspace
     def current_revision(self) -> int:
         row = _get_conn().execute(
             "SELECT current_revision FROM archive_sync_meta WHERE id = 1"
         ).fetchone()
         return int(row["current_revision"]) if row else 0
 
+    @uses_workspace
     def changes(self, cursor: int, limit: int) -> dict[str, Any]:
         self.reconcile()
         conn = _get_conn()
@@ -135,6 +148,7 @@ class ArchiveSyncService:
             "server_revision": self.current_revision(),
         }
 
+    @uses_workspace
     def manifest(self, archive_id: str) -> dict[str, Any] | None:
         self.reconcile()
         record = self._active_record(archive_id)
@@ -149,6 +163,7 @@ class ArchiveSyncService:
             "total_size": sum(int(entry["size"]) for entry in files),
         }
 
+    @uses_workspace
     def resolve_declared_file(
         self,
         archive_id: str,
@@ -175,6 +190,7 @@ class ArchiveSyncService:
         entry = allowed.get(normalized)
         return (target, entry) if entry else None
 
+    @uses_workspace
     def rebuild(self) -> dict[str, int]:
         """Re-index current archives while preserving monotonic revision history."""
         conn = _get_conn()

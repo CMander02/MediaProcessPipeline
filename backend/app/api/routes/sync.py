@@ -16,6 +16,8 @@ from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadF
 from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
+from app.core.workspace_lifecycle import run_in_thread
+
 from app.core.archive_sync import (
     archive_file_manifest,
     build_archive_zip,
@@ -166,14 +168,14 @@ async def export_completed_archive(
     zip_path = staging_dir / "archive.zip"
     staging_dir.mkdir(parents=True, exist_ok=False)
     try:
-        await asyncio.to_thread(
+        await run_in_thread(
             build_archive_zip,
             archive_dir,
             zip_path,
             include_media=include_media,
         )
     except Exception:
-        await asyncio.to_thread(shutil.rmtree, staging_dir, True)
+        await run_in_thread(shutil.rmtree, staging_dir, True)
         raise
     encoded_name = quote(archive_dir.name, safe="")
     return FileResponse(
@@ -289,4 +291,4 @@ async def import_completed_archive(
             "sync": sync_info,
         }
     finally:
-        await asyncio.to_thread(shutil.rmtree, staging_dir, True)
+        await run_in_thread(shutil.rmtree, staging_dir, True)

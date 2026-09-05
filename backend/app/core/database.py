@@ -26,6 +26,13 @@ _connection: sqlite3.Connection | None = None
 _db_lock = threading.Lock()  # Serialize all DB writes
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS archive_deletions (
+    original_path TEXT PRIMARY KEY,
+    staging_name TEXT NOT NULL,
+    task_ids TEXT NOT NULL,
+    archive_ids TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
     id              TEXT PRIMARY KEY,
     task_type       TEXT NOT NULL,

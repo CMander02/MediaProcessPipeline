@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.core.workspace_lifecycle import run_in_thread, WorkspaceActivityMiddleware
+
 from app.api.routes import auth, filesystem, logs, pipeline, sync, tasks, voiceprints
 from app.api.routes import kb as kb_router
 from app.api.routes import settings as settings_router
@@ -74,7 +76,7 @@ async def lifespan(app: FastAPI):
             )
 
             spec = resolve_model(rt.sherpa_model_id, rt.sherpa_model_root)
-            _, runtime_info = await asyncio.to_thread(
+            _, runtime_info = await run_in_thread(
                 get_sherpa_runtime().get,
                 spec,
                 SherpaRuntimeOptions(
@@ -93,16 +95,18 @@ async def lifespan(app: FastAPI):
 
     from app.services.ingestion.ytdlp_version import auto_update_on_startup, warn_if_stale
     if rt.ytdlp_auto_update:
-        await asyncio.to_thread(auto_update_on_startup, True)
+        await run_in_thread(auto_update_on_startup, True)
     else:
-        asyncio.create_task(asyncio.to_thread(warn_if_stale))
+        asyncio.create_task(run_in_thread(warn_if_stale))
 
     # Initialize SQLite task store
     init_db()
+    from app.core.archive_lifecycle import get_archive_lifecycle
+    await run_in_thread(get_archive_lifecycle().recover)
 
     # Keep stable archive identities and the mobile sync revision current.
     from app.core.archive_sync import get_archive_sync_service
-    await asyncio.to_thread(get_archive_sync_service().reconcile)
+    await run_in_thread(get_archive_sync_service().reconcile)
 
     # Start task queue worker
     queue = get_task_queue()
@@ -137,8 +141,8 @@ async def lifespan(app: FastAPI):
                 from app.services.analysis.local_llm_runtime import release_local_llm_runtime
                 from app.services.recognition import release_asr_models
 
-                await asyncio.to_thread(release_asr_models)
-                await asyncio.to_thread(release_local_llm_runtime)
+                await run_in_thread(release_asr_models)
+                await run_in_thread(release_local_llm_runtime)
             except Exception as e:
                 logger.warning("Runtime cleanup during shutdown failed: %s", e)
             close_db()
@@ -149,6 +153,8 @@ app = FastAPI(
     debug=config.debug,
     lifespan=lifespan,
 )
+
+app.add_middleware(WorkspaceActivityMiddleware)
 
 # CORS middleware
 app.add_middleware(

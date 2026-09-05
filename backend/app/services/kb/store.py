@@ -119,18 +119,15 @@ class KBStore:
 
     def delete_task(self, task_id: str) -> None:
         conn = self._get_conn()
-        with _db_lock:
+        with _db_lock, conn:
             rowids = [r[0] for r in conn.execute(
                 "SELECT id FROM kb_chunks WHERE task_id = ?", (task_id,)
             ).fetchall()]
             if rowids:
                 placeholders = ",".join("?" for _ in rowids)
-                try:
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'vec_chunks'").fetchone():
                     conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", rowids)
-                except Exception:
-                    pass
             conn.execute("DELETE FROM kb_chunks WHERE task_id = ?", (task_id,))
-            conn.commit()
 
     def search(
         self,

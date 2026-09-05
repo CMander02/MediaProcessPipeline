@@ -265,11 +265,12 @@ class TaskQueue:
         return await self.resume(task_id, force=True)
 
     async def delete(self, task_id: UUID) -> dict[str, Any] | None:
-        """Delete a task record and best-effort remove its output directory."""
+        """Stop a task and remove its outputs through the recoverable archive lifecycle."""
         store = get_task_store()
         task = store.get(task_id)
         if not task:
-            return None
+            from app.core.archive_lifecycle import get_archive_lifecycle
+            return get_archive_lifecycle().delete_task(task_id)
 
         self._remove_from_queue(self._download_queue, task_id)
         self._remove_from_queue(self._gpu_queue, task_id)
@@ -283,24 +284,23 @@ class TaskQueue:
             except Exception:
                 pass
 
-        output_dirs = self._task_output_dirs(task)
-        deleted_paths, errors = self._delete_output_dirs(output_dirs)
-        deleted = store.delete(task_id)
-        if not deleted:
+        # Refresh after cancellation so the journal captures the final output paths.
+        task = store.get(task_id)
+        if task is None:
             return None
-
-        payload = {
-            "status": "deleted",
-            "deleted_paths": deleted_paths,
-            "errors": errors,
-        }
+        if task.status in {TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.PROCESSING, TaskStatus.PAUSED}:
+            store.update_status(task_id, TaskStatus.CANCELLED, completed_at=datetime.now())
+        from app.core.archive_lifecycle import get_archive_lifecycle
+        payload = get_archive_lifecycle().delete_task(task_id)
+        if payload is None:
+            return None
         await get_event_bus().publish(TaskEvent(task_id, "deleted", payload))
         log_event(
             logger,
             logging.INFO,
             "task.deleted",
-            deleted_paths=len(deleted_paths),
-            errors=len(errors),
+            deleted_paths=len(payload["deleted_paths"]),
+            errors=len(payload["errors"]),
         )
         return payload
 
@@ -342,31 +342,6 @@ class TaskQueue:
                 seen.add(key)
                 paths.append(path)
         return paths
-
-    def _delete_output_dirs(self, paths: list[Path]) -> tuple[list[str], list[dict[str, str]]]:
-        import shutil
-
-        from app.core.settings import get_runtime_settings
-
-        data_root = Path(get_runtime_settings().data_root).resolve()
-        deleted: list[str] = []
-        errors: list[dict[str, str]] = []
-        for path in paths:
-            try:
-                target = path.resolve()
-                if target == data_root:
-                    raise RuntimeError("refusing to delete data_root")
-                target.relative_to(data_root)
-                if not target.exists():
-                    continue
-                if target.is_dir():
-                    shutil.rmtree(target)
-                else:
-                    target.unlink()
-                deleted.append(str(target))
-            except Exception as exc:
-                errors.append({"path": str(path), "error": str(exc)})
-        return deleted, errors
 
     def _checkpoint_completed_steps(self, task: Any) -> list[str]:
         """Infer durable steps that can be reused during a forced checkpoint rerun."""

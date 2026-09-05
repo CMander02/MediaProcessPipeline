@@ -208,6 +208,13 @@ class VoiceprintStore:
         """)
         conn.commit()
 
+    def detach_task(self, task_id: str) -> None:
+        """Keep reusable people and clips while removing deleted task references."""
+        conn = self._get_conn()
+        with self._lock, conn:
+            conn.execute("DELETE FROM task_speaker_map WHERE task_id = ?", (task_id,))
+            conn.execute("UPDATE sample_meta SET task_id = NULL WHERE task_id = ?", (task_id,))
+
     # ---- Person CRUD ----
 
     def create_person(self, name: str, notes: str = "") -> Person:
@@ -467,6 +474,6 @@ def get_voiceprint_store() -> VoiceprintStore:
 def reset_voiceprint_store() -> None:
     """For tests or data_root changes."""
     global _store
-    if _store and _store._conn:
-        _store._conn.close()
+    if _store:
+        _store._close_conn()
     _store = None

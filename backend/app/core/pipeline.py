@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from app.core.workspace_lifecycle import run_in_thread
+
 from app.core.database import get_task_store
 from app.core.events import TaskEvent, get_event_bus
 from app.core.logging_setup import log_event
@@ -2707,7 +2709,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
 
             if dest_source.suffix.lower() in video_exts:
                 audio_path = task_dir / f"{title}.wav"
-                await asyncio.to_thread(_extract_audio_from_video, dest_source, audio_path)
+                await run_in_thread(_extract_audio_from_video, dest_source, audio_path)
                 await _raise_if_cancelled(task.id)
                 audio_path = str(audio_path)
                 metadata = MediaMetadata(
@@ -3244,7 +3246,7 @@ async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
                                     data={"model_used": preprocess.get("model_used")},
                                 )
                     finally:
-                        await asyncio.to_thread(_release_uvr_gpu_resources)
+                        await run_in_thread(_release_uvr_gpu_resources)
                     await _raise_if_cancelled(task.id)
                 await _update_step(task, PipelineStep.SEPARATE, completed=True)
 
@@ -3762,7 +3764,7 @@ def _schedule_kb_index(task_id: str, archive_path: str) -> None:
                 return
             from app.services.kb.indexer import index_task
             log_event(logger, logging.INFO, "kb.index.started", archive_path=archive_path)
-            await asyncio.to_thread(index_task, task_id, archive_path)
+            await run_in_thread(index_task, task_id, archive_path)
             log_event(logger, logging.INFO, "kb.index.completed", archive_path=archive_path)
         except Exception as e:
             log_event(logger, logging.WARNING, "kb.index.failed", task_id=task_id, error=e)
