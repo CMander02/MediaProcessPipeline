@@ -148,8 +148,17 @@ def index_task(task_id: str, archive_path: str | Path) -> None:
         c["task_id"] = task_id
         c["archive_path"] = str(archive_dir)
 
+    from uuid import UUID
+
+    from app.core.archive_sync import get_archive_sync_service
+    from app.core.database import get_task_store
     from app.services.kb.store import get_kb_store
-    get_kb_store().upsert_task(task_id, raw_chunks)
+
+    # Embedding runs outside the deletion lock; check ownership again at commit.
+    with get_archive_sync_service()._reconcile_lock:
+        if get_task_store().get(UUID(task_id)) is None or not archive_dir.is_dir():
+            return
+        get_kb_store().upsert_task(task_id, raw_chunks)
     logger.info(f"KB: indexed {len(raw_chunks)} chunks for task {task_id}")
 
 

@@ -11,7 +11,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from app.core import database, settings
-from app.core.workspace_lifecycle import WorkspaceBusyError, run_in_thread, workspace_activity
+from app.core.workspace_lifecycle import (
+    WorkspaceBusyError,
+    drain_workspace_threads,
+    run_in_thread,
+    workspace_activity,
+)
 from app.models import Task, TaskStatus, TaskType
 from app.services.kb import store as kb
 from app.services.voiceprint import store as voice
@@ -103,12 +108,17 @@ async def test_cancel_drains_actual_thread_before_resources_are_released(workspa
 
     task = asyncio.create_task(run_in_thread(worker))
     await asyncio.to_thread(started.wait, 5)
+    with pytest.raises(WorkspaceBusyError):
+        settings.patch_runtime_settings({"data_root": str(workspace[1])})
     task.cancel()
+    draining = asyncio.create_task(drain_workspace_threads())
     await asyncio.sleep(0)
     assert not task.done()
+    assert not draining.done()
     release.set()
     with pytest.raises(asyncio.CancelledError):
         await task
+    await draining
     assert finished.is_set()
 
 

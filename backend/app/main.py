@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.core.workspace_lifecycle import run_in_thread, WorkspaceActivityMiddleware
+from app.core.workspace_lifecycle import run_in_thread, WorkspaceActivityMiddleware, drain_workspace_threads
 
 from app.api.routes import auth, filesystem, logs, pipeline, sync, tasks, voiceprints
 from app.api.routes import kb as kb_router
@@ -145,6 +145,7 @@ async def lifespan(app: FastAPI):
                 await run_in_thread(release_local_llm_runtime)
             except Exception as e:
                 logger.warning("Runtime cleanup during shutdown failed: %s", e)
+            await drain_workspace_threads()
             close_db()
 
 app = FastAPI(

@@ -199,3 +199,31 @@ def test_multiple_outputs_all_move_before_record_deletion(archive, monkeypatch):
     assert lifecycle.recover() == []
     assert database.get_task_store().get(task.id) is None
     assert not second.exists()
+
+
+def test_background_embedding_does_not_recreate_deleted_kb_records(archive, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services.kb import embedding, indexer
+    from app.services.kb import store as kb
+
+    directory, task, lifecycle = archive
+    runtime = settings.get_runtime_settings()
+    runtime.kb_enabled = True
+    runtime.kb_embedding_api_base = "http://localhost:18000/test-embedding"
+    (directory / "summary.md").write_text("# Summary\nInterview content", encoding="utf-8")
+    kb.reset_kb_store()
+
+    def embed_then_delete(texts):
+        lifecycle.delete(directory)
+        return [[1.0] * runtime.kb_embedding_dim for _ in texts]
+
+    monkeypatch.setattr(
+        embedding, "get_embedding_service", lambda: SimpleNamespace(embed_batch=embed_then_delete)
+    )
+    try:
+        indexer.index_task(str(task.id), directory)
+        assert database.get_task_store().get(task.id) is None
+        assert kb.get_kb_store().chunk_count() == 0
+    finally:
+        kb.reset_kb_store()

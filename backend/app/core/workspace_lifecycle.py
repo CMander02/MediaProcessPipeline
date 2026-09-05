@@ -12,6 +12,7 @@ from pathlib import Path
 _lock = threading.Lock()
 _active = 0
 _switching = False
+_thread_workers: set[asyncio.Task] = set()
 
 
 class WorkspaceBusyError(ValueError):
@@ -50,9 +51,12 @@ def uses_workspace(function):
     return synchronous
 
 
+@uses_workspace
 async def run_in_thread(function, /, *args, **kwargs):
     """Drain a worker on cancellation before releasing its workspace resources."""
     worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    _thread_workers.add(worker)
+    worker.add_done_callback(_thread_workers.discard)
     try:
         return await asyncio.shield(worker)
     except asyncio.CancelledError:
@@ -66,6 +70,12 @@ async def run_in_thread(function, /, *args, **kwargs):
         if not worker.cancelled():
             worker.exception()
         raise
+
+
+async def drain_workspace_threads() -> None:
+    """Finish background indexing before shutdown closes the shared databases."""
+    while workers := tuple(_thread_workers):
+        await asyncio.gather(*workers, return_exceptions=True)
 
 
 @contextmanager
