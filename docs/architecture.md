@@ -25,6 +25,8 @@ workspace_lifecycle 协调目录切换与文件/数据库操作。切换时检�
 
 ## 接口与同步
 
+前端模型设置位于 `web/src/components/settings/models/`，分别组织 provider 注册表、模型编辑、本地模型、阶段绑定及共享控件；原 model-sections 保留导出入口。结果页通过 `hooks/use-result-viewer.ts` 管理渐进加载、SSE、编辑和操作状态，`result/result-content-pane.tsx` 组合标签页，`result/note-content.tsx` 渲染图文内容；章节、来源和进度文本辅助函数位于 lib/result-*。页面继续复用平台适配器与归档 repository，以支持 Web 和 Android。
+
 HTTP 路由调用核心与服务模块。任务事件通过全局 /api/tasks/events 和单任务 /api/tasks/{id}/events SSE 推送；单任务 GET 查询保留兼容。
 
 归档同步维护归档索引、revision、变更记录和删除记录。manifest 提供可传输文件清单；导入复用归档 ID。远程上传服务按配置发送已完成归档，并处理离线退避。完整性校验字段属于传输协议。

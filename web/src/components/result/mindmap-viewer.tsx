@@ -249,6 +249,13 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
           cloneMindmapNode(data),
         ) as unknown as MarkmapInstance
 
+        const fit = ref.current.fit?.bind(ref.current)
+        ref.current.fit = () => {
+          if (!svgEl.isConnected) return
+          const bounds = svgEl.getBoundingClientRect()
+          if (bounds.width > 0 && bounds.height > 0) return fit?.()
+        }
+
         ref.current.handleClick = (event: MouseEvent, node: MindmapNode) => {
           event.preventDefault()
           event.stopPropagation()
@@ -291,8 +298,14 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
         svgEl.addEventListener("click", handleLabelClick)
 
         const destroy = ref.current.destroy?.bind(ref.current)
+        const selection = ref.current.svg as {
+          interrupt: () => unknown
+          selectAll: (selector: string) => { interrupt: () => unknown }
+        }
         ref.current.destroy = () => {
           svgEl.removeEventListener("click", handleLabelClick)
+          selection.interrupt()
+          selection.selectAll("*").interrupt()
           destroy?.()
         }
 
