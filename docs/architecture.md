@@ -10,6 +10,8 @@ app.core.pipeline 编排输入识别、媒体下载、音频准备、转写、LL
 
 ## 存储契约
 
+`app.core.settings` 保留运行时单例、原子保存、配置更新及公开类型导出。`app.core.configuration` 按职责组织字段模型（models）、旧自定义端点（profiles）、provider 与服务模型注册表（registry）、阶段模型绑定（bindings）、旧文档迁移与点路径更新（document），共享字段映射位于 constants。规范化函数仅处理传入的配置文档，保存成功后才更新运行时单例。
+
 app.core.paths 统一解析配置与资料库路径。项目根目录 config.json 保存运行时设置，data_root 指向资料库。新库使用 archives/、state/、tmp/、logs/、backups/；现有混合目录按原布局继续运行。迁移由显式 CLI 命令执行，详见[资料库迁移与恢复](storage-migration.md)。
 
 - TaskStore 在 SQLite 保存活动任务、历史、事件、文本产物和同步状态。重复保存任务保留关联记录。
