@@ -12,725 +12,132 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
-
-from app.core.paths import get_workspace_paths
 
 from app.core.config import get_settings
 from app.core.logging_setup import log_event
-from app.core.network import runtime_proxy_url as shared_runtime_proxy_url
 from app.core.network import urllib_urlopen
+from app.core.paths import get_workspace_paths
 from app.core.settings import get_runtime_settings
 from app.models import ChapterInfo, MediaMetadata, MediaType
+from app.services.ingestion.platform.bilibili.subtitle_download import (
+    _download_bilibili_subtitle as _subtitle_download_download_bilibili_subtitle,
+)
+from app.services.ingestion.platform.bilibili.subtitle_download import (
+    _download_bilibili_subtitle_legacy as _subtitle_download_download_bilibili_subtitle_legacy,
+)
+from app.services.ingestion.platform.source_urls import _BILIBILI_BVID_RE as _BILIBILI_BVID_RE
+from app.services.ingestion.platform.source_urls import _DIRECT_MEDIA_EXTS as _DIRECT_MEDIA_EXTS
+from app.services.ingestion.platform.source_urls import _HTTP_URL_RE as _HTTP_URL_RE
+from app.services.ingestion.platform.source_urls import (
+    _bilibili_canonical_video_url as _bilibili_canonical_video_url,
+)
+from app.services.ingestion.platform.source_urls import (
+    _bilibili_display_title as _bilibili_display_title,
+)
+from app.services.ingestion.platform.source_urls import _candidate_matches as _candidate_matches
+from app.services.ingestion.platform.source_urls import _candidate_urls as _candidate_urls
+from app.services.ingestion.platform.source_urls import _ensure_http_url as _ensure_http_url
+from app.services.ingestion.platform.source_urls import (
+    _extract_bilibili_bvid as _extract_bilibili_bvid,
+)
+from app.services.ingestion.platform.source_urls import (
+    _extract_bilibili_page_number as _extract_bilibili_page_number,
+)
+from app.services.ingestion.platform.source_urls import _extract_http_urls as _extract_http_urls
+from app.services.ingestion.platform.source_urls import _host_matches as _host_matches
+from app.services.ingestion.platform.source_urls import (
+    _is_apple_podcast_url as _is_apple_podcast_url,
+)
+from app.services.ingestion.platform.source_urls import (
+    _is_bilibili_article_url as _is_bilibili_article_url,
+)
+from app.services.ingestion.platform.source_urls import (
+    _is_bilibili_image_note_url as _is_bilibili_image_note_url,
+)
+from app.services.ingestion.platform.source_urls import (
+    _is_bilibili_short_url as _is_bilibili_short_url,
+)
+from app.services.ingestion.platform.source_urls import _is_bilibili_url as _is_bilibili_url
+from app.services.ingestion.platform.source_urls import (
+    _is_bilibili_video_url as _is_bilibili_video_url,
+)
+from app.services.ingestion.platform.source_urls import _is_direct_media_url as _is_direct_media_url
+from app.services.ingestion.platform.source_urls import (
+    _is_generic_webpage_url as _is_generic_webpage_url,
+)
+from app.services.ingestion.platform.source_urls import _is_twitter_url as _is_twitter_url
+from app.services.ingestion.platform.source_urls import _is_xiaohongshu_url as _is_xiaohongshu_url
+from app.services.ingestion.platform.source_urls import _is_xiaoyuzhou_url as _is_xiaoyuzhou_url
+from app.services.ingestion.platform.source_urls import _is_youtube_url as _is_youtube_url
+from app.services.ingestion.platform.source_urls import _is_zhihu_url as _is_zhihu_url
+from app.services.ingestion.platform.source_urls import _NoRedirectHandler as _NoRedirectHandler
+from app.services.ingestion.platform.source_urls import (
+    _normalize_bilibili_video_url as _normalize_bilibili_video_url,
+)
+from app.services.ingestion.platform.source_urls import (
+    _resolve_bilibili_short_url as _resolve_bilibili_short_url,
+)
+from app.services.ingestion.platform.source_urls import (
+    _resolve_bilibili_short_url_once as _resolve_bilibili_short_url_once,
+)
+from app.services.ingestion.platform.source_urls import (
+    _select_bilibili_page as _select_bilibili_page,
+)
+from app.services.ingestion.platform.source_urls import (
+    _urllib_urlopen_no_redirect as _urllib_urlopen_no_redirect,
+)
+from app.services.ingestion.platform.source_urls import (
+    normalize_bilibili_source_url as normalize_bilibili_source_url,
+)
+from app.services.ingestion.platform.twitter.payload import (
+    _clean_twitter_text as _clean_twitter_text,
+)
+from app.services.ingestion.platform.twitter.payload import (
+    _clean_twitter_title as _clean_twitter_title,
+)
+from app.services.ingestion.platform.twitter.payload import (
+    _dedupe_twitter_image_urls as _dedupe_twitter_image_urls,
+)
+from app.services.ingestion.platform.twitter.payload import (
+    _extract_twitter_article_title as _extract_twitter_article_title,
+)
+from app.services.ingestion.platform.twitter.payload import (
+    _extract_twitter_external_article_url as _extract_twitter_external_article_url,
+)
+from app.services.ingestion.platform.twitter.payload import (
+    _is_twitter_content_image as _is_twitter_content_image,
+)
+from app.services.ingestion.platform.twitter.payload import (
+    _twitter_image_dedupe_key as _twitter_image_dedupe_key,
+)
+from app.services.ingestion.subtitles import _bili_json_to_srt as _bili_json_to_srt
+from app.services.ingestion.subtitles import _empty_subtitle_result as _empty_subtitle_result
+from app.services.ingestion.subtitles import (
+    _filter_and_sort_subtitle_tracks as _filter_and_sort_subtitle_tracks,
+)
+from app.services.ingestion.subtitles import _lang_rank as _lang_rank
+from app.services.ingestion.subtitles import _parse_lang_priority as _parse_lang_priority
+from app.services.ingestion.subtitles import _subtitle_track_type as _subtitle_track_type
+from app.services.ingestion.subtitles import download_subtitles as _subtitles_download_subtitles
+from app.services.ingestion.ytdlp_options import _BBDOWN_DIR as _BBDOWN_DIR
+from app.services.ingestion.ytdlp_options import _BBDOWN_EXE as _BBDOWN_EXE
+from app.services.ingestion.ytdlp_options import (
+    _YTDLP_NETWORK_ERROR_MARKERS as _YTDLP_NETWORK_ERROR_MARKERS,
+)
+from app.services.ingestion.ytdlp_options import YoutubeNetworkError as YoutubeNetworkError
+from app.services.ingestion.ytdlp_options import _normalize_proxy_url as _normalize_proxy_url
+from app.services.ingestion.ytdlp_options import _youtube_network_error as _youtube_network_error
+from app.services.ingestion.ytdlp_options import _YtdlpLogger as _YtdlpLogger
+from app.services.ingestion.ytdlp_options import (
+    is_youtube_network_error as is_youtube_network_error,
+)
+from app.services.ingestion.ytdlp_options import youtube_proxy_url as youtube_proxy_url
+from app.services.ingestion.ytdlp_options import ytdlp_auth_opts as ytdlp_auth_opts
+from app.services.ingestion.ytdlp_options import ytdlp_base_opts as ytdlp_base_opts
 
 logger = logging.getLogger(__name__)
 
 # BBDown executable — shipped with the project
-_BBDOWN_DIR = Path(__file__).resolve().parent.parent.parent.parent / "tools" / "bbdown"
-_BBDOWN_EXE = _BBDOWN_DIR / "BBDown.exe"
-_HTTP_URL_RE = re.compile(r'https?://[^\s<>"\'，。！？；、]+', re.IGNORECASE)
-_BILIBILI_BVID_RE = r'BV[0-9A-Za-z]{10}'
-
-
-def _extract_http_urls(value: str) -> list[str]:
-    return [match.group(0).strip() for match in _HTTP_URL_RE.finditer(value)]
-
-
-def _extract_twitter_external_article_url(value: str) -> str:
-    """Return the first article URL that leaves X/Twitter infrastructure."""
-    for candidate in _extract_http_urls(value):
-        parsed = urlparse(candidate.rstrip(".,;:!?)]}"))
-        host = (parsed.hostname or "").lower()
-        if host and not any(
-            host == suffix or host.endswith(f".{suffix}")
-            for suffix in ("x.com", "twitter.com", "t.co", "twimg.com")
-        ):
-            return parsed.geturl()
-    return ""
-
-
-def _candidate_urls(value: str) -> list[str]:
-    urls = _extract_http_urls(value)
-    return urls or [value.strip()]
-
-
-def _candidate_matches(value: str, pattern: str) -> bool:
-    return any(re.search(pattern, candidate, re.IGNORECASE) for candidate in _candidate_urls(value))
-
-
-def _host_matches(value: str, suffixes: tuple[str, ...]) -> bool:
-    for candidate in _candidate_urls(value):
-        if "://" not in candidate:
-            candidate = f"https://{candidate}"
-        parsed = urlparse(candidate)
-        host = (parsed.hostname or "").lower()
-        if any(host == suffix or host.endswith(f".{suffix}") for suffix in suffixes):
-            return True
-    return False
-
-
-def _ensure_http_url(value: str) -> str:
-    return value if "://" in value else f"https://{value}"
-
-
-def _is_bilibili_short_url(value: str) -> bool:
-    try:
-        parsed = urlparse(_ensure_http_url(value))
-    except ValueError:
-        return False
-    host = (parsed.hostname or "").lower()
-    return host == "b23.tv" or host.endswith(".b23.tv")
-
-
-def normalize_bilibili_source_url(url: str) -> str:
-    """Resolve b23.tv short links before selecting a Bilibili ingestor."""
-    for candidate in _candidate_urls(url):
-        if not _is_bilibili_short_url(candidate):
-            continue
-        ensured = _ensure_http_url(candidate)
-        resolved = _resolve_bilibili_short_url(ensured)
-        if resolved and resolved != ensured:
-            return resolved
-    return url
-
-
-def _is_bilibili_article_url(url: str) -> bool:
-    url = normalize_bilibili_source_url(url)
-    for candidate in _candidate_urls(url):
-        if "://" not in candidate:
-            candidate = f"https://{candidate}"
-        parsed = urlparse(candidate)
-        host = (parsed.hostname or "").lower()
-        if not (host == "bilibili.com" or host.endswith(".bilibili.com")):
-            continue
-        path = parsed.path.rstrip("/")
-        if re.match(r"^/read/(?:cv\d+|mobile|readlist)", path, re.IGNORECASE):
-            return True
-        if re.match(r"^/h5/note-app/view", path, re.IGNORECASE):
-            return True
-    return False
-
-
-def _is_bilibili_image_note_url(url: str) -> bool:
-    url = normalize_bilibili_source_url(url)
-    for candidate in _candidate_urls(url):
-        if "://" not in candidate:
-            candidate = f"https://{candidate}"
-        parsed = urlparse(candidate)
-        host = (parsed.hostname or "").lower()
-        path = parsed.path.rstrip("/")
-        if host == "t.bilibili.com" or host.endswith(".t.bilibili.com"):
-            return bool(re.match(r"^/(?:dynamic/)?\d+$", path, re.IGNORECASE))
-        if not (host == "bilibili.com" or host.endswith(".bilibili.com")):
-            continue
-        if re.match(r"^/(?:opus|dynamic)/\d+$", path, re.IGNORECASE):
-            return True
-        if re.match(r"^/h5/dynamic/detail/\d+$", path, re.IGNORECASE):
-            return True
-    return False
-
-
-def _is_bilibili_video_url(url: str) -> bool:
-    url = normalize_bilibili_source_url(url)
-    if not _extract_http_urls(url):
-        return bool(re.fullmatch(rf'(?:{_BILIBILI_BVID_RE}|av\d+)', url.strip(), re.IGNORECASE))
-
-    for candidate in _candidate_urls(url):
-        if "://" not in candidate:
-            candidate = f"https://{candidate}"
-        parsed = urlparse(candidate)
-        host = (parsed.hostname or "").lower()
-        host_token = parsed.netloc.rsplit("@", 1)[-1].split(":", 1)[0]
-        path = parsed.path
-        query = parse_qs(parsed.query)
-        if re.fullmatch(_BILIBILI_BVID_RE, host_token):
-            return True
-        if not (host == "bilibili.com" or host.endswith(".bilibili.com")):
-            continue
-        if re.search(rf"/(?:video/)?(?:{_BILIBILI_BVID_RE}|av\d+)(?:/|$)", path, re.IGNORECASE):
-            return True
-        if query.get("bvid") or query.get("aid"):
-            return True
-        if path.startswith("/x/web-interface/view"):
-            return True
-    return False
-
-
-def _is_bilibili_url(url: str) -> bool:
-    return _is_bilibili_video_url(url)
-
-
-def _is_xiaoyuzhou_url(url: str) -> bool:
-    return _candidate_matches(url, r'xiaoyuzhoufm\.com/episode/[0-9a-fA-F]+')
-
-
-def _is_xiaohongshu_url(url: str) -> bool:
-    return _host_matches(url, ("xiaohongshu.com", "xhslink.com"))
-
-
-def _is_zhihu_url(url: str) -> bool:
-    return _candidate_matches(url, r'zhihu\.com/(?:pin/\d+|question/\d+/answer/\d+)')
-
-
-_DIRECT_MEDIA_EXTS = {
-    ".mp4", ".mkv", ".avi", ".webm", ".mov", ".m4v",
-    ".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac",
-}
-
-
-def _is_direct_media_url(url: str) -> bool:
-    for candidate in _candidate_urls(url):
-        if "://" not in candidate:
-            continue
-        parsed = urlparse(candidate)
-        if Path(parsed.path).suffix.lower() in _DIRECT_MEDIA_EXTS:
-            return True
-    return False
-
-
-def _is_apple_podcast_url(url: str) -> bool:
-    return _candidate_matches(url, r'podcasts\.apple\.com/(?:[a-z]{2}/)?podcast/[^?#/]*/id\d+')
-
-
-def _is_youtube_url(url: str) -> bool:
-    return _host_matches(url, ("youtube.com", "youtu.be"))
-
-
-def _is_twitter_url(url: str) -> bool:
-    return _host_matches(url, ("x.com", "twitter.com"))
-
-
-def _clean_twitter_title(title: str) -> str:
-    title = re.sub(r"\s*/\s*X\s*$", "", title or "").strip()
-    title = re.sub(r"\s+on\s+X:\s+.*$", " on X", title).strip()
-    return title
-
-
-def _clean_twitter_text(text: str) -> str:
-    lines = [line.strip() for line in (text or "").splitlines()]
-    stop_markers = {
-        "New to X?",
-        "Relevant people",
-        "Terms",
-        "Don't miss what's happening",
-        "People on X are the first to know.",
-    }
-    drop_exact = {
-        "",
-        "Post",
-        "Log in",
-        "Sign up",
-        "Sign up with Google",
-        "Sign up with Apple",
-        "Create account",
-    }
-    cleaned: list[str] = []
-    for line in lines:
-        if line in stop_markers:
-            break
-        if line in drop_exact:
-            continue
-        if line.startswith("By signing up,"):
-            break
-        cleaned.append(line)
-    return "\n".join(cleaned).strip()
-
-
-def _extract_twitter_article_title(value: Any) -> str:
-    lines = [line.strip() for line in str(value or "").splitlines()]
-    for idx, line in enumerate(lines):
-        if line != "Article":
-            continue
-        for candidate in lines[idx + 1:]:
-            if candidate and not candidate.startswith(("http://", "https://")):
-                return candidate
-    return ""
-
-
-def _is_twitter_content_image(value: Any) -> bool:
-    raw = str(value or "").strip()
-    if not raw:
-        return False
-    parsed = urlparse(raw)
-    host = (parsed.hostname or "").lower()
-    return (host == "pbs.twimg.com" or host.endswith(".pbs.twimg.com")) and "/media/" in parsed.path
-
-
-def _dedupe_twitter_image_urls(values: Any) -> list[str]:
-    if not isinstance(values, list):
-        values = [values] if values else []
-    image_urls: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        raw = str(value or "").strip()
-        if not _is_twitter_content_image(raw):
-            continue
-        dedupe_key = _twitter_image_dedupe_key(raw)
-        if dedupe_key in seen:
-            continue
-        seen.add(dedupe_key)
-        image_urls.append(raw)
-    return image_urls
-
-
-def _twitter_image_dedupe_key(value: str) -> str:
-    parsed = urlparse(value)
-    host = (parsed.hostname or "").lower()
-    path = urllib.parse.unquote(parsed.path)
-    filename = path.rsplit("/", 1)[-1].split(":", 1)[0]
-    media_id = filename.rsplit(".", 1)[0] if "." in filename else filename
-    return f"{host}/media/{media_id}" if media_id else value
-
-
-def _is_generic_webpage_url(url: str) -> bool:
-    url = normalize_bilibili_source_url(url)
-    if not _extract_http_urls(url) and not url.strip().startswith(("http://", "https://")):
-        return False
-    if _is_direct_media_url(url):
-        return False
-    if _is_bilibili_article_url(url) or _is_bilibili_image_note_url(url):
-        return False
-    if _is_bilibili_video_url(url):
-        return False
-    if _host_matches(url, (
-        "youtube.com", "youtu.be", "vimeo.com",
-        "x.com", "twitter.com", "tiktok.com", "douyin.com",
-        "kuaishou.com", "weibo.com",
-        "bilibili.com", "b23.tv",
-    )):
-        return False
-    return True
-
-
-def _extract_bilibili_bvid(url: str) -> str | None:
-    """Extract or resolve a Bilibili BV id from BV or av/aid URLs."""
-    url = normalize_bilibili_source_url(url)
-    value = url.strip()
-    if not value:
-        return None
-
-    bare_bv = re.fullmatch(rf'({_BILIBILI_BVID_RE})', value)
-    if bare_bv:
-        return bare_bv.group(1)
-
-    bare_av = re.fullmatch(r'av(\d+)', value, re.IGNORECASE)
-    if bare_av:
-        aid = bare_av.group(1)
-    else:
-        aid = None
-        for candidate in _candidate_urls(value):
-            if "://" not in candidate:
-                candidate = f"https://{candidate}"
-            parsed = urlparse(candidate)
-            host = (parsed.hostname or "").lower()
-            host_token = parsed.netloc.rsplit("@", 1)[-1].split(":", 1)[0]
-            if re.fullmatch(_BILIBILI_BVID_RE, host_token):
-                return host_token
-            if host == "b23.tv" or host.endswith(".b23.tv"):
-                resolved = _resolve_bilibili_short_url(candidate)
-                if resolved and resolved != candidate:
-                    bvid = _extract_bilibili_bvid(resolved)
-                    if bvid:
-                        return bvid
-                continue
-            if not (host == "bilibili.com" or host.endswith(".bilibili.com")):
-                continue
-
-            bvid_values = parse_qs(parsed.query).get("bvid") or []
-            for bvid in bvid_values:
-                if re.fullmatch(_BILIBILI_BVID_RE, bvid):
-                    return bvid
-
-            path_match = re.search(rf'/(?:video/)?({_BILIBILI_BVID_RE})(?:/|$)', parsed.path)
-            if path_match:
-                return path_match.group(1)
-
-            av_match = re.search(r'/(?:video/)?av(\d+)(?:/|$)', parsed.path, re.IGNORECASE)
-            if av_match:
-                aid = av_match.group(1)
-                break
-
-    if not aid:
-        return None
-
-    try:
-        import json
-
-        req = urllib.request.Request(
-            f"https://api.bilibili.com/x/web-interface/view?aid={aid}",
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Referer": f"https://www.bilibili.com/video/av{aid}/",
-            },
-        )
-        with urllib_urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read()).get("data", {})
-        bvid = data.get("bvid")
-        return str(bvid) if bvid else None
-    except Exception as e:
-        log_event(logger, logging.WARNING, "bilibili.bvid.resolve_failed", aid=aid, error=e)
-        return None
-
-
-def _resolve_bilibili_short_url(url: str) -> str | None:
-    """Resolve b23.tv short links to their final Bilibili URL."""
-    for method in ("HEAD", "GET"):
-        try:
-            return _resolve_bilibili_short_url_once(url, method=method)
-        except Exception as e:
-            if method == "GET":
-                log_event(logger, logging.WARNING, "bilibili.short_url.resolve_failed", url=url, error=e)
-    return None
-
-
-def _resolve_bilibili_short_url_once(url: str, *, method: str) -> str | None:
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://www.bilibili.com/",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        },
-        method=method,
-    )
-    try:
-        with _urllib_urlopen_no_redirect(req, timeout=10) as resp:
-            location = resp.headers.get("Location")
-            return urllib.parse.urljoin(url, location) if location else resp.geturl()
-    except urllib.error.HTTPError as e:
-        if 300 <= e.code < 400:
-            location = e.headers.get("Location")
-            if location:
-                return urllib.parse.urljoin(url, location)
-        raise
-
-
-def _urllib_urlopen_no_redirect(req: urllib.request.Request, *, timeout: float):
-    handlers: list[urllib.request.BaseHandler] = [_NoRedirectHandler()]
-    proxy = shared_runtime_proxy_url()
-    if proxy == "":
-        handlers.append(urllib.request.ProxyHandler({}))
-    elif proxy:
-        handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-    opener = urllib.request.build_opener(*handlers)
-    return opener.open(req, timeout=timeout)
-
-
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-def _extract_bilibili_page_number(url: str) -> int:
-    """Return the selected Bilibili page number from ?p=, defaulting to 1."""
-    url = normalize_bilibili_source_url(url)
-    for candidate in _candidate_urls(url):
-        if "://" not in candidate:
-            candidate = f"https://{candidate}"
-        parsed = urlparse(candidate)
-        host = (parsed.hostname or "").lower()
-        if host == "b23.tv" or host.endswith(".b23.tv"):
-            resolved = _resolve_bilibili_short_url(candidate)
-            if resolved and resolved != candidate:
-                return _extract_bilibili_page_number(resolved)
-        query = parse_qs(parsed.query)
-        for key in ("p", "page"):
-            values = query.get(key) or []
-            if not values:
-                continue
-            try:
-                page_number = int(values[0])
-            except (TypeError, ValueError):
-                continue
-            return max(page_number, 1)
-    return 1
-
-
-def _select_bilibili_page(view_data: dict[str, Any], page_number: int) -> dict[str, Any]:
-    pages = view_data.get("pages") or []
-    if not pages:
-        return {}
-    page_number = max(int(page_number or 1), 1)
-    for page in pages:
-        if int(page.get("page") or 0) == page_number:
-            return page
-    index = min(page_number - 1, len(pages) - 1)
-    return pages[index]
-
-
-def _bilibili_canonical_video_url(bvid: str, page_number: int = 1) -> str:
-    suffix = f"?p={page_number}" if page_number > 1 else ""
-    return f"https://www.bilibili.com/video/{bvid}{suffix}"
-
-
-def _normalize_bilibili_video_url(url: str) -> str:
-    url = normalize_bilibili_source_url(url)
-    bvid = _extract_bilibili_bvid(url)
-    if bvid:
-        return _bilibili_canonical_video_url(bvid, _extract_bilibili_page_number(url))
-    if not url.startswith(("http://", "https://")):
-        return "https://" + url
-    return url
-
-
-def _bilibili_display_title(view_data: dict[str, Any], page: dict[str, Any], page_number: int) -> str:
-    title = str(view_data.get("title") or "").strip()
-    part = str(page.get("part") or "").strip()
-    pages = view_data.get("pages") or []
-    if len(pages) > 1 and part and part != title:
-        return f"{title} P{page_number} {part}".strip()
-    return title or part
-
-
-class YoutubeNetworkError(RuntimeError):
-    """Raised when YouTube is unreachable after yt-dlp's bounded retries."""
-
-
-_YTDLP_NETWORK_ERROR_MARKERS = (
-    "http error 429",
-    "too many requests",
-    "failed to establish a new connection",
-    "connection refused",
-    "actively refused",
-    "winerror 10061",
-    "nameresolutionerror",
-    "getaddrinfo failed",
-    "temporary failure in name resolution",
-    "no route to host",
-    "network is unreachable",
-    "connection reset by peer",
-    "connect timeout",
-    "connecttimeout",
-    "read timed out",
-    "timed out",
-    "proxyerror",
-    "unable to connect to proxy",
-    "unable to download api page",
-)
-
-
-class _YtdlpLogger:
-    """Route yt-dlp output through app logging instead of raw stderr."""
-
-    def __init__(self) -> None:
-        self.messages: list[str] = []
-
-    def debug(self, msg: str) -> None:
-        if msg.startswith("[debug] "):
-            self.messages.append(msg)
-            log_event(logger, logging.DEBUG, "ytdlp.debug", message=msg)
-
-    def info(self, msg: str) -> None:
-        self.messages.append(msg)
-        log_event(logger, logging.INFO, "ytdlp.info", message=msg)
-
-    def warning(self, msg: str) -> None:
-        self.messages.append(msg)
-        log_event(logger, logging.WARNING, "ytdlp.warning", message=msg)
-
-    def error(self, msg: str) -> None:
-        self.messages.append(msg)
-        log_event(logger, logging.ERROR, "ytdlp.error", message=msg)
-
-    def has_youtube_network_error(self, url: str | None = None) -> bool:
-        return any(is_youtube_network_error(msg, url) for msg in self.messages)
-
-    def network_error_summary(self) -> str:
-        for msg in reversed(self.messages):
-            if is_youtube_network_error(msg):
-                return msg
-        return self.messages[-1] if self.messages else "unknown yt-dlp error"
-
-
-def _normalize_proxy_url(raw: str) -> str:
-    proxy = raw.strip()
-    if not proxy:
-        return ""
-    if "://" not in proxy:
-        proxy = f"http://{proxy}"
-    return proxy
-
-
-def youtube_proxy_url() -> str | None:
-    """Resolve proxy for YouTube yt-dlp calls.
-
-    Returns:
-        str: explicit or auto-detected proxy URL.
-        None: no proxy option should be set.
-        "": explicitly disable proxy use in yt-dlp.
-    """
-    rt = get_runtime_settings()
-    configured = (rt.youtube_proxy or "").strip()
-    if configured:
-        if configured.lower() in {"direct", "none", "off", "false", "0"}:
-            return ""
-        return _normalize_proxy_url(configured)
-
-    return shared_runtime_proxy_url()
-
-
-def ytdlp_base_opts(ydl_logger: _YtdlpLogger | None = None) -> dict[str, Any]:
-    """Shared yt-dlp options: fail fast on network errors instead of retrying
-    forever. Without this, a dead proxy or DNS issue produces ~9 retries
-    × multiple clients (tv/android/web) × ~3 socket retries each = looks like
-    an infinite loop in the log.
-
-    Proxy handling: YouTube requests may run inside the cmd-launched daemon,
-    which often does not inherit PowerShell-scoped proxy variables. Resolve the
-    dedicated runtime setting first, then the shared app proxy resolution, and
-    pass it explicitly to yt-dlp.
-
-    EJS solver: YouTube's n-parameter signature challenge now requires a JS
-    runtime via yt-dlp's EJS subsystem. Without it, extraction succeeds for
-    metadata but all video/audio formats are filtered out (only images remain).
-    `ejs:github` fetches the solver from the official yt-dlp release on demand
-    and caches it; first call may take a few extra seconds.
-    """
-    opts: dict[str, Any] = {
-        "retries": 3,                 # video-data retries
-        "fragment_retries": 3,        # DASH fragment retries
-        "extractor_retries": 3,       # extractor-level retries
-        "socket_timeout": 15,         # cap each TCP attempt
-        "remote_components": ["ejs:github"],
-        "logger": ydl_logger or _YtdlpLogger(),
-        "noprogress": True,
-        "no_color": True,
-    }
-    proxy = youtube_proxy_url()
-    if proxy is not None:
-        opts["proxy"] = proxy
-    return opts
-
-
-def is_youtube_network_error(error: BaseException | str, url: str | None = None) -> bool:
-    if url and not _is_youtube_url(url):
-        return False
-    text = str(error).lower()
-    if not text:
-        return False
-    return any(marker in text for marker in _YTDLP_NETWORK_ERROR_MARKERS)
-
-
-def _youtube_network_error(url: str, error: BaseException) -> YoutubeNetworkError:
-    return YoutubeNetworkError(
-        "YouTube is unreachable or rate-limited after limited yt-dlp retries. "
-        "Check Settings > YouTube > Proxy and cookies/browser auth, or configure youtube_proxy "
-        "for the server network environment. "
-        f"Last error: {error}"
-    )
-
-
-def ytdlp_auth_opts() -> dict[str, Any]:
-    """yt-dlp options for YouTube (and other sites) auth cookies.
-
-    YouTube increasingly blocks unauthenticated requests ("Sign in to confirm
-    you're not a bot"). Users can either point to an exported cookies.txt or
-    name a browser for yt-dlp to read cookies from directly.
-    """
-    rt = get_runtime_settings()
-    opts: dict[str, Any] = {}
-    cookie_file = (rt.youtube_cookies_file or "").strip()
-    cookie_browser = (rt.youtube_cookies_browser or "").strip().lower()
-    if cookie_file:
-        p = Path(cookie_file)
-        if p.exists():
-            opts["cookiefile"] = str(p)
-        else:
-            log_event(logger, logging.WARNING, "youtube.cookies.missing", path=cookie_file)
-    elif cookie_browser:
-        # yt-dlp expects a tuple (browser, profile, keyring, container)
-        opts["cookiesfrombrowser"] = (cookie_browser,)
-    return opts
-
-
-def _bili_json_to_srt(body: list[dict]) -> str:
-    """Convert Bilibili player/v2 subtitle JSON body to SRT text."""
-    def _fmt(t: float) -> str:
-        if t < 0:
-            t = 0
-        h = int(t // 3600); m = int((t % 3600) // 60)
-        s = t - h * 3600 - m * 60
-        return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
-    out: list[str] = []
-    for i, cue in enumerate(body, 1):
-        out.append(str(i))
-        out.append(f"{_fmt(float(cue.get('from') or 0))} --> {_fmt(float(cue.get('to') or 0))}")
-        out.append(str(cue.get("content") or ""))
-        out.append("")
-    return "\n".join(out)
-
-
-def _parse_lang_priority(langs: list[str] | str | None = None) -> list[str]:
-    """Normalize subtitle language priority strings like 'zh,en'."""
-    if langs is None:
-        raw = get_runtime_settings().subtitle_languages
-        parts = raw.split(",") if raw else []
-    elif isinstance(langs, str):
-        parts = langs.split(",")
-    else:
-        parts = langs
-    return [p.strip().lower() for p in parts if p and p.strip()]
-
-
-def _lang_rank(lang: str, preferred: list[str]) -> int:
-    """Return the priority rank for a language code, or a large value."""
-    if not preferred:
-        return 0
-    normalized = (lang or "").lower()
-    for idx, want in enumerate(preferred):
-        if (
-            normalized == want
-            or normalized.startswith(want)
-            or want.startswith(normalized)
-            or want in normalized
-        ):
-            return idx
-    return 999
-
-
-def _subtitle_track_type(track: dict[str, Any]) -> int:
-    """Return Bilibili subtitle type, preserving 0 as manual CC."""
-    raw = track.get("type")
-    return int(raw) if raw is not None else 1
-
-
-def _filter_and_sort_subtitle_tracks(
-    tracks: list[dict[str, Any]],
-    preferred_langs: list[str],
-) -> list[dict[str, Any]]:
-    """Prefer configured languages first, then manual CC before AI."""
-    indexed = list(enumerate(tracks))
-
-    if preferred_langs:
-        matched = [
-            (i, t) for i, t in indexed
-            if _lang_rank(str(t.get("lan") or ""), preferred_langs) < 999
-        ]
-        if matched:
-            indexed = matched
-
-    indexed.sort(key=lambda item: (
-        _lang_rank(str(item[1].get("lan") or ""), preferred_langs),
-        _subtitle_track_type(item[1]),  # 0=CC, 1=AI
-        item[0],
-    ))
-    return [t for _, t in indexed]
-
-
-def _empty_subtitle_result(
-    *,
-    engine: str | None = None,
-    diagnostics: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    return {
-        "tracks": [],
-        "subtitle_path": None,
-        "subtitle_lang": None,
-        "subtitle_format": None,
-        "subtitle_engine": engine,
-        "diagnostics": diagnostics if diagnostics is not None else [],
-    }
 
 
 def _run_subprocess_streamed(
@@ -818,6 +225,7 @@ class YtdlpService:
             return self._download_webpage(url, output_dir)
 
         import yt_dlp
+
         outtmpl = str(output_dir / "%(title)s.%(ext)s")
 
         # Step 1: Download video (1080p preferred, degrade gracefully)
@@ -848,7 +256,14 @@ class YtdlpService:
         except Exception as e:
             if is_youtube_network_error(e, url):
                 raise _youtube_network_error(url, e) from e
-            log_event(logger, logging.WARNING, "download.video.failed", url=url, fallback="audio_only", error=e)
+            log_event(
+                logger,
+                logging.WARNING,
+                "download.video.failed",
+                url=url,
+                fallback="audio_only",
+                error=e,
+            )
 
         if info is None:
             # Video download failed entirely — get metadata + audio only
@@ -880,13 +295,31 @@ class YtdlpService:
         # Step 2: Extract audio from video using ffmpeg
         audio_file = output_dir / f"{title}.wav"
         if video_file and video_file.exists():
-            log_event(logger, logging.INFO, "audio.extract.started", input=video_file.name, output=audio_file.name)
+            log_event(
+                logger,
+                logging.INFO,
+                "audio.extract.started",
+                input=video_file.name,
+                output=audio_file.name,
+            )
             try:
                 subprocess.run(
-                    ["ffmpeg", "-i", str(video_file), "-vn",
-                     "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
-                     str(audio_file), "-y"],
-                    capture_output=True, check=True,
+                    [
+                        "ffmpeg",
+                        "-i",
+                        str(video_file),
+                        "-vn",
+                        "-acodec",
+                        "pcm_s16le",
+                        "-ar",
+                        "16000",
+                        "-ac",
+                        "1",
+                        str(audio_file),
+                        "-y",
+                    ],
+                    capture_output=True,
+                    check=True,
                 )
             except subprocess.CalledProcessError as e:
                 stderr = e.stderr.decode(errors="replace")[:500] if e.stderr else ""
@@ -941,28 +374,32 @@ class YtdlpService:
             selected_page_number = int(selected_page.get("page") or page_number)
             owner = data.get("owner", {})
             title = _bilibili_display_title(data, selected_page, selected_page_number)
-            info.update({
-                "title": title or data.get("title"),
-                "description": data.get("desc"),
-                "uploader": owner.get("name"),
-                "uploader_id": str(owner.get("mid", "")) if owner.get("mid") else None,
-                "platform": "bilibili_video",
-                "content_subtype": "video",
-                "duration": selected_page.get("duration") or data.get("duration"),
-                "upload_date": datetime.fromtimestamp(data["pubdate"]).strftime("%Y%m%d") if data.get("pubdate") else None,
-                "webpage_url": _bilibili_canonical_video_url(bvid, selected_page_number),
-                "thumbnail": data.get("pic"),
-                "extra": {
+            info.update(
+                {
+                    "title": title or data.get("title"),
+                    "description": data.get("desc"),
+                    "uploader": owner.get("name"),
+                    "uploader_id": str(owner.get("mid", "")) if owner.get("mid") else None,
                     "platform": "bilibili_video",
-                    "bilibili_type": "video",
-                    "bvid": bvid,
-                    "aid": data.get("aid"),
-                    "cid": selected_page.get("cid"),
-                    "page_number": selected_page_number,
-                    "part": selected_page.get("part"),
-                    "pages_count": len(data.get("pages") or []),
-                },
-            })
+                    "content_subtype": "video",
+                    "duration": selected_page.get("duration") or data.get("duration"),
+                    "upload_date": datetime.fromtimestamp(data["pubdate"]).strftime("%Y%m%d")
+                    if data.get("pubdate")
+                    else None,
+                    "webpage_url": _bilibili_canonical_video_url(bvid, selected_page_number),
+                    "thumbnail": data.get("pic"),
+                    "extra": {
+                        "platform": "bilibili_video",
+                        "bilibili_type": "video",
+                        "bvid": bvid,
+                        "aid": data.get("aid"),
+                        "cid": selected_page.get("cid"),
+                        "page_number": selected_page_number,
+                        "part": selected_page.get("part"),
+                        "pages_count": len(data.get("pages") or []),
+                    },
+                }
+            )
         except Exception as e:
             log_event(logger, logging.WARNING, "bilibili.view.failed", bvid=bvid, error=e)
 
@@ -1002,7 +439,9 @@ class YtdlpService:
 
     def _download_bilibili_note(self, url: str, output_dir: Path) -> dict[str, Any]:
         """Fetch Bilibili opus/dynamic metadata; images are downloaded by the note branch."""
-        from app.services.ingestion.platform.bilibili.note import fetch_metadata as fetch_bilibili_note
+        from app.services.ingestion.platform.bilibili.note import (
+            fetch_metadata as fetch_bilibili_note,
+        )
 
         output_dir.mkdir(parents=True, exist_ok=True)
         info = fetch_bilibili_note(url)
@@ -1016,15 +455,17 @@ class YtdlpService:
 
     def _download_bilibili(self, url: str, output_dir: Path) -> dict[str, Any]:
         """Download Bilibili video using native DASH API (replaces BBDown)."""
-        from app.services.ingestion.platform.bilibili.dash import download_video, extract_audio
         from app.services.ingestion.platform.bilibili.auth import is_logged_in
+        from app.services.ingestion.platform.bilibili.dash import download_video, extract_audio
 
         url = _normalize_bilibili_video_url(url)
 
         rt = get_runtime_settings()
         qn = rt.bilibili_preferred_quality if is_logged_in() else 16
         if not is_logged_in() and qn > 16:
-            log_event(logger, logging.WARNING, "bilibili.quality.forced", reason="not_logged_in", qn=16)
+            log_event(
+                logger, logging.WARNING, "bilibili.quality.forced", reason="not_logged_in", qn=16
+            )
             qn = 16
 
         bvid = _extract_bilibili_bvid(url)
@@ -1032,7 +473,9 @@ class YtdlpService:
             raise RuntimeError(f"Cannot extract Bilibili video id from URL: {url}")
 
         page_number = _extract_bilibili_page_number(url)
-        log_event(logger, logging.INFO, "bilibili.download.started", bvid=bvid, qn=qn, page=page_number)
+        log_event(
+            logger, logging.INFO, "bilibili.download.started", bvid=bvid, qn=qn, page=page_number
+        )
         video_file, info = download_video(bvid, output_dir, qn=qn, page_number=page_number)
 
         title = video_file.stem
@@ -1054,6 +497,8 @@ class YtdlpService:
         """Download a Xiaoyuzhou podcast episode via page metadata + audio URL."""
         from app.services.ingestion.platform.xiaoyuzhou.api import (
             download_audio,
+        )
+        from app.services.ingestion.platform.xiaoyuzhou.api import (
             fetch_metadata as fetch_xiaoyuzhou_metadata,
         )
 
@@ -1073,6 +518,8 @@ class YtdlpService:
         """Download an Apple Podcasts episode by resolving RSS enclosure URL."""
         from app.services.ingestion.platform.apple_podcast.api import (
             download_audio,
+        )
+        from app.services.ingestion.platform.apple_podcast.api import (
             fetch_metadata as fetch_apple_metadata,
         )
 
@@ -1093,6 +540,8 @@ class YtdlpService:
         image notes return metadata only (images are fetched later by the pipeline)."""
         from app.services.ingestion.platform.xiaohongshu.api import (
             download_video,
+        )
+        from app.services.ingestion.platform.xiaohongshu.api import (
             fetch_metadata as fetch_xiaohongshu_metadata,
         )
 
@@ -1157,7 +606,9 @@ class YtdlpService:
         output_dir.mkdir(parents=True, exist_ok=True)
         info = self._fetch_twitter_webpage_note(url, fallback_error=fallback_error)
         extra = info.setdefault("extra", {})
-        external_article_url = extra.get("external_article_url") if isinstance(extra, dict) else None
+        external_article_url = (
+            extra.get("external_article_url") if isinstance(extra, dict) else None
+        )
         if external_article_url and extra.get("content_kind") == "long_article":
             try:
                 from app.services.ingestion.platform.webpage.api import download_webpage
@@ -1169,21 +620,27 @@ class YtdlpService:
                     article_info["extra"] = article_extra
                 external_scrape_engine = article_extra.get("scrape_engine")
                 article_extra.update(extra)
-                article_extra.update({
-                    "platform": "twitter",
-                    "external_article_url": str(external_article_url),
-                    "external_scrape_engine": external_scrape_engine,
-                    "article_body_status": "complete",
-                    "article_body_engine": external_scrape_engine or "webpage",
-                    "source_markdown_path": str(output_dir / "source.md"),
-                })
-                article_info.update({
-                    "title": extra.get("article_title") or article_info.get("title") or info.get("title"),
-                    "original_url": url,
-                    "platform": "twitter",
-                    "content_subtype": "text_note",
-                    "uploader": info.get("uploader") or article_info.get("uploader"),
-                })
+                article_extra.update(
+                    {
+                        "platform": "twitter",
+                        "external_article_url": str(external_article_url),
+                        "external_scrape_engine": external_scrape_engine,
+                        "article_body_status": "complete",
+                        "article_body_engine": external_scrape_engine or "webpage",
+                        "source_markdown_path": str(output_dir / "source.md"),
+                    }
+                )
+                article_info.update(
+                    {
+                        "title": extra.get("article_title")
+                        or article_info.get("title")
+                        or info.get("title"),
+                        "original_url": url,
+                        "platform": "twitter",
+                        "content_subtype": "text_note",
+                        "uploader": info.get("uploader") or article_info.get("uploader"),
+                    }
+                )
                 info = article_info
                 extra = article_extra
                 log_event(
@@ -1221,21 +678,27 @@ class YtdlpService:
                     article_info["extra"] = article_extra
                 article_scrape_engine = article_extra.get("scrape_engine")
                 article_extra.update(extra)
-                article_extra.update({
-                    "platform": "twitter",
-                    "status_url": url,
-                    "article_body_status": "complete",
-                    "article_body_engine": article_scrape_engine or "defuddle",
-                    "source_markdown_path": str(output_dir / "source.md"),
-                })
-                article_info.update({
-                    "title": extra.get("article_title") or article_info.get("title") or info.get("title"),
-                    "original_url": url,
-                    "webpage_url": url,
-                    "platform": "twitter",
-                    "content_subtype": "text_note",
-                    "uploader": info.get("uploader") or article_info.get("uploader"),
-                })
+                article_extra.update(
+                    {
+                        "platform": "twitter",
+                        "status_url": url,
+                        "article_body_status": "complete",
+                        "article_body_engine": article_scrape_engine or "defuddle",
+                        "source_markdown_path": str(output_dir / "source.md"),
+                    }
+                )
+                article_info.update(
+                    {
+                        "title": extra.get("article_title")
+                        or article_info.get("title")
+                        or info.get("title"),
+                        "original_url": url,
+                        "webpage_url": url,
+                        "platform": "twitter",
+                        "content_subtype": "text_note",
+                        "uploader": info.get("uploader") or article_info.get("uploader"),
+                    }
+                )
                 info = article_info
                 extra = article_extra
                 log_event(
@@ -1280,7 +743,9 @@ class YtdlpService:
         article_title = _extract_twitter_article_title(page.get("article_text") or body_text)
         external_article_url = _extract_twitter_external_article_url(body_text)
         article_url = str(page.get("article_url") or "")
-        is_x_article = bool(re.search(r"(?:x|twitter)\.com/i/article/\d+", article_url, re.IGNORECASE))
+        is_x_article = bool(
+            re.search(r"(?:x|twitter)\.com/i/article/\d+", article_url, re.IGNORECASE)
+        )
         title = article_title or _clean_twitter_title(str(page.get("title") or "")) or "X post"
         image_urls = _dedupe_twitter_image_urls(page.get("image_urls"))
         markdown_parts = [f"# {title}", f"Source: {resolved_url}"]
@@ -1300,7 +765,9 @@ class YtdlpService:
             "content_kind": "long_article" if is_x_article else "status",
             "article_url": article_url,
             "article_title": article_title,
-            "article_body_status": "complete" if article_body else ("auth_required" if is_x_article else "not_applicable"),
+            "article_body_status": "complete"
+            if article_body
+            else ("auth_required" if is_x_article else "not_applicable"),
             "external_article_url": external_article_url,
             "status_url": resolved_url,
             "image_urls": image_urls,
@@ -1316,7 +783,9 @@ class YtdlpService:
             "webpage_url": resolved_url,
             "original_url": url,
             "platform": "twitter",
-            "content_subtype": "text_note" if is_x_article else ("image_note" if image_urls else "text_note"),
+            "content_subtype": "text_note"
+            if is_x_article
+            else ("image_note" if image_urls else "text_note"),
             "media_type": "image",
             "uploader": uploader,
             "thumbnail": thumbnail,
@@ -1421,7 +890,10 @@ class YtdlpService:
                         if len(article_body) > max(600, len(preview) * 2):
                             data["article_body"] = article_body
                             data["image_urls"] = _dedupe_twitter_image_urls(
-                                [*(data.get("image_urls") or []), *(article_data.get("image_urls") or [])]
+                                [
+                                    *(data.get("image_urls") or []),
+                                    *(article_data.get("image_urls") or []),
+                                ]
                             )
             browser.close()
         return data if isinstance(data, dict) else {}
@@ -1432,259 +904,7 @@ class YtdlpService:
         output_dir: Path,
         langs: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Download ALL usable Bilibili subtitle tracks via the wbi-signed player/v2 API.
-
-        Uses wbi-signed /x/player/wbi/v2 (authenticated via SESSDATA from settings or
-        BBDown.data fallback) to avoid the stale-URL bug in the unsigned endpoint.
-
-        Returns:
-            {
-                "tracks": [{"path": str, "lang": str, "format": "srt", "type": "cc"|"ai"}, ...],
-                # Back-compat single-track fields (first good track):
-                "subtitle_path": str|None,
-                "subtitle_lang": str|None,
-                "subtitle_format": "srt"|None,
-            }
-        """
-        import json
-        import urllib.request
-
-        rt = get_runtime_settings()
-        engine = rt.bilibili_subtitle_engine or "native_wbi"
-        strict_validation = bool(rt.bilibili_subtitle_strict_validation)
-        min_coverage = float(rt.bilibili_subtitle_min_coverage)
-        preferred_langs = _parse_lang_priority(langs)
-        diagnostics: list[dict[str, Any]] = []
-
-        empty = _empty_subtitle_result(engine=engine, diagnostics=diagnostics)
-
-        url = _normalize_bilibili_video_url(url)
-
-        bvid = _extract_bilibili_bvid(url)
-        if not bvid:
-            log_event(logger, logging.WARNING, "bilibili.bvid.missing", url=url)
-            diagnostics.append({"stage": "resolve", "status": "failed", "reason": "missing_bvid"})
-            return empty
-
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        # Try new wbi-signed path first; fall back to old unsigned path on import error
-        try:
-            from app.services.ingestion.platform.bilibili.api import (
-                player_v2 as bili_player_v2,
-                view as bili_view,
-                subtitle_url_matches_video,
-            )
-        except ImportError as e:
-            log_event(logger, logging.WARNING, "bilibili.api.import_failed", error=e)
-            diagnostics.append({
-                "stage": "import",
-                "status": "failed",
-                "reason": "native_api_import_failed",
-                "detail": str(e),
-            })
-            if not rt.bilibili_subtitle_allow_legacy_fallback:
-                return empty
-            log_event(logger, logging.WARNING, "bilibili.subtitle.legacy_fallback")
-            return self._download_bilibili_subtitle_legacy(url, output_dir, bvid, preferred_langs)
-
-        # --- Fetch video metadata (aid, cid, duration) ---
-        try:
-            view_data = bili_view(bvid)
-        except Exception as e:
-            log_event(logger, logging.WARNING, "bilibili.view.failed", bvid=bvid, error=e)
-            diagnostics.append({"stage": "view", "status": "failed", "reason": "api_error", "detail": str(e)})
-            return empty
-
-        aid = int(view_data.get("aid") or 0)
-        pages = view_data.get("pages") or []
-        if not pages:
-            log_event(logger, logging.WARNING, "bilibili.view.no_pages", bvid=bvid)
-            diagnostics.append({"stage": "view", "status": "failed", "reason": "no_pages"})
-            return empty
-        page_number = _extract_bilibili_page_number(url)
-        page = _select_bilibili_page(view_data, page_number)
-        selected_page_number = int(page.get("page") or page_number)
-        cid = int(page.get("cid") or 0)
-        video_duration = float(page.get("duration") or view_data.get("duration") or 0)
-
-        if not aid or not cid:
-            log_event(logger, logging.WARNING, "bilibili.view.missing_ids", bvid=bvid, aid=aid, cid=cid)
-            diagnostics.append({
-                "stage": "view",
-                "status": "failed",
-                "reason": "missing_aid_or_cid",
-                "aid": aid,
-                "cid": cid,
-                "page": selected_page_number,
-            })
-            return empty
-
-        # --- Fetch subtitle track list via wbi-signed endpoint ---
-        try:
-            pv2_data = bili_player_v2(bvid, aid, cid)
-        except Exception as e:
-            log_event(logger, logging.WARNING, "bilibili.player_wbi.failed", bvid=bvid, error=e)
-            diagnostics.append({
-                "stage": "player_wbi_v2",
-                "status": "failed",
-                "reason": "api_error",
-                "detail": str(e),
-            })
-            return empty
-
-        tracks = ((pv2_data.get("subtitle") or {}).get("subtitles")) or []
-        if not tracks:
-            reason = "login_required" if pv2_data.get("need_login_subtitle") else "no_tracks"
-            log_event(logger, logging.INFO, "bilibili.subtitle.empty", bvid=bvid, reason=reason)
-            diagnostics.append({"stage": "track_list", "status": "empty", "reason": reason})
-            return empty
-
-        usable = [t for t in tracks if t.get("subtitle_url")]
-        if not usable:
-            log_event(logger, logging.INFO, "bilibili.subtitle.empty", bvid=bvid, reason="all_tracks_missing_url", tracks=len(tracks))
-            diagnostics.append({
-                "stage": "track_list",
-                "status": "empty",
-                "reason": "all_tracks_missing_url",
-                "track_count": len(tracks),
-            })
-            return empty
-        usable = _filter_and_sort_subtitle_tracks(usable, preferred_langs)
-
-        saved_tracks: list[dict[str, Any]] = []
-        seen_langs: set[str] = set()
-        for track in usable:
-            sub_url = track["subtitle_url"]
-            if sub_url.startswith("//"):
-                sub_url = "https:" + sub_url
-            lan = track.get("lan", "unknown")
-            t_type = _subtitle_track_type(track)
-            t_label = "CC" if t_type == 0 else "AI"
-
-            # Prefer CC over AI when same language has both
-            if lan in seen_langs:
-                continue
-
-            # Validate that the blob URL encodes this video's aid+cid
-            matches_video = subtitle_url_matches_video(sub_url, aid, cid)
-            if strict_validation and not matches_video:
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "bilibili.subtitle.validation_failed",
-                    bvid=bvid,
-                    lang=lan,
-                    type=t_label.lower(),
-                    reason="aid_cid_mismatch",
-                    aid=aid,
-                    cid=cid,
-                )
-                diagnostics.append({
-                    "stage": "validate_url",
-                    "status": "skipped",
-                    "reason": "aid_cid_mismatch",
-                    "lang": lan,
-                    "type": t_label.lower(),
-                    "aid": aid,
-                    "cid": cid,
-                    "url_tail": sub_url.split("/")[-1].split("?")[0],
-                })
-                continue
-
-            try:
-                req = urllib.request.Request(sub_url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib_urlopen(req, timeout=15) as resp:
-                    sub_json = json.loads(resp.read())
-            except Exception as e:
-                log_event(logger, logging.WARNING, "bilibili.subtitle.download_failed", bvid=bvid, page=selected_page_number, lang=lan, type=t_label.lower(), error=e)
-                diagnostics.append({
-                    "stage": "download",
-                    "status": "failed",
-                    "reason": "download_error",
-                    "lang": lan,
-                    "type": t_label.lower(),
-                    "detail": str(e),
-                })
-                continue
-
-            body = sub_json.get("body") or []
-            if len(body) < 3:
-                log_event(logger, logging.INFO, "bilibili.subtitle.validation_skipped", bvid=bvid, lang=lan, type=t_label.lower(), reason="too_few_cues", cues=len(body))
-                diagnostics.append({
-                    "stage": "validate_body",
-                    "status": "skipped",
-                    "reason": "too_few_cues",
-                    "lang": lan,
-                    "type": t_label.lower(),
-                    "cue_count": len(body),
-                })
-                continue
-
-            coverage = None
-            if video_duration > 0:
-                last_t = float(body[-1].get("from") or 0)
-                coverage = last_t / video_duration
-                if coverage < min_coverage:
-                    log_event(
-                        logger,
-                        logging.WARNING,
-                        "bilibili.subtitle.validation_failed",
-                        bvid=bvid,
-                        lang=lan,
-                        type=t_label.lower(),
-                        reason="low_coverage",
-                        coverage=round(coverage, 4),
-                        min_coverage=min_coverage,
-                        last_cue_seconds=round(last_t),
-                        video_duration_seconds=round(video_duration),
-                    )
-                    diagnostics.append({
-                        "stage": "validate_body",
-                        "status": "skipped",
-                        "reason": "low_coverage",
-                        "lang": lan,
-                        "type": t_label.lower(),
-                        "coverage": round(coverage, 4),
-                        "min_coverage": min_coverage,
-                        "last_cue_seconds": last_t,
-                        "video_duration_seconds": video_duration,
-                    })
-                    continue
-
-            srt_path = output_dir / f"{bvid}.{lan}.srt"
-            srt_path.write_text(_bili_json_to_srt(body), encoding="utf-8")
-            log_event(logger, logging.INFO, "bilibili.subtitle.saved", bvid=bvid, page=selected_page_number, lang=lan, type=t_label.lower(), cues=len(body), path=srt_path)
-            saved_tracks.append({
-                "path": str(srt_path),
-                "lang": lan,
-                "format": "srt",
-                "type": "cc" if t_type == 0 else "ai",
-                "source_engine": engine,
-                "validation": {
-                    "strict_url_match": strict_validation,
-                    "url_matches_video": matches_video,
-                    "coverage": round(coverage, 4) if coverage is not None else None,
-                    "min_coverage": min_coverage,
-                    "aid": aid,
-                    "cid": cid,
-                },
-            })
-            seen_langs.add(lan)
-
-        if not saved_tracks:
-            log_event(logger, logging.INFO, "bilibili.subtitle.empty", bvid=bvid, reason="all_validation_failed", tracks=len(usable))
-            return empty
-
-        first = saved_tracks[0]
-        return {
-            "tracks": saved_tracks,
-            "subtitle_path": first["path"],
-            "subtitle_lang": first["lang"],
-            "subtitle_format": first["format"],
-            "subtitle_engine": engine,
-            "diagnostics": diagnostics,
-        }
+        return _subtitle_download_download_bilibili_subtitle(self, url, output_dir, langs)
 
     def _download_bilibili_subtitle_legacy(
         self,
@@ -1693,113 +913,9 @@ class YtdlpService:
         bvid: str,
         preferred_langs: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Legacy fallback: unsigned /x/player/v2 (used only if new api.py fails to import)."""
-        import json
-        import urllib.request
-
-        engine = "legacy_unsigned"
-        empty = _empty_subtitle_result(engine=engine)
-
-        cookie_file = _BBDOWN_DIR / "BBDown.data"
-        cookie = ""
-        if cookie_file.exists():
-            try:
-                cookie = cookie_file.read_text(encoding="utf-8", errors="ignore").strip()
-            except Exception as e:
-                log_event(logger, logging.WARNING, "bbdown.cookie.read_failed", path=cookie_file, error=e)
-
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Referer": f"https://www.bilibili.com/video/{bvid}",
-        }
-        if cookie:
-            headers["Cookie"] = cookie
-
-        def _get_json(api_url: str, timeout: int = 10) -> dict | None:
-            try:
-                req = urllib.request.Request(api_url, headers=headers)
-                with urllib_urlopen(req, timeout=timeout) as resp:
-                    return json.loads(resp.read())
-            except Exception as e:
-                log_event(logger, logging.WARNING, "bilibili.legacy_api.failed", api=api_url[:60], error=e)
-                return None
-
-        view_resp = _get_json(f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}")
-        if not view_resp or view_resp.get("code") != 0:
-            return empty
-        pages = view_resp["data"].get("pages") or []
-        if not pages:
-            return empty
-        page_number = _extract_bilibili_page_number(url)
-        page = _select_bilibili_page(view_resp["data"], page_number)
-        cid = page["cid"]
-        video_duration = float(page.get("duration") or view_resp["data"].get("duration") or 0)
-
-        pv2 = _get_json(f"https://api.bilibili.com/x/player/v2?bvid={bvid}&cid={cid}")
-        if not pv2 or pv2.get("code") != 0:
-            return empty
-        tracks = ((pv2.get("data") or {}).get("subtitle") or {}).get("subtitles") or []
-        if not tracks:
-            return empty
-
-        usable = [t for t in tracks if t.get("subtitle_url")]
-        if not usable:
-            return empty
-        usable = _filter_and_sort_subtitle_tracks(usable, preferred_langs or [])
-
-        saved_tracks: list[dict[str, Any]] = []
-        seen_langs: set[str] = set()
-        for track in usable:
-            sub_url = track["subtitle_url"]
-            if sub_url.startswith("//"):
-                sub_url = "https:" + sub_url
-            lan = track.get("lan", "unknown")
-            t_type = _subtitle_track_type(track)
-            t_label = "CC" if t_type == 0 else "AI"
-            if lan in seen_langs:
-                continue
-            try:
-                req = urllib.request.Request(sub_url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib_urlopen(req, timeout=15) as resp:
-                    sub_json = json.loads(resp.read())
-            except Exception as e:
-                log_event(logger, logging.WARNING, "bilibili.subtitle.download_failed", bvid=bvid, lang=lan, type=t_label.lower(), engine=engine, error=e)
-                continue
-            body = sub_json.get("body") or []
-            if len(body) < 3:
-                continue
-            if video_duration > 0:
-                last_t = float(body[-1].get("from") or 0)
-                if (last_t / video_duration) < 0.6:
-                    continue
-            srt_path = output_dir / f"{bvid}.{lan}.srt"
-            srt_path.write_text(_bili_json_to_srt(body), encoding="utf-8")
-            saved_tracks.append({
-                "path": str(srt_path),
-                "lang": lan,
-                "format": "srt",
-                "type": "cc" if t_type == 0 else "ai",
-                "source_engine": engine,
-                "validation": {
-                    "strict_url_match": False,
-                    "url_matches_video": None,
-                    "coverage": round(last_t / video_duration, 4) if video_duration > 0 else None,
-                    "min_coverage": 0.6,
-                },
-            })
-            seen_langs.add(lan)
-
-        if not saved_tracks:
-            return empty
-        first = saved_tracks[0]
-        return {
-            "tracks": saved_tracks,
-            "subtitle_path": first["path"],
-            "subtitle_lang": first["lang"],
-            "subtitle_format": first["format"],
-            "subtitle_engine": engine,
-            "diagnostics": [],
-        }
+        return _subtitle_download_download_bilibili_subtitle_legacy(
+            self, url, output_dir, bvid, preferred_langs
+        )
 
     def fetch_metadata(self, url: str) -> dict[str, Any]:
         """Fetch video metadata without downloading the video.
@@ -1834,26 +950,31 @@ class YtdlpService:
             from app.services.ingestion.platform.xiaoyuzhou.api import (
                 fetch_metadata as fetch_xiaoyuzhou_metadata,
             )
+
             return fetch_xiaoyuzhou_metadata(url)
         if _is_apple_podcast_url(url):
             from app.services.ingestion.platform.apple_podcast.api import (
                 fetch_metadata as fetch_apple_metadata,
             )
+
             return fetch_apple_metadata(url)
         if _is_xiaohongshu_url(url):
             from app.services.ingestion.platform.xiaohongshu.api import (
                 fetch_metadata as fetch_xiaohongshu_metadata,
             )
+
             return fetch_xiaohongshu_metadata(url)
         if _is_zhihu_url(url):
             from app.services.ingestion.platform.zhihu.api import (
                 fetch_metadata as fetch_zhihu_metadata,
             )
+
             return fetch_zhihu_metadata(url)
         if _is_generic_webpage_url(url):
             from app.services.ingestion.platform.webpage.api import (
                 fetch_metadata as fetch_webpage_metadata,
             )
+
             return fetch_webpage_metadata(url)
 
         import yt_dlp
@@ -1886,11 +1007,13 @@ class YtdlpService:
             "outtmpl": str(output_dir / "%(title)s.%(ext)s"),
             "writeinfojson": False,
             "quiet": not self._settings.debug,
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "wav",
-                "preferredquality": "192",
-            }],
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "wav",
+                    "preferredquality": "192",
+                }
+            ],
             **ytdlp_base_opts(),
             **ytdlp_auth_opts(),
         }
@@ -1934,40 +1057,49 @@ class YtdlpService:
                 if f.name.endswith(".part"):
                     continue
                 # Skip yt-dlp intermediate files like 'title.f399.mp4'
-                if re.search(r'\.f\d+\.[^.]+$', f.name):
+                if re.search(r"\.f\d+\.[^.]+$", f.name):
                     continue
                 candidates.append(f)
         if candidates:
             return max(candidates, key=lambda p: p.stat().st_mtime)
         return None
 
-    def _cleanup_temp_files(self, output_dir: Path, title: str, keep_files: set[Path | None] | None = None):
+    def _cleanup_temp_files(
+        self, output_dir: Path, title: str, keep_files: set[Path | None] | None = None
+    ):
         """Clean up temporary files after download."""
         import re
+
         keep = {f for f in (keep_files or set()) if f is not None}
-        temp_extensions = {'.m4a', '.webm', '.part', '.ytdl', '.info.json', '.json'}
+        temp_extensions = {".m4a", ".webm", ".part", ".ytdl", ".info.json", ".json"}
 
         for file in output_dir.iterdir():
             if not file.is_file():
                 continue
             if file in keep:
                 continue
-            if title not in file.stem and not file.name.endswith('.info.json'):
+            if title not in file.stem and not file.name.endswith(".info.json"):
                 continue
 
             is_temp = (
                 file.suffix in temp_extensions
-                or file.name.endswith('.info.json')
-                or file.name.endswith('.part')
+                or file.name.endswith(".info.json")
+                or file.name.endswith(".part")
                 # yt-dlp intermediate format files: 'title.f399.mp4', 'title.f140.m4a'
-                or re.search(r'\.f\d+\.[^.]+$', file.name)
+                or re.search(r"\.f\d+\.[^.]+$", file.name)
             )
             if is_temp:
                 try:
                     file.unlink()
                     log_event(logger, logging.INFO, "cleanup.temp_file.deleted", path=file)
                 except Exception as e:
-                    log_event(logger, logging.WARNING, "cleanup.temp_file.delete_failed", path=file, error=e)
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "cleanup.temp_file.delete_failed",
+                        path=file,
+                        error=e,
+                    )
 
     def extract_metadata(self, info: dict[str, Any], file_path: str | None = None) -> MediaMetadata:
         """
@@ -2005,10 +1137,9 @@ class YtdlpService:
         if info.get("chapters"):
             for ch in info["chapters"]:
                 if ch.get("title") and ch.get("start_time") is not None:
-                    chapters.append(ChapterInfo(
-                        title=ch["title"],
-                        start_time=float(ch["start_time"])
-                    ))
+                    chapters.append(
+                        ChapterInfo(title=ch["title"], start_time=float(ch["start_time"]))
+                    )
 
         description = info.get("description")
         content_subtype = str(info.get("content_subtype") or "").strip().lower()
@@ -2023,10 +1154,13 @@ class YtdlpService:
         raw_media_type = str(info.get("media_type") or "").lower()
         if raw_media_type == "podcast":
             media_type = MediaType.PODCAST
-        elif (
-            raw_media_type == "audio"
-            or str(info.get("ext") or "").lower() in {"mp3", "m4a", "wav", "flac", "ogg"}
-        ):
+        elif raw_media_type == "audio" or str(info.get("ext") or "").lower() in {
+            "mp3",
+            "m4a",
+            "wav",
+            "flac",
+            "ogg",
+        }:
             media_type = MediaType.AUDIO
         elif raw_media_type == "image":
             media_type = MediaType.OTHER
@@ -2099,225 +1233,7 @@ class YtdlpService:
         output_dir: Path,
         langs: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Download ALL available platform subtitle tracks without downloading video.
-
-        Returns:
-            {
-                "tracks": [{"path": str, "lang": str, "format": str, "type": "cc"|"ai"}],
-                # Back-compat: first track as single fields
-                "subtitle_path": str|None,
-                "subtitle_lang": str|None,
-                "subtitle_format": "json3"|"srt"|None,
-            }
-        """
-        url = normalize_bilibili_source_url(url)
-        import yt_dlp
-
-        preferred_langs = _parse_lang_priority(langs)
-        empty = _empty_subtitle_result()
-
-        if _is_bilibili_url(url):
-            return self._download_bilibili_subtitle(url, output_dir, preferred_langs)
-        if _is_xiaoyuzhou_url(url):
-            try:
-                info = self.fetch_metadata(url)
-            except Exception as e:
-                log_event(logger, logging.WARNING, "xiaoyuzhou.subtitle.probe_failed", error=e)
-                return _empty_subtitle_result(
-                    engine="xiaoyuzhou-page",
-                    diagnostics=[{"stage": "metadata", "status": "failed", "detail": str(e)}],
-                )
-            return _empty_subtitle_result(
-                engine="xiaoyuzhou-page",
-                diagnostics=[{
-                    "stage": "transcript",
-                    "status": "skipped",
-                    "reason": "no_public_transcript_endpoint",
-                    "transcript_media_id": (info.get("extra") or {}).get("transcript_media_id"),
-                }],
-            )
-        if _is_apple_podcast_url(url):
-            return _empty_subtitle_result(
-                engine="apple-podcast-rss",
-                diagnostics=[{
-                    "stage": "subtitle",
-                    "status": "skipped",
-                    "reason": "no_public_transcript_in_rss",
-                }],
-            )
-        if _is_xiaohongshu_url(url):
-            return _empty_subtitle_result(
-                engine="xiaohongshu-page",
-                diagnostics=[{
-                    "stage": "subtitle",
-                    "status": "skipped",
-                    "reason": "no_public_subtitle_endpoint",
-                }],
-            )
-        if _is_zhihu_url(url):
-            return _empty_subtitle_result(
-                engine="zhihu-page",
-                diagnostics=[{
-                    "stage": "subtitle",
-                    "status": "skipped",
-                    "reason": "text_note_no_subtitle_endpoint",
-                }],
-            )
-        if _is_generic_webpage_url(url):
-            return _empty_subtitle_result(
-                engine="webpage-scrape",
-                diagnostics=[{
-                    "stage": "subtitle",
-                    "status": "skipped",
-                    "reason": "text_note_no_subtitle_endpoint",
-                }],
-            )
-
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        # Probe all available subtitle languages via yt-dlp metadata
-        metadata_logger = _YtdlpLogger()
-        subtitle_network_error: YoutubeNetworkError | None = None
-        metadata_opts = {
-            "quiet": True,
-            "skip_download": True,
-            **ytdlp_base_opts(metadata_logger),
-            **ytdlp_auth_opts(),
-        }
-        try:
-            with yt_dlp.YoutubeDL(metadata_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-        except Exception as e:
-            if is_youtube_network_error(e, url):
-                raise _youtube_network_error(url, e) from e
-            log_event(logger, logging.WARNING, "ytdlp.subtitle.probe_failed", url=url, error=e)
-            return empty
-        if not info:
-            return empty
-
-        manual_subs = info.get("subtitles") or {}
-        auto_subs = info.get("automatic_captions") or {}
-        if not manual_subs and not auto_subs and metadata_logger.has_youtube_network_error(url):
-            raise _youtube_network_error(url, RuntimeError(metadata_logger.network_error_summary()))
-
-        # If user provided langs, filter; otherwise take ALL available
-        def _filter(avail: dict, want: list[str] | None) -> list[str]:
-            if not want:
-                return list(avail.keys())
-            out = []
-            for w in want:
-                w_l = w.lower()
-                for k in avail.keys():
-                    if k.lower() == w_l or k.lower().startswith(w_l) or w_l in k.lower():
-                        if k not in out:
-                            out.append(k)
-            return out
-
-        manual_langs = _filter(manual_subs, preferred_langs)
-        auto_langs = _filter(auto_subs, preferred_langs)
-        # Skip auto-captions for languages where a manual track exists
-        auto_langs = [l for l in auto_langs if l not in manual_langs]
-
-        tracks: list[dict[str, Any]] = []
-
-        def _try_download(use_auto: bool, target_langs: list[str], type_label: str) -> None:
-            nonlocal subtitle_network_error
-            if not target_langs or subtitle_network_error is not None:
-                return
-            subtitle_logger = _YtdlpLogger()
-            ydl_opts = {
-                "skip_download": True,
-                "writesubtitles": not use_auto,
-                "writeautomaticsub": use_auto,
-                "subtitleslangs": target_langs,
-                "subtitlesformat": "json3/srt/best",
-                "outtmpl": str(output_dir / "%(id)s"),
-                "quiet": True,
-                **ytdlp_base_opts(subtitle_logger),
-                **ytdlp_auth_opts(),
-            }
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
-            except Exception as e:
-                if is_youtube_network_error(e, url):
-                    subtitle_network_error = _youtube_network_error(url, e)
-                    log_event(
-                        logger,
-                        logging.WARNING,
-                        "ytdlp.subtitle.network_limited",
-                        auto=use_auto,
-                        langs=",".join(target_langs),
-                        error=e,
-                        fallback="media_download_asr",
-                    )
-                    return
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "ytdlp.subtitle.download_failed",
-                    auto=use_auto,
-                    langs=",".join(target_langs),
-                    error=e,
-                )
-                return
-            if subtitle_logger.has_youtube_network_error(url):
-                subtitle_network_error = _youtube_network_error(
-                    url,
-                    RuntimeError(subtitle_logger.network_error_summary()),
-                )
-            for lang in target_langs:
-                # Find the file yt-dlp wrote for this lang
-                for ext in ["json3", "srt", "vtt"]:
-                    for f in output_dir.glob(f"*.{lang}.{ext}"):
-                        if any(t["path"] == str(f) for t in tracks):
-                            continue
-                        tracks.append({
-                            "path": str(f),
-                            "lang": lang,
-                            "format": ext,
-                            "type": type_label,
-                        })
-                        break
-                    else:
-                        continue
-                    break
-
-        _try_download(False, manual_langs, "cc")
-        _try_download(True, auto_langs, "ai")
-
-        if not tracks:
-            if subtitle_network_error:
-                return _empty_subtitle_result(
-                    engine="yt-dlp",
-                    diagnostics=[{
-                        "stage": "subtitle",
-                        "status": "failed",
-                        "reason": "rate_limited_or_unreachable",
-                        "detail": str(subtitle_network_error),
-                        "fallback": "media_download_asr",
-                    }],
-                )
-            log_event(logger, logging.INFO, "subtitle.empty", url=url, engine="yt-dlp")
-            return empty
-
-        log_event(
-            logger,
-            logging.INFO,
-            "subtitle.downloaded",
-            engine="yt-dlp",
-            tracks=len(tracks),
-            langs=",".join(t["lang"] for t in tracks),
-        )
-        first = tracks[0]
-        return {
-            "tracks": tracks,
-            "subtitle_path": first["path"],
-            "subtitle_lang": first["lang"],
-            "subtitle_format": first["format"],
-            "subtitle_engine": "yt-dlp",
-            "diagnostics": [],
-        }
+        return _subtitles_download_subtitles(self, url, output_dir, langs)
 
     def _compute_hash(self, file_path: str) -> str:
         sha256 = hashlib.sha256()
@@ -2339,10 +1255,14 @@ def get_ytdlp_service() -> YtdlpService:
 
 async def download_media(url: str, output_dir: Path | None = None) -> dict[str, Any]:
     import asyncio
+
     service = get_ytdlp_service()
     result = await asyncio.to_thread(service.download, url, output_dir=output_dir)
     from app.core.media_retention import record_media
-    playback = result.get("video_path") or result.get("source_audio_path") or result.get("file_path")
+
+    playback = (
+        result.get("video_path") or result.get("source_audio_path") or result.get("file_path")
+    )
     if playback:
         directory = Path(playback).parent
         record_media(directory, playback, "source", playback=True, regenerate_from=url)
@@ -2362,6 +1282,7 @@ async def download_subtitles(
     url: str, output_dir: Path, langs: list[str] | None = None
 ) -> dict[str, Any]:
     import asyncio
+
     service = get_ytdlp_service()
     return await asyncio.to_thread(service.download_subtitles, url, output_dir, langs)
 
@@ -2369,6 +1290,7 @@ async def download_subtitles(
 async def fetch_metadata(url: str) -> "MediaMetadata":
     """Fetch metadata without downloading — for subtitle fast path."""
     import asyncio
+
     service = get_ytdlp_service()
     info = await asyncio.to_thread(service.fetch_metadata, url)
     return service.extract_metadata(info)

@@ -68,7 +68,7 @@ def test_bilibili_short_url_resolves_bvid_and_page(monkeypatch):
     short_url = "https://b23.tv/9obruXU"
     resolved_url = "https://www.bilibili.com/video/BV1eERyBnEBZ/?p=2&vd_source=sample"
 
-    monkeypatch.setattr(ytdlp, "_resolve_bilibili_short_url", lambda url: resolved_url)
+    monkeypatch.setattr("app.services.ingestion.platform.source_urls._resolve_bilibili_short_url", lambda url: resolved_url)
 
     assert ytdlp._is_bilibili_url(short_url)
     assert ytdlp._extract_bilibili_bvid(short_url) == "BV1eERyBnEBZ"
@@ -79,7 +79,7 @@ def test_bilibili_short_url_to_opus_routes_as_image_note(monkeypatch):
     short_url = "https://b23.tv/fUzR8hQ"
     resolved_url = "https://m.bilibili.com/opus/1222911198638374913?share_source=COPY"
 
-    monkeypatch.setattr(ytdlp, "_resolve_bilibili_short_url", lambda url: resolved_url)
+    monkeypatch.setattr("app.services.ingestion.platform.source_urls._resolve_bilibili_short_url", lambda url: resolved_url)
 
     assert ytdlp.normalize_bilibili_source_url(short_url) == resolved_url
     assert ytdlp._is_bilibili_image_note_url(short_url)
@@ -100,6 +100,6 @@ def test_bilibili_short_url_uses_first_redirect_location(monkeypatch):
     def fake_urlopen_no_redirect(req, *, timeout):
         raise urllib.error.HTTPError(req.full_url, 302, "Found", {"Location": resolved_url}, None)
 
-    monkeypatch.setattr(ytdlp, "_urllib_urlopen_no_redirect", fake_urlopen_no_redirect)
+    monkeypatch.setattr("app.services.ingestion.platform.source_urls._urllib_urlopen_no_redirect", fake_urlopen_no_redirect)
 
     assert ytdlp._resolve_bilibili_short_url(short_url) == resolved_url

@@ -50,7 +50,7 @@ def test_bilibili_subtitle_coverage_setting_is_bounded():
 
 def test_bilibili_subtitle_reports_login_required(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "app.services.ingestion.ytdlp.get_runtime_settings",
+        "app.services.ingestion.platform.bilibili.subtitle_download.get_runtime_settings",
         lambda: RuntimeSettings(),
     )
     monkeypatch.setattr(
