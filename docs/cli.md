@@ -2,6 +2,8 @@
 
 MPP CLI 与 Web GUI 共用 FastAPI daemon、SQLite 任务库、runtime settings 和归档目录。默认服务地址为 `http://localhost:18000`。
 
+命令注册与全局参数位于 `app.cli.main`。`app.cli.commands` 中的 execution 管理提交与跟踪，direct_execution 管理当前进程执行，task_views 管理兼容查询命令，config_values 管理配置值读写，maintenance 管理服务与诊断，root_support 提供客户端和任务引用解析。各命令通过共享 CliContext 读取输出模式、连接参数和交互设置。
+
 ## 启动与连接
 
 ```powershell

@@ -257,7 +257,9 @@ def test_task_list_json_uses_one_envelope(monkeypatch):
 
 
 def test_legacy_command_local_json_uses_shared_envelope(monkeypatch):
-    monkeypatch.setattr(cli_main, "_read_settings", lambda: {"api_token": "abcd..."})
+    from app.cli.commands import config_values
+
+    monkeypatch.setattr(config_values, "_read_settings", lambda: {"api_token": "abcd..."})
 
     result = runner.invoke(
         app,

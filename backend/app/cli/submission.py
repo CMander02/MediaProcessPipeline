@@ -76,7 +76,11 @@ def expand_sources(
                 elif item.is_file() and item.suffix.lower() in MEDIA_EXTENSIONS:
                     expanded.append(str(item.resolve()))
             continue
-        if not _is_url(source) and (path.is_absolute() or path.suffix.lower() in MEDIA_EXTENSIONS):
+        if (
+            not _is_url(source)
+            and not path.is_file()
+            and (path.is_absolute() or path.suffix.lower() in MEDIA_EXTENSIONS)
+        ):
             emit_error(
                 "source_not_found", f"Local media source does not exist: {source}", exit_code=2
             )
