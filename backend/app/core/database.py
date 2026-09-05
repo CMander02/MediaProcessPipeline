@@ -118,6 +118,22 @@ CREATE INDEX IF NOT EXISTS idx_archive_sync_changes_archive ON archive_sync_chan
 
 # Columns added after initial schema — applied idempotently via ALTER TABLE
 _MIGRATIONS = [
+    "ALTER TABLE archive_sync_meta ADD COLUMN last_reconciled_at TEXT",
+    "ALTER TABLE archive_sync_index ADD COLUMN file_state TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE archive_sync_index ADD COLUMN task_id TEXT",
+    "ALTER TABLE archive_sync_index ADD COLUMN title TEXT",
+    "ALTER TABLE archive_sync_index ADD COLUMN title_search TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE archive_sync_index ADD COLUMN created_at REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE archive_sync_index ADD COLUMN published_at REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE archive_sync_index ADD COLUMN platform TEXT NOT NULL DEFAULT 'other'",
+    "ALTER TABLE archive_sync_index ADD COLUMN content_subtype TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE archive_sync_index ADD COLUMN has_video INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE archive_sync_index ADD COLUMN has_audio INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE archive_sync_index ADD COLUMN has_image INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE archive_sync_index ADD COLUMN processing INTEGER NOT NULL DEFAULT 0",
+    "CREATE INDEX IF NOT EXISTS idx_archive_page ON archive_sync_index(deleted, processing DESC, created_at DESC, archive_id)",
+    "CREATE INDEX IF NOT EXISTS idx_archive_path ON archive_sync_index(archive_path)",
+    "CREATE INDEX IF NOT EXISTS idx_archive_task ON archive_sync_index(task_id)",
     "ALTER TABLE tasks ADD COLUMN path_fields TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE tasks ADD COLUMN external_source INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE tasks ADD COLUMN platform TEXT",
@@ -158,6 +174,8 @@ def _get_conn() -> sqlite3.Connection:
         _connection.execute("PRAGMA foreign_keys=ON")
         _connection.executescript(SCHEMA)
         _apply_migrations(_connection)
+        from app.core.archive_index import register_title_collation
+        register_title_collation(_connection)
         log_event(logger, logging.INFO, "database.opened", path=db_path)
     return _connection
 
@@ -171,6 +189,8 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError as e:
             if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
                 raise
+    from app.core.archive_index import backfill_query_fields
+    backfill_query_fields(conn)
 
 
 def _task_to_row(task: Task) -> dict:
@@ -274,6 +294,15 @@ class TaskStore:
                 f"ON CONFLICT(id) DO UPDATE SET {updates}",
                 row,
             )
+        self._archive_changed(task)
+
+    @staticmethod
+    def _archive_changed(task: Task) -> None:
+        from app.core.archive_sync import get_archive_sync_service
+        result = task.result or {}
+        output_dir = result.get("output_dir") or (result.get("archive") or {}).get("output_dir")
+        if isinstance(output_dir, str) and output_dir:
+            get_archive_sync_service().mark_changed(output_dir)
 
     def get(self, task_id: UUID) -> Task | None:
         """Get a single task by ID."""
@@ -369,6 +398,10 @@ class TaskStore:
                 vals,
             )
             conn.commit()
+
+        task = self.get(task_id)
+        if task:
+            self._archive_changed(task)
 
     def add_event(
         self,

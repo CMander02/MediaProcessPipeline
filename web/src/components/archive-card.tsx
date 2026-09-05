@@ -118,8 +118,8 @@ export function ArchiveCard({
           </div>
 
           {/* Info */}
-          <div className={compact ? "flex flex-col gap-0 pt-1 px-0.5" : "flex flex-col gap-1 pt-2 px-0.5"}>
-            <h3 className={compact ? "line-clamp-2 min-h-[2lh] text-[13px] font-medium leading-tight group-hover:text-primary transition-colors" : "line-clamp-2 min-h-[2lh] text-sm font-medium leading-snug group-hover:text-primary transition-colors"}>
+          <div className={compact ? "flex flex-col gap-0 pt-[3px] px-0.5" : "flex flex-col gap-1 pt-2 px-0.5"}>
+            <h3 className={compact ? "line-clamp-2 min-h-[2lh] text-[13px] font-medium leading-[1.2] group-hover:text-primary transition-colors" : "line-clamp-2 min-h-[2lh] text-sm font-medium leading-snug group-hover:text-primary transition-colors"}>
               {archive.title}
             </h3>
             <div className={compact ? "flex items-center gap-1.5 text-[11px] leading-tight text-muted-foreground" : "flex items-center gap-2 text-xs text-muted-foreground"}>

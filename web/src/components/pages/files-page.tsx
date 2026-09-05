@@ -1,10 +1,10 @@
-import { useState, useMemo, useEffect, useLayoutEffect, useRef } from "react"
-import { useArchives } from "@/hooks/use-archives"
+import { useState, useCallback, useEffect, useLayoutEffect, useRef } from "react"
+import { useArchivePage } from "@/hooks/use-archive-page"
 import { usePreferences } from "@/hooks/use-preferences"
 import { navigate } from "@/lib/router"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
-import { sourceFilterFromMetadata, type ArchiveSort, type MediaFilter, type SourceFilter } from "@/lib/archive-filters"
+import { type ArchiveSort, type MediaFilter, type SourceFilter } from "@/lib/archive-filters"
 import type { ArchiveItem } from "@/hooks/use-archives"
 import { ArchiveCard } from "@/components/archive-card"
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
@@ -21,6 +21,7 @@ import { EmptyState, LoadingState } from "@/components/ui/page-state"
 import { useAppAccess } from "@/hooks/use-app-access-context"
 import { OfflineSyncStatus } from "@/components/offline-sync-status"
 import { usePlatform } from "@/platform/use-platform"
+import { Button } from "@/components/ui/button"
 
 const PAGE_SIZE = 28
 const MIN_PAGE_SIZE = 1
@@ -33,12 +34,19 @@ interface FilesPageProps {
 }
 
 export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPageProps) {
-  const { archives, loading, refresh, removeArchive } = useArchives()
   const { capabilities, online } = useAppAccess()
   const platform = usePlatform()
   const { update: updatePrefs } = usePreferences()
-  const [page, setPage] = useState(1)
+  const filterKey = JSON.stringify([search, mediaFilter, sourceFilter, sort])
+  const [pagination, setPagination] = useState({ filterKey, page: 1 })
+  if (pagination.filterKey !== filterKey) setPagination({ filterKey, page: 1 })
+  const page = pagination.filterKey === filterKey ? pagination.page : 1
+  const setPage = useCallback((value: number) => setPagination({ filterKey, page: value }), [filterKey])
   const [pageSize, setPageSize] = useState(PAGE_SIZE)
+  const { archives, total, page: resolvedPage, loading, error, indexing, lastReconciledAt,
+    refresh, removeArchive } = useArchivePage({ page, page_size: pageSize, search,
+    media: mediaFilter, source: sourceFilter, sort })
+  const [checking, setChecking] = useState(false)
   const [paginationRangeSize, setPaginationRangeSize] = useState(7)
   const [deleteTarget, setDeleteTarget] = useState<{ title: string; path: string; taskId?: string; taskDelete?: boolean } | null>(null)
   const [rerunningPath, setRerunningPath] = useState<string | null>(null)
@@ -46,53 +54,20 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
   const [taskActionPath, setTaskActionPath] = useState<string | null>(null)
   const gridRef = useRef<HTMLDivElement>(null)
 
-  const filtered = useMemo(() => {
-    let list = archives
-    if (mediaFilter === "video") list = list.filter((a) => a.has_video)
-    if (mediaFilter === "audio") list = list.filter((a) => !a.has_video && !a.has_image && a.has_audio)
-    if (mediaFilter === "image") {
-      list = list.filter((a) => {
-        const subtype = a.metadata?.content_subtype
-        return a.has_image || subtype === "image_note" || subtype === "text_note"
-      })
-    }
-    if (sourceFilter !== "all") {
-      list = list.filter((a) => sourceFilterFromMetadata(a.metadata) === sourceFilter)
-    }
-    if (search.trim()) {
-      const q = search.toLowerCase()
-      list = list.filter((a) => a.title.toLowerCase().includes(q))
-    }
-    const timestamp = (value: unknown) => {
-      if (typeof value !== "string" || !value) return 0
-      const parsed = new Date(value).getTime()
-      return Number.isFinite(parsed) ? parsed : 0
-    }
-
-    // Surface active work first, then apply the selected archive ordering.
-    return [...list].sort((a, b) => {
-      if (!!a.processing !== !!b.processing) return a.processing ? -1 : 1
-      if (sort === "created_asc") return timestamp(a.created_at) - timestamp(b.created_at)
-      if (sort === "published_desc") return timestamp(b.metadata?.upload_date) - timestamp(a.metadata?.upload_date)
-      if (sort === "title_asc") return a.title.localeCompare(b.title, "zh-CN")
-      return timestamp(b.created_at) - timestamp(a.created_at)
-    })
-  }, [archives, search, mediaFilter, sourceFilter, sort])
-
-  // Reset page when filters change
-  useEffect(() => { setPage(1) }, [search, mediaFilter, sourceFilter, sort])
+  useEffect(() => {
+    if (!loading && resolvedPage !== page) setPage(resolvedPage)
+  }, [loading, page, resolvedPage, setPage])
 
   // While any task is processing, poll for updates so the queue card progress stays fresh
   const anyProcessing = archives.some((a) => a.processing)
   useEffect(() => {
-    if (!anyProcessing) return
+    if (!anyProcessing && !indexing) return
     const id = window.setInterval(() => { refresh(true) }, 3000)
     return () => window.clearInterval(id)
-  }, [anyProcessing, refresh])
+  }, [anyProcessing, indexing, refresh])
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
-  const safePage = Math.min(page, totalPages)
-  const paged = filtered.slice((safePage - 1) * pageSize, safePage * pageSize)
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const safePage = Math.min(resolvedPage, totalPages)
 
   useLayoutEffect(() => {
     const grid = gridRef.current
@@ -104,14 +79,14 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
 
       const styles = window.getComputedStyle(grid)
       const columns = styles.gridTemplateColumns.split(" ").filter(Boolean).length || 1
-      setPaginationRangeSize(grid.clientWidth >= 768 ? 7 : 3)
+      setPaginationRangeSize(window.innerWidth >= 768 ? 7 : 3)
       const rowGap = Number.parseFloat(styles.rowGap) || 0
       const cardHeight = firstCard.getBoundingClientRect().height
       if (cardHeight <= 0) return
 
       const availableHeight = grid.getBoundingClientRect().height
       const rowHeight = cardHeight + rowGap
-      const rows = Math.max(1, Math.floor((availableHeight + rowGap + cardHeight * 0.2) / rowHeight))
+      const rows = Math.max(1, Math.floor((availableHeight + rowGap) / rowHeight))
       const nextPageSize = Math.max(MIN_PAGE_SIZE, columns * rows)
       setPageSize((current) => (current === nextPageSize ? current : nextPageSize))
     }
@@ -128,7 +103,19 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
       observer.disconnect()
       window.removeEventListener("resize", updatePageSize)
     }
-  }, [paged.length, filtered.length])
+  }, [archives.length, total])
+
+  const checkFiles = async () => {
+    setChecking(true)
+    try {
+      await api.archives.reconcile()
+      await refresh(true)
+    } catch (reason) {
+      window.alert(`检查文件失败：${String(reason)}`)
+    } finally {
+      setChecking(false)
+    }
+  }
 
   const handleOpen = (path: string, taskId?: string) => {
     updatePrefs({ lastArchivePath: path })
@@ -230,13 +217,13 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
     )}>
       {platform.isNative && <OfflineSyncStatus compact />}
       {/* Grid */}
-      {filtered.length > 0 ? (
+      {archives.length > 0 ? (
         <div
           ref={gridRef}
           data-testid="archive-grid"
-          className="grid h-full min-h-0 grid-cols-2 content-start gap-3 overflow-hidden sm:gap-x-5 sm:gap-y-4 lg:grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] min-[1600px]:grid-cols-7!"
+          className="grid h-full min-h-0 grid-cols-2 content-start gap-3 overflow-hidden sm:gap-x-5 sm:gap-y-4 lg:grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] min-[1972px]:grid-cols-7!"
         >
-          {paged.map((a) => (
+          {archives.map((a) => (
             <ArchiveCard
               key={a.path}
               archive={a}
@@ -262,14 +249,20 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
       ) : (
         <EmptyState
           className="h-full min-h-0"
-          title={archives.length === 0 ? "还没有归档结果" : "没有匹配的结果"}
-          description={archives.length === 0 ? "处理完成后，文件会显示在这里。" : "调整搜索条件或筛选项后再试。"}
+          title={error ? "文件加载失败" : search || mediaFilter !== "all" || sourceFilter !== "all" ? "没有匹配的结果" : "还没有归档结果"}
+          description={error ?? (search || mediaFilter !== "all" || sourceFilter !== "all" ? "调整搜索条件或筛选项后再试。" : "处理完成后，文件会显示在这里。")}
         />
       )}
 
       {/* Pagination */}
+      <div className="relative flex h-8 min-w-0 items-center gap-1">
+      {!platform.isNative && <Button size="sm" variant="ghost" disabled={checking || indexing}
+        title={lastReconciledAt ? `上次检查：${new Date(lastReconciledAt).toLocaleString()}。检查文件可发现外部编辑。` : "检查文件可发现外部编辑。"}
+        onClick={checkFiles} className="shrink-0 px-1 text-xs">
+        {checking || indexing ? "检查中…" : "检查文件"}
+      </Button>}
       {totalPages > 1 && (
-        <Pagination data-testid="files-pagination" className="h-8 shrink-0">
+        <Pagination data-testid="files-pagination" className="h-8 min-w-0 flex-1">
           <PaginationContent>
             <PaginationItem>
               <PaginationPrevious
@@ -308,6 +301,10 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
           </PaginationContent>
         </Pagination>
       )}
+      {!platform.isNative && <span className="ml-auto hidden shrink-0 text-xs text-muted-foreground lg:block">
+        {lastReconciledAt ? `上次检查 ${new Date(lastReconciledAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "等待首次检查"}
+      </span>}
+      </div>
 
       {/* Delete confirmation dialog */}
       {deleteTarget && (
@@ -318,7 +315,7 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
           archivePath={deleteTarget.path}
           taskId={deleteTarget.taskId}
           taskDelete={deleteTarget.taskDelete}
-          onDeleted={() => removeArchive(deleteTarget.path)}
+          onDeleted={removeArchive}
         />
       )}
     </div>

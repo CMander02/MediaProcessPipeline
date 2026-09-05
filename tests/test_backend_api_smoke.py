@@ -414,6 +414,7 @@ def test_archives_lite_omits_heavy_metadata_and_detail_returns_full(tmp_path, mo
         encoding="utf-8",
     )
 
+    assert client.post("/api/pipeline/archives/reconcile").status_code == 200
     lite_response = client.get("/api/pipeline/archives", params={"lite": "true"})
 
     assert lite_response.status_code == 200

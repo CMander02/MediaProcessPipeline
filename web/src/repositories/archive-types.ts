@@ -19,6 +19,7 @@ export interface ArchiveItem {
   has_video: boolean
   has_audio: boolean
   has_image: boolean
+  has_thumbnail?: boolean
   media_file: string | null
   processing?: boolean
   task_id?: string
@@ -36,4 +37,28 @@ export interface ArchiveItem {
   offline?: boolean
   offlineFiles?: OfflineFileDescriptor[]
   thumbnail_url?: string
+}
+import type { ArchiveSort, MediaFilter, SourceFilter } from "@/lib/archive-filters"
+
+export interface ArchiveQuery {
+  page: number
+  page_size: number
+  search: string
+  media: MediaFilter
+  source: SourceFilter
+  sort: ArchiveSort
+}
+
+export interface ArchiveIndexStatus {
+  workspace_id: string
+  revision: number
+  indexing: boolean
+  last_reconciled_at: string | null
+}
+
+export interface ArchivePage extends ArchiveIndexStatus {
+  archives: ArchiveItem[]
+  total: number
+  page: number
+  page_size: number
 }

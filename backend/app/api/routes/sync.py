@@ -297,7 +297,7 @@ async def import_completed_archive(
             message="本地归档已同步到服务器",
             data={"worker_id": worker_id.strip(), "archive_sha256": upload_sha256},
         )
-        get_archive_sync_service().reconcile()
+        get_archive_sync_service().flush_changes()
         return {
             "ok": True,
             "task_id": str(task.id),

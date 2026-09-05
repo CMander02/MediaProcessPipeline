@@ -2,7 +2,8 @@ import { Capacitor } from "@capacitor/core"
 
 import { api } from "@/lib/api"
 import type { PlatformAdapter, OfflineArchiveRecord } from "@/platform"
-import type { ArchiveItem, OfflineFileDescriptor } from "@/repositories/archive-types"
+import type { ArchiveItem, ArchivePage, ArchiveQuery, OfflineFileDescriptor } from "@/repositories/archive-types"
+import { queryLocalArchives } from "@/lib/archive-query"
 
 const OFFLINE_PREFIX = "offline://"
 let activeSync: Promise<void> | null = null
@@ -10,6 +11,7 @@ const offlineFileCache = new Map<string, Map<string, string>>()
 
 export interface ArchiveRepository {
   list(lite?: boolean): Promise<ArchiveItem[]>
+  listPage(query: ArchiveQuery): Promise<ArchivePage>
   get(path: string): Promise<ArchiveItem | null>
   readFile(path: string): Promise<string>
   listFiles(archive: ArchiveItem, directory: string): OfflineFileDescriptor[]
@@ -71,6 +73,11 @@ export function createArchiveRepository(platform: PlatformAdapter): ArchiveRepos
     async list() {
       return (await platform.listOfflineArchives()).map(normalize)
     },
+    async listPage(query) {
+      const items = (await platform.listOfflineArchives()).map(normalize)
+      return { ...queryLocalArchives(items, query), workspace_id: "offline", revision: 0,
+        last_reconciled_at: null, indexing: false }
+    },
     async get(path) {
       const parsed = parseOfflinePath(path)
       if (!parsed) {
@@ -123,6 +130,7 @@ export function createArchiveRepository(platform: PlatformAdapter): ArchiveRepos
 
 function createWebArchiveRepository(): ArchiveRepository {
   return {
+    listPage: (query) => api.archives.page(query),
     async list(lite = true) {
       const data = await api.archives.list({ lite })
       return (data.archives ?? []) as ArchiveItem[]

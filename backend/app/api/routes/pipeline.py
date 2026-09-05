@@ -9,10 +9,10 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import Any
+from typing import Any, Literal
 
 # Windows reserved device names (case-insensitive, with or without extension)
 _WIN_RESERVED = re.compile(
@@ -378,10 +378,37 @@ async def mindmap(req: AnalyzeRequest):
 
 
 @router.get("/archives")
-async def archives(lite: bool = False):
+async def archives(
+    lite: bool = False,
+    page: int | None = Query(None, ge=1),
+    page_size: int = Query(28, ge=1, le=500),
+    search: str = "",
+    media: Literal["all", "video", "audio", "image"] = "all",
+    source: str = "all",
+    sort: Literal["created_desc", "created_asc", "published_desc", "title_asc"] = "created_desc",
+):
     """List archived content (all, sorted by mtime desc)."""
     from app.services.archiving import list_archives
+    if page is not None:
+        from app.core.archive_sync import get_archive_sync_service
+        return await run_in_thread(get_archive_sync_service().list_page, page=page,
+                                   page_size=page_size, search=search, media=media,
+                                   source=source, sort=sort)
     return {"archives": await list_archives(lite=lite)}
+
+
+@router.get("/archives/index")
+async def archive_index_status():
+    from app.core.archive_sync import get_archive_sync_service
+    return await run_in_thread(get_archive_sync_service().index_status)
+
+
+@router.post("/archives/reconcile")
+async def reconcile_archives():
+    from app.core.archive_sync import get_archive_sync_service
+    service = get_archive_sync_service()
+    await run_in_thread(service.reconcile)
+    return service.index_status()
 
 
 @router.get("/archives/detail")

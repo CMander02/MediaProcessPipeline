@@ -62,12 +62,14 @@ class ArtifactStore:
         get_archive_sync_service().mark_changed(output_dir)
 
     @uses_workspace
-    def write(self, task_id, output_dir: Path | str, filename: str, content: str) -> Path:
+    def write(self, task_id, output_dir: Path | str, filename: str, content: str,
+              *, notify_index: bool = True) -> Path:
         target = self._path(output_dir, filename)
         self._validate(target, content)
         with _write_lock:
             atomic_write_text(target, content)
-            self._changed(output_dir)
+            if notify_index:
+                self._changed(output_dir)
             if task_id is not None:
                 try:
                     self.tasks.save_artifact(

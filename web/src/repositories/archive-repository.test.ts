@@ -54,6 +54,22 @@ function nativePlatform(): PlatformAdapter {
 }
 
 describe("Android ArchiveRepository", () => {
+  it("filters and clamps offline pages using native records", async () => {
+    const platform = nativePlatform()
+    const [record] = await platform.listOfflineArchives()
+    vi.mocked(platform.listOfflineArchives).mockResolvedValue([
+      { ...record, archive_id: "a", title: "Zulu", metadata: { platform: "yt" } },
+      { ...record, archive_id: "b", title: "Alpha", metadata: { platform: "youtube" } },
+      { ...record, archive_id: "c", title: "Other", metadata: { platform: "bili" } },
+    ])
+    const result = await createArchiveRepository(platform).listPage({
+      page: 99, page_size: 1, search: "", source: "youtube", media: "video", sort: "title_asc",
+    })
+    expect(result).toMatchObject({ total: 2, page: 2, workspace_id: "offline" })
+    expect(result.archives.map(item => item.title)).toEqual(["Zulu"])
+    expect(platform.syncOfflineArchives).not.toHaveBeenCalled()
+  })
+
   it("maps the native SQLite record into the shared archive model", async () => {
     const repository = createArchiveRepository(nativePlatform())
 

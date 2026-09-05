@@ -5,6 +5,7 @@
 
 import { createSettingsPatch, type SettingsPatchInput } from "./settings-patch"
 import type { ProviderConfig, ProviderModelRecord, RuntimeSettings } from "./settings-schema"
+import type { ArchivePage, ArchiveQuery, ArchiveIndexStatus } from "@/repositories/archive-types"
 
 export interface Task {
   id: string
@@ -403,7 +404,7 @@ async function readJson<T>(res: Response): Promise<T> {
   }
 }
 
-function dispatchApiEvent(name: "mpp:api-error" | "mpp:offline" | "mpp:capabilities-change", detail: Record<string, unknown>) {
+function dispatchApiEvent(name: "mpp:api-error" | "mpp:offline" | "mpp:capabilities-change" | "mpp:workspace-change", detail: Record<string, unknown>) {
   if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(name, { detail }))
 }
 
@@ -529,6 +530,9 @@ export const api = {
       if (typeof preparedUpdates.allow_remote_filesystem === "boolean") {
         dispatchApiEvent("mpp:capabilities-change", {})
       }
+      if (typeof preparedUpdates.data_root === "string") {
+        dispatchApiEvent("mpp:workspace-change", { workspace_id: updated.data_root })
+      }
       return updated
     },
     detectLocalUvr: () => get<{ found: boolean; path: string; models: string[] }>("/api/settings/uvr/local"),
@@ -554,6 +558,13 @@ export const api = {
   },
 
   archives: {
+    page: (query: ArchiveQuery) => {
+      const params = new URLSearchParams({ ...Object.fromEntries(
+        Object.entries(query).map(([key, value]) => [key, String(value)])), lite: "true" })
+      return get<ArchivePage>(`/api/pipeline/archives?${params}`)
+    },
+    indexStatus: () => get<ArchiveIndexStatus>("/api/pipeline/archives/index"),
+    reconcile: () => post<ArchiveIndexStatus>("/api/pipeline/archives/reconcile"),
     list: (options: { lite?: boolean } = {}) => {
       const params = new URLSearchParams()
       if (options.lite) params.set("lite", "true")

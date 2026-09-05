@@ -47,6 +47,7 @@ def _archive(tmp_path: Path, name: str, title: str, archive_id: str | None = Non
         json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
     )
     (archive_dir / "summary.md").write_text(f"# {title}\n", encoding="utf-8")
+    get_archive_sync_service().mark_changed(archive_dir)
     return archive_dir
 
 
@@ -76,6 +77,7 @@ def test_sync_changes_are_revisioned_paginated_and_tombstoned(tmp_path, monkeypa
     metadata = json.loads((first / "metadata.json").read_text(encoding="utf-8"))
     metadata["title"] = "第一份（已更新）"
     (first / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+    get_archive_sync_service().reconcile()
     update = client.get("/api/sync/changes", params={"cursor": 2, "limit": 10}).json()
     assert update["changes"][0]["archive_id"] == first_id
     assert update["changes"][0]["archive"]["title"] == "第一份（已更新）"
@@ -84,6 +86,7 @@ def test_sync_changes_are_revisioned_paginated_and_tombstoned(tmp_path, monkeypa
     for child in first.iterdir():
         child.unlink()
     first.rmdir()
+    get_archive_sync_service().reconcile()
     deleted = client.get("/api/sync/changes", params={"cursor": 3, "limit": 10}).json()
     assert len(deleted["changes"]) == 1
     assert deleted["changes"][0]["revision"] == 4
@@ -201,6 +204,7 @@ def test_sync_migrates_legacy_gb18030_metadata(tmp_path, monkeypatch):
         json.dumps(legacy_metadata, ensure_ascii=False).encode("gb18030")
     )
     (archive / "summary.md").write_text("# 旧编码资料\n", encoding="utf-8")
+    get_archive_sync_service().reconcile()
 
     response = client.get("/api/sync/changes")
 
@@ -221,12 +225,14 @@ def test_sync_preserves_id_on_move_and_repairs_copied_id(tmp_path, monkeypatch):
 
     moved = tmp_path / "moved"
     original.rename(moved)
+    get_archive_sync_service().reconcile()
     moved_change = client.get("/api/sync/changes", params={"cursor": 1}).json()
     assert moved_change["changes"][0]["archive_id"] == archive_id
     assert moved_change["changes"][0]["archive"]["path"] == str(moved)
 
     copied = tmp_path / "copied"
     shutil.copytree(moved, copied)
+    get_archive_sync_service().reconcile()
     copied_changes = client.get(
         "/api/sync/changes",
         params={"cursor": moved_change["next_cursor"]},

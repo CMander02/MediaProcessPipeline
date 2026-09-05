@@ -73,7 +73,9 @@ class ArchiveSyncService:
 
     def __init__(self) -> None:
         self._reconcile_lock = threading.Lock()
-        self._dirty_paths: set[str] = set()
+        self._dirty_lock = threading.Lock()
+        self._dirty_paths: set[tuple[str, str]] = set()
+        self._indexing = False
 
     def mark_changed(self, archive_dir: Path | str) -> None:
         """Collect artifact changes for the incremental archive index."""
@@ -82,13 +84,81 @@ class ArchiveSyncService:
             directory = archive_directory(archive_dir, get_runtime_settings().data_root)
         except ValueError:
             return
-        self._dirty_paths.add(str(directory))
+        root = str(Path(get_runtime_settings().data_root).resolve())
+        with self._dirty_lock:
+            self._dirty_paths.add((root, str(directory)))
+
+    def _take_pending(self) -> list[str]:
+        root = str(Path(get_runtime_settings().data_root).resolve())
+        with self._dirty_lock:
+            pending = {entry for entry in self._dirty_paths if entry[0] == root}
+            self._dirty_paths.difference_update(pending)
+        return [path for _, path in sorted(pending)]
+
+    @uses_workspace
+    def flush_changes(self) -> int:
+        """Publish only archive paths changed through application writes."""
+        root = str(Path(get_runtime_settings().data_root).resolve())
+        with self._dirty_lock:
+            pending_here = any(entry[0] == root for entry in self._dirty_paths)
+        if not pending_here:
+            return self.current_revision()
+        with self._reconcile_lock:
+            pending = self._take_pending()
+            for index, path in enumerate(pending):
+                try:
+                    self._index_directory(Path(path))
+                except Exception:
+                    for remaining in pending[index:]:
+                        self.mark_changed(remaining)
+                    raise
+        return self.current_revision()
+
+    def _index_directory(self, archive_dir: Path, task_map=None) -> str | None:
+        from app.core.database import get_task_store
+
+        service = get_archive_service()
+        if task_map is None:
+            owner = get_task_store().find_task_by_output_dir(archive_dir)
+            task_map = {service._path_key(archive_dir): {
+                "id": str(owner.id), "created_at": owner.created_at.isoformat(),
+                "status": owner.status,
+            }} if owner else {}
+        item = service._archive_item(archive_dir, task_map, lite=True)
+        root = Path(get_runtime_settings().data_root).resolve()
+        if item is None:
+            rows = _get_conn().execute(
+                "SELECT archive_id FROM archive_sync_index WHERE archive_path IN (?,?) AND deleted=0",
+                (str(archive_dir), archive_dir.relative_to(root).as_posix()),
+            ).fetchall()
+            for row in rows:
+                self._record_delete(str(row["archive_id"]))
+            return None
+        archive_id = self._ensure_archive_id(archive_dir, item.get("task_id"))
+        # Metadata edits retain the creation time first observed for standalone archives.
+        if service._path_key(archive_dir) not in task_map:
+            previous = _get_conn().execute(
+                "SELECT snapshot FROM archive_sync_index WHERE archive_id=?", (archive_id,)
+            ).fetchone()
+            if previous:
+                snapshot = json.loads(previous["snapshot"])
+                item["created_at"] = snapshot["created_at"]
+                item["date"] = snapshot["date"]
+        # _ensure_archive_id may have just added the ID to metadata.
+        item["metadata"]["archive_id"] = archive_id
+        self._upsert_if_changed(archive_id, archive_dir, self._file_state(archive_dir), item)
+        return archive_id
 
     @uses_workspace
     def reconcile(self) -> int:
         """Index current archives and create tombstones for removed archives."""
         with self._reconcile_lock:
-            return self._reconcile()
+            self._indexing = True
+            try:
+                self._take_pending()
+                return self._reconcile()
+            finally:
+                self._indexing = False
 
     def _reconcile(self) -> int:
         data_root = Path(get_runtime_settings().data_root).resolve()
@@ -98,13 +168,9 @@ class ArchiveSyncService:
         current_ids: set[str] = set()
 
         for archive_dir in sorted(iter_archive_directories(data_root), key=lambda item: item.name.casefold()):
-            item = archive_service._archive_item(archive_dir, task_map, lite=True)
-            if not item:
-                continue
-            archive_id = self._ensure_archive_id(archive_dir, item.get("task_id"))
-            current_ids.add(archive_id)
-            fingerprint = self._fingerprint(archive_dir)
-            self._upsert_if_changed(archive_id, archive_dir, fingerprint, item)
+            archive_id = self._index_directory(archive_dir, task_map)
+            if archive_id:
+                current_ids.add(archive_id)
 
         conn = _get_conn()
         active_rows = conn.execute(
@@ -114,8 +180,39 @@ class ArchiveSyncService:
             archive_id = str(row["archive_id"])
             if archive_id not in current_ids:
                 self._record_delete(archive_id)
-
+        with _db_lock, conn:
+            conn.execute("UPDATE archive_sync_meta SET last_reconciled_at=? WHERE id=1",
+                         (datetime.now().astimezone().isoformat(),))
         return self.current_revision()
+
+    @uses_workspace
+    def index_status(self) -> dict:
+        row = _get_conn().execute(
+            "SELECT current_revision,last_reconciled_at FROM archive_sync_meta WHERE id=1"
+        ).fetchone()
+        return {"workspace_id": str(Path(get_runtime_settings().data_root).resolve()),
+                "revision": row["current_revision"], "last_reconciled_at": row["last_reconciled_at"],
+                "indexing": self._indexing}
+
+    @uses_workspace
+    def list_page(self, *, page=1, page_size=28, search="", media="all", source="all", sort="created_desc") -> dict:
+        from app.core.archive_index import query_page
+
+        self.flush_changes()
+        rows, total, page = query_page(_get_conn(), page=page, page_size=page_size,
+                                      search=search, media=media, source=source, sort=sort)
+        root = Path(get_runtime_settings().data_root).resolve()
+        return {"archives": [self.decode_snapshot(json.loads(row["snapshot"]), root) for row in rows],
+                "total": total, "page": page, "page_size": page_size, **self.index_status()}
+
+    @uses_workspace
+    def list_all(self) -> list[dict]:
+        self.flush_changes()
+        rows = _get_conn().execute(
+            "SELECT snapshot FROM archive_sync_index WHERE deleted=0 ORDER BY created_at DESC, archive_id ASC"
+        ).fetchall()
+        root = Path(get_runtime_settings().data_root).resolve()
+        return [self.decode_snapshot(json.loads(row["snapshot"]), root) for row in rows]
 
     @uses_workspace
     def current_revision(self) -> int:
@@ -126,7 +223,7 @@ class ArchiveSyncService:
 
     @uses_workspace
     def changes(self, cursor: int, limit: int) -> dict[str, Any]:
-        self.reconcile()
+        self.flush_changes()
         conn = _get_conn()
         rows = conn.execute(
             """
@@ -141,6 +238,7 @@ class ArchiveSyncService:
         has_more = len(rows) > limit
         page = rows[:limit]
         changes: list[dict[str, Any]] = []
+        root = Path(get_runtime_settings().data_root).resolve()
         for row in page:
             change: dict[str, Any] = {
                 "revision": int(row["revision"]),
@@ -149,7 +247,7 @@ class ArchiveSyncService:
                 "changed_at": str(row["changed_at"]),
             }
             if row["snapshot"]:
-                change["archive"] = self.decode_snapshot(json.loads(row["snapshot"]))
+                change["archive"] = self.decode_snapshot(json.loads(row["snapshot"]), root)
             changes.append(change)
         next_cursor = int(page[-1]["revision"]) if page else cursor
         return {
@@ -161,11 +259,15 @@ class ArchiveSyncService:
 
     @uses_workspace
     def manifest(self, archive_id: str) -> dict[str, Any] | None:
-        self.reconcile()
         record = self._active_record(archive_id)
         if not record:
             return None
         archive_dir = Path(record["archive_path"])
+        with self._reconcile_lock:
+            self._index_directory(archive_dir)
+        record = self._active_record(archive_id)
+        if not record:
+            return None
         files = [entry.as_dict() for entry in self._iter_sync_files(archive_dir, with_hash=True)]
         return {
             "archive_id": archive_id,
@@ -205,9 +307,8 @@ class ArchiveSyncService:
     def rebuild(self) -> dict[str, int]:
         """Re-index current archives while preserving monotonic revision history."""
         conn = _get_conn()
-        with _db_lock:
-            conn.execute("UPDATE archive_sync_index SET fingerprint = '' WHERE deleted = 0")
-            conn.commit()
+        with _db_lock, conn:
+            conn.execute("UPDATE archive_sync_index SET file_state='' WHERE deleted=0")
         revision = self.reconcile()
         count = conn.execute(
             "SELECT COUNT(*) FROM archive_sync_index WHERE deleted = 0"
@@ -257,55 +358,65 @@ class ArchiveSyncService:
             from app.core.database import get_task_store
             owner = get_task_store().find_task_by_output_dir(archive_dir)
             get_artifact_store().write(owner.id if owner else None, archive_dir, "metadata.json",
-                                       json.dumps(metadata, indent=2, ensure_ascii=False))
+                                       json.dumps(metadata, indent=2, ensure_ascii=False), notify_index=False)
         return archive_id
 
     def _upsert_if_changed(
         self,
         archive_id: str,
         archive_dir: Path,
-        fingerprint: str,
+        file_state: str,
         item: dict[str, Any],
     ) -> None:
         conn = _get_conn()
         row = conn.execute(
-            "SELECT archive_path, revision, fingerprint, deleted "
+            "SELECT archive_path, revision, file_state, snapshot, deleted "
             "FROM archive_sync_index WHERE archive_id = ?",
             (archive_id,),
         ).fetchone()
         root = Path(get_runtime_settings().data_root).resolve()
         archive_path = archive_dir.resolve().relative_to(root).as_posix()
+        snapshot = dict(item)
+        snapshot["archive_id"] = archive_id
+        encoded, fields = encode_workspace_paths(snapshot, root)
+        encoded["_path_fields"] = fields
+        previous = json.loads(row["snapshot"]) if row else {}
+        previous.pop("revision", None)
         if (
             row
             and not int(row["deleted"])
-            and str(row["fingerprint"]) == fingerprint
+            and str(row["file_state"]) == file_state
+            and previous == encoded
             and (root / str(row["archive_path"])).resolve() == archive_dir.resolve()
         ):
             return
 
         now = datetime.now().astimezone().isoformat()
-        with _db_lock:
+        with _db_lock, conn:
             revision = self._next_revision_locked(conn)
-            snapshot = dict(item)
-            snapshot["archive_id"] = archive_id
-            snapshot["revision"] = revision
-            encoded, fields = encode_workspace_paths(snapshot, root)
-            encoded["_path_fields"] = fields
+            encoded["revision"] = revision
             snapshot_json = json.dumps(encoded, ensure_ascii=False)
             conn.execute(
                 """
                 INSERT INTO archive_sync_index
-                    (archive_id, archive_path, revision, fingerprint, snapshot, deleted, updated_at)
-                VALUES (?, ?, ?, ?, ?, 0, ?)
+                    (archive_id, archive_path, revision, fingerprint, file_state, snapshot, deleted, updated_at)
+                VALUES (?, ?, ?, '', ?, ?, 0, ?)
                 ON CONFLICT(archive_id) DO UPDATE SET
                     archive_path = excluded.archive_path,
                     revision = excluded.revision,
-                    fingerprint = excluded.fingerprint,
+                    fingerprint = '',
+                    file_state = excluded.file_state,
                     snapshot = excluded.snapshot,
                     deleted = 0,
                     updated_at = excluded.updated_at
                 """,
-                (archive_id, archive_path, revision, fingerprint, snapshot_json, now),
+                (archive_id, archive_path, revision, file_state, snapshot_json, now),
+            )
+            from app.core.archive_index import index_fields
+            query_fields = index_fields(item)
+            conn.execute(
+                "UPDATE archive_sync_index SET " + ",".join(f"{key}=?" for key in query_fields)
+                + " WHERE archive_id=?", (*query_fields.values(), archive_id),
             )
             conn.execute(
                 """
@@ -326,7 +437,7 @@ class ArchiveSyncService:
         if not row or int(row["deleted"]):
             return
         now = datetime.now().astimezone().isoformat()
-        with _db_lock:
+        with _db_lock, conn:
             revision = self._next_revision_locked(conn)
             conn.execute(
                 """
@@ -359,9 +470,9 @@ class ArchiveSyncService:
         return revision
 
     @staticmethod
-    def decode_snapshot(snapshot: dict) -> dict:
+    def decode_snapshot(snapshot: dict, root: Path | None = None) -> dict:
         fields = snapshot.pop("_path_fields", [])
-        return decode_workspace_paths(snapshot, fields, Path(get_runtime_settings().data_root).resolve())
+        return decode_workspace_paths(snapshot, fields, root or Path(get_runtime_settings().data_root).resolve())
 
     @staticmethod
     def _active_record(archive_id: str):
@@ -384,15 +495,13 @@ class ArchiveSyncService:
         return record
 
 
-    def _fingerprint(self, archive_dir: Path) -> str:
-        digest = hashlib.sha256()
+    def _file_state(self, archive_dir: Path) -> str:
+        files = []
         for entry in self._iter_sync_files(archive_dir, with_hash=False):
             target = archive_dir / Path(*PurePosixPath(entry.relative_path).parts)
             stat = target.stat()
-            digest.update(entry.relative_path.encode("utf-8"))
-            digest.update(str(stat.st_size).encode("ascii"))
-            digest.update(str(stat.st_mtime_ns).encode("ascii"))
-        return digest.hexdigest()
+            files.append([entry.relative_path, stat.st_size, stat.st_mtime_ns])
+        return json.dumps(files, ensure_ascii=False, separators=(",", ":"))
 
     def _iter_sync_files(self, archive_dir: Path, *, with_hash: bool) -> Iterable[SyncFile]:
         root = archive_dir.resolve()

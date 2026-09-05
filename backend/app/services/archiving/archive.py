@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -134,26 +135,14 @@ class ArchiveService:
         return {"output_dir": str(output_dir), "files": files}
 
     def list_archives(self, limit: int = 0, *, lite: bool = False) -> list[dict[str, Any]]:
-        """List archives from flat data directory structure."""
-        rt = get_runtime_settings()
-        data_root = Path(rt.data_root).resolve()
-
-        if not data_root.exists():
-            return []
-
-        dir_to_task = self._archive_task_map()
-
-        archives = []
-        for task_dir in iter_archive_directories(data_root):
-            item = self._archive_item(task_dir, dir_to_task, lite=lite)
-            if not item:
-                continue
-            archives.append(item)
-
-        archives.sort(key=lambda item: item["created_at"], reverse=True)
+        """Read the shared archive index, hydrating full details only on request."""
+        from app.core.archive_sync import get_archive_sync_service
+        archives = get_archive_sync_service().list_all()
         if limit:
             archives = archives[:limit]
-
+        if not lite:
+            task_map = self._archive_task_map()
+            archives = [self._archive_item(Path(item["path"]), task_map) or item for item in archives]
         return archives
 
     def get_archive(self, path: str | Path, *, lite: bool = False) -> dict[str, Any] | None:
@@ -166,23 +155,31 @@ class ArchiveService:
             task_dir.resolve().relative_to(data_root)
         except ValueError:
             return None
-        return self._archive_item(task_dir, self._archive_task_map(), lite=lite)
+        from app.core.database import get_task_store
+        task = get_task_store().find_task_by_output_dir(task_dir)
+        task_map = {self._path_key(task_dir): {
+            "id": str(task.id), "created_at": task.created_at.isoformat(), "status": task.status,
+        }} if task else {}
+        return self._archive_item(task_dir, task_map, lite=lite)
 
     def _archive_task_map(self) -> dict[str, dict[str, str]]:
         dir_to_task: dict[str, dict[str, str]] = {}
         try:
-            from app.core.database import get_task_store
+            from app.core.database import _get_conn, _database_root
 
-            store = get_task_store()
-            for task in store.list(limit=10000):
-                result = task.result or {}
-                out_dir = result.get("output_dir") or (result.get("archive") or {}).get(
-                    "output_dir"
-                )
+            rows = _get_conn().execute(
+                "SELECT id,created_at,status,path_fields,COALESCE(json_extract(result,'$.output_dir'),"
+                "json_extract(result,'$.archive.output_dir')) AS output_dir FROM tasks "
+                "WHERE result IS NOT NULL AND json_valid(result)"
+            )
+            for task in rows:
+                out_dir = task["output_dir"]
                 if out_dir:
-                    dir_to_task[str(Path(out_dir).resolve())] = {
-                        "id": str(task.id),
-                        "created_at": task.created_at.isoformat(),
+                    fields = json.loads(task["path_fields"])
+                    if ["result", "output_dir"] in fields or ["result", "archive", "output_dir"] in fields:
+                        out_dir = _database_root() / out_dir
+                    dir_to_task[self._path_key(out_dir)] = {
+                        "id": task["id"], "created_at": task["created_at"], "status": task["status"],
                     }
         except Exception:
             pass
@@ -264,9 +261,10 @@ class ArchiveService:
             has_audio = True
             media_is_external = media_file is None
 
-        meta_status = metadata.get("status", "completed")
+        task_info = dir_to_task.get(self._path_key(task_dir), {})
+        meta_status = task_info.get("status") or metadata.get("status", "completed")
         processing = meta_status in ("queued", "processing", "paused")
-        task_info = dir_to_task.get(str(task_dir.resolve()), {})
+        metadata["status"] = meta_status
         task_id = (
             task_info.get("id")
             or metadata.get("task_id")
@@ -306,6 +304,10 @@ class ArchiveService:
             "analysis": analysis,
             "duration_seconds": duration_seconds,
         }
+
+    @staticmethod
+    def _path_key(path: str | Path) -> str:
+        return os.path.normcase(os.path.abspath(os.fspath(path)))
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any]:
