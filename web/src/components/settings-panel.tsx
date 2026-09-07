@@ -265,9 +265,9 @@ export function SettingsPanel() {
         setYtdlpMessage(result.output || "yt-dlp 更新失败")
         return
       }
-      setYtdlpMessage(`yt-dlp ${result.old ?? "unknown"} -> ${result.new ?? "unknown"}，后端正在重启`)
+      setYtdlpMessage(`yt-dlp ${result.old ?? "unknown"} -> ${result.new ?? "unknown"}${result.restart_scheduled ? "，后端正在重启" : "，当前环境已更新"}`)
       setYtdlpStatus((status) => (
-        status ? { ...status, installed: result.new, is_stale: false } : status
+        status ? { ...status, installed: result.new, latest: result.new, is_stale: false, check_error: null } : status
       ))
       if (result.restart_scheduled) reloadAfterBackendRestart()
     } catch (error) {
@@ -612,10 +612,10 @@ export function SettingsPanel() {
                   <div className="flex items-center justify-between">
                     <div>
                       <Label>启动时自动更新</Label>
-                      <p className="mt-0.5 text-xs text-muted-foreground">服务启动阶段检查 PyPI，新版本会先安装再开放后端。</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">每次启动按清华源 → 中科大源 → 系统默认源检查，有新稳定版本时更新。</p>
                     </div>
                     <Switch
-                      checked={Boolean(settings.ytdlp_auto_update ?? false)}
+                      checked={Boolean(settings.ytdlp_auto_update ?? true)}
                       onCheckedChange={(v) => updateSetting("ytdlp_auto_update", v)}
                     />
                   </div>
@@ -631,6 +631,8 @@ export function SettingsPanel() {
                     {ytdlpUpdating && <HugeiconsIcon icon={Loading03Icon} className="mr-2 h-4 w-4 animate-spin" />}
                     更新到最新并重启后端
                   </Button>
+                  {ytdlpStatus?.source && <p className="text-xs text-muted-foreground">检查来源：{ytdlpStatus.source}</p>}
+                  {ytdlpStatus?.check_error && <p className="text-xs text-muted-foreground">{ytdlpStatus.check_error}</p>}
                   {ytdlpMessage && <p className="text-xs text-muted-foreground">{ytdlpMessage}</p>}
                 </CardContent>
               </Card>

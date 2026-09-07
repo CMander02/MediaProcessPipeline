@@ -263,6 +263,8 @@ export interface YtdlpStatus {
   age_days: number | null
   is_stale: boolean
   auto_update: boolean
+  source?: string | null
+  check_error?: string | null
 }
 
 export interface YtdlpUpgradeResult {
