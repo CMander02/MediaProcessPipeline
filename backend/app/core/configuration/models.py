@@ -240,8 +240,8 @@ class RuntimeSettings(BaseModel):
     # Optional proxy for yt-dlp YouTube requests. Empty = auto-detect process/env
     # or Windows user proxy; "direct"/"none" disables proxy use explicitly.
     youtube_proxy: str = ""
-    # Upgrade yt-dlp before the daemon finishes startup when PyPI has a newer build.
-    ytdlp_auto_update: bool = False
+    # Check TUNA, USTC, then package-manager defaults; install newer stable builds.
+    ytdlp_auto_update: bool = True
 
     # Bilibili
     bilibili_sessdata: str = ""

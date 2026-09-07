@@ -1,6 +1,6 @@
 [project]
 name = "MediaProcessPipeline"
-version = "0.6.4"
+version = "0.6.5"
 description = "Omni-Media Processing Pipeline - Convert audio/video to structured knowledge"
 requires-python = ">=3.11,<3.13"
 dependencies = [
@@ -27,6 +27,7 @@ dependencies = [
     "sqlite-vec>=0.1.6",
     # Media pipeline runtime dependencies
     "yt-dlp>=2026.3.17",
+    "packaging>=24.0",
     "litellm>=1.83.14",
     "playwright>=1.60.0",
 ]

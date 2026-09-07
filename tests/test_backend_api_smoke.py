@@ -474,6 +474,7 @@ def test_main_app_lifespan_auth_and_task_submission_smoke(tmp_path, monkeypatch)
         api_token="",
         allow_remote_filesystem=True,
         max_download_concurrency=1,
+        ytdlp_auto_update=False,
     )
     monkeypatch.setattr(settings_module, "_runtime_settings", settings)
     monkeypatch.setattr(settings_module, "_save_settings_to_file", lambda _settings: None)
@@ -603,7 +604,9 @@ def test_ytdlp_settings_endpoints_report_status_and_schedule_restart(tmp_path, m
         "latest": "2026.07.09",
         "age_days": 0,
         "is_stale": True,
-        "auto_update": False,
+        "auto_update": True,
+        "source": None,
+        "check_error": None,
     }
 
     upgrade = client.post("/api/settings/ytdlp/upgrade", headers={"X-Requested-With": "fetch"})
@@ -643,7 +646,11 @@ def test_ytdlp_upgrade_uses_uv_sync_to_persist_lock(monkeypatch):
             sys.executable,
             "--inexact",
             "--upgrade-package",
-            "yt-dlp",
+            "yt-dlp>=2026.6.9",
+            "--prerelease",
+            "disallow",
+            "--default-index",
+            ytdlp_version._SOURCES[0][1],
         ]
     ]
 

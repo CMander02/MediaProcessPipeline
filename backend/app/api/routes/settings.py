@@ -423,6 +423,8 @@ def _ytdlp_info_payload(info: Any) -> dict[str, Any]:
         "latest": info.latest,
         "age_days": info.age_days,
         "is_stale": info.is_stale,
+        "source": info.source,
+        "check_error": info.check_error,
     }
 
 
@@ -444,7 +446,7 @@ async def upgrade_ytdlp(background_tasks: BackgroundTasks):
     from app.services.ingestion.ytdlp_version import schedule_process_restart, upgrade
 
     result = await asyncio.to_thread(upgrade)
-    restart_scheduled = bool(result.get("ok"))
+    restart_scheduled = bool(result.get("ok") and result.get("restart_recommended"))
     if restart_scheduled:
         background_tasks.add_task(schedule_process_restart, 1.0)
     return {

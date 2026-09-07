@@ -1,10 +1,4 @@
-"""yt-dlp version checking + self-upgrade.
-
-YouTube actively breaks older yt-dlp versions (SABR streaming, n-sig changes).
-We don't auto-upgrade on every startup (slow + risk of breaking changes), but:
-  - check version age in the background at daemon startup
-  - expose an upgrade endpoint / CLI command for one-shot bumps
-"""
+"""Check and update yt-dlp through TUNA, USTC, then package-manager defaults."""
 
 from __future__ import annotations
 
@@ -16,18 +10,22 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.core.network import urllib_urlopen
+from packaging.version import InvalidVersion, Version
 
 logger = logging.getLogger(__name__)
 
-_PYPI_URL = "https://pypi.org/pypi/yt-dlp/json"
-_STALE_DAYS = 30
+# Try each source independently; the final attempt inherits package-manager config.
+_SOURCES = (
+    ("清华源", "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"),
+    ("中科大源", "https://mirrors.ustc.edu.cn/pypi/simple"),
+    ("系统默认源", None),
+)
+_PROJECT_ROOT = Path(__file__).resolve().parents[4]
+_CHECK_TIMEOUT = 20
 _upgrade_lock = threading.Lock()
 
 
@@ -37,12 +35,16 @@ class YtdlpVersionInfo:
     latest: str | None
     age_days: int | None
     is_stale: bool
+    source: str | None = None
+    check_error: str | None = None
 
 
 def _installed_version() -> str | None:
     # yt_dlp doesn't expose __version__ at module level; use dist metadata.
     try:
-        from importlib.metadata import version as _ver, PackageNotFoundError
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version as _ver
+
         try:
             return _ver("yt-dlp")
         except PackageNotFoundError:
@@ -51,43 +53,133 @@ def _installed_version() -> str | None:
         return None
 
 
-def _pypi_latest() -> tuple[str | None, datetime | None]:
+def _command_environment(cmd: list[str]) -> dict[str, str]:
+    env = os.environ.copy()
+    if "--default-index" in cmd or "--index-url" in cmd:
+        # Explicit mirror attempts must not be overridden by an extra index.
+        for key in (
+            "UV_INDEX",
+            "UV_DEFAULT_INDEX",
+            "UV_INDEX_URL",
+            "UV_EXTRA_INDEX_URL",
+            "PIP_INDEX_URL",
+            "PIP_EXTRA_INDEX_URL",
+            "UV_CONFIG_FILE",
+        ):
+            env.pop(key, None)
+        if "--index-url" in cmd:
+            env["PIP_CONFIG_FILE"] = os.devnull
+    env.setdefault("UV_HTTP_TIMEOUT", "10")
+    env.setdefault("UV_HTTP_RETRIES", "0")
+    return env
+
+
+def _latest_from_source(index: str | None) -> str:
+    """Let the resolver select a stable release compatible with this Python."""
+    uv = shutil.which("uv")
+    if uv:
+        cmd = [
+            uv,
+            "pip",
+            "compile",
+            "-",
+            "--python",
+            sys.executable,
+            "--no-deps",
+            "--upgrade",
+            "--prerelease",
+            "disallow",
+            "--no-header",
+            "--no-annotate",
+            "--quiet",
+            "--project",
+            str(_PROJECT_ROOT),
+        ]
+        if index:
+            cmd += ["--no-config", "--default-index", index]
+        proc = subprocess.run(
+            cmd,
+            input="yt-dlp\n",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_CHECK_TIMEOUT,
+            env=_command_environment(cmd),
+            cwd=_PROJECT_ROOT,
+        )
+        if proc.returncode == 0:
+            for line in proc.stdout.splitlines():
+                if line.startswith("yt-dlp=="):
+                    return str(Version(line.split("==", 1)[1].split(";", 1)[0].strip()))
+    else:
+        cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--dry-run",
+            "--ignore-installed",
+            "--no-deps",
+            "--only-binary=:all:",
+            "--quiet",
+            "--report",
+            "-",
+            "yt-dlp",
+        ]
+        if index:
+            cmd += ["--index-url", index]
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_CHECK_TIMEOUT,
+            env=_command_environment(cmd),
+            cwd=_PROJECT_ROOT,
+        )
+        if proc.returncode == 0:
+            data = json.loads(proc.stdout)
+            for item in data.get("install", []):
+                metadata = item["metadata"]
+                if metadata["name"].replace("_", "-").lower() == "yt-dlp":
+                    version = Version(metadata["version"])
+                    if not version.is_prerelease and not version.is_devrelease:
+                        return str(version)
+    raise RuntimeError("package resolver did not return a compatible yt-dlp release")
+
+
+def _is_newer(latest: str, installed: str) -> bool:
     try:
-        req = urllib.request.Request(_PYPI_URL, headers={"User-Agent": "mpp-version-check"})
-        with urllib_urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read())
-    except Exception as e:
-        logger.debug(f"yt-dlp PyPI lookup failed: {e}")
-        return None, None
-
-    latest = data.get("info", {}).get("version")
-    upload_time = None
-    files = data.get("releases", {}).get(latest, []) if latest else []
-    if files:
-        ts = files[0].get("upload_time_iso_8601") or files[0].get("upload_time")
-        if ts:
-            try:
-                upload_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            except ValueError:
-                upload_time = None
-    return latest, upload_time
+        return Version(latest) > Version(installed)
+    except InvalidVersion:
+        return False
 
 
-def check_version(stale_days: int = _STALE_DAYS) -> YtdlpVersionInfo:
-    """Return (installed, latest, age_days, is_stale). Network errors → unknown."""
+def check_version(stale_days: int = 30) -> YtdlpVersionInfo:
+    """Check sources in priority order. Keep the legacy age field for API clients."""
     installed = _installed_version()
-    latest, latest_uploaded = _pypi_latest()
-
-    age_days: int | None = None
-    if latest_uploaded:
-        age_days = (datetime.now(timezone.utc) - latest_uploaded).days
-
-    is_stale = bool(
-        installed and latest
-        and installed != latest
-        and (age_days is None or age_days >= 0)
+    failures = []
+    for source, index in _SOURCES:
+        try:
+            latest = _latest_from_source(index)
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, RuntimeError) as exc:
+            logger.info(
+                "yt-dlp check via %s failed (%s); trying next source", source, type(exc).__name__
+            )
+            failures.append(source)
+            continue
+        return YtdlpVersionInfo(
+            installed,
+            latest,
+            None,
+            bool(installed and _is_newer(latest, installed)),
+            source,
+        )
+    return YtdlpVersionInfo(
+        installed, None, None, False, check_error="版本检查失败：" + "、".join(failures)
     )
-    return YtdlpVersionInfo(installed=installed, latest=latest, age_days=age_days, is_stale=is_stale)
 
 
 def warn_if_stale() -> YtdlpVersionInfo | None:
@@ -111,25 +203,33 @@ def warn_if_stale() -> YtdlpVersionInfo | None:
     return info
 
 
-def _upgrade_commands() -> list[list[str]]:
-    commands: list[list[str]] = []
+def _upgrade_commands(minimum: str | None = None) -> list[list[str]]:
+    # A lower bound prevents a lagging mirror from downgrading the installation.
+    requirement = f"yt-dlp>={minimum}" if minimum else "yt-dlp"
     uv = shutil.which("uv")
-    if uv:
-        project_root = str(Path(__file__).resolve().parents[4])
-        commands.append(
-            [
+    commands = []
+    for _source, index in _SOURCES:
+        if uv:
+            cmd = [
                 uv,
                 "sync",
                 "--project",
-                project_root,
+                str(_PROJECT_ROOT),
                 "--python",
                 sys.executable,
                 "--inexact",
                 "--upgrade-package",
-                "yt-dlp",
+                requirement,
+                "--prerelease",
+                "disallow",
             ]
-        )
-    commands.append([sys.executable, "-m", "pip", "install", "-U", "--quiet", "yt-dlp"])
+            if index:
+                cmd += ["--default-index", index]
+        else:
+            cmd = [sys.executable, "-m", "pip", "install", "-U", "--quiet", requirement]
+            if index:
+                cmd += ["--index-url", index]
+        commands.append(cmd)
     return commands
 
 
@@ -139,6 +239,10 @@ def _run_upgrade_command(cmd: list[str], timeout: float) -> subprocess.Completed
         capture_output=True,
         text=True,
         timeout=timeout,
+        encoding="utf-8",
+        errors="replace",
+        env=_command_environment(cmd),
+        cwd=_PROJECT_ROOT,
     )
 
 
@@ -161,7 +265,7 @@ def _result(
     }
 
 
-def upgrade(timeout: float = 180) -> dict[str, Any]:
+def upgrade(timeout: float = 180, *, target: str | None = None) -> dict[str, Any]:
     """Upgrade yt-dlp in the Python environment used by this process.
 
     Returns {ok, old, new, output}. Caller should reload yt_dlp module or restart
@@ -178,26 +282,35 @@ def upgrade(timeout: float = 180) -> dict[str, Any]:
     try:
         old = _installed_version()
         failures: list[str] = []
-        for cmd in _upgrade_commands():
+        minimum = old
+        if target and (not old or _is_newer(target, old)):
+            minimum = target
+        commands = _upgrade_commands(minimum)
+        for (source, _index), cmd in zip(_SOURCES, commands):
             try:
                 proc = _run_upgrade_command(cmd, timeout)
-            except subprocess.TimeoutExpired:
-                failures.append(f"{' '.join(cmd)} timed out after {timeout:.0f}s")
+            except (subprocess.SubprocessError, OSError) as exc:
+                failures.append(f"{source}: {type(exc).__name__}")
                 continue
 
             output = (proc.stdout or "") + (proc.stderr or "")
             if proc.returncode != 0:
-                failures.append(output.strip() or f"{' '.join(cmd)} exited with {proc.returncode}")
+                failures.append(f"{source}: " + (output.strip() or f"exit {proc.returncode}"))
                 continue
 
-            new = _installed_version() or old
+            new = _installed_version()
+            if not new or (minimum and _is_newer(minimum, new)):
+                failures.append(f"{source}: expected >= {minimum}, installed {new}")
+                continue
+            logger.info("yt-dlp update via %s: %s -> %s", source, old, new)
+            loaded = getattr(sys.modules.get("yt_dlp.version"), "__version__", None)
             return _result(
                 ok=True,
                 old=old,
                 new=new,
                 output=output,
                 command=cmd,
-                restart_recommended=True,
+                restart_recommended=(new != old or bool(loaded and _is_newer(new, loaded))),
             )
 
         return _result(
@@ -205,7 +318,7 @@ def upgrade(timeout: float = 180) -> dict[str, Any]:
             old=old,
             new=old,
             output="\n\n".join(failures),
-            command=_upgrade_commands()[-1],
+            command=commands[-1],
         )
     finally:
         _upgrade_lock.release()
@@ -222,10 +335,25 @@ def auto_update_on_startup(enabled: bool) -> dict[str, Any] | None:
         logger.warning("yt-dlp startup version check failed: %s", e)
         return None
 
+    if not info.latest:
+        logger.warning("yt-dlp startup check unavailable: %s", info.check_error)
+        return {
+            **_result(
+                ok=False,
+                old=info.installed,
+                new=info.installed,
+                output=info.check_error or "Version check unavailable",
+            ),
+            "skipped": True,
+        }
     if not info.installed:
         logger.info("yt-dlp is not installed; installing latest build")
     elif not info.is_stale:
-        logger.info("yt-dlp startup auto-update skipped: installed=%s latest=%s", info.installed, info.latest or "unknown")
+        logger.info(
+            "yt-dlp startup auto-update skipped: installed=%s latest=%s",
+            info.installed,
+            info.latest or "unknown",
+        )
         return {
             "ok": True,
             "old": info.installed,
@@ -235,10 +363,20 @@ def auto_update_on_startup(enabled: bool) -> dict[str, Any] | None:
             "skipped": True,
         }
 
-    logger.info("yt-dlp startup auto-update started: installed=%s latest=%s", info.installed, info.latest or "unknown")
-    result = upgrade()
+    logger.info(
+        "yt-dlp startup auto-update started: installed=%s latest=%s",
+        info.installed,
+        info.latest or "unknown",
+    )
+    result = upgrade(target=info.latest)
     if result.get("ok"):
-        logger.info("yt-dlp startup auto-update complete: %s -> %s", result.get("old"), result.get("new"))
+        logger.info(
+            "yt-dlp startup auto-update complete: %s -> %s", result.get("old"), result.get("new")
+        )
+        if result.get("restart_recommended") and "yt_dlp" in sys.modules:
+            logger.warning(
+                "yt-dlp was already loaded; restart the backend to use the updated version"
+            )
     else:
         logger.warning("yt-dlp startup auto-update failed: %s", result.get("output", ""))
     return result
