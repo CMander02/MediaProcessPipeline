@@ -12,7 +12,7 @@ from typing import Any
 
 from packaging.version import Version
 
-DEFAULT_SHERPA_MODEL_ID = "sensevoice-small-int8"
+DEFAULT_SHERPA_MODEL_ID = "qwen3-asr-0.6b-int8"
 MIN_SHERPA_ONNX_VERSION = "1.13.4"
 _checksum_cache: dict[tuple[Any, ...], bool] = {}
 
@@ -61,6 +61,24 @@ class SherpaModelSpec:
 
 
 _BUILTIN_MODELS: dict[str, dict[str, Any]] = {
+    "qwen3-asr-0.6b-int8": {
+        "display_name": "Qwen3-ASR 0.6B INT8",
+        "family": "qwen3_asr",
+        "languages": ("auto", "zh", "en", "yue", "ja", "ko", "de", "fr", "es"),
+        "files": {
+            "conv_frontend": "conv_frontend.onnx",
+            "encoder": "encoder.int8.onnx",
+            "decoder": "decoder.int8.onnx",
+            "tokenizer": "tokenizer",
+        },
+        "supports_hotwords": True,
+        "defaults": {
+            "max_total_len": 512,
+            "max_new_tokens": 128,
+            "max_chunk_sec": 30,
+            "device": "cpu",
+        },
+    },
     "qwen3-asr-1.7b-onnx": {
         "display_name": "Qwen3-ASR 1.7B INT8",
         "family": "qwen3_asr",

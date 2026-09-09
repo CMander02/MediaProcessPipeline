@@ -107,6 +107,7 @@ def task_options(
     *,
     force_asr: bool = False,
     prefer_subtitles: bool = False,
+    subtitle_reference: bool = False,
     skip_separation: bool = False,
     speakers: int | None = None,
     hotwords: list[str] | None = None,
@@ -115,7 +116,7 @@ def task_options(
     assignments: list[str] | None = None,
 ) -> dict[str, Any]:
     options = parse_assignments(assignments or [])
-    if force_asr and prefer_subtitles:
+    if (force_asr or subtitle_reference) and prefer_subtitles:
         emit_error(
             "invalid_options",
             "Use one of --force-asr or --prefer-subtitles.",
@@ -123,8 +124,13 @@ def task_options(
         )
     if force_asr:
         options["force_asr"] = True
+        options["use_platform_subtitle_reference"] = False
+    if subtitle_reference:
+        options["force_asr"] = True
+        options["use_platform_subtitle_reference"] = True
     if prefer_subtitles:
         options["force_asr"] = False
+        options["use_platform_subtitle_reference"] = False
     if skip_separation:
         options["skip_separation"] = True
     if speakers is not None:

@@ -207,24 +207,28 @@ async def _prepare_source_context(
     task: Task,
     task_dir: Path,
     metadata: MediaMetadata,
+    *,
+    enrich: bool = True,
 ) -> dict[str, Any]:
     """Build or restore the source-grounded context before ASR and polishing."""
     from app.services.analysis.source_context import load_or_build_source_context
 
-    context_path = task_dir / "source_context.json"
+    context_filename = "source_context.json" if enrich else "source_context.asr.json"
+    context_path = task_dir / context_filename
     context = await load_or_build_source_context(
         metadata,
         task.options,
         context_path,
+        enrich=enrich,
     )
     payload = context.model_dump(mode="json")
     await _write_text_artifact(
         task,
         task_dir,
-        "source_context.json",
+        context_filename,
         json.dumps(payload, indent=2, ensure_ascii=False),
     )
-    metadata.extra["source_context_file"] = "source_context.json"
+    metadata.extra["source_context_file"] = context_filename
     metadata.extra["source_context"] = {
         "entities": len(context.entities),
         "timeline": len(context.timeline),

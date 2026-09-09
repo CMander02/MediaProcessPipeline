@@ -60,7 +60,7 @@ function looksLikeBilibiliVideo(value: string) {
   return /(?:bilibili\.com\/video\/|b23\.tv\/|\bBV[0-9A-Za-z]{10}\b)/i.test(value)
 }
 
-type SubtitleStrategy = "auto" | "force_asr"
+type SubtitleStrategy = "auto" | "force_asr" | "asr_reference"
 
 export function SubmitPage() {
   const { capabilities, online } = useAppAccess()
@@ -68,8 +68,9 @@ export function SubmitPage() {
   const submitHistory = useSubmitHistory()
   const [source, setSource] = useState("")
   const [queuedFiles, setQueuedFiles] = useState<QueuedFile[]>([])
-  const [strategy, setStrategy] = useState<SubtitleStrategy>("auto")
-  const forceAsr = strategy === "force_asr"
+  const [strategy, setStrategy] = useState<SubtitleStrategy>("asr_reference")
+  const forceAsr = strategy !== "auto"
+  const useSubtitleReference = strategy === "asr_reference"
   const [numSpeakers, setNumSpeakers] = useState("")
   const [hotwordTags, setHotwordTags] = useState<string[]>([])
   const [hotwordInput, setHotwordInput] = useState("")
@@ -102,6 +103,7 @@ export function SubmitPage() {
   const buildOptions = () => {
     const opts: Record<string, unknown> = {}
     if (forceAsr) opts.force_asr = true
+    opts.use_platform_subtitle_reference = useSubtitleReference
     const ns = parseInt(numSpeakers, 10)
     if (ns > 0) opts.num_speakers = ns
     if (hotwordTags.length > 0) opts.hotwords = hotwordTags
@@ -280,7 +282,7 @@ export function SubmitPage() {
   const canSubmit = online && totalCount > 0 && !submitting && !anyUploading
   const hasFiles = queuedFiles.length > 0
   const hasRightPanel = hasFiles || collection !== null
-  const activeOptions = [forceAsr, !!numSpeakers, hotwordTags.length > 0].filter(Boolean).length
+  const activeOptions = [strategy !== "auto", !!numSpeakers, hotwordTags.length > 0].filter(Boolean).length
 
   return (
     <div className="flex h-full flex-col overflow-y-auto md:flex-row md:overflow-hidden">
@@ -410,6 +412,7 @@ export function SubmitPage() {
           <div className="hidden md:block">
             <button
               type="button"
+              aria-label="高级选项"
               className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
               onClick={() => setShowAdvanced(!showAdvanced)}
             >
@@ -426,7 +429,7 @@ export function SubmitPage() {
               <div className="mt-3 space-y-4 rounded-lg border p-4 bg-muted/30">
                 <div className="space-y-1.5">
                   <Label className="text-sm">字幕来源</Label>
-                  <div className="grid grid-cols-2 gap-1.5">
+                  <div className="grid grid-cols-1 gap-1.5">
                     <button
                       type="button"
                       onClick={() => setStrategy("auto")}
@@ -453,11 +456,26 @@ export function SubmitPage() {
                       <span className="text-xs font-medium">强制 ASR</span>
                       <span className="text-[10px] text-muted-foreground leading-tight">忽略平台字幕自行转录</span>
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setStrategy("asr_reference")}
+                      className={cn(
+                        "flex flex-col items-start gap-0.5 rounded-md border px-2.5 py-2 text-left transition-colors",
+                        strategy === "asr_reference"
+                          ? "border-primary bg-primary/5"
+                          : "border-border hover:bg-muted",
+                      )}
+                    >
+                      <span className="text-xs font-medium">ASR + 原生字幕参考</span>
+                      <span className="text-[10px] text-muted-foreground leading-tight">ASR 识别说话人，润色时按时间段参考平台字幕</span>
+                    </button>
                   </div>
                   <p className="text-[10px] text-muted-foreground mt-1">
                     {strategy === "auto"
                       ? "阶段：下载 → 字幕/ASR → 分析 → 归档"
-                      : "阶段：下载 → 人声分离 → ASR → 说话人分离 → 分析 → 润色 → 归档"}
+                      : strategy === "asr_reference"
+                        ? "阶段：下载原生字幕 → 人声分离 → ASR → 说话人分离 → 对照字幕润色 → 分析 → 归档"
+                        : "阶段：下载 → 人声分离 → ASR → 说话人分离 → 分析 → 润色 → 归档"}
                   </p>
                 </div>
 

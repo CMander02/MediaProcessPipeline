@@ -27,6 +27,7 @@ from app.core.configuration.constants import _MODEL_TYPE_CAPABILITIES as _MODEL_
 from app.core.configuration.constants import (
     _MODEL_TYPE_ENDPOINT_PATHS as _MODEL_TYPE_ENDPOINT_PATHS,
 )
+from app.core.configuration.constants import _OAUTH_PROVIDER_TYPES as _OAUTH_PROVIDER_TYPES
 from app.core.configuration.constants import (
     _PROVIDER_CONNECTION_ALIASES as _PROVIDER_CONNECTION_ALIASES,
 )

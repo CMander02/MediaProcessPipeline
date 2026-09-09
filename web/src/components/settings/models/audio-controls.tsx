@@ -199,9 +199,10 @@ export function AsrSettingsControls({
           <>
             <SelectSettingRow
               label="默认模型"
-              value={String(settings.sherpa_model_id ?? "sensevoice-small-int8")}
+              value={String(settings.sherpa_model_id ?? "qwen3-asr-0.6b-int8")}
               onChange={(value) => updateSetting("sherpa_model_id", value)}
             >
+              <option value="qwen3-asr-0.6b-int8">Qwen3-ASR 0.6B INT8</option>
               <option value="qwen3-asr-1.7b-onnx">Qwen3-ASR 1.7B INT8</option>
               <option value="sensevoice-small-int8">SenseVoice Small INT8</option>
               <option value="paraformer-zh-int8">Paraformer Chinese INT8</option>

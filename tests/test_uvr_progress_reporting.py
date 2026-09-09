@@ -60,8 +60,8 @@ def _task_with_url_flow() -> Task:
 async def test_uvr_fractional_progress_updates_task_flow_and_events(monkeypatch):
     store = RecordingStore()
     bus = RecordingBus()
-    monkeypatch.setattr(pipeline_core, "get_task_store", lambda: store)
-    monkeypatch.setattr(pipeline_core, "get_event_bus", lambda: bus)
+    monkeypatch.setattr("app.core.pipeline_steps.state.get_task_store", lambda: store)
+    monkeypatch.setattr("app.core.pipeline_steps.state.get_event_bus", lambda: bus)
     task = _task_with_url_flow()
 
     await pipeline_core._update_step_progress(
@@ -95,8 +95,8 @@ async def test_uvr_fractional_progress_updates_task_flow_and_events(monkeypatch)
 async def test_flow_keeps_uvr_fraction_until_transcription_completes(monkeypatch):
     store = RecordingStore()
     bus = RecordingBus()
-    monkeypatch.setattr(pipeline_core, "get_task_store", lambda: store)
-    monkeypatch.setattr(pipeline_core, "get_event_bus", lambda: bus)
+    monkeypatch.setattr("app.core.pipeline_steps.state.get_task_store", lambda: store)
+    monkeypatch.setattr("app.core.pipeline_steps.state.get_event_bus", lambda: bus)
     task = _task_with_url_flow()
 
     await pipeline_core._update_step_progress(

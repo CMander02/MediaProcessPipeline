@@ -6,6 +6,7 @@ from difflib import get_close_matches
 from typing import Optional
 
 import typer
+
 from app.cli.commands.root_support import _emit_json_compat, _get_client
 from app.cli.context import get_cli_context as _command_context
 
@@ -204,8 +205,9 @@ def config_list(
 
 
 def _config_list_impl(group: str | None) -> None:
-    from app.cli.display import console
     from rich.table import Table
+
+    from app.cli.display import console
 
     settings = _read_settings()
     valid_keys = _all_valid_keys()
@@ -342,7 +344,7 @@ def config_preset(
         },
         "local-models": {
             "asr_provider": "sherpa_onnx",
-            "sherpa_model_id": "sensevoice-small-int8",
+            "sherpa_model_id": "qwen3-asr-0.6b-int8",
             "enable_diarization": True,
             "enable_voiceprint": True,
             "polish_provider": "local",

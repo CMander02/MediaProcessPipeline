@@ -7,6 +7,7 @@ import sys
 from typing import Optional
 
 import typer
+
 from app.cli.commands.root_support import (
     _emit_json_compat,
     _get_client,
@@ -92,9 +93,10 @@ def status_alias():
 
 def _tasks_watch(status_filter: str | None = None, limit: int = 20) -> None:
     """Live-refresh task list using Rich Live + global SSE stream."""
-    from app.cli.display import console, styled_status, time_ago
     from rich.live import Live
     from rich.table import Table
+
+    from app.cli.display import console, styled_status, time_ago
 
     client = _require_daemon()
 

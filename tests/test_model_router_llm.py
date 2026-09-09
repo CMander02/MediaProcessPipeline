@@ -151,6 +151,7 @@ def test_codex_oauth_provider_uses_cli_transport_without_api_credentials():
                         "model_type": "llm",
                         "capabilities": ["llm", "chat"],
                         "enabled": True,
+                        "default_params": {"reasoning_effort": "max"},
                     }
                 ],
             }
@@ -166,6 +167,7 @@ def test_codex_oauth_provider_uses_cli_transport_without_api_credentials():
     assert binding.request_kwargs["provider_type"] == "codex_oauth"
     assert binding.request_kwargs["cli_path"] == "C:/Tools/codex.exe"
     assert binding.request_kwargs["timeout_sec"] == 900
+    assert binding.request_kwargs["reasoning_effort"] == "max"
 
 
 def test_agy_oauth_provider_uses_cli_transport_without_api_base():
@@ -202,4 +204,81 @@ def test_agy_oauth_provider_uses_cli_transport_without_api_base():
     assert binding.provider == "agy-oauth"
     assert binding.transport == "agy_cli"
     assert binding.model == "Gemini 3.1 Pro (High)"
+    assert binding.configured is True
+
+
+def test_kimi_oauth_provider_uses_cli_transport_and_alias():
+    settings = RuntimeSettings(
+        runtime_model_bindings={
+            "polish": {
+                "provider_id": "kimi-oauth",
+                "model_id": "kimi-code/kimi-for-coding",
+                "capability": "llm",
+            }
+        },
+        providers=[
+            {
+                "id": "kimi-oauth",
+                "name": "Kimi Code OAuth",
+                "provider_type": "kimi_oauth",
+                "enabled": True,
+                "models": [
+                    {
+                        "id": "kimi-oauth:kimi-code/kimi-for-coding",
+                        "model_id": "kimi-code/kimi-for-coding",
+                        "cli_model_name": "kimi-code/kimi-for-coding",
+                        "model_type": "llm",
+                        "capabilities": ["llm", "chat"],
+                        "enabled": True,
+                    }
+                ],
+            }
+        ],
+    )
+
+    binding = resolve_llm_binding(
+        settings,
+        provider_override="kimi-oauth",
+        stage="polish",
+    )
+
+    assert binding.provider == "kimi-oauth"
+    assert binding.transport == "kimi_cli"
+    assert binding.model == "kimi-code/kimi-for-coding"
+    assert binding.configured is True
+
+
+def test_qoder_oauth_provider_uses_parallel_safe_cli_transport():
+    settings = RuntimeSettings(
+        runtime_model_bindings={
+            "polish": {
+                "provider_id": "qodercn-oauth",
+                "model_id": "performance",
+                "capability": "llm",
+            }
+        },
+        providers=[
+            {
+                "id": "qodercn-oauth",
+                "name": "QoderCN OAuth",
+                "provider_type": "qoder_oauth",
+                "enabled": True,
+                "models": [
+                    {
+                        "id": "qodercn-oauth:performance",
+                        "model_id": "performance",
+                        "model_type": "llm",
+                        "capabilities": ["llm", "chat"],
+                        "enabled": True,
+                    }
+                ],
+            }
+        ],
+    )
+
+    binding = resolve_llm_binding(settings, stage="polish")
+
+    assert binding.provider == "qodercn-oauth"
+    assert binding.transport == "qoder_cli"
+    assert binding.model == "performance"
     assert binding.configured is True

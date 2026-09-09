@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.services.analysis import llm as llm_module  # noqa: E402
 from app.services.analysis.llm import LLMService  # noqa: E402
+from app.services.analysis.prompts.polish import get_polish_prompt  # noqa: E402
 
 
 def _srt_segment(index: int, text: str) -> dict[str, object]:
@@ -74,6 +76,77 @@ def test_polish_constraints_restore_cue_fields_and_prevent_speaker_invention():
     }
     assert constrained[1]["timestamp"] == original[1]["timestamp"]
     assert constrained[1]["text"] == "[SPEAKER_00] 润色内容。"
+
+
+def test_parse_polish_response_accepts_concatenated_json_strings():
+    service = LLMService()
+    original = [_srt_segment(1, "原文")]
+    response = """[
+      {
+        "index": 1,
+        "timestamp": "00:00:00,000 --> ""00:00:01,000",
+        "text": "润色" + "结果"
+      }
+    ]"""
+
+    parsed = service._parse_polish_response(response, original)
+
+    assert parsed == [
+        {
+            "index": 1,
+            "timestamp": "00:00:00,000 --> 00:00:01,000",
+            "text": "润色结果",
+        }
+    ]
+
+
+def test_parse_polish_response_repairs_rogue_timestamp_quote():
+    service = LLMService()
+    response = """[
+      {
+        "index": 1,
+        "timestamp": "00:00:00,000 --> "00:00:01,000",
+        "text": "润色结果"
+      }
+    ]"""
+
+    parsed = service._parse_polish_response(response, [])
+
+    assert parsed[0]["timestamp"] == "00:00:00,000 --> 00:00:01,000"
+
+
+def test_parse_polish_response_repairs_missing_timestamp_quote():
+    service = LLMService()
+    response = """[
+      {
+        "index": 1,
+        "timestamp": "00:00:00,000 --> 00:00:01,000,"text": "润色结果"
+      }
+    ]"""
+
+    parsed = service._parse_polish_response(response, [])
+
+    assert parsed == [
+        {
+            "index": 1,
+            "timestamp": "00:00:00,000 --> 00:00:01,000",
+            "text": "润色结果",
+        }
+    ]
+
+
+def test_parse_polish_response_recovers_items_from_mixed_timestamp_damage():
+    service = LLMService()
+    response = """[
+      {"index": 1, "timestamp": "00:00:00,000 --> 00:00:01,000", "text": "第一条"},
+      {"index": 2, "timestamp": "00:00:01,000 --> "00:00:02,000", "text": "第二条"},
+      {"index": 3, "timestamp": "00:00:02,000,"text": "第三条"}
+    ]"""
+
+    parsed = service._parse_polish_response(response, [])
+
+    assert [segment["index"] for segment in parsed] == [1, 2, 3]
+    assert [segment["text"] for segment in parsed] == ["第一条", "第二条", "第三条"]
 
 
 @pytest.mark.asyncio
@@ -188,7 +261,80 @@ async def test_parallel_polish_retries_only_transiently_failed_chunk(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_parallel_polish_reports_chunk_after_retry_is_exhausted(monkeypatch):
+async def test_kimi_polish_bounds_chunk_size_and_overlap(monkeypatch):
+    service = LLMService()
+    segments = [_srt_segment(index, f"cue-{index}") for index in range(1, 51)]
+    calls: list[list[int]] = []
+
+    monkeypatch.setattr(service, "_effective_provider", lambda _override="": "kimi-oauth")
+    monkeypatch.setattr(
+        llm_module,
+        "get_runtime_settings",
+        lambda: SimpleNamespace(llm_polish_concurrency=4),
+    )
+
+    async def fake_call(prompt, **_kwargs):
+        cue_ids = {int(value) for value in re.findall(r"cue-(\d+)", prompt)}
+        selected = [segment for segment in segments if int(segment["index"]) in cue_ids]
+        calls.append([int(segment["index"]) for segment in selected])
+        return json.dumps(selected, ensure_ascii=False)
+
+    monkeypatch.setattr(service, "_call", fake_call)
+
+    polished = await service.polish_with_context_parallel(
+        _srt(segments),
+        {},
+        chunk_size=64,
+        overlap=16,
+        max_concurrency=8,
+        provider_override="kimi-oauth",
+    )
+
+    assert calls == [
+        list(range(1, 25)),
+        list(range(21, 45)),
+        list(range(41, 51)),
+    ]
+    assert [segment["text"] for segment in service._parse_srt(polished)] == [
+        f"cue-{index}" for index in range(1, 51)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_parallel_polish_retries_severely_incomplete_response(monkeypatch):
+    service = LLMService()
+    segments = [_srt_segment(index, f"cue-{index}") for index in range(1, 5)]
+    calls = 0
+
+    monkeypatch.setattr(service, "_effective_provider", lambda _override="": "deepseek")
+    monkeypatch.setattr(
+        llm_module,
+        "get_runtime_settings",
+        lambda: SimpleNamespace(llm_polish_concurrency=1),
+    )
+
+    async def fake_call(_prompt, **_kwargs):
+        nonlocal calls
+        calls += 1
+        returned = segments[:1] if calls == 1 else segments
+        return json.dumps(returned, ensure_ascii=False)
+
+    monkeypatch.setattr(service, "_call", fake_call)
+
+    polished = await service.polish_with_context_parallel(
+        _srt(segments),
+        {},
+        chunk_size=4,
+        overlap=0,
+        max_concurrency=1,
+    )
+
+    assert calls == 2
+    assert all(polished.count(f"cue-{index}") == 1 for index in range(1, 5))
+
+
+@pytest.mark.asyncio
+async def test_parallel_polish_keeps_original_chunk_after_retry_is_exhausted(monkeypatch):
     service = LLMService()
     segments = [_srt_segment(index, f"cue-{index}") for index in range(1, 5)]
     calls = 0
@@ -209,13 +355,39 @@ async def test_parallel_polish_reports_chunk_after_retry_is_exhausted(monkeypatc
 
     monkeypatch.setattr(service, "_call", fake_call)
 
-    with pytest.raises(RuntimeError, match=r"Polish chunk 2/2 failed"):
-        await service.polish_with_context_parallel(
-            _srt(segments),
-            {},
-            chunk_size=2,
-            overlap=0,
-            max_concurrency=1,
-        )
+    polished = await service.polish_with_context_parallel(
+        _srt(segments),
+        {},
+        chunk_size=2,
+        overlap=0,
+        max_concurrency=1,
+    )
 
     assert calls == 2
+    assert all(polished.count(f"cue-{index}") == 1 for index in range(1, 5))
+
+
+def test_polish_reference_only_includes_overlapping_platform_cues():
+    service = LLMService()
+    context = {
+        "subtitle_reference_segments": [
+            {"start": 0.2, "end": 0.8, "text": "平台参考第一句"},
+            {"start": 8.0, "end": 9.0, "text": "范围外字幕"},
+        ]
+    }
+    chunk = [
+        {
+            "index": 1,
+            "timestamp": "00:00:00,000 --> 00:00:02,000",
+            "text": "[SPEAKER_00] ASR 第一局",
+        }
+    ]
+
+    reference = service._polish_subtitle_reference(context, chunk)
+    prompt = get_polish_prompt("ASR 字幕", subtitle_reference=reference)
+
+    assert "平台参考第一句" in reference
+    assert "范围外字幕" not in reference
+    assert "00:00:00,200 --> 00:00:00,800" in reference
+    assert "平台字幕参考不得改变 ASR 的说话人归属" in prompt
+    assert "平台参考第一句" in prompt

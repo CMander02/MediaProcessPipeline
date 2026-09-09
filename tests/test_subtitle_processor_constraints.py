@@ -69,3 +69,33 @@ async def test_platform_subtitle_polish_cannot_add_speakers_or_change_timestamps
     assert "嘉宾" not in result["polished_srt"]
     assert "00:00:00,000 --> 00:00:01,000" in result["polished_srt"]
     assert "00:09" not in result["polished_srt"]
+
+
+@pytest.mark.asyncio
+async def test_platform_subtitle_parse_stage_skips_llm(tmp_path, monkeypatch):
+    subtitle = tmp_path / "captions.srt"
+    subtitle.write_text(
+        "1\n00:00:00,000 --> 00:00:01,000\n第一句\n\n"
+        "2\n00:00:01,000 --> 00:00:02,000\n第二句",
+        encoding="utf-8",
+    )
+    metadata = MediaMetadata(title="字幕解析", media_type="video")
+    service = LLMService()
+
+    async def fail_call(*_args, **_kwargs):
+        raise AssertionError("parse-only subtitle stage called the LLM")
+
+    monkeypatch.setattr(service, "_call", fail_call)
+    monkeypatch.setattr(llm_module, "get_llm_service", lambda: service)
+
+    result = await process_subtitles(
+        str(subtitle),
+        "srt",
+        metadata,
+        polish=False,
+    )
+
+    assert len(result["segments"]) == 2
+    assert result["srt"].startswith("1\n00:00:00,000")
+    assert result["polished_srt"] == ""
+    assert result["polished_md"] == ""

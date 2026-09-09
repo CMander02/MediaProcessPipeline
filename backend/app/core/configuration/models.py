@@ -126,7 +126,7 @@ class RuntimeSettings(BaseModel):
     asr_provider: str = "sherpa_onnx"
 
     # Unified local ASR through sherpa-onnx
-    sherpa_model_id: str = "sensevoice-small-int8"
+    sherpa_model_id: str = "qwen3-asr-0.6b-int8"
     sherpa_model_root: str = ""
     sherpa_device: str = "auto"  # auto | cuda | cpu
     sherpa_num_threads: int = 4
@@ -186,6 +186,7 @@ class RuntimeSettings(BaseModel):
     prefer_platform_subtitles: bool = True  # Use platform subtitles when available
     subtitle_languages: str = "zh,en"  # Comma-separated language priority
     force_asr: bool = False  # Force ASR even when platform subtitles are available
+    use_platform_subtitle_reference: bool = True
 
     # UVR
     uvr_model: str = "UVR-MDX-NET-Inst_HQ_3"

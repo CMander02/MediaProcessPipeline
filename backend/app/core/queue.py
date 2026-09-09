@@ -1,11 +1,11 @@
-"""Async task queue — parallel downloads, serialised GPU.
+"""Async task queue with batched transcription before LLM post-processing.
 
 New tasks enter a download queue consumed by N concurrent download workers
 (I/O-bound, configurable via settings.max_download_concurrency, default 2).
-After the DOWNLOAD step completes, each task is moved to the GPU queue,
-which is consumed by a single GPU worker that runs UVR separation and ASR
-transcription serially to avoid VRAM conflicts. LLM steps (analysis, polish,
-summary) run freely inside the GPU worker after the GPU is released.
+After the DOWNLOAD step completes, each task is moved to the transcription
+queue. A single worker drains all ready transcription work before it starts
+the post-processing queue, keeping subtitle extraction ahead of long LLM
+polish and analysis calls.
 
 On backend restart, tasks that already completed DOWNLOAD are restored
 directly into the GPU queue so they skip re-downloading.
@@ -23,10 +23,13 @@ from app.core.database import get_task_store
 from app.core.events import TaskEvent, get_event_bus
 from app.core.logging_setup import (
     log_event,
-    set_task_context, set_worker_context, reset_context,
-    task_id_var, worker_var,
+    reset_context,
+    set_task_context,
+    set_worker_context,
+    task_id_var,
+    worker_var,
 )
-from app.models.task import TaskStatus
+from app.models.task import TaskStatus, TaskType
 
 logger = logging.getLogger(__name__)
 
@@ -60,21 +63,53 @@ def _flush_gpu_models() -> None:
         log_event(logger, logging.INFO, "runtime.gc.collected")
     except Exception:
         pass
+    try:
+        from app.services.analysis.local_llm_runtime import release_local_llm_runtime
+
+        release_local_llm_runtime()
+    except Exception as e:
+        log_event(logger, logging.WARNING, "gpu.local_llm.release_failed", error=e)
+
+
+def _release_transcription_models() -> None:
+    """Release ASR and UVR models before the post-processing batch starts."""
+    try:
+        from app.services.preprocessing.uvr import release_uvr_service
+
+        release_uvr_service()
+    except Exception as e:
+        log_event(logger, logging.WARNING, "gpu.uvr.release_failed", error=e)
+    try:
+        from app.services.recognition import release_asr_models
+
+        release_asr_models()
+    except Exception as e:
+        log_event(logger, logging.WARNING, "gpu.asr.release_failed", error=e)
+
+
+def _release_local_llm_runtime() -> None:
+    """Release the managed llama.cpp process before returning to transcription."""
+    try:
+        from app.services.analysis.local_llm_runtime import release_local_llm_runtime
+
+        release_local_llm_runtime()
+    except Exception as e:
+        log_event(logger, logging.WARNING, "gpu.local_llm.release_failed", error=e)
 
 
 class TaskQueue:
-    """Two-stage queue: parallel download → serialised GPU → free LLM."""
+    """Three-stage queue: parallel download, batched transcription, post-processing."""
 
     def __init__(self):
         self._download_queue: asyncio.Queue[UUID] = asyncio.Queue()
         self._gpu_queue: asyncio.Queue[UUID] = asyncio.Queue()
+        self._postprocess_queue: asyncio.Queue[UUID] = asyncio.Queue()
 
         self._download_worker_tasks: list[asyncio.Task] = []
         self._gpu_worker_task: asyncio.Task | None = None
 
-        # Called by the download worker to run just the DOWNLOAD step.
-        # Called by the GPU worker to run SEPARATE → TRANSCRIBE → ANALYZE → POLISH → ARCHIVE.
-        self._pipeline_fn: Callable[[UUID, bool], Coroutine[Any, Any, None]] | None = None
+        # Pipeline calls accept (task_id, download_worker_call, stop_after_transcribe).
+        self._pipeline_fn: Callable[..., Coroutine[Any, Any, None]] | None = None
 
         self._active_download_ids: set[UUID] = set()
         self._active_gpu_id: UUID | None = None
@@ -103,9 +138,13 @@ class TaskQueue:
 
     @property
     def pending_count(self) -> int:
-        return self._download_queue.qsize() + self._gpu_queue.qsize()
+        return (
+            self._download_queue.qsize()
+            + self._gpu_queue.qsize()
+            + self._postprocess_queue.qsize()
+        )
 
-    def set_pipeline(self, fn: Callable[[UUID, bool], Coroutine[Any, Any, None]]) -> None:
+    def set_pipeline(self, fn: Callable[..., Coroutine[Any, Any, None]]) -> None:
         self._pipeline_fn = fn
 
     async def submit(self, task_id: UUID) -> None:
@@ -135,6 +174,7 @@ class TaskQueue:
             return False
         self._remove_from_queue(self._download_queue, task_id)
         self._remove_from_queue(self._gpu_queue, task_id)
+        self._remove_from_queue(self._postprocess_queue, task_id)
         store.update_status(task_id, TaskStatus.CANCELLED, completed_at=datetime.now())
         if task.result and task.result.get("output_dir"):
             try:
@@ -167,6 +207,7 @@ class TaskQueue:
 
         self._remove_from_queue(self._download_queue, task_id)
         self._remove_from_queue(self._gpu_queue, task_id)
+        self._remove_from_queue(self._postprocess_queue, task_id)
 
         flow = task.flow
         if flow:
@@ -210,7 +251,7 @@ class TaskQueue:
         task = store.get(task_id)
         resumable = {TaskStatus.PAUSED, TaskStatus.FAILED}
         if force:
-            resumable.add(TaskStatus.COMPLETED)
+            resumable.update({TaskStatus.CANCELLED, TaskStatus.COMPLETED})
         if not task or task.status not in resumable:
             return False
 
@@ -261,7 +302,7 @@ class TaskQueue:
         return True
 
     async def rerun_from_checkpoint(self, task_id: UUID) -> bool:
-        """Queue an in-place checkpoint rerun for failed, paused, or completed tasks."""
+        """Queue an in-place checkpoint rerun from any durable stopped state."""
         return await self.resume(task_id, force=True)
 
     async def delete(self, task_id: UUID) -> dict[str, Any] | None:
@@ -274,6 +315,7 @@ class TaskQueue:
 
         self._remove_from_queue(self._download_queue, task_id)
         self._remove_from_queue(self._gpu_queue, task_id)
+        self._remove_from_queue(self._postprocess_queue, task_id)
         running = self._running_tasks.get(task_id)
         if running:
             running.cancel()
@@ -457,6 +499,18 @@ class TaskQueue:
                             reason="fast_path_redownload",
                             depth=self._download_queue.qsize(),
                         )
+                    elif (
+                        PipelineStep.TRANSCRIBE in completed
+                        or task.content_subtype in {"image_note", "text_note"}
+                    ):
+                        await self._postprocess_queue.put(task.id)
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "queue.postprocess.restored",
+                            reason="transcript_done",
+                            depth=self._postprocess_queue.qsize(),
+                        )
                     else:
                         await self._gpu_queue.put(task.id)
                         log_event(
@@ -525,6 +579,7 @@ class TaskQueue:
         if (
             self._download_queue.empty()
             and self._gpu_queue.empty()
+            and self._postprocess_queue.empty()
             and not self._active_download_ids
             and self._active_gpu_id is None
         ):
@@ -572,26 +627,64 @@ class TaskQueue:
                     reset_context(t_token, task_id_var)
                     self._active_download_ids.discard(task_id)
                     self._download_queue.task_done()
-                    await self._maybe_flush_all_models()
         finally:
             reset_context(w_token, worker_var)
 
     async def _gpu_worker(self) -> None:
-        """Pull downloaded tasks and run GPU + LLM steps sequentially."""
+        """Drain transcription work before sequential LLM post-processing."""
         w_token = set_worker_context("gpu-1")
+        previous_stage: str | None = None
         try:
             while self._running:
                 try:
-                    task_id = await asyncio.wait_for(self._gpu_queue.get(), timeout=1.0)
-                except asyncio.TimeoutError:
-                    continue
+                    task_id = self._gpu_queue.get_nowait()
+                    source_queue = self._gpu_queue
+                    stage = "transcribe"
+                except asyncio.QueueEmpty:
+                    if (
+                        self._download_queue.empty()
+                        and not self._active_download_ids
+                        and self._gpu_queue.empty()
+                    ):
+                        try:
+                            task_id = self._postprocess_queue.get_nowait()
+                            source_queue = self._postprocess_queue
+                            stage = "postprocess"
+                        except asyncio.QueueEmpty:
+                            await asyncio.sleep(0.2)
+                            continue
+                    else:
+                        await asyncio.sleep(0.2)
+                        continue
                 except asyncio.CancelledError:
                     break
 
+                if stage != previous_stage:
+                    if stage == "postprocess":
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "queue.transcription_batch.completed",
+                            postprocess_depth=self._postprocess_queue.qsize() + 1,
+                        )
+                        await asyncio.to_thread(_release_transcription_models)
+                    elif previous_stage == "postprocess":
+                        await asyncio.to_thread(_release_local_llm_runtime)
+                    previous_stage = stage
+
                 store = get_task_store()
                 task = store.get(task_id)
-                if not task or task.status == TaskStatus.CANCELLED:
-                    self._gpu_queue.task_done()
+                if not task or task.status in {TaskStatus.CANCELLED, TaskStatus.PAUSED}:
+                    source_queue.task_done()
+                    continue
+
+                if (
+                    stage == "transcribe"
+                    and task.task_type == TaskType.PIPELINE
+                    and task.content_subtype in {"image_note", "text_note"}
+                ):
+                    await self.advance_to_postprocess(task_id)
+                    source_queue.task_done()
                     continue
 
                 # Serial mode: wait until all downloads are idle before using GPU
@@ -611,22 +704,36 @@ class TaskQueue:
 
                 self._active_gpu_id = task_id
                 t_token = set_task_context(str(task_id))
-                log_event(logger, logging.INFO, "queue.gpu.started")
+                log_event(logger, logging.INFO, f"queue.{stage}.started")
 
                 try:
                     if self._pipeline_fn:
-                        running = asyncio.create_task(self._pipeline_fn(task_id, False))
+                        running = asyncio.create_task(
+                            self._pipeline_fn(
+                                task_id,
+                                False,
+                                (
+                                    stage == "transcribe"
+                                    and task.task_type == TaskType.PIPELINE
+                                ),
+                            )
+                        )
                         self._running_tasks[task_id] = running
-                        await running  # gpu-worker call
+                        await running
                 except asyncio.CancelledError:
-                    log_event(logger, logging.INFO, "queue.gpu.cancelled")
+                    log_event(logger, logging.INFO, f"queue.{stage}.cancelled")
                 except Exception:
-                    log_event(logger, logging.ERROR, "queue.gpu.failed", exc_info=True)
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        f"queue.{stage}.failed",
+                        exc_info=True,
+                    )
                 finally:
                     self._running_tasks.pop(task_id, None)
                     reset_context(t_token, task_id_var)
                     self._active_gpu_id = None
-                    self._gpu_queue.task_done()
+                    source_queue.task_done()
                     await self._maybe_flush_all_models()
         finally:
             reset_context(w_token, worker_var)
@@ -637,8 +744,26 @@ class TaskQueue:
 
     async def advance_to_gpu(self, task_id: UUID) -> None:
         """Move a task from download stage to the GPU queue."""
+        task = get_task_store().get(task_id)
+        completed = set(task.completed_steps or []) if task else set()
+        if task and (
+            "transcribe" in completed
+            or task.content_subtype in {"image_note", "text_note"}
+        ):
+            await self.advance_to_postprocess(task_id)
+            return
         await self._gpu_queue.put(task_id)
         log_event(logger, logging.INFO, "queue.gpu.enqueued", depth=self._gpu_queue.qsize())
+
+    async def advance_to_postprocess(self, task_id: UUID) -> None:
+        """Move a transcript-ready task to the deferred LLM queue."""
+        await self._postprocess_queue.put(task_id)
+        log_event(
+            logger,
+            logging.INFO,
+            "queue.postprocess.enqueued",
+            depth=self._postprocess_queue.qsize(),
+        )
 
     # ------------------------------------------------------------------
     # Inspection
@@ -647,7 +772,8 @@ class TaskQueue:
     def get_queue_snapshot(self) -> list[UUID]:
         dl = list(self._download_queue._queue)   # type: ignore[attr-defined]
         gpu = list(self._gpu_queue._queue)        # type: ignore[attr-defined]
-        return dl + gpu
+        postprocess = list(self._postprocess_queue._queue)  # type: ignore[attr-defined]
+        return dl + gpu + postprocess
 
 
 # Singleton

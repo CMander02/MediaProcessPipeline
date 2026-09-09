@@ -15,7 +15,7 @@ from app.core.settings import RuntimeSettings
 LLM_STAGES = {"analyze", "polish", "summary", "mindmap"}
 ASR_PROVIDERS = {"moss_cpp", "sherpa_onnx", "siliconflow"}
 
-_DEFAULT_SHERPA_MODEL = "sensevoice-small-int8"
+_DEFAULT_SHERPA_MODEL = "qwen3-asr-0.6b-int8"
 _DEFAULT_DEEPSEEK_API_BASE = "https://api.deepseek.com"
 _DEFAULT_SILICONFLOW_VLM_MODEL = "Qwen/Qwen3.5-4B"
 _LEGACY_VLM_DEFAULT_MODELS = {"qwen2.5-vl-7b-instruct"}
@@ -267,9 +267,18 @@ def resolve_llm_binding(
     """Resolve an LLM provider binding without applying polish-local fallback."""
 
     normalized_stage = _normalize_stage(stage)
-    stage_binding = _stage_runtime_binding(rt, normalized_stage) if not provider_override else {}
+    configured_stage_binding = _stage_runtime_binding(rt, normalized_stage)
+    override_provider = _canonical_provider_id(provider_override)
+    stage_provider = _canonical_provider_id(
+        configured_stage_binding.get("provider_id")
+    )
+    stage_binding = (
+        configured_stage_binding
+        if not override_provider or override_provider == stage_provider
+        else {}
+    )
     provider = (
-        _canonical_provider_id(provider_override)
+        override_provider
         or _canonical_provider_id(stage_binding.get("provider_id"))
         or _normalize_provider(rt.llm_provider)
     )
@@ -582,7 +591,12 @@ def resolve_provider_model_binding(
     )
     enabled = bool(provider.get("enabled", True) and model.get("enabled", True))
     resolved_model = _clean_text(model.get("model_id"))
-    cli_oauth = provider_type in {"codex_oauth", "agy_oauth"}
+    cli_oauth = provider_type in {
+        "codex_oauth",
+        "agy_oauth",
+        "kimi_oauth",
+        "qoder_oauth",
+    }
     configured = bool(enabled and resolved_model and (api_base or cli_oauth))
     return ProviderModelBinding(
         provider_id=requested_provider,
@@ -633,6 +647,8 @@ def _llm_binding_from_provider(
     transport = {
         "codex_oauth": "codex_cli",
         "agy_oauth": "agy_cli",
+        "kimi_oauth": "kimi_cli",
+        "qoder_oauth": "qoder_cli",
     }.get(binding.provider_type, "litellm")
     if not binding.configured:
         return LLMBinding(
@@ -646,7 +662,10 @@ def _llm_binding_from_provider(
             reason=binding.reason,
             request_kwargs={},
         )
-    if transport in {"codex_cli", "agy_cli"}:
+    if transport in {"codex_cli", "agy_cli", "kimi_cli", "qoder_cli"}:
+        default_params = binding.request_kwargs.get("default_params")
+        if not isinstance(default_params, dict):
+            default_params = {}
         return LLMBinding(
             provider=provider_id,
             stage=_normalize_stage(stage),
@@ -658,6 +677,7 @@ def _llm_binding_from_provider(
                 "cli_path": binding.request_kwargs.get("cli_path", ""),
                 "timeout_sec": binding.request_kwargs.get("timeout_sec", 600),
                 "provider_type": binding.provider_type,
+                "reasoning_effort": _clean_text(default_params.get("reasoning_effort")),
             },
         )
     return LLMBinding(
@@ -1002,9 +1022,18 @@ def resolve_vlm_binding(rt: RuntimeSettings) -> EndpointBinding:
             "vision",
         )
         if provider_binding.configured or provider_binding.reason != "provider not found":
+            oauth_cli = provider_binding.provider_type in {
+                "codex_oauth",
+                "agy_oauth",
+                "kimi_oauth",
+                "qoder_oauth",
+            }
+            cli_model_name = _clean_text(
+                provider_binding.request_kwargs.get("cli_model_name")
+            )
             return EndpointBinding(
                 capability="vlm",
-                model=provider_binding.model_id,
+                model=(cli_model_name or provider_binding.model_id),
                 api_base=provider_binding.api_base,
                 api_key=provider_binding.api_key,
                 configured=provider_binding.configured,
@@ -1014,6 +1043,16 @@ def resolve_vlm_binding(rt: RuntimeSettings) -> EndpointBinding:
                     "max_tokens": rt.vlm_max_tokens,
                     "concurrency": rt.vlm_concurrency,
                     "timeout_sec": rt.vlm_timeout_sec,
+                    "transport": "oauth_cli" if oauth_cli else "openai_compatible",
+                    "provider_id": provider_binding.provider_id,
+                    "provider_type": provider_binding.provider_type,
+                    "cli_path": provider_binding.request_kwargs.get("cli_path", ""),
+                    "model_id": provider_binding.model_id,
+                    "reasoning_effort": _clean_text(
+                        provider_binding.request_kwargs.get("default_params", {}).get(
+                            "reasoning_effort"
+                        )
+                    ),
                     **provider_binding.request_kwargs.get("default_params", {}),
                 },
             )

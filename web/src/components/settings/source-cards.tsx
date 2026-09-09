@@ -735,6 +735,21 @@ export function BilibiliCard({ settings, updateSetting, saving, saved, onAuthCha
                 </div>
               </div>
 
+              <div className="flex items-center justify-between gap-4">
+                <Label className="text-sm text-muted-foreground">默认使用 ASR + 原生字幕参考</Label>
+                <div className="flex items-center gap-2">
+                  {saved.use_platform_subtitle_reference && (
+                    <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
+                  )}
+                  <Switch
+                    checked={Boolean(settings.use_platform_subtitle_reference ?? true)}
+                    disabled={Boolean(saving.use_platform_subtitle_reference)}
+                    onCheckedChange={(value) =>
+                      updateSetting("use_platform_subtitle_reference", Boolean(value))}
+                  />
+                </div>
+              </div>
+
               <Separator />
               <p className="text-xs font-medium text-muted-foreground">字幕下载与校验</p>
 

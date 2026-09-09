@@ -2,6 +2,8 @@
 
 from typing import Any
 
+from pydantic import BaseModel
+
 from app.core.configuration.constants import _RUNTIME_BINDING_SPECS
 from app.core.configuration.profiles import _coerce_custom_profiles, _str_value
 from app.core.configuration.registry import (
@@ -11,7 +13,6 @@ from app.core.configuration.registry import (
     _find_provider_model,
     _normalize_provider_id,
 )
-from pydantic import BaseModel
 
 
 def _binding_record(provider_id: Any, model_id: Any, capability: str) -> dict[str, str]:
@@ -60,7 +61,7 @@ def _default_runtime_model_bindings(data: dict[str, Any]) -> dict[str, dict[str,
             model_id = _str_value(data.get("sherpa_model_id") or "qwen3-asr-1.7b-onnx").strip()
         elif provider_id == "sherpa_onnx":
             model_id = _str_value(
-                data.get("sherpa_model_id") or model_id or "sensevoice-small-int8"
+                data.get("sherpa_model_id") or model_id or "qwen3-asr-0.6b-int8"
             ).strip()
         elif provider_id == "siliconflow" and key == "asr":
             model_id = _str_value(data.get("siliconflow_asr_model")).strip()

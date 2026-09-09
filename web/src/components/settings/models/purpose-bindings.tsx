@@ -1,7 +1,15 @@
 import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { type PurposeModelBindingsProps, type PurposeBindingDef } from "./types"
 import {
-  getProviderModelOptions,
+  buildProviderModelOptions,
   getRuntimeModelBindings,
   bindingValue,
   asrBindingValue,
@@ -11,10 +19,10 @@ import {
 import { CardLikeSection } from "./controls"
 
 export function PurposeModelBindings({ settings, updateSetting }: PurposeModelBindingsProps) {
-  const textOptions = getProviderModelOptions(settings, "llm")
-  const asrOptions = getProviderModelOptions(settings, "asr")
-  const visionOptions = getProviderModelOptions(settings, "vision")
-  const embeddingOptions = getProviderModelOptions(settings, "embedding")
+  const textOptions = buildProviderModelOptions(settings, "llm")
+  const asrOptions = buildProviderModelOptions(settings, "asr")
+  const visionOptions = buildProviderModelOptions(settings, "vision")
+  const embeddingOptions = buildProviderModelOptions(settings, "embedding")
   const runtimeBindings = getRuntimeModelBindings(settings)
 
   const bindings: PurposeBindingDef[] = [
@@ -114,28 +122,30 @@ function PurposeBindingRow({
   onChange: (value: string) => Promise<void>
 }) {
   const hasSelectedValue = binding.options.some((option) => option.value === value)
-  const selectedValue = hasSelectedValue ? value : binding.options[0]?.value ?? ""
+  const selectedValue = hasSelectedValue ? value : ""
 
   return (
-    <div className="space-y-2 rounded-lg border border-border/70 p-3">
-      <div className="space-y-1">
+    <div className="flex flex-col gap-2 rounded-lg border border-border/70 p-3">
+      <div className="flex flex-col gap-1">
         <Label className="text-sm font-medium">{binding.label}</Label>
         <p className="text-xs leading-5 text-muted-foreground">{binding.description}</p>
       </div>
-      <select
+      <Select
         value={selectedValue}
-        onChange={(event) => void onChange(event.target.value)}
+        onValueChange={(nextValue) => void onChange(nextValue)}
         disabled={binding.options.length === 0}
-        className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
       >
-        {binding.options.length === 0 ? (
-          <option value="">无可用模型</option>
-        ) : (
-          binding.options.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))
-        )}
-      </select>
+        <SelectTrigger className="w-full" aria-label={binding.label}>
+          <SelectValue placeholder={binding.options.length === 0 ? "无可用模型" : value ? "已选模型不可用，请重新选择" : "请选择模型"} />
+        </SelectTrigger>
+        <SelectContent position="popper" align="start">
+          <SelectGroup>
+            {binding.options.map((option) => (
+              <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+            ))}
+          </SelectGroup>
+        </SelectContent>
+      </Select>
     </div>
   )
 }

@@ -66,6 +66,38 @@ def test_jina_reader_key_is_masked():
     assert data["jina_reader_api_key"] == "*" * len("jina-secret-1234")
 
 
+def test_platform_subtitle_reference_is_enabled_by_default():
+    assert core_settings.RuntimeSettings().use_platform_subtitle_reference is True
+
+
+def test_oauth_llm_models_are_registered_for_vision():
+    providers = core_settings._normalize_provider_array(
+        [
+            {
+                "id": "codex-oauth",
+                "name": "Codex OAuth",
+                "provider_type": "codex_oauth",
+                "models": [
+                    {
+                        "id": "codex-oauth:default",
+                        "model_id": "default",
+                        "display_name": "GPT-5.6 Luna (Max)",
+                        "model_type": "llm",
+                        "capabilities": ["llm", "chat", "json"],
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert providers[0]["models"][0]["capabilities"] == [
+        "llm",
+        "chat",
+        "json",
+        "vision",
+    ]
+
+
 def test_siliconflow_model_type_inference_uses_model_id_keywords():
     cases = {
         "BAAI/bge-reranker-v2-m3": "rerank",
@@ -249,22 +281,96 @@ async def test_oauth_provider_model_payload_uses_cli_catalog(monkeypatch):
     from app.services.analysis import coding_plan_cli
 
     async def fake_models(provider_type: str, *, cli_path: str):
-        assert provider_type == "codex_oauth"
-        assert cli_path == "C:/Tools/codex.exe"
+        assert provider_type == "kimi_oauth"
+        assert cli_path == "C:/Tools/kimi.exe"
         return [
             {"id": "default", "display_name": "CLI 当前默认模型", "model_type": "llm"},
-            {"id": "gpt-5.6-sol", "display_name": "gpt-5.6-sol", "model_type": "llm"},
+            {
+                "id": "kimi-code/kimi-for-coding",
+                "display_name": "K2.7 Coding",
+                "model_type": "llm",
+                "cli_model_name": "kimi-code/kimi-for-coding",
+            },
         ]
 
     monkeypatch.setattr(coding_plan_cli, "coding_plan_models", fake_models)
 
     payload = await settings_route._fetch_provider_models_payload({
-        "id": "codex-oauth",
-        "provider_type": "codex_oauth",
-        "cli_path": "C:/Tools/codex.exe",
+        "id": "kimi-oauth",
+        "provider_type": "kimi_oauth",
+        "cli_path": "C:/Tools/kimi.exe",
     })
 
-    assert [model["id"] for model in payload["data"]] == ["default", "gpt-5.6-sol"]
+    parsed = settings_route._provider_models_from_payload(payload)
+    assert [model["id"] for model in parsed] == ["default", "kimi-code/kimi-for-coding"]
+    assert parsed[1]["cli_model_name"] == "kimi-code/kimi-for-coding"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("latest", ["gpt-5.6-luna", "gpt-6-astra"])
+async def test_oauth_model_sync_replaces_stale_aliases(monkeypatch, latest):
+    runtime = core_settings.RuntimeSettings(
+        providers=[
+            {
+                "id": "codex-oauth",
+                "name": "Codex OAuth",
+                "provider_type": "codex_oauth",
+                "enabled": True,
+                "models": [
+                    {
+                        "id": "codex-oauth:default",
+                        "model_id": "default",
+                        "display_name": "GPT-5.6 Luna (Max)",
+                        "model_type": "llm",
+                        "enabled": True,
+                        "cli_model_name": "gpt-5.6-luna",
+                    },
+                    {
+                        "id": "codex-oauth:gpt-5.6-luna",
+                        "model_id": "gpt-5.6-luna",
+                        "display_name": "GPT-5.6 Luna (Max)",
+                        "model_type": "llm",
+                        "enabled": True,
+                    },
+                ],
+            }
+        ],
+        runtime_model_bindings={
+            "polish": {"provider_id": "codex-oauth", "model_id": "gpt-5.6-luna", "capability": "llm"},
+        },
+    )
+
+    async def fake_fetch(_provider):
+        return {
+            "data": [
+                {
+                    "id": "default",
+                    "display_name": f"CLI 当前默认模型（{latest}）",
+                    "model_type": "llm",
+                    "cli_model_name": latest,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(settings_route, "get_runtime_settings", lambda: runtime)
+    monkeypatch.setattr(settings_route, "_fetch_provider_models_payload", fake_fetch)
+    patched = []
+
+    def apply_updates(updates):
+        result = core_settings.RuntimeSettings(**{**runtime.model_dump(), **updates})
+        patched.append(result)
+        return result
+
+    monkeypatch.setattr(settings_route, "patch_runtime_settings", apply_updates)
+
+    result = await settings_route.sync_provider_models("codex-oauth")
+
+    assert [model["model_id"] for model in result["models"]] == ["default"]
+    expected_label = "GPT-5.6 Luna (Max)" if latest == "gpt-5.6-luna" else f"CLI 当前默认模型（{latest}）"
+    assert result["models"][0]["display_name"] == expected_label
+    assert result["models"][0]["cli_model_name"] == latest
+    selected = patched[-1].runtime_model_bindings["polish"].model_id
+    assert selected == ("default" if latest == "gpt-5.6-luna" else "gpt-5.6-luna")
 
 
 def test_agy_cli_model_name_survives_provider_normalization():
@@ -357,6 +463,12 @@ def test_flat_config_load_migrates_default_service_registry(isolated_settings_fi
     agy_oauth = _by_id(data["providers"], "agy-oauth")
     assert agy_oauth["provider_type"] == "agy_oauth"
     assert agy_oauth["timeout_sec"] == 600
+    kimi_oauth = _by_id(data["providers"], "kimi-oauth")
+    assert kimi_oauth["provider_type"] == "kimi_oauth"
+    assert kimi_oauth["models"][0]["model_id"] == "default"
+    qoder_oauth = _by_id(data["providers"], "qodercn-oauth")
+    assert qoder_oauth["provider_type"] == "qoder_oauth"
+    assert qoder_oauth["models"][0]["model_id"] == "default"
     assert data["runtime_model_bindings"]["summary"] == {
         "provider_id": "deepseek",
         "model_id": "deepseek-summary",
@@ -364,7 +476,7 @@ def test_flat_config_load_migrates_default_service_registry(isolated_settings_fi
     }
     assert data["runtime_model_bindings"]["asr"] == {
         "provider_id": "sherpa_onnx",
-        "model_id": "sensevoice-small-int8",
+        "model_id": "qwen3-asr-0.6b-int8",
         "capability": "asr",
     }
 

@@ -16,7 +16,6 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.api.routes import tasks as task_routes  # noqa: E402
-from app.cli import main as cli_main  # noqa: E402
 from app.cli.client import MppClient, MppClientError  # noqa: E402
 from app.cli.commands import operations as operation_commands  # noqa: E402
 from app.cli.commands import task as task_commands  # noqa: E402
@@ -363,6 +362,20 @@ def test_common_submit_options_and_conflicts():
         "skip_separation": True,
         "num_speakers": 2,
         "hotwords": ["Codex", "MPP"],
+    }
+
+    reference_options = task_options(subtitle_reference=True)
+    assert reference_options == {
+        "force_asr": True,
+        "use_platform_subtitle_reference": True,
+    }
+    assert task_options(force_asr=True) == {
+        "force_asr": True,
+        "use_platform_subtitle_reference": False,
+    }
+    assert task_options(prefer_subtitles=True) == {
+        "force_asr": False,
+        "use_platform_subtitle_reference": False,
     }
 
 

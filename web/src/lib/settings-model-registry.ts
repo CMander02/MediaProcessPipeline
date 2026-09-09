@@ -107,6 +107,13 @@ export const MODEL_REGISTRY: ModelRegistryEntry[] = [
     stages: ["asr"],
   },
   {
+    value: "qwen3-asr-0.6b-int8",
+    label: "Qwen3-ASR 0.6B INT8",
+    provider: "sherpa_onnx",
+    capabilities: ["asr", "fast", "local"],
+    stages: ["asr"],
+  },
+  {
     value: "qwen3-asr-1.7b-onnx",
     label: "Qwen3-ASR 1.7B INT8",
     provider: "sherpa_onnx",

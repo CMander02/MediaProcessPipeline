@@ -1,11 +1,19 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.core.model_router import resolve_embedding_binding, resolve_vlm_binding  # noqa: E402
+from app.core.model_router import (  # noqa: E402
+    EndpointBinding,
+    resolve_embedding_binding,
+    resolve_vlm_binding,
+)
 from app.core.settings import RuntimeSettings  # noqa: E402
+from app.services.analysis import coding_plan_cli  # noqa: E402
+from app.services.analysis.vlm import VLMService  # noqa: E402
 
 
 def test_vlm_binding_resolves_openai_compatible_endpoint():
@@ -69,6 +77,86 @@ def test_vlm_binding_resolves_local_llama_cpp_multimodal_model():
     assert binding.api_base == "local://llama_cpp"
     assert binding.request_kwargs["local_engine"] == "llama_cpp"
     assert binding.request_kwargs["parallel"] == 2
+
+
+def test_vlm_binding_resolves_codex_oauth_luna_max():
+    settings = RuntimeSettings(
+        providers=[
+            {
+                "id": "codex-oauth",
+                "name": "Codex OAuth",
+                "provider_type": "codex_oauth",
+                "enabled": True,
+                "cli_path": "C:/tools/codex.exe",
+                "models": [
+                    {
+                        "id": "codex-oauth:default",
+                        "model_id": "default",
+                        "display_name": "GPT-5.6 Luna (Max)",
+                        "model_type": "llm",
+                        "capabilities": ["llm", "chat", "json", "vision"],
+                        "cli_model_name": "gpt-5.6-luna",
+                        "enabled": True,
+                        "default_params": {"reasoning_effort": "max"},
+                    }
+                ],
+            }
+        ],
+        runtime_model_bindings={
+            "vision": {
+                "provider_id": "codex-oauth",
+                "model_id": "default",
+                "capability": "vision",
+            }
+        },
+    )
+
+    binding = resolve_vlm_binding(settings)
+
+    assert binding.configured is True
+    assert binding.model == "gpt-5.6-luna"
+    assert binding.api_base == ""
+    assert binding.request_kwargs["transport"] == "oauth_cli"
+    assert binding.request_kwargs["provider_type"] == "codex_oauth"
+    assert binding.request_kwargs["cli_path"] == "C:/tools/codex.exe"
+    assert binding.request_kwargs["reasoning_effort"] == "max"
+
+
+def test_vlm_service_passes_image_to_oauth_cli(monkeypatch, tmp_path):
+    Image = pytest.importorskip("PIL.Image")
+    image_path = tmp_path / "sample.png"
+    Image.new("RGB", (32, 24), color=(24, 80, 160)).save(image_path)
+    captured = {}
+
+    async def fake_call(provider_type, **kwargs):
+        captured["provider_type"] = provider_type
+        captured.update(kwargs)
+        return "KIND: content\n一张蓝色测试图片。"
+
+    monkeypatch.setattr(coding_plan_cli, "call_coding_plan_cli", fake_call)
+    binding = EndpointBinding(
+        capability="vlm",
+        model="gpt-5.6-luna",
+        api_base="",
+        api_key="",
+        configured=True,
+        request_kwargs={
+            "transport": "oauth_cli",
+            "provider_type": "codex_oauth",
+            "cli_path": "C:/tools/codex.exe",
+            "reasoning_effort": "max",
+            "timeout_sec": 120,
+        },
+    )
+
+    result = VLMService().describe_image(image_path, binding)
+
+    assert result["kind"] == "content"
+    assert result["text"] == "一张蓝色测试图片。"
+    assert captured["provider_type"] == "codex_oauth"
+    assert captured["model"] == "gpt-5.6-luna"
+    assert captured["reasoning_effort"] == "max"
+    assert captured["image_paths"] == [image_path]
 
 
 def test_embedding_binding_tracks_kb_enablement_and_vector_settings():

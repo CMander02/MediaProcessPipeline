@@ -2,11 +2,14 @@
 
 from typing import Any
 
+from pydantic import BaseModel
+
 from app.core.configuration.constants import (
     _MASKED_SECRET_PATTERN,
     _MODEL_FIELD_SPECS,
     _MODEL_TYPE_CAPABILITIES,
     _MODEL_TYPE_ENDPOINT_PATHS,
+    _OAUTH_PROVIDER_TYPES,
     _PROVIDER_CONNECTION_ALIASES,
     _PROVIDER_FLAT_KEYS,
     _PROVIDER_MODEL_TYPE_CAPABILITIES,
@@ -14,7 +17,6 @@ from app.core.configuration.constants import (
     _SILICONFLOW_RERANK_DEFAULT_PARAMS,
 )
 from app.core.configuration.profiles import _coerce_custom_profiles, _positive_int, _str_value
-from pydantic import BaseModel
 
 
 def _looks_masked_secret(value: Any) -> bool:
@@ -621,7 +623,7 @@ def _default_provider_records(data: dict[str, Any]) -> list[dict[str, Any]]:
         "default",
         display_name="CLI 当前默认模型",
         model_type="llm",
-        capabilities=["reasoning", "json"],
+        capabilities=["reasoning", "json", "vision"],
     )
     providers.append(
         _provider_record(
@@ -639,7 +641,7 @@ def _default_provider_records(data: dict[str, Any]) -> list[dict[str, Any]]:
         "default",
         display_name="CLI 当前默认模型",
         model_type="llm",
-        capabilities=["reasoning", "json"],
+        capabilities=["reasoning", "json", "vision"],
     )
     providers.append(
         _provider_record(
@@ -649,6 +651,42 @@ def _default_provider_records(data: dict[str, Any]) -> list[dict[str, Any]]:
             api_mode="oauth_cli",
             timeout_sec=600,
             models=[agy_model] if agy_model else [],
+        )
+    )
+
+    kimi_model = _provider_model_record(
+        "kimi-oauth",
+        "default",
+        display_name="CLI 当前默认模型",
+        model_type="llm",
+        capabilities=["reasoning", "json", "vision"],
+    )
+    providers.append(
+        _provider_record(
+            provider_id="kimi-oauth",
+            name="Kimi Code OAuth",
+            provider_type="kimi_oauth",
+            api_mode="oauth_cli",
+            timeout_sec=600,
+            models=[kimi_model] if kimi_model else [],
+        )
+    )
+
+    qoder_model = _provider_model_record(
+        "qodercn-oauth",
+        "default",
+        display_name="CLI 当前默认模型",
+        model_type="llm",
+        capabilities=["reasoning", "json", "vision"],
+    )
+    providers.append(
+        _provider_record(
+            provider_id="qodercn-oauth",
+            name="QoderCN OAuth",
+            provider_type="qoder_oauth",
+            api_mode="oauth_cli",
+            timeout_sec=600,
+            models=[qoder_model] if qoder_model else [],
         )
     )
 
@@ -854,6 +892,17 @@ def _normalize_provider_array(providers: list[Any]) -> list[dict[str, Any]]:
         if provider_id == "siliconflow":
             balance = {"enabled": True, "endpoint_path": "/user/info", "method": "GET", **balance}
 
+        models = _normalize_provider_model_array(
+            provider_id,
+            data.get("models") if isinstance(data.get("models"), list) else [],
+        )
+        if provider_type in _OAUTH_PROVIDER_TYPES:
+            for model in models:
+                if model.get("model_type") == "llm":
+                    model["capabilities"] = list(
+                        dict.fromkeys([*model.get("capabilities", []), "vision"])
+                    )
+
         normalized.append(
             _provider_record(
                 provider_id=provider_id,
@@ -870,10 +919,7 @@ def _normalize_provider_array(providers: list[Any]) -> list[dict[str, Any]]:
                 if isinstance(data.get("extra_body"), dict)
                 else {},
                 balance=balance,
-                models=_normalize_provider_model_array(
-                    provider_id,
-                    data.get("models") if isinstance(data.get("models"), list) else [],
-                ),
+                models=models,
             )
         )
     return normalized

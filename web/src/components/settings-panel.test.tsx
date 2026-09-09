@@ -5,7 +5,8 @@ import "@testing-library/jest-dom/vitest"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { SettingsPanel } from "./settings-panel"
-import { api } from "@/lib/api"
+import { buildProviderModelOptions } from "./settings/models/registry-utils"
+import { api, type Settings } from "@/lib/api"
 
 vi.mock("@/hooks/use-app-access-context", () => ({
   useAppAccess: () => ({ online: true, authExpired: false }),
@@ -16,7 +17,7 @@ const { mockSettings } = vi.hoisted(() => ({
     llm_provider: "deepseek",
     asr_provider: "sherpa_onnx",
     audio_processing_flow: "asr",
-    sherpa_model_id: "sensevoice-small-int8",
+    sherpa_model_id: "qwen3-asr-0.6b-int8",
     sherpa_model_root: "",
     sherpa_device: "auto",
     sherpa_num_threads: 4,
@@ -139,9 +140,10 @@ vi.mock("@/lib/api", () => ({
       detectLocalUvr: vi.fn().mockResolvedValue({ found: false, path: "", models: [] }),
       localAsrModels: vi.fn().mockResolvedValue({
         model_root: "C:/Models/sherpa-onnx",
-        selected_model_id: "sensevoice-small-int8",
+        selected_model_id: "qwen3-asr-0.6b-int8",
         runtime: null,
         models: [
+          { id: "qwen3-asr-0.6b-int8", display_name: "Qwen3-ASR 0.6B INT8", family: "qwen3_asr", directory: "C:/Models/sherpa-onnx/qwen3-0.6b", installed: true, verified: true, compatible: true },
           { id: "qwen3-asr-1.7b-onnx", display_name: "Qwen3-ASR 1.7B INT8", family: "qwen3_asr", directory: "C:/Models/sherpa-onnx/qwen3", installed: true, verified: true, compatible: true },
           { id: "sensevoice-small-int8", display_name: "SenseVoice Small INT8", family: "sense_voice", directory: "C:/Models/sherpa-onnx/sensevoice", installed: true, verified: true, compatible: true },
           { id: "paraformer-zh-int8", display_name: "Paraformer Chinese INT8", family: "paraformer", directory: "C:/Models/sherpa-onnx/paraformer", installed: true, verified: true, compatible: true },
@@ -344,6 +346,62 @@ afterEach(() => {
 })
 
 describe("SettingsPanel", () => {
+  it("deduplicates OAuth aliases and hides generic defaults when concrete models exist", () => {
+    const settings = {
+      providers: [
+        {
+          id: "codex-oauth",
+          name: "Codex OAuth",
+          provider_type: "codex_oauth",
+          models: [
+            {
+              id: "codex-oauth:default",
+              model_id: "default",
+              display_name: "GPT-5.6 Luna (Max)",
+              model_type: "llm",
+              cli_model_name: "gpt-5.6-luna",
+            },
+            {
+              id: "codex-oauth:gpt-5.6-luna",
+              model_id: "gpt-5.6-luna",
+              display_name: "GPT-5.6 Luna (Max)",
+              model_type: "llm",
+            },
+          ],
+        },
+        {
+          id: "kimi-oauth",
+          name: "Kimi Code OAuth",
+          provider_type: "kimi_oauth",
+          models: [
+            {
+              id: "kimi-oauth:default",
+              model_id: "default",
+              display_name: "CLI 当前默认模型",
+              model_type: "llm",
+            },
+            {
+              id: "kimi-oauth:kimi-code/k3",
+              model_id: "kimi-code/k3",
+              display_name: "K3",
+              model_type: "llm",
+            },
+          ],
+        },
+      ],
+    } as unknown as Settings
+    const options = buildProviderModelOptions(settings, "llm")
+    const visionOptions = buildProviderModelOptions(settings, "vision")
+
+    expect(options.filter((option) => option.label === "GPT-5.6 Luna (Max) · Codex OAuth"))
+      .toEqual([{ value: "codex-oauth:default", label: "GPT-5.6 Luna (Max) · Codex OAuth" }])
+    expect(options.some((option) => option.label === "CLI 当前默认模型 · Kimi Code OAuth")).toBe(false)
+    expect(options.some((option) => option.label === "K3 · Kimi Code OAuth")).toBe(true)
+    expect(visionOptions.filter((option) => option.label === "GPT-5.6 Luna (Max) · Codex OAuth"))
+      .toEqual([{ value: "codex-oauth:default", label: "GPT-5.6 Luna (Max) · Codex OAuth" }])
+    expect(visionOptions.some((option) => option.label === "K3 · Kimi Code OAuth")).toBe(true)
+  })
+
   it("renders six hierarchical tabs", async () => {
     render(<SettingsPanel />)
 
@@ -399,7 +457,8 @@ describe("SettingsPanel", () => {
     expect(screen.getByText("ASR")).toBeInTheDocument()
     expect(screen.getAllByRole("combobox").length).toBeGreaterThanOrEqual(8)
     expect(screen.queryByText(/当前：/)).not.toBeInTheDocument()
-    expect(screen.getByDisplayValue("BAAI/bge-m3 · SiliconFlow")).toBeInTheDocument()
+    expect(screen.getByRole("combobox", { name: "知识库向量" }))
+      .toHaveTextContent("已选模型不可用，请重新选择")
 
     fireEvent.click(await screen.findByRole("button", { name: "模型提供商" }))
 
@@ -412,6 +471,10 @@ describe("SettingsPanel", () => {
     const codexOAuthButton = within(providerList as HTMLElement).getByRole("button", { name: /Codex OAuth/ })
     expect(codexOAuthButton).toBeInTheDocument()
     expect(within(providerList as HTMLElement).getByRole("button", { name: /Antigravity OAuth/ })).toBeInTheDocument()
+    const kimiOAuthButton = within(providerList as HTMLElement).getByRole("button", { name: /Kimi Code OAuth/ })
+    expect(kimiOAuthButton).toBeInTheDocument()
+    const qoderOAuthButton = within(providerList as HTMLElement).getByRole("button", { name: /QoderCN OAuth/ })
+    expect(qoderOAuthButton).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /本地 HF 模型/ })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /Vision Server/ })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /Purpose Binding/ })).not.toBeInTheDocument()
@@ -456,6 +519,14 @@ describe("SettingsPanel", () => {
     await waitFor(() => expect(api.settings.providerOAuthStatus).toHaveBeenCalledWith("codex-oauth"))
     expect(await screen.findByText("已连接")).toBeInTheDocument()
 
+    fireEvent.click(kimiOAuthButton)
+    expect(screen.getByRole("heading", { name: "Kimi Code OAuth" })).toBeInTheDocument()
+    expect(screen.getByText(/Kimi Code CLI 会在本机保留会话与日志/)).toBeInTheDocument()
+
+    fireEvent.click(qoderOAuthButton)
+    expect(screen.getByRole("heading", { name: "QoderCN OAuth" })).toBeInTheDocument()
+    expect(screen.getByText(/支持字幕分块并发/)).toBeInTheDocument()
+
     fireEvent.click(screen.getByRole("button", { name: "本地模型" }))
 
     expect(await screen.findByRole("heading", { name: "音频流程" })).toBeInTheDocument()
@@ -476,6 +547,7 @@ describe("SettingsPanel", () => {
     expect(screen.queryByText("ASR + pyannote")).not.toBeInTheDocument()
     expect(screen.queryByText("MOSS 一步转录")).not.toBeInTheDocument()
 
+
     fireEvent.click(within(localModelNav).getByRole("button", { name: "人声分离" }))
     expect(screen.getByRole("heading", { name: "人声分离" })).toBeInTheDocument()
     expect(screen.getByLabelText("默认模型")).toHaveValue("UVR-MDX-NET-Inst_HQ_3")
@@ -485,7 +557,7 @@ describe("SettingsPanel", () => {
     fireEvent.click(within(localModelNav).getByRole("button", { name: "ASR" }))
     expect(screen.getByRole("heading", { name: "ASR" })).toBeInTheDocument()
     expect(screen.getByLabelText("ASR 服务")).toHaveValue("sherpa_onnx")
-    expect(await screen.findByText("本地模型 4/4 可用")).toBeInTheDocument()
+    expect(await screen.findByText("本地模型 5/5 可用")).toBeInTheDocument()
     expect(screen.getByLabelText("时间戳模式")).toHaveValue("auto")
     expect(screen.getByPlaceholderText("Qwen3-ForcedAligner-0.6B 本地目录")).toBeInTheDocument()
 

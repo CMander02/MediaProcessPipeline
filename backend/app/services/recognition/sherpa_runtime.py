@@ -66,7 +66,10 @@ class SherpaRuntime:
         options: SherpaRuntimeOptions,
     ) -> tuple[Any, SherpaRuntimeInfo]:
         with self._lock:
-            providers = self._provider_candidates(options.device)
+            requested_device = options.device
+            if requested_device == "auto":
+                requested_device = str(spec.defaults.get("device") or "auto")
+            providers = self._provider_candidates(requested_device)
             model_files = tuple(
                 sorted(
                     (

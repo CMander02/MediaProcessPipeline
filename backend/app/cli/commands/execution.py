@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+
 from app.cli.commands.direct_execution import _run_direct
 from app.cli.commands.root_support import _require_daemon, _resolve_ref
 from app.cli.context import get_cli_context as _command_context
@@ -20,6 +21,11 @@ def run(
     hotword: list[str] = typer.Option(None, "--hotword", help="热词，可重复"),
     force_asr: bool = typer.Option(False, "--force-asr", help="强制 ASR，忽略平台字幕"),
     prefer_subtitles: bool = typer.Option(False, "--prefer-subtitles", help="优先使用平台字幕"),
+    subtitle_reference: bool = typer.Option(
+        False,
+        "--subtitle-reference",
+        help="运行完整 ASR，并在润色时按时间段参考平台字幕",
+    ),
     from_file: Optional[Path] = typer.Option(
         None, "--from-file", exists=True, dir_okay=False, readable=True
     ),
@@ -47,6 +53,7 @@ def run(
     options = task_options(
         force_asr=force_asr,
         prefer_subtitles=prefer_subtitles,
+        subtitle_reference=subtitle_reference,
         skip_separation=no_sep,
         speakers=speakers,
         hotwords=hotword or [],
@@ -142,6 +149,11 @@ def submit(
     hotword: list[str] = typer.Option(None, "--hotword", help="热词，可重复"),
     force_asr: bool = typer.Option(False, "--force-asr", help="强制 ASR"),
     prefer_subtitles: bool = typer.Option(False, "--prefer-subtitles", help="优先使用平台字幕"),
+    subtitle_reference: bool = typer.Option(
+        False,
+        "--subtitle-reference",
+        help="运行完整 ASR，并在润色时按时间段参考平台字幕",
+    ),
     from_file: Optional[Path] = typer.Option(
         None, "--from-file", exists=True, dir_okay=False, readable=True
     ),
@@ -172,6 +184,7 @@ def submit(
     options = task_options(
         force_asr=force_asr,
         prefer_subtitles=prefer_subtitles,
+        subtitle_reference=subtitle_reference,
         skip_separation=no_sep,
         speakers=speakers,
         hotwords=hotword or [],
@@ -287,7 +300,6 @@ def _do_attach(task_id: str, client=None, quiet: bool = False) -> dict:
 
     # Rich progress display — uv-style: each completed step prints a line,
     # current step shows a live spinner+bar.
-    from app.cli.display import STEP_LABELS
     from rich.progress import (
         BarColumn,
         Progress,
@@ -295,6 +307,8 @@ def _do_attach(task_id: str, client=None, quiet: bool = False) -> dict:
         TextColumn,
         TimeElapsedColumn,
     )
+
+    from app.cli.display import STEP_LABELS
 
     src = current.get("source", task_id)
     label = src if len(src) <= 40 else "..." + src[-37:]

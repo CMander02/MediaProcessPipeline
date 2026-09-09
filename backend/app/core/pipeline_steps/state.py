@@ -6,15 +6,19 @@ import asyncio
 import logging
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from app.core.database import get_task_store
 from app.core.events import TaskEvent, get_event_bus
 from app.core.logging_setup import log_event
+from app.core.pipeline_steps.artifacts import _emit_file_ready, write_metadata_json
 from app.core.settings import get_runtime_settings
 from app.core.source_resolver import SourceFlow, flow_from_metadata
 from app.models import MediaMetadata, Task, TaskStatus
+
+if TYPE_CHECKING:
+    from app.core.pipeline_steps.context import PipelineContext
 
 logger = logging.getLogger(__name__)
 
@@ -388,3 +392,39 @@ async def _update_step(
         completed=completed and flow_step == str(step),
         message=task.message,
     )
+
+
+async def handoff_postprocess(ctx: PipelineContext):
+    from app.core.queue import get_task_queue
+
+    if ctx.stop_after_transcribe:
+        meta_path = write_metadata_json(ctx.task_dir, ctx.metadata, status="processing")
+        await _emit_file_ready(ctx.task, "metadata.json", str(meta_path))
+        interim_result = dict(ctx.task.result or {})
+        interim_result.update(
+            {
+                "output_dir": str(ctx.task_dir),
+                "transcript_segments": (
+                    len(ctx.recognition_segments)
+                    or int((ctx.task.result or {}).get("transcript_segments") or 0)
+                ),
+                "subtitle_source": ctx.subtitle_source,
+            }
+        )
+        ctx.task.result = interim_result
+        get_task_store().update_status(
+            ctx.task.id,
+            TaskStatus.PROCESSING,
+            result=interim_result,
+            current_step=PipelineStep.POLISH,
+            message="字幕提取完成，等待润色",
+        )
+        await get_task_queue().advance_to_postprocess(ctx.task.id)
+        log_event(
+            logger,
+            logging.INFO,
+            "pipeline.transcription_stage.completed",
+            transcript_segments=len(ctx.recognition_segments),
+            subtitle_source=ctx.subtitle_source,
+        )
+        return

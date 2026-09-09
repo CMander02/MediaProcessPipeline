@@ -47,7 +47,7 @@ export function asrBindingValue(settings: Settings, binding: RuntimeModelBinding
     binding,
     "sherpa_onnx",
     settings.sherpa_model_id,
-    "sensevoice-small-int8",
+    "qwen3-asr-0.6b-int8",
   )
 }
 
@@ -65,20 +65,42 @@ function uniqueOptions(options: ModelBindingOption[]): ModelBindingOption[] {
   })
 }
 
-export function getProviderModelOptions(settings: Settings, capability: string): ModelBindingOption[] {
+function selectableProviderModels(provider: ProviderConfig, capability: string): ProviderModelRecord[] {
+  const oauthProvider = isOAuthProvider(provider)
+  const models = getProviderModels(provider).filter(
+    (model) => model.enabled !== false && (
+      modelMatchesCapability(model, capability)
+      || (oauthProvider && capability === "vision" && modelMatchesCapability(model, "llm"))
+    ),
+  )
+  const hasConcreteModel = oauthProvider && models.some((model) => model.model_id !== "default")
+  const seen = new Set<string>()
+
+  return models.filter((model) => {
+    const cliModelName = String(model.cli_model_name || "").trim()
+    if (hasConcreteModel && model.model_id === "default" && !cliModelName) return false
+
+    const identity = oauthProvider
+      ? (cliModelName || model.model_id || model.display_name || "").trim().toLowerCase()
+      : model.model_id.trim().toLowerCase()
+    if (!identity || seen.has(identity)) return false
+    seen.add(identity)
+    return true
+  })
+}
+
+export function buildProviderModelOptions(settings: Settings, capability: string): ModelBindingOption[] {
   const providers = getProviders(settings)
   const options = providers.flatMap((provider) => {
     if (provider.enabled === false) return []
-    return getProviderModels(provider).flatMap((model) => {
-      if (model.enabled === false || !modelMatchesCapability(model, capability)) return []
-      return [{
-        value: modelValue(provider.id, model.model_id),
-        label: `${model.display_name || model.model_id} · ${provider.name || provider.id}`,
-      }]
-    })
+    return selectableProviderModels(provider, capability).map((model) => ({
+      value: modelValue(provider.id, model.model_id),
+      label: `${model.display_name || model.model_id} · ${provider.name || provider.id}`,
+    }))
   })
   if (capability === "asr") {
     const localModels = [
+      ["qwen3-asr-0.6b-int8", "Qwen3-ASR 0.6B INT8"],
       ["qwen3-asr-1.7b-onnx", "Qwen3-ASR 1.7B INT8"],
       ["sensevoice-small-int8", "SenseVoice Small INT8"],
       ["paraformer-zh-int8", "Paraformer Chinese INT8"],
@@ -164,7 +186,9 @@ function fallbackProvidersFromLegacy(settings: Settings): ProviderConfig[] {
   })
   const codex = createProvider("codex_oauth", legacyProviders)
   const agy = createProvider("agy_oauth", [...legacyProviders, codex])
-  return [...legacyProviders, codex, agy]
+  const kimi = createProvider("kimi_oauth", [...legacyProviders, codex, agy])
+  const qoder = createProvider("qoder_oauth", [...legacyProviders, codex, agy, kimi])
+  return [...legacyProviders, codex, agy, kimi, qoder]
 }
 
 export function createProvider(type: string, existing: ProviderConfig[]): ProviderConfig {
@@ -231,6 +255,48 @@ export function createProvider(type: string, existing: ProviderConfig[]): Provid
       enabled: true,
       models: [{
         id: "agy-oauth:default",
+        model_id: "default",
+        display_name: "CLI 当前默认模型",
+        model_type: "llm",
+        enabled: true,
+        capabilities: ["llm", "chat", "json", "reasoning"],
+        endpoint_path: "/chat/completions",
+        default_params: {},
+      }],
+    })
+  }
+  if (type === "kimi_oauth" && !taken.has("kimi-oauth")) {
+    return normalizeProvider({
+      id: "kimi-oauth",
+      name: "Kimi Code OAuth",
+      provider_type: "kimi_oauth",
+      api_mode: "oauth_cli",
+      cli_path: "",
+      timeout_sec: 600,
+      enabled: true,
+      models: [{
+        id: "kimi-oauth:default",
+        model_id: "default",
+        display_name: "CLI 当前默认模型",
+        model_type: "llm",
+        enabled: true,
+        capabilities: ["llm", "chat", "json", "reasoning"],
+        endpoint_path: "/chat/completions",
+        default_params: {},
+      }],
+    })
+  }
+  if (type === "qoder_oauth" && !taken.has("qodercn-oauth")) {
+    return normalizeProvider({
+      id: "qodercn-oauth",
+      name: "QoderCN OAuth",
+      provider_type: "qoder_oauth",
+      api_mode: "oauth_cli",
+      cli_path: "",
+      timeout_sec: 600,
+      enabled: true,
+      models: [{
+        id: "qodercn-oauth:default",
         model_id: "default",
         display_name: "CLI 当前默认模型",
         model_type: "llm",
@@ -353,11 +419,27 @@ export function providerTypeLabel(provider: ProviderConfig): string {
   if (type === "anthropic") return "Anthropic"
   if (type === "codex_oauth") return "Codex OAuth"
   if (type === "agy_oauth") return "Antigravity OAuth"
+  if (type === "kimi_oauth") return "Kimi Code OAuth"
+  if (type === "qoder_oauth") return "QoderCN OAuth"
   return "OpenAI-compatible"
 }
 
 export function isOAuthProvider(provider: ProviderConfig): boolean {
-  return provider.provider_type === "codex_oauth" || provider.provider_type === "agy_oauth"
+  const oauthTypes = ["codex_oauth", "agy_oauth", "kimi_oauth", "qoder_oauth"]
+  return oauthTypes.includes(String(provider.provider_type || ""))
+}
+
+export function oauthSessionNote(provider: ProviderConfig): string {
+  if (provider.provider_type === "codex_oauth") {
+    return " Codex 调用使用临时会话，不写入会话历史。"
+  }
+  if (provider.provider_type === "kimi_oauth") {
+    return " Kimi Code CLI 会在本机保留会话与日志。"
+  }
+  if (provider.provider_type === "qoder_oauth") {
+    return " QoderCN 调用使用临时会话，并支持字幕分块并发。"
+  }
+  return " Antigravity CLI 会在本机保留会话与日志。"
 }
 
 function providerModel(providerId: string, model: unknown, modelType: ServiceModelType): ProviderModelRecord | null {

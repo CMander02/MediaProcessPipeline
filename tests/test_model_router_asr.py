@@ -114,7 +114,7 @@ def test_sherpa_default_binding_reports_missing_model_bundle():
     binding = resolve_asr_binding(settings)
 
     assert binding.provider == "sherpa_onnx"
-    assert binding.model == "sensevoice-small-int8"
+    assert binding.model == "qwen3-asr-0.6b-int8"
     assert binding.configured is False
     assert "not installed" in binding.reason
     assert binding.chunk_strategy == "vad"
@@ -220,7 +220,7 @@ def test_explicit_sherpa_provider_overrides_moss_audio_flow(tmp_path):
 
 
 def test_sherpa_binding_enables_global_pyannote_diarization(tmp_path):
-    _install_fake_sherpa_model(tmp_path)
+    _install_fake_sherpa_model(tmp_path, model_id="qwen3-asr-0.6b-int8")
     settings = RuntimeSettings(
         sherpa_model_root=str(tmp_path),
         enable_diarization=True,
@@ -305,7 +305,7 @@ def test_url_asr_fallback_prefers_configured_siliconflow(monkeypatch):
         siliconflow_api_key="sf-key",
         siliconflow_asr_model="FunAudioLLM/SenseVoiceSmall",
     )
-    monkeypatch.setattr(pipeline_core, "get_runtime_settings", lambda: settings)
+    monkeypatch.setattr("app.core.pipeline_steps.state.get_runtime_settings", lambda: settings)
     task = Task(task_type=TaskType.PIPELINE, source="https://example.com/video.mp4")
 
     provider, reason, is_api = pipeline_core._select_asr_provider_for_fallback(task)
@@ -317,7 +317,7 @@ def test_url_asr_fallback_prefers_configured_siliconflow(monkeypatch):
 
 def test_url_asr_fallback_uses_sherpa_when_api_provider_missing(monkeypatch):
     settings = RuntimeSettings(siliconflow_api_key="")
-    monkeypatch.setattr(pipeline_core, "get_runtime_settings", lambda: settings)
+    monkeypatch.setattr("app.core.pipeline_steps.state.get_runtime_settings", lambda: settings)
     task = Task(task_type=TaskType.PIPELINE, source="https://example.com/video.mp4")
 
     provider, reason, is_api = pipeline_core._select_asr_provider_for_fallback(task)
@@ -329,7 +329,7 @@ def test_url_asr_fallback_uses_sherpa_when_api_provider_missing(monkeypatch):
 
 def test_url_asr_fallback_preserves_moss_audio_flow(monkeypatch):
     settings = RuntimeSettings(audio_processing_flow="moss", siliconflow_api_key="sf-key")
-    monkeypatch.setattr(pipeline_core, "get_runtime_settings", lambda: settings)
+    monkeypatch.setattr("app.core.pipeline_steps.state.get_runtime_settings", lambda: settings)
     task = Task(task_type=TaskType.PIPELINE, source="https://example.com/video.mp4")
 
     provider, reason, is_api = pipeline_core._select_asr_provider_for_fallback(task)

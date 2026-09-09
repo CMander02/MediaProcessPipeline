@@ -1,4 +1,4 @@
-"""Install and verify the four default sherpa-onnx ASR model bundles."""
+"""Install and verify the default sherpa-onnx ASR model bundles."""
 
 from __future__ import annotations
 
@@ -18,6 +18,46 @@ ASSET_BASE = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models
 VAD_SHA256 = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
 
 MODELS = {
+    "qwen3-asr-0.6b-int8": {
+        "display_name": "Qwen3-ASR 0.6B INT8",
+        "family": "qwen3_asr",
+        "archive": "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2",
+        "source": (
+            f"{ASSET_BASE}/"
+            "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2"
+        ),
+        "license": "Apache-2.0",
+        "files": {
+            "conv_frontend": "conv_frontend.onnx",
+            "encoder": "encoder.int8.onnx",
+            "decoder": "decoder.int8.onnx",
+            "tokenizer": "tokenizer",
+        },
+        "languages": ["auto", "zh", "en", "yue", "ja", "ko", "de", "fr", "es"],
+        "supports_hotwords": True,
+        "defaults": {
+            "max_total_len": 512,
+            "max_new_tokens": 128,
+            "max_chunk_sec": 30,
+            "device": "cpu",
+        },
+        "checksums": {
+            "conv_frontend.onnx": (
+                "d22dc4423e0940e49884e903d2ea2f7e5567c14fc1aed97e4e26d6b8f208ef9e"
+            ),
+            "encoder.int8.onnx": "60748d3e6744a57c9c91e1b17424a6c2990567e8adceb0783940c03ed98fa9d9",
+            "decoder.int8.onnx": "4f6885be5959ae26af3089d38ee7972c5fafbeeb1cf8d5e76eab6d8b61ca5771",
+            "tokenizer/merges.txt": (
+                "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"
+            ),
+            "tokenizer/tokenizer_config.json": (
+                "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c"
+            ),
+            "tokenizer/vocab.json": (
+                "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+            ),
+        },
+    },
     "qwen3-asr-1.7b-onnx": {
         "display_name": "Qwen3-ASR 1.7B INT8",
         "family": "qwen3_asr",

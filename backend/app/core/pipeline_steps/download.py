@@ -13,7 +13,6 @@ from app.core.logging_setup import log_event
 from app.core.paths import get_workspace_paths
 from app.core.pipeline_steps.artifacts import (
     _emit_file_ready,
-    _prepare_source_context,
     _rename_task_dir_to_title,
     _rewrite_ingest_paths_after_task_dir_move,
     _sync_task_from_metadata,
@@ -48,8 +47,8 @@ logger = logging.getLogger(__name__)
 
 async def prepare_download(ctx: PipelineContext) -> bool:
     import yt_dlp
+
     from app.core.queue import get_task_queue
-    from app.services.analysis.source_context import source_context_to_analysis
     from app.services.archiving import archive_result
     from app.services.ingestion import download_media
     from app.services.ingestion.local import find_local_subtitle, parse_nfo
@@ -87,7 +86,7 @@ async def prepare_download(ctx: PipelineContext) -> bool:
                             "subtitle_lang": "zh",
                             "subtitle_format": sub_file.suffix.lstrip("."),
                         }
-                        ctx.has_subtitle = True
+                        ctx.has_subtitle = not ctx.force_asr
                         break
 
         # Fast-path resume: LLM steps done, just need video + archive
@@ -205,7 +204,7 @@ async def prepare_download(ctx: PipelineContext) -> bool:
 
                 # Search for local subtitle and NFO metadata
                 # For browser uploads source_path == dest_source (no original dir to search)
-                if not is_browser_upload and ctx.use_platform_subtitles:
+                if not is_browser_upload and ctx.collect_platform_subtitles:
                     ctx.platform_subtitle = find_local_subtitle(source_path)
                     if ctx.platform_subtitle:
                         log_event(
@@ -250,7 +249,7 @@ async def prepare_download(ctx: PipelineContext) -> bool:
             else:
                 raise ValueError(f"Unsupported file format: {dest_source.suffix}")
 
-            ctx.has_subtitle = ctx.platform_subtitle is not None
+            ctx.has_subtitle = ctx.platform_subtitle is not None and not ctx.force_asr
 
             # Write metadata.json immediately after local file processing
             _sync_task_from_metadata(ctx.task, ctx.metadata)
@@ -420,6 +419,18 @@ async def prepare_download(ctx: PipelineContext) -> bool:
                             ctx.metadata.file_path = ingest["video_path"]
                         write_metadata_json(ctx.task_dir, ctx.metadata, status="processing")
 
+                    if ctx.download_worker_call:
+                        await _branch_video_download()
+                        await _raise_if_cancelled(ctx.task.id)
+                        ctx.task.result = {"output_dir": str(ctx.task_dir)}
+                        get_task_store().update_status(
+                            ctx.task.id,
+                            ctx.task.status,
+                            result=ctx.task.result,
+                        )
+                        await get_task_queue().advance_to_gpu(ctx.task.id)
+                        return True
+
                     results = await asyncio.gather(
                         _run_subtitle_fast_path(
                             ctx.task, ctx.task_dir, probe_subtitle, ctx.metadata
@@ -531,7 +542,7 @@ async def prepare_download(ctx: PipelineContext) -> bool:
                 return True
 
             # Try to download platform subtitles (for full pipeline, still useful)
-            if ctx.use_platform_subtitles:
+            if ctx.collect_platform_subtitles:
                 await _update_flow_step(ctx.task, "subtitle_probe", message="探测平台字幕")
                 try:
                     sub_dir = ctx.task_dir / "subtitles"
@@ -558,15 +569,22 @@ async def prepare_download(ctx: PipelineContext) -> bool:
                     log_event(logger, logging.WARNING, "subtitle.download_failed", error=e)
                     ctx.platform_subtitle = None
 
-            ctx.has_subtitle = ctx.platform_subtitle is not None
-            if ctx.use_platform_subtitles:
+            ctx.has_subtitle = ctx.platform_subtitle is not None and not ctx.force_asr
+            if ctx.collect_platform_subtitles:
+                platform_subtitle_available = ctx.platform_subtitle is not None
                 subtitle_unavailable_message = _subtitle_unavailable_message(ctx.metadata)
                 await _update_flow_step(
                     ctx.task,
                     "subtitle_probe",
                     completed=True,
-                    level="info" if ctx.has_subtitle else "warning",
-                    message="平台字幕可用" if ctx.has_subtitle else subtitle_unavailable_message,
+                    level="info" if platform_subtitle_available else "warning",
+                    message=(
+                        "平台字幕参考可用"
+                        if platform_subtitle_available and ctx.subtitle_reference_mode
+                        else "平台字幕可用"
+                        if platform_subtitle_available
+                        else subtitle_unavailable_message
+                    ),
                 )
             ctx.source_flow = await _update_flow_from_metadata(
                 ctx.task,
@@ -576,7 +594,7 @@ async def prepare_download(ctx: PipelineContext) -> bool:
                 force_asr=ctx.force_asr,
                 current_step="download",
             )
-            if ctx.use_platform_subtitles and not ctx.has_subtitle:
+            if ctx.collect_platform_subtitles and ctx.platform_subtitle is None:
                 await _emit_timeline_event(
                     ctx.task,
                     "subtitle.missing",
@@ -615,11 +633,6 @@ async def prepare_download(ctx: PipelineContext) -> bool:
         }
         await _process_image_note(ctx.task, ctx.metadata, ctx.task_dir, ingest_info)
         return True
-
-    ctx.source_context = await _prepare_source_context(ctx.task, ctx.task_dir, ctx.metadata)
-    from app.services.analysis.source_context import source_context_to_analysis
-
-    ctx.analysis = source_context_to_analysis(ctx.source_context)
 
     # Hand off to GPU queue if we were called from a download worker.
     # The GPU worker will call process_task again; at that point DOWNLOAD is

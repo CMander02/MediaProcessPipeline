@@ -9,6 +9,8 @@ import DeepSeekColor from "@lobehub/icons/es/DeepSeek/components/Color"
 import SiliconCloudColor from "@lobehub/icons/es/SiliconCloud/components/Color"
 import OpenAIMono from "@lobehub/icons/es/OpenAI/components/Mono"
 import GeminiColor from "@lobehub/icons/es/Gemini/components/Color"
+import KimiColor from "@lobehub/icons/es/Kimi/components/Color"
+import QoderColor from "@lobehub/icons/es/Qoder/components/Color"
 import AnthropicMono from "@lobehub/icons/es/Anthropic/components/Mono"
 import LobeHubColor from "@lobehub/icons/es/LobeHub/components/Color"
 import { type RegistrySettingsProps, type ModelListItem } from "./types"
@@ -22,6 +24,7 @@ import {
   createProvider,
   isOAuthProvider,
   providerTypeLabel,
+  oauthSessionNote,
   getModelCapabilities,
   normalizeProviderModelType,
 } from "./registry-utils"
@@ -343,6 +346,8 @@ function ProviderDetailPanel({
             <option value="anthropic">Anthropic</option>
             <option value="codex_oauth">Codex OAuth</option>
             <option value="agy_oauth">Antigravity OAuth</option>
+            <option value="kimi_oauth">Kimi Code OAuth</option>
+            <option value="qoder_oauth">QoderCN OAuth</option>
           </select>
         </ProviderFormRow>
         <ProviderFormRow label="名称">
@@ -391,7 +396,7 @@ function ProviderDetailPanel({
             </ProviderFormRow>
             <p className="text-xs leading-5 text-muted-foreground xl:col-span-2">
               复用本机 CLI 的 OAuth 登录与 Coding Plan 配额，凭据由 CLI 自己保存和刷新。
-              {provider.provider_type === "agy_oauth" ? " Antigravity CLI 会在本机保留会话与日志。" : " Codex 调用使用临时会话，不写入会话历史。"}
+              {oauthSessionNote(provider)}
               {oauthStatus?.current_model ? ` 当前模型：${oauthStatus.current_model}` : ""}
             </p>
           </>
@@ -524,6 +529,8 @@ function providerIcon(provider: ProviderConfig): ReactNode {
   if (provider.id === "siliconflow" || provider.provider_type === "siliconflow") return <SiliconCloudColor size={18} aria-hidden />
   if (provider.id === "openai" || provider.provider_type === "codex_oauth") return <OpenAIMono size={18} aria-hidden />
   if (provider.provider_type === "agy_oauth") return <GeminiColor size={18} aria-hidden />
+  if (provider.provider_type === "kimi_oauth") return <KimiColor size={18} aria-hidden />
+  if (provider.provider_type === "qoder_oauth") return <QoderColor size={18} aria-hidden />
   if (provider.id === "anthropic" || provider.provider_type === "anthropic") return <AnthropicMono size={18} aria-hidden />
   return <LobeHubColor size={18} aria-hidden />
 }

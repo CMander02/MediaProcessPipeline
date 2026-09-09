@@ -19,6 +19,7 @@ def get_polish_prompt(
     entities: list[dict[str, Any]] | None = None,
     speaker_ids: list[str] | None = None,
     timeline_context: str = "",
+    subtitle_reference: str = "",
 ) -> str:
     """
     Generate the polish prompt with context from analysis phase.
@@ -50,6 +51,14 @@ def get_polish_prompt(
         if speaker_ids
         else "输入没有说话人标签。所有输出都禁止新增任何 [SPEAKER]、人物名或角色前缀。"
     )
+    reference_section = ""
+    if subtitle_reference:
+        reference_section = f"""
+## 同时段平台原生字幕参考
+以下字幕只用于修正 ASR 正文中的识别错误、专有名词和漏词。说话人标签、条目数量、index 和
+timestamp 始终以待润色的 ASR 字幕为准。
+{subtitle_reference}
+"""
 
     return f"""你是专业的字幕校对编辑。请根据上下文信息润色下面的字幕片段。
 
@@ -64,6 +73,7 @@ def get_polish_prompt(
 
 ## 规范实体表
 {entities_str}
+{reference_section}
 
 ## 润色要求
 1. 修正语音识别错误和错别字
@@ -74,6 +84,7 @@ def get_polish_prompt(
 6. **不要**合并或拆分字幕条目；输入有 N 条，输出就必须有 N 条
 7. **不要**改写 timestamp，必须原样保留
 8. 实体表中的 canonical 拼写必须保持一致
+9. 平台字幕参考不得改变 ASR 的说话人归属、条目数量和时间戳
 
 ## 输出格式（严格遵守）
 直接输出 JSON 数组，**不要**任何前后解释/markdown 代码块/废话引导句。

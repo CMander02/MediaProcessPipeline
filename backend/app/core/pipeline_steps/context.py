@@ -178,17 +178,32 @@ async def create_context(task, rt, download_worker_call=False, stop_after_transc
         get_task_store().save(ctx.task)
     ctx.platform_subtitle = None
     ctx.source_type = _detect_source_type(ctx.source)
-    ctx.force_asr = bool(ctx.rt.force_asr or ctx.task.options.get("force_asr", False))
+    ctx.subtitle_reference_mode = bool(
+        ctx.task.options.get(
+            "use_platform_subtitle_reference",
+            ctx.rt.use_platform_subtitle_reference,
+        )
+    )
+    ctx.force_asr = bool(
+        ctx.rt.force_asr or ctx.task.options.get("force_asr", False) or ctx.subtitle_reference_mode
+    )
     ctx.initial_flow = resolve_source_flow(
         ctx.source,
         prefer_platform_subtitles=True,
-        force_asr=ctx.force_asr,
+        force_asr=False if ctx.subtitle_reference_mode else ctx.force_asr,
         task_options=ctx.task.options,
     )
     ctx.use_platform_subtitles = (
         ctx.initial_flow.try_subtitles
         and _platform_prefer_subtitles(ctx.initial_flow.route_type)
         and not ctx.force_asr
+    )
+    ctx.collect_platform_subtitles = bool(
+        ctx.use_platform_subtitles
+        or (
+            ctx.subtitle_reference_mode
+            and (ctx.initial_flow.try_subtitles or ctx.source_type == "local_video")
+        )
     )
     ctx.source_flow = resolve_source_flow(
         ctx.source,
@@ -215,6 +230,7 @@ async def create_context(task, rt, download_worker_call=False, stop_after_transc
         flow_id=ctx.source_flow.flow_id,
         completed_steps=",".join(sorted(str(s) for s in ctx.done)) or "none",
         download_worker_call=ctx.download_worker_call,
+        stop_after_transcribe=ctx.stop_after_transcribe,
     )
     await _set_task_flow(
         ctx.task,

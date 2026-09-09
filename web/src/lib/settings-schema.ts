@@ -180,6 +180,7 @@ export interface RuntimeSettings {
   media_retention_policy?: "all" | "playback" | "text"
   network_proxy?: string
   ytdlp_auto_update?: boolean
+  use_platform_subtitle_reference?: boolean
 
   [key: string]: unknown
 }

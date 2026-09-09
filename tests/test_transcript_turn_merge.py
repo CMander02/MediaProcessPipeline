@@ -168,3 +168,28 @@ def test_srt_to_markdown_preserves_turn_boundaries():
     markdown = srt_to_markdown(srt, "标题")
 
     assert "**[SPEAKER_00]** 第一段。\n\n**[SPEAKER_00]** 第二段。" in markdown
+
+
+def test_merge_consecutive_speaker_segments_orders_overlapping_split_cues():
+    srt = """1
+00:00:00,000 --> 00:00:10,000
+[SPEAKER_00] First sentence. Second sentence.
+
+2
+00:00:03,000 --> 00:00:04,000
+[SPEAKER_01] Interjection.
+"""
+
+    merged = merge_consecutive_speaker_segments(
+        srt,
+        max_sentences=1,
+        max_chars=1000,
+        max_duration=999,
+    )
+    starts = [
+        line.split(" --> ", 1)[0]
+        for line in merged.splitlines()
+        if " --> " in line
+    ]
+
+    assert starts == sorted(starts)

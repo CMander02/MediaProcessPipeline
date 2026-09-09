@@ -3,7 +3,6 @@
 import asyncio
 import json
 import re
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -84,6 +83,7 @@ def _provider_models_from_payload(payload: Any) -> list[dict[str, str]]:
     seen: set[str] = set()
     for item in raw_models:
         model_type = ""
+        cli_model_name = ""
         if isinstance(item, str):
             model_id = item.strip()
             display_name = model_id
@@ -91,6 +91,7 @@ def _provider_models_from_payload(payload: Any) -> list[dict[str, str]]:
             model_id = str(item.get("id") or item.get("model") or item.get("name") or "").strip()
             display_name = str(item.get("display_name") or item.get("name") or model_id).strip()
             model_type = str(item.get("model_type") or "").strip().lower()
+            cli_model_name = str(item.get("cli_model_name") or "").strip()
         else:
             continue
 
@@ -99,6 +100,7 @@ def _provider_models_from_payload(payload: Any) -> list[dict[str, str]]:
         seen.add(model_id)
         models.append(
             {
+                **({"cli_model_name": cli_model_name} if cli_model_name else {}),
                 "id": model_id,
                 "display_name": display_name or model_id,
                 "model_type": model_type if model_type in {"llm", "vlm", "embedding", "rerank", "asr"} else _infer_siliconflow_model_type(model_id),
@@ -666,7 +668,7 @@ async def _fetch_provider_models_payload(provider: dict[str, Any]) -> Any:
     provider_type = str(provider.get("provider_type") or "")
     api_base = str(provider.get("api_base") or "")
     api_key = str(provider.get("api_key") or "")
-    if provider_type in {"codex_oauth", "agy_oauth"}:
+    if provider_type in {"codex_oauth", "agy_oauth", "kimi_oauth", "qoder_oauth"}:
         from app.services.analysis.coding_plan_cli import (
             CodingPlanCLIError,
             coding_plan_models,
@@ -757,7 +759,7 @@ async def provider_oauth_status(provider_id: str):
     if provider is None:
         raise HTTPException(status_code=404, detail="Provider not found.")
     provider_type = str(provider.get("provider_type") or "").strip().lower()
-    if provider_type not in {"codex_oauth", "agy_oauth"}:
+    if provider_type not in {"codex_oauth", "agy_oauth", "kimi_oauth", "qoder_oauth"}:
         raise HTTPException(status_code=400, detail="Provider does not use CLI OAuth.")
 
     from app.services.analysis.coding_plan_cli import coding_plan_status
@@ -783,13 +785,18 @@ async def sync_provider_models(provider_id: str):
         _provider_model_record(provider_id, model)
         for model in _provider_models_from_payload(payload)
     ]
-    by_model_id = {
+    existing_by_model_id = {
         str(model.get("model_id")): model
         for model in provider.get("models", [])
         if isinstance(model, dict)
     }
+
+
+    provider_type = str(provider.get("provider_type") or "").strip().lower()
+    oauth_provider = provider_type in {"codex_oauth", "agy_oauth", "kimi_oauth", "qoder_oauth"}
+    by_model_id = {} if oauth_provider else dict(existing_by_model_id)
     for model in fetched:
-        existing = by_model_id.get(model["model_id"])
+        existing = existing_by_model_id.get(model["model_id"])
         existing_type = str((existing or {}).get("model_type") or "").strip().lower()
         fetched_type = str(model.get("model_type") or "").strip().lower()
         model_type_changed = bool(existing_type and fetched_type and existing_type != fetched_type)
@@ -813,9 +820,35 @@ async def sync_provider_models(provider_id: str):
                 merged_type,
                 existing_params,
             ),
+            **({"cli_model_name": model.get("cli_model_name", "")} if oauth_provider else {}),
         }
+        if (
+            oauth_provider
+            and model["model_id"] == "default"
+            and model.get("cli_model_name") != (existing or {}).get("cli_model_name")
+        ):
+            by_model_id[model["model_id"]]["display_name"] = model["display_name"]
     provider["models"] = list(by_model_id.values())
-    updated = patch_runtime_settings({"providers": data.get("providers", [])})
+    updates = {"providers": data.get("providers", [])}
+    if oauth_provider:
+        # Keep selections valid when the CLI catalog collapses an alias into default.
+        aliases = {
+            str(model.get("cli_model_name") or model["model_id"]): model["model_id"]
+            for model in fetched
+        }
+        bindings = data.get("runtime_model_bindings", {})
+        for binding in bindings.values():
+            if binding.get("provider_id") != provider_id:
+                continue
+            old_id = binding.get("model_id")
+            if old_id in by_model_id:
+                continue
+            previous = existing_by_model_id.get(old_id) or {}
+            replacement = aliases.get(str(previous.get("cli_model_name") or old_id))
+            if replacement:
+                binding["model_id"] = replacement
+                updates["runtime_model_bindings"] = bindings
+    updated = patch_runtime_settings(updates)
     updated_provider = _settings_provider(_mask_settings(updated), provider_id)
     return {
         "provider": updated_provider,

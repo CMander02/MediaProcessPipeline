@@ -22,6 +22,7 @@ from app.services.recognition.sherpa_runtime import (
 logger = logging.getLogger(__name__)
 
 _SENTENCE_END = re.compile(r"[。！？!?；;]$")
+_HOTWORD_ECHO_SEPARATOR = re.compile(r"[\s,，、。.!！？;；:：/|_\-—]+")
 
 
 def _clean_text(text: Any) -> str:
@@ -41,6 +42,51 @@ def _normalize_language(value: Any) -> str:
     language = _clean_text(value)
     tag = re.fullmatch(r"<\|([^|]+)\|>", language)
     return tag.group(1).lower() if tag else language.lower()
+
+
+def _remove_hotword_echoes(
+    segments: list[dict[str, Any]],
+    hotwords: tuple[str, ...],
+) -> tuple[list[dict[str, Any]], int]:
+    normalized_words = [
+        _HOTWORD_ECHO_SEPARATOR.sub("", word).lower()
+        for word in hotwords
+        if _HOTWORD_ECHO_SEPARATOR.sub("", word)
+    ]
+    if len(normalized_words) < 3:
+        return segments, 0
+    target = "".join(normalized_words)
+    cleaned = [dict(segment) for segment in segments]
+    removed = 0
+
+    while True:
+        normalized_chars: list[str] = []
+        positions: list[tuple[int, int]] = []
+        for segment_index, segment in enumerate(cleaned):
+            text = str(segment.get("text") or "")
+            for char_index, char in enumerate(text):
+                if _HOTWORD_ECHO_SEPARATOR.fullmatch(char):
+                    continue
+                normalized_chars.append(char.lower())
+                positions.append((segment_index, char_index))
+
+        match_start = "".join(normalized_chars).find(target)
+        if match_start < 0:
+            break
+        start_segment, start_char = positions[match_start]
+        end_segment, end_char = positions[match_start + len(target) - 1]
+        for segment_index in range(start_segment, end_segment + 1):
+            text = str(cleaned[segment_index].get("text") or "")
+            left = start_char if segment_index == start_segment else 0
+            right = end_char + 1 if segment_index == end_segment else len(text)
+            text = f"{text[:left]}{text[right:]}"
+            text = re.sub(r"^[\s,，、。;；:：]+", "", text)
+            text = re.sub(r"([。！？!?；;])(?:\s*[。！？!?；;])+", r"\1", text)
+            text = re.sub(r"\s+([，。！？!?；;：:])", r"\1", text)
+            cleaned[segment_index]["text"] = text.strip()
+        removed += 1
+
+    return [segment for segment in cleaned if str(segment.get("text") or "").strip()], removed
 
 
 def _append_token(current: str, token: str, *, token_stream: bool = False) -> str:
@@ -245,6 +291,10 @@ class SherpaOnnxASRService:
             raise RuntimeError(
                 f"All {len(chunks)} sherpa ASR chunks failed: {failed_chunks[0]['error']}"
             )
+        segments, hotword_echoes_removed = _remove_hotword_echoes(
+            segments,
+            hotword_values,
+        )
         if timestamp_mode == "native" and any(source == "vad" for source in timestamp_sources):
             raise RuntimeError(
                 f"Sherpa model '{model_id}' returned no native timestamps for one or more chunks"
@@ -282,6 +332,7 @@ class SherpaOnnxASRService:
                 "rtf": round(elapsed / audio_duration, 4) if audio_duration > 0 else None,
                 "hotwords": list(hotword_values),
                 "hotwords_applied": bool(hotword_values and spec.supports_hotwords),
+                "hotword_echoes_removed": hotword_echoes_removed,
                 "emotion": emotions,
                 "event": events,
             },

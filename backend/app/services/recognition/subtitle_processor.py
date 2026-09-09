@@ -137,6 +137,7 @@ async def process_subtitles(
     metadata: MediaMetadata,
     on_progress: Any = None,
     source_context: dict[str, Any] | None = None,
+    polish: bool = True,
 ) -> dict[str, Any]:
     """
     Process platform subtitles through cue-preserving LLM correction.
@@ -146,6 +147,7 @@ async def process_subtitles(
         subtitle_format: Format of the subtitle file ("json3", "srt", "vtt")
         metadata: Video metadata for context
         on_progress: Optional callback for progress updates
+        polish: Run cue-preserving LLM correction when true
 
     Returns:
         Dict compatible with ASR output:
@@ -194,18 +196,21 @@ async def process_subtitles(
             "content_type": metadata.content_subtype or str(metadata.media_type),
             "proper_nouns": [],
         }
-    try:
-        polished_srt = await llm_service.polish(original_srt, context=context)
-    except Exception as exc:
-        log_event(logger, logging.ERROR, "subtitle.polish.failed", error=exc)
-        polished_srt = original_srt
-    if on_progress:
-        await on_progress(1.0)
-    polished_md = llm_service.srt_to_markdown(polished_srt, metadata.title)
+    polished_srt = ""
+    polished_md = ""
+    if polish:
+        try:
+            polished_srt = await llm_service.polish(original_srt, context=context)
+        except Exception as exc:
+            log_event(logger, logging.ERROR, "subtitle.polish.failed", error=exc)
+            polished_srt = original_srt
+        if on_progress:
+            await on_progress(1.0)
+        polished_md = llm_service.srt_to_markdown(polished_srt, metadata.title)
 
     result_segments: list[dict[str, Any]] = []
     known_speakers: list[str] = []
-    for cue in llm_service._parse_srt(polished_srt):
+    for cue in llm_service._parse_srt(polished_srt or original_srt):
         start_text, end_text = cue["timestamp"].split("-->", 1)
         speaker, body = llm_service._split_speaker_prefix(cue["text"])
         if speaker and speaker not in known_speakers:

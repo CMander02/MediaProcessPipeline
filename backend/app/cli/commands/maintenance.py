@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import typer
+
 from app.cli.commands.config_values import _read_settings
 from app.cli.commands.root_support import _get_client
 from app.cli.context import get_cli_context as _command_context

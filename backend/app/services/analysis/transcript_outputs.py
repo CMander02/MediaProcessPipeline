@@ -259,6 +259,12 @@ def merge_consecutive_speaker_segments(
         events.extend(_segment_to_readable_events(seg, max_chars=max_chars))
     if not events:
         return srt_content
+    events.sort(
+        key=lambda event: (
+            event.get("start_s") is None,
+            float(event["start_s"]) if event.get("start_s") is not None else 0.0,
+        )
+    )
 
     readable: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
@@ -383,7 +389,31 @@ def _parse_polish_response(response: str, fallback_segments: list[dict]) -> list
         start = text.find("[")
         end = text.rfind("]")
         if start >= 0 and end > start:
-            arr = json.loads(text[start : end + 1])
+            candidate = text[start : end + 1]
+            candidate = re.sub(
+                r'("timestamp"\s*:\s*"\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*)"(?=\d{2}:\d{2}:\d{2},\d{3}")',
+                r"\1",
+                candidate,
+            )
+            candidate = re.sub(
+                r'("timestamp"\s*:\s*"\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3})(?=,\s*"text"\s*:)',
+                r'\1"',
+                candidate,
+            )
+            string_concat_pattern = re.compile(
+                r'("(?:\\.|[^"\\])*")\s*(?:\+\s*)?("(?:\\.|[^"\\])*")'
+            )
+            while True:
+                candidate, substitutions = string_concat_pattern.subn(
+                    lambda match: json.dumps(
+                        json.loads(match.group(1)) + json.loads(match.group(2)),
+                        ensure_ascii=False,
+                    ),
+                    candidate,
+                )
+                if substitutions == 0:
+                    break
+            arr = json.loads(candidate)
             if isinstance(arr, list):
                 segs: list[dict] = []
                 for item in arr:
@@ -405,6 +435,32 @@ def _parse_polish_response(response: str, fallback_segments: list[dict]) -> list
                     return segs
     except (json.JSONDecodeError, ValueError, TypeError) as e:
         log_event(logger, logging.DEBUG, "llm.polish.parse_json_failed", error=e)
+
+    # Codex may return a complete array with a few malformed timestamp
+    # quotes. Recover each object independently so one cue cannot discard
+    # an otherwise usable chunk; timestamps are restored from the source
+    # during alignment below.
+    relaxed_item_pattern = re.compile(
+        r'\{\s*"index"\s*:\s*(?P<index>\d+)\s*,\s*'
+        r'"timestamp"\s*:\s*"(?P<timestamp>.*?)"?\s*,\s*'
+        r'"text"\s*:\s*(?P<text>"(?:\\.|[^"\\])*")\s*\}',
+        flags=re.DOTALL,
+    )
+    relaxed_segs: list[dict] = []
+    for match in relaxed_item_pattern.finditer(text):
+        try:
+            relaxed_text = json.loads(match.group("text"))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        relaxed_segs.append(
+            {
+                "index": int(match.group("index")),
+                "timestamp": match.group("timestamp").replace('"', "").strip(),
+                "text": str(relaxed_text).strip(),
+            }
+        )
+    if relaxed_segs:
+        return relaxed_segs
 
     # Fall back to SRT block parse
     srt_segs = _parse_srt(text)
@@ -495,6 +551,42 @@ def _polish_timeline_context(
         ):
             labels.append(f"{item_start:g}s {item.get('title', '')}")
     return " / ".join(labels)
+
+
+def _polish_subtitle_reference(
+    context: dict[str, Any],
+    chunk_segments: list[dict],
+) -> str:
+    references = context.get("subtitle_reference_segments") or []
+    if not isinstance(references, list) or not chunk_segments:
+        return ""
+
+    first_start, _first_end = _timestamp_bounds(str(chunk_segments[0].get("timestamp") or ""))
+    _last_start, last_end = _timestamp_bounds(str(chunk_segments[-1].get("timestamp") or ""))
+    chunk_start = _timestamp_to_seconds(first_start)
+    chunk_end = _timestamp_to_seconds(last_end)
+    if chunk_start is None or chunk_end is None:
+        return ""
+
+    lines: list[str] = []
+    total_chars = 0
+    for item in references:
+        if not isinstance(item, dict):
+            continue
+        try:
+            start = float(item.get("start") or 0)
+            end = float(item.get("end") or start)
+        except (TypeError, ValueError):
+            continue
+        text = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()
+        if not text or end < chunk_start or start > chunk_end:
+            continue
+        line = f"[{_seconds_to_srt_timestamp(start)} --> {_seconds_to_srt_timestamp(end)}] {text}"
+        if total_chars + len(line) > 12_000:
+            break
+        lines.append(line)
+        total_chars += len(line)
+    return "\n".join(lines)
 
 
 def srt_to_markdown(srt_content: str, title: str = "") -> str:

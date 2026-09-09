@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Any
 
 from app.core.logging_setup import log_event
-from app.core.pipeline_steps.artifacts import _write_speaker_map, _write_text_artifact
+from app.core.pipeline_steps.artifacts import (
+    _prepare_source_context,
+    _write_speaker_map,
+    _write_text_artifact,
+)
 from app.core.pipeline_steps.context import PipelineContext
 from app.core.pipeline_steps.state import (
     PipelineStep,
@@ -150,9 +154,67 @@ async def _run_voiceprint_step(
 
 async def transcribe(ctx: PipelineContext) -> None:
     from app.core.queue import get_task_queue
+    from app.services.analysis.source_context import source_context_to_analysis
     from app.services.preprocessing import separate_vocals
     from app.services.recognition import transcribe_audio
     from app.services.recognition.subtitle_processor import process_subtitles
+
+    ctx.source_context = await _prepare_source_context(
+        ctx.task,
+        ctx.task_dir,
+        ctx.metadata,
+        enrich=not ctx.stop_after_transcribe,
+    )
+    ctx.analysis = source_context_to_analysis(ctx.source_context)
+
+    if ctx.subtitle_reference_mode and ctx.platform_subtitle:
+        reference_tracks = ctx.platform_subtitle.get("tracks") or []
+        if not reference_tracks and ctx.platform_subtitle.get("subtitle_path"):
+            reference_tracks = [
+                {
+                    "path": ctx.platform_subtitle["subtitle_path"],
+                    "lang": ctx.platform_subtitle.get("subtitle_lang") or "unknown",
+                    "format": ctx.platform_subtitle.get("subtitle_format") or "srt",
+                    "type": "cc",
+                }
+            ]
+        if reference_tracks:
+            selected_reference, reference_lang = await _select_polish_track(
+                reference_tracks,
+                detect_with_llm=False,
+            )
+            reference_result = await process_subtitles(
+                subtitle_path=selected_reference["path"],
+                subtitle_format=selected_reference.get("format") or "srt",
+                metadata=ctx.metadata,
+                source_context=ctx.source_context,
+                polish=False,
+            )
+            ctx.subtitle_reference_segments = reference_result.get("segments", [])
+            reference_manifest = _save_all_tracks_as_transcripts(
+                reference_tracks,
+                ctx.task_dir,
+            )
+            for item in reference_manifest:
+                item["role"] = "reference"
+            ctx.metadata.extra["subtitle_reference"] = {
+                "enabled": True,
+                "language": reference_lang,
+                "segments": len(ctx.subtitle_reference_segments),
+                "filename": Path(selected_reference["path"]).name,
+            }
+            ctx.metadata.extra["subtitle_engine"] = ctx.platform_subtitle.get("subtitle_engine")
+            ctx.metadata.extra["subtitle_diagnostics"] = (
+                ctx.platform_subtitle.get("diagnostics") or []
+            )
+            ctx.metadata.extra["subtitle_tracks"] = reference_manifest
+            log_event(
+                logger,
+                logging.INFO,
+                "subtitle.reference.loaded",
+                language=reference_lang,
+                segments=len(ctx.subtitle_reference_segments),
+            )
 
     # ── Steps 2+3: SEPARATE + TRANSCRIBE — GPU-bound, serialised by semaphore ──
     gpu_sem = get_task_queue().gpu_semaphore
@@ -332,11 +394,14 @@ async def transcribe(ctx: PipelineContext) -> None:
                             }
                         ]
                     tracks_manifest = _save_all_tracks_as_transcripts(pst_tracks, ctx.task_dir)
-                    selected_track, detected_lang = await _select_polish_track(pst_tracks)
-                    for entry in tracks_manifest:
-                        if entry["lang"] == (selected_track.get("lang") or "unknown"):
-                            entry["polished"] = True
+                    selected_track, detected_lang = await _select_polish_track(
+                        pst_tracks,
+                        detect_with_llm=not ctx.stop_after_transcribe,
+                    )
                     ctx.metadata.extra["subtitle_tracks"] = tracks_manifest
+                    ctx.metadata.extra["selected_subtitle_lang"] = (
+                        selected_track.get("lang") or "unknown"
+                    )
                     ctx.metadata.extra["detected_language"] = detected_lang
                     ctx.metadata.extra["subtitle_engine"] = ctx.platform_subtitle.get(
                         "subtitle_engine"
@@ -350,6 +415,7 @@ async def transcribe(ctx: PipelineContext) -> None:
                         subtitle_format=selected_track.get("format") or "srt",
                         metadata=ctx.metadata,
                         source_context=ctx.source_context,
+                        polish=False,
                     )
                     ctx.transcript = " ".join(s["text"] for s in sub_result.get("segments", []))
                     ctx.srt = sub_result.get("srt", "")
@@ -616,19 +682,27 @@ async def transcribe(ctx: PipelineContext) -> None:
                     # Detect transcript language (non-fatal, populates metadata for UI)
                     if ctx.srt:
                         try:
-                            from app.services.analysis.language_detect import (
-                                detect_transcript_language,
-                            )
+                            detected_lang = str(recognition.get("language") or "unknown")
+                            if not ctx.stop_after_transcribe and detected_lang == "unknown":
+                                from app.services.analysis.language_detect import (
+                                    detect_transcript_language,
+                                )
 
-                            detected_lang = await detect_transcript_language(srt=ctx.srt)
+                                detected_lang = await detect_transcript_language(srt=ctx.srt)
                             ctx.metadata.extra["detected_language"] = detected_lang
+                            reference_tracks = [
+                                item
+                                for item in ctx.metadata.extra.get("subtitle_tracks") or []
+                                if item.get("role") == "reference"
+                            ]
                             ctx.metadata.extra["subtitle_tracks"] = [
+                                *reference_tracks,
                                 {
                                     "lang": detected_lang if detected_lang != "unknown" else "asr",
                                     "type": "asr",
                                     "filename": "transcript.srt",
-                                    "polished": True,  # polish step will populate
-                                }
+                                    "polished": False,
+                                },
                             ]
                         except Exception as e:
                             log_event(logger, logging.WARNING, "asr.lang_detect.failed", error=e)

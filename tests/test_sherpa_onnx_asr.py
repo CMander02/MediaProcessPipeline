@@ -18,6 +18,7 @@ from app.services.recognition.sherpa_onnx_asr import (  # noqa: E402
     SherpaOnnxASRService,
     _clean_text,
     _merge_timed_units,
+    _remove_hotword_echoes,
 )
 from app.services.recognition.sherpa_runtime import (  # noqa: E402
     SherpaRuntime,
@@ -55,8 +56,9 @@ def _fake_qwen_bundle(root: Path) -> Path:
     return directory
 
 
-def test_catalog_exposes_four_default_models():
+def test_catalog_exposes_five_default_models():
     assert model_ids() == (
+        "qwen3-asr-0.6b-int8",
         "qwen3-asr-1.7b-onnx",
         "sensevoice-small-int8",
         "paraformer-zh-int8",
@@ -73,7 +75,8 @@ def test_catalog_resolves_complete_bundle_and_reports_missing_ones(tmp_path):
     assert model.directory == directory.resolve()
     assert model.family == "qwen3_asr"
     assert model.files["decoder"] == (directory / "decoder.int8.onnx").resolve()
-    assert status[0]["installed"] is True
+    qwen_status = next(item for item in status if item["id"] == "qwen3-asr-1.7b-onnx")
+    assert qwen_status["installed"] is True
     assert sum(item["installed"] for item in status) == 1
 
 
@@ -128,6 +131,57 @@ def test_runtime_auto_falls_back_from_cuda_to_cpu(tmp_path, monkeypatch):
 
     assert calls == ["cuda", "cpu"]
     assert info.provider == "cpu"
+
+
+def test_runtime_auto_honors_model_default_device(tmp_path, monkeypatch):
+    directory = _fake_qwen_bundle(tmp_path)
+    manifest_path = directory / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["defaults"] = {"device": "cpu"}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    spec = resolve_model("qwen3-asr-1.7b-onnx", tmp_path)
+    requested = []
+
+    monkeypatch.setattr(
+        SherpaRuntime,
+        "_provider_candidates",
+        staticmethod(lambda device: requested.append(device) or ("cpu",)),
+    )
+    monkeypatch.setattr(SherpaRuntime, "_create", staticmethod(lambda *_args: object()))
+
+    _, info = SherpaRuntime().get(spec, SherpaRuntimeOptions(device="auto"))
+
+    assert requested == ["cpu"]
+    assert info.provider == "cpu"
+
+
+def test_remove_hotword_echoes_across_adjacent_segments():
+    segments = [
+        {"start": 0.0, "end": 1.0, "text": "前文。许晨阳 高维代数几何 K-稳定性 Fan"},
+        {"start": 1.0, "end": 2.0, "text": "o，普林斯顿大学。后文"},
+    ]
+
+    cleaned, removed = _remove_hotword_echoes(
+        segments,
+        ("许晨阳", "高维代数几何", "K-稳定性", "Fano", "普林斯顿大学"),
+    )
+
+    assert removed == 1
+    assert [segment["text"] for segment in cleaned] == ["前文。", "后文"]
+
+
+def test_remove_hotword_echoes_keeps_normal_term_mentions():
+    segments = [
+        {"start": 0.0, "end": 1.0, "text": "许晨阳研究高维代数几何。"},
+    ]
+
+    cleaned, removed = _remove_hotword_echoes(
+        segments,
+        ("许晨阳", "高维代数几何", "K-稳定性", "Fano", "普林斯顿大学"),
+    )
+
+    assert removed == 0
+    assert cleaned == segments
 
 
 def test_native_segment_timestamps_are_offset_and_cleaned():

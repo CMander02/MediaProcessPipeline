@@ -87,9 +87,59 @@ describe("SubmitPage Bilibili collection selection", () => {
     await waitFor(() => {
       expect(createBatch).toHaveBeenCalledWith(
         ["https://www.bilibili.com/video/BV1DK4y1b7bY"],
-        {},
+        {
+          force_asr: true,
+          use_platform_subtitle_reference: true,
+        },
       )
     })
     expect(navigate).toHaveBeenCalledWith("#/result/task/task-1")
+  })
+
+  it("submits ASR with platform subtitle reference as one strategy", async () => {
+    const createBatch = vi.spyOn(api.tasks, "createBatch").mockResolvedValue([
+      { id: "task-reference" },
+    ] as Awaited<ReturnType<typeof api.tasks.createBatch>>)
+
+    render(<SubmitPage />)
+
+    fireEvent.change(screen.getByPlaceholderText("粘贴视频或网页链接"), {
+      target: { value: "https://www.youtube.com/watch?v=abcdefghijk" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "高级选项" }))
+    fireEvent.click(screen.getByRole("button", { name: /ASR \+ 原生字幕参考/ }))
+    fireEvent.click(screen.getByRole("button", { name: "开始处理" }))
+
+    await waitFor(() => {
+      expect(createBatch).toHaveBeenCalledWith(
+        ["https://www.youtube.com/watch?v=abcdefghijk"],
+        {
+          force_asr: true,
+          use_platform_subtitle_reference: true,
+        },
+      )
+    })
+  })
+
+  it("lets the automatic strategy override the global subtitle reference default", async () => {
+    const createBatch = vi.spyOn(api.tasks, "createBatch").mockResolvedValue([
+      { id: "task-auto" },
+    ] as Awaited<ReturnType<typeof api.tasks.createBatch>>)
+
+    render(<SubmitPage />)
+
+    fireEvent.change(screen.getByPlaceholderText("粘贴视频或网页链接"), {
+      target: { value: "https://www.youtube.com/watch?v=abcdefghijk" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "高级选项" }))
+    fireEvent.click(screen.getByRole("button", { name: /^自动/ }))
+    fireEvent.click(screen.getByRole("button", { name: "开始处理" }))
+
+    await waitFor(() => {
+      expect(createBatch).toHaveBeenCalledWith(
+        ["https://www.youtube.com/watch?v=abcdefghijk"],
+        { use_platform_subtitle_reference: false },
+      )
+    })
   })
 })

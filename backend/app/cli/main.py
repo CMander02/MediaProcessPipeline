@@ -16,6 +16,7 @@ import sys
 from typing import Optional
 
 import typer
+
 from app.cli.commands.config_values import _all_valid_keys as _all_valid_keys
 from app.cli.commands.config_values import _config_default as _config_default
 from app.cli.commands.config_values import _config_list_impl as _config_list_impl

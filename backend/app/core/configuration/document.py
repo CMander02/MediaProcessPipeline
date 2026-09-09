@@ -131,7 +131,7 @@ def _normalize_settings_document_state(
     default_sherpa_model = (
         "qwen3-asr-1.7b-onnx"
         if legacy_asr_provider in {"qwen3", "qwen3_gguf"}
-        else "sensevoice-small-int8"
+        else "qwen3-asr-0.6b-int8"
     )
     data.setdefault("sherpa_model_id", default_sherpa_model)
     data.setdefault("sherpa_model_root", "")

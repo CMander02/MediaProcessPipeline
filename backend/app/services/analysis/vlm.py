@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import logging
@@ -11,8 +12,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from app.core.model_router import EndpointBinding, resolve_vlm_binding
 from app.core.logging_setup import log_event
+from app.core.model_router import EndpointBinding, resolve_vlm_binding
 
 logger = logging.getLogger(__name__)
 
@@ -156,12 +157,66 @@ class VLMService:
 
             base_url = get_local_llm_runtime().ensure(binding.request_kwargs)
             binding = replace(binding, api_base=f"{base_url}/v1", api_key="local")
-        client, model = self._get_client(binding)
 
         b64, media_type, payload_meta = _encode_image(image_path)
         timeout_sec = int(binding.request_kwargs.get("timeout_sec") or 90)
         started = time.monotonic()
         max_tokens = max(2048, int(binding.request_kwargs.get("max_tokens") or rt.vlm_max_tokens))
+        if binding.request_kwargs.get("transport") == "oauth_cli":
+            from app.services.analysis.coding_plan_cli import call_coding_plan_cli
+
+            provider_type = str(binding.request_kwargs.get("provider_type") or "")
+            raw = asyncio.run(
+                call_coding_plan_cli(
+                    provider_type,
+                    model=binding.model,
+                    prompt=f"{_SYSTEM_PROMPT}\n\n{_USER_IMAGE_PROMPT}",
+                    cli_path=str(binding.request_kwargs.get("cli_path") or ""),
+                    timeout_sec=timeout_sec,
+                    reasoning_effort=str(
+                        binding.request_kwargs.get("reasoning_effort") or ""
+                    ),
+                    image_paths=[image_path],
+                )
+            )
+            result = _parse_response(raw)
+            if not result["text"].strip():
+                retry_text = asyncio.run(
+                    call_coding_plan_cli(
+                        provider_type,
+                        model=binding.model,
+                        prompt=_OCR_RETRY_PROMPT,
+                        cli_path=str(binding.request_kwargs.get("cli_path") or ""),
+                        timeout_sec=timeout_sec,
+                        reasoning_effort=str(
+                            binding.request_kwargs.get("reasoning_effort") or ""
+                        ),
+                        image_paths=[image_path],
+                    )
+                ).strip()
+                if retry_text:
+                    result = {"kind": "text", "text": retry_text}
+            duration_ms = int((time.monotonic() - started) * 1000)
+            result["payload_meta"] = payload_meta
+            result["duration_ms"] = duration_ms
+            log_event(
+                logger,
+                logging.INFO,
+                "vlm.image.completed",
+                file=image_path.name,
+                kind=result["kind"],
+                chars=len(result["text"]),
+                payload_bytes=payload_meta.get("payload_bytes"),
+                source_bytes=payload_meta.get("source_bytes"),
+                source_size=payload_meta.get("source_size"),
+                payload_size=payload_meta.get("payload_size"),
+                duration_ms=duration_ms,
+                transport="oauth_cli",
+                provider=provider_type,
+            )
+            return result
+
+        client, model = self._get_client(binding)
         response = client.chat.completions.create(
             model=model,
             max_tokens=max_tokens,

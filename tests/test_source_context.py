@@ -153,3 +153,35 @@ def test_summary_markdown_keeps_timeline_in_structured_artifact_only():
     assert "摘要正文" in rendered
     assert "### Key Facts" in rendered
     assert "Timeline" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_transcription_context_cache_does_not_skip_postprocess_enrichment(tmp_path, monkeypatch):
+    from app.core.pipeline_steps import artifacts
+    from app.models import MediaMetadata, Task, TaskType
+    from app.services.analysis import source_context
+
+    builds = []
+    original_build = source_context.build_source_context
+
+    async def build(metadata, options, *, enrich=True):
+        builds.append(enrich)
+        return await original_build(metadata, options, enrich=False)
+
+    async def write(_task, directory, filename, content):
+        path = directory / filename
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(source_context, "build_source_context", build)
+    monkeypatch.setattr(artifacts, "_write_text_artifact", write)
+    task = Task(task_type=TaskType.PIPELINE, source="demo.mp4")
+    metadata = MediaMetadata(title="Demo")
+
+    await artifacts._prepare_source_context(task, tmp_path, metadata, enrich=False)
+    assert (tmp_path / "source_context.asr.json").is_file()
+    assert not (tmp_path / "source_context.json").exists()
+    await artifacts._prepare_source_context(task, tmp_path, metadata, enrich=True)
+    await artifacts._prepare_source_context(task, tmp_path, metadata, enrich=True)
+    assert builds == [False, True]
+    assert metadata.extra["source_context_file"] == "source_context.json"

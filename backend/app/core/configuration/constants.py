@@ -77,6 +77,8 @@ _PROVIDER_MODEL_TYPE_CAPABILITIES: dict[str, list[str]] = {
     "asr": ["asr"],
 }
 
+_OAUTH_PROVIDER_TYPES = {"codex_oauth", "agy_oauth", "kimi_oauth", "qoder_oauth"}
+
 _PROVIDER_CONNECTION_ALIASES: dict[str, str] = {
     "siliconflow-asr": "siliconflow",
     "vision-default": "custom-vision-default",

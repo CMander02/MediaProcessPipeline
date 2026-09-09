@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import time
 from typing import Any
@@ -123,7 +124,7 @@ def _load_local_llm(model_path: str, device: str = "cuda", dtype: str = "bfloat1
     right AutoModel class from the config's architectures field.
     """
     try:
-        import torch
+        import torch  # noqa: F401 - verify the optional runtime can be imported
         from transformers import AutoConfig, AutoTokenizer
         from transformers.utils import logging as hf_logging
     except ImportError as e:
@@ -332,6 +333,7 @@ class LLMService:
     ) -> str:
         """Call a managed local llama.cpp OpenAI-compatible endpoint."""
         import httpx
+
         from app.services.analysis._openai_client import make_async_openai_client
         from app.services.analysis.local_llm_runtime import get_local_llm_runtime
 
@@ -407,7 +409,7 @@ class LLMService:
                 system_prompt=system_prompt,
             )
 
-        if binding.transport in {"codex_cli", "agy_cli"}:
+        if binding.transport in {"codex_cli", "agy_cli", "kimi_cli", "qoder_cli"}:
             from app.services.analysis.coding_plan_cli import call_coding_plan_cli
 
             if not binding.configured:
@@ -429,6 +431,7 @@ class LLMService:
                     prompt=cli_prompt,
                     cli_path=str(binding.request_kwargs.get("cli_path") or ""),
                     timeout_sec=float(binding.request_kwargs.get("timeout_sec") or 600),
+                    reasoning_effort=str(binding.request_kwargs.get("reasoning_effort") or ""),
                 )
             except Exception as exc:
                 log_event(
@@ -514,6 +517,7 @@ class LLMService:
             return "[LLM not configured]"
 
         import httpx
+
         from app.services.analysis._openai_client import make_async_openai_client
 
         timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
@@ -715,6 +719,13 @@ class LLMService:
     ) -> str:
         return _transcript_outputs._polish_timeline_context(context, chunk_segments)
 
+    def _polish_subtitle_reference(
+        self,
+        context: dict[str, Any],
+        chunk_segments: list[dict],
+    ) -> str:
+        return _transcript_outputs._polish_subtitle_reference(context, chunk_segments)
+
     async def polish_with_context_parallel(
         self,
         srt_content: str,
@@ -749,6 +760,12 @@ class LLMService:
             except (TypeError, ValueError):
                 configured = max_concurrency
             max_concurrency = max(1, min(max_concurrency, configured))
+
+        # Kimi Code produces subtitle JSON reliably at this bounded response
+        # size. Larger chunks can exceed the OAuth CLI request timeout.
+        if effective_provider in {"kimi-oauth", "kimi_oauth"}:
+            chunk_size = min(chunk_size, 24)
+            overlap = min(overlap, 4)
 
         segments = self._parse_srt(srt_content)
         if not segments:
@@ -828,18 +845,52 @@ class LLMService:
                     entities=context.get("entities"),
                     speaker_ids=speaker_ids,
                     timeline_context=self._polish_timeline_context(context, chunk_segments),
+                    subtitle_reference=self._polish_subtitle_reference(
+                        context,
+                        chunk_segments,
+                    ),
                 )
 
-                # Call LLM
-                polished_chunk = await self._call(
-                    prompt,
-                    provider_override=provider_override,
-                    stage="polish",
-                    system_prompt=POLISH_SYSTEM_PROMPT,
-                )
+                # Retry once when a successful response ends far too early.
+                # Keep the best partial result if the retry itself fails.
+                polished_segs: list[dict] = []
+                minimum_coverage = max(1, math.ceil(len(chunk_segments) * 0.75))
+                for response_attempt in range(2):
+                    try:
+                        polished_chunk = await self._call(
+                            prompt,
+                            provider_override=provider_override,
+                            stage="polish",
+                            system_prompt=POLISH_SYSTEM_PROMPT,
+                        )
+                    except Exception as retry_error:
+                        if response_attempt > 0 and polished_segs:
+                            log_event(
+                                logger,
+                                logging.WARNING,
+                                "llm.polish.incomplete_retry_failed",
+                                chunk=idx,
+                                retained_segments=len(polished_segs),
+                                error=retry_error,
+                            )
+                            break
+                        raise
 
-                # Try JSON first (preferred output format), then fall back to SRT
-                polished_segs = self._parse_polish_response(polished_chunk, chunk_segments)
+                    candidate_segs = self._parse_polish_response(polished_chunk, chunk_segments)
+                    if len(candidate_segs) > len(polished_segs):
+                        polished_segs = candidate_segs
+                    if len(candidate_segs) >= minimum_coverage:
+                        break
+                    if response_attempt == 0:
+                        log_event(
+                            logger,
+                            logging.WARNING,
+                            "llm.polish.incomplete_retry_started",
+                            chunk=idx,
+                            input_segments=len(chunk_segments),
+                            output_segments=len(candidate_segs),
+                            minimum_segments=minimum_coverage,
+                        )
 
                 if len(polished_segs) != len(chunk_segments):
                     log_event(
@@ -919,14 +970,11 @@ class LLMService:
                     log_event(
                         logger,
                         logging.ERROR,
-                        "llm.polish.chunk_retry_failed",
+                        "llm.polish.chunk_fallback_original",
                         chunk=idx,
                         error=retry_error,
                     )
-                    raise RuntimeError(
-                        f"Polish chunk {idx + 1}/{len(chunks)} failed after sequential retry: "
-                        f"{retry_error}"
-                    ) from retry_error
+                    results.append((idx, [dict(segment) for segment in segs]))
 
         # Sort by chunk index to maintain order
         results.sort(key=lambda x: x[0])

@@ -96,7 +96,7 @@ async def postprocess(ctx: PipelineContext) -> None:
         ctx.restore_transcript()  # picks up polished if present
     else:
         await _update_step(ctx.task, PipelineStep.POLISH)
-        if ctx.has_subtitle:
+        if ctx.has_subtitle and ctx.polished:
             log_event(
                 logger,
                 logging.INFO,
@@ -113,9 +113,12 @@ async def postprocess(ctx: PipelineContext) -> None:
                 ctx.analysis["proper_nouns"] = list(set(existing + hotwords))
             elif hotwords:
                 ctx.analysis = {"proper_nouns": hotwords}
-            ctx.polished = await polish_text(ctx.srt, context=ctx.analysis)
+            polish_context = dict(ctx.analysis)
+            if ctx.subtitle_reference_segments:
+                polish_context["subtitle_reference_segments"] = ctx.subtitle_reference_segments
+            ctx.polished = await polish_text(ctx.srt, context=polish_context)
             await _raise_if_cancelled(ctx.task.id)
-        if not ctx.has_subtitle and ctx.polished:
+        if ctx.polished:
             from app.services.analysis import srt_to_markdown
 
             await _write_text_artifact(
@@ -125,6 +128,12 @@ async def postprocess(ctx: PipelineContext) -> None:
             await _write_text_artifact(
                 ctx.task, ctx.task_dir, "transcript_polished.md", polished_md_content
             )
+            selected_lang = str(ctx.metadata.extra.get("selected_subtitle_lang") or "")
+            for track in ctx.metadata.extra.get("subtitle_tracks") or []:
+                if track.get("type") == "asr" or (
+                    selected_lang and track.get("lang") == selected_lang
+                ):
+                    track["polished"] = True
             polish_ran = True
         await _update_step(ctx.task, PipelineStep.POLISH, completed=True)
         await _raise_if_cancelled(ctx.task.id)
@@ -254,11 +263,14 @@ async def postprocess(ctx: PipelineContext) -> None:
 
     ctx.task.result = {
         "metadata": ctx.metadata.model_dump(mode="json"),
-        "transcript_segments": len(ctx.recognition_segments),
+        "transcript_segments": (
+            len(ctx.recognition_segments)
+            or int((ctx.task.result or {}).get("transcript_segments") or 0)
+        ),
         "archive": archive,
         "output_dir": str(ctx.task_dir),
         "analysis": ctx.analysis,
-        "subtitle_source": ctx.subtitle_source,
+        "subtitle_source": (ctx.task.result or {}).get("subtitle_source") or ctx.subtitle_source,
     }
 
     # Async KB indexing (fail-soft)

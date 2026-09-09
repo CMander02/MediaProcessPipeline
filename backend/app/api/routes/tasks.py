@@ -123,10 +123,20 @@ async def create_task(task_create: TaskCreate, request: Request):
         title = str(task.id)
         media_type = "unknown"
 
+    subtitle_reference_mode = bool(
+        task.options.get(
+            "use_platform_subtitle_reference",
+            runtime.use_platform_subtitle_reference,
+        )
+    )
     source_flow = resolve_source_flow(
         source,
         prefer_platform_subtitles=True,
-        force_asr=bool(task.options.get("force_asr", False)),
+        force_asr=bool(
+            runtime.force_asr
+            or subtitle_reference_mode
+            or task.options.get("force_asr", False)
+        ),
         task_options=task.options,
     )
     task.flow = source_flow.snapshot(status="queued", current_step="resolve")

@@ -102,6 +102,8 @@ def _plain_text_from_srt(srt_content: str) -> str:
 async def _select_polish_track(
     tracks: list[dict],
     srt_text_hint: str = "",
+    *,
+    detect_with_llm: bool = True,
 ) -> tuple[dict, str]:
     """Pick the subtitle track to polish based on LLM-detected language.
 
@@ -119,14 +121,8 @@ async def _select_polish_track(
 
     if not tracks:
         raise ValueError("no tracks to select from")
-    if len(tracks) == 1:
-        # No point running LLM — still detect lang so we can tag metadata
-        try:
-            sample_srt = Path(tracks[0]["path"]).read_text(encoding="utf-8", errors="ignore")
-            detected = await detect_transcript_language(srt=sample_srt)
-        except Exception:
-            detected = tracks[0].get("lang") or "unknown"
-        return tracks[0], detected
+    if len(tracks) == 1 or not detect_with_llm:
+        return tracks[0], tracks[0].get("lang") or "unknown"
 
     # Use the first (best — CC before AI) track's content as detection sample
     # if no external srt_text_hint was provided.

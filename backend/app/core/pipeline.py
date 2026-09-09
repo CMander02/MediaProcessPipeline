@@ -110,6 +110,7 @@ from app.core.pipeline_steps.state import _update_flow_from_metadata as _update_
 from app.core.pipeline_steps.state import _update_flow_step as _update_flow_step
 from app.core.pipeline_steps.state import _update_step as _update_step
 from app.core.pipeline_steps.state import _update_step_progress as _update_step_progress
+from app.core.pipeline_steps.state import handoff_postprocess
 from app.core.pipeline_steps.state import pipeline_steps_schema as pipeline_steps_schema
 from app.core.pipeline_steps.subtitle_fast_path import (
     _run_subtitle_fast_path as _run_subtitle_fast_path,
@@ -135,23 +136,33 @@ from app.core.pipeline_steps.transcription import _run_voiceprint_step as _run_v
 from app.core.pipeline_steps.transcription import transcribe
 
 
-async def run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
+async def run_pipeline(
+    task: Task, _download_worker_call: bool = False, _stop_after_transcribe: bool = False
+) -> None:
     """Run a queue stage, restoring persisted outputs at each worker handoff."""
-    context = await create_context(task, get_runtime_settings(), _download_worker_call)
+    context = await create_context(
+        task, get_runtime_settings(), _download_worker_call, _stop_after_transcribe
+    )
     if await prepare_download(context):
         return
     await transcribe(context)
+    if _stop_after_transcribe:
+        await handoff_postprocess(context)
+        return
     await postprocess(context)
 
 
-async def process_task(task_id: UUID, _download_worker_call: bool = False) -> None:
+async def process_task(
+    task_id: UUID,
+    _download_worker_call: bool = False,
+    _stop_after_transcribe: bool = False,
+) -> None:
     """Process a single task — called by both download workers and GPU worker.
 
     download worker  → process_task(id, _download_worker_call=True)
                          runs DOWNLOAD, then advance_to_gpu(), returns
-    GPU worker       → process_task(id, _download_worker_call=False)
-                         DOWNLOAD already in completed_steps, skips it,
-                         runs SEPARATE → TRANSCRIBE → POLISH → ANALYZE → ARCHIVE
+    queue worker      → first stops after TRANSCRIBE and enqueues post-processing
+                      → then resumes POLISH → ANALYZE → ARCHIVE
     """
     from app.services.analysis import generate_mindmap, polish_text, summarize_text
     from app.services.ingestion import download_media
@@ -184,7 +195,11 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
 
     try:
         if task.task_type == TaskType.PIPELINE:
-            await run_pipeline(task, _download_worker_call=_download_worker_call)
+            await run_pipeline(
+                task,
+                _download_worker_call=_download_worker_call,
+                _stop_after_transcribe=_stop_after_transcribe,
+            )
         elif task.task_type == TaskType.INGESTION:
             task.result = await download_media(task.source)
         elif task.task_type == TaskType.PREPROCESSING:
@@ -210,6 +225,9 @@ async def process_task(task_id: UUID, _download_worker_call: bool = False) -> No
         # fast path is the exception: it can finish ARCHIVE inside the download
         # worker, so it must fall through to the normal completion write below.
         if _download_worker_call and task.task_type == TaskType.PIPELINE:
+            if PipelineStep.ARCHIVE not in (task.completed_steps or []):
+                return
+        if _stop_after_transcribe and task.task_type == TaskType.PIPELINE:
             if PipelineStep.ARCHIVE not in (task.completed_steps or []):
                 return
 
