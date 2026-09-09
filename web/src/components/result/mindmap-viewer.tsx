@@ -223,9 +223,11 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
       svgEl: SVGSVGElement,
       ref: React.MutableRefObject<MarkmapInstance | null>,
       data: MindmapNode,
+      isCancelled: () => boolean,
     ) => {
       try {
         const { Markmap } = await import("markmap-view")
+        if (isCancelled()) return
 
         svgEl.innerHTML = ""
         ref.current?.destroy?.()
@@ -324,7 +326,8 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
 
     ;(async () => {
       if (!cancelled) {
-        await renderMarkmap(el, mmRef, rootNode)
+        await renderMarkmap(el, mmRef, rootNode, () => cancelled)
+        if (cancelled) return
         if (!cancelled && fillContainer && onFitReadyRef.current) {
           onFitReadyRef.current(() => mmRef.current?.fit?.())
         }
@@ -333,18 +336,26 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
 
     return () => {
       cancelled = true
+      mmRef.current?.destroy?.()
+      mmRef.current = null
     }
   }, [rootNode, renderMarkmap, fillContainer, viewMode])
 
   useEffect(() => {
     if (viewMode !== "mindmap" || !dialogOpen || !dialogSvgRef.current || !rootNode) return
-    const timer = setTimeout(() => {
+    let cancelled = false
+    const timer = setTimeout(async () => {
       if (dialogSvgRef.current) {
-        renderMarkmap(dialogSvgRef.current, dialogMMRef, rootNode)
+        await renderMarkmap(dialogSvgRef.current, dialogMMRef, rootNode, () => cancelled)
       }
     }, 100)
 
-    return () => clearTimeout(timer)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+      dialogMMRef.current?.destroy?.()
+      dialogMMRef.current = null
+    }
   }, [dialogOpen, rootNode, renderMarkmap, viewMode])
 
   useEffect(() => () => {
@@ -369,7 +380,7 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
       variant="ghost"
       size="icon-sm"
       onClick={toggleView}
-      className="absolute right-2 top-2 bg-background/80 text-muted-foreground shadow-sm backdrop-blur-sm"
+      className="absolute right-2 top-2 z-10 bg-background/80 text-muted-foreground shadow-sm backdrop-blur-sm"
       title={viewToggleLabel}
       aria-label={viewToggleLabel}
     >

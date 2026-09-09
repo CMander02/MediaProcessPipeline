@@ -16,7 +16,7 @@ describe("sanitizeMindmapMarkdown", () => {
     ].join("\n"))
   })
 
-  it("renders legacy list levels as recursive Markdown headings", () => {
+  it("renders legacy branches as headings and leaves as body items", () => {
     const markdown = [
       "- 开场 [00:00:00]",
       "  - 嘉宾背景",
@@ -28,13 +28,15 @@ describe("sanitizeMindmapMarkdown", () => {
       "## 开场",
       "### 嘉宾背景",
       "#### Evolvent AI",
-      "##### RSI",
+      "- RSI",
     ].join("\n"))
   })
 
-  it("keeps heading-based mindmaps unchanged", () => {
-    const markdown = "## 开场\n### 嘉宾背景"
+  it("renders heading-based mindmap leaves as body items", () => {
+    const markdown = "## 开场\n### 嘉宾背景\n### 课程介绍\n#### 目标"
 
-    expect(mindmapMarkdownForReading(markdown)).toBe(markdown)
+    expect(mindmapMarkdownForReading(markdown)).toBe(
+      "## 开场\n- 嘉宾背景\n### 课程介绍\n- 目标",
+    )
   })
 })
