@@ -27,7 +27,7 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="repla
 
 ROOT = Path(__file__).resolve().parent.parent
 COOKIE_FILE = ROOT / "backend" / "tools" / "bbdown" / "BBDown.data"
-OUT_DIR = ROOT / "agentspace" / "bili_sub_path_probe"
+OUT_DIR = ROOT / "agentspace" / "assets" / time.strftime("%Y-%m-%d") / "bili_sub_path_probe"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/121.0 Safari/537.36"
