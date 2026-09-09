@@ -58,7 +58,9 @@ export function ArchiveCard({
   const canPause = archive.processing && metadataStatus !== "paused" && Boolean(onPause)
   const canResume = archive.processing && metadataStatus === "paused" && Boolean(onResume)
 
-  const showThumbnail = !imgError && (!isTextNote || archive.has_image)
+  const showThumbnail = archive.has_thumbnail !== false
+    && !imgError
+    && (!isTextNote || archive.has_image)
   const thumbnailUrl = archive.thumbnail_url ?? api.archives.thumbnailUrl(archive.path)
   const thumbnailClassName =
     "h-full w-full object-cover object-center transition-opacity duration-150 group-hover:opacity-90"
@@ -78,6 +80,7 @@ export function ArchiveCard({
                 src={thumbnailUrl}
                 alt=""
                 loading="lazy"
+                decoding="async"
                 onError={() => setImgError(true)}
                 className={thumbnailClassName}
               />

@@ -36,6 +36,29 @@ def archive(root, title):
     return directory, identity
 
 
+def test_archive_with_audio_and_video_preserves_video_as_primary(library, monkeypatch):
+    from app.services.archiving import archive as archive_module
+
+    root, _service = library
+    directory, _identity = archive(root, "mixed-media")
+    (directory / "video.mp4").write_bytes(b"video")
+    (directory / "audio.wav").write_bytes(b"audio")
+    scan = archive_module.os.scandir
+
+    class OrderedScan:
+        def __enter__(self):
+            with scan(directory) as entries:
+                return iter(sorted(entries, key=lambda item: item.name, reverse=True))
+
+        def __exit__(self, *_args):
+            pass
+
+    monkeypatch.setattr(archive_module.os, "scandir", lambda _path: OrderedScan())
+    item = archive_module.ArchiveService()._archive_item(directory, {})
+    assert item["has_video"] and item["has_audio"]
+    assert item["media_file"] == str(directory / "video.mp4")
+
+
 def test_5000_rows_page_filter_order_and_no_filesystem_scan(library, monkeypatch):
     root, service = library
     conn = database._get_conn()

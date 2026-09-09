@@ -94,20 +94,28 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("Sherpa runtime preload failed: %s", exc)
 
-    from app.services.ingestion.ytdlp_version import auto_update_on_startup, warn_if_stale
-    if rt.ytdlp_auto_update:
-        await run_in_thread(auto_update_on_startup, True)
-    else:
-        asyncio.create_task(run_in_thread(warn_if_stale))
-
     # Initialize SQLite task store
     init_db()
     from app.core.archive_lifecycle import get_archive_lifecycle
     await run_in_thread(get_archive_lifecycle().recover)
 
-    # Keep stable archive identities and the mobile sync revision current.
+    # Startup maintenance can run after the health endpoint becomes available.
+    from app.services.ingestion.ytdlp_version import auto_update_on_startup, warn_if_stale
     from app.core.archive_sync import get_archive_sync_service
-    await run_in_thread(get_archive_sync_service().reconcile)
+
+    startup_maintenance = [
+        asyncio.create_task(
+            run_in_thread(
+                auto_update_on_startup if rt.ytdlp_auto_update else warn_if_stale,
+                *([True] if rt.ytdlp_auto_update else []),
+            ),
+            name="ytdlp-startup-maintenance",
+        ),
+        asyncio.create_task(
+            run_in_thread(get_archive_sync_service().reconcile),
+            name="archive-sync-reconcile",
+        ),
+    ]
 
     # Start task queue worker
     queue = get_task_queue()
@@ -146,6 +154,9 @@ async def lifespan(app: FastAPI):
                 await run_in_thread(release_local_llm_runtime)
             except Exception as e:
                 logger.warning("Runtime cleanup during shutdown failed: %s", e)
+            # to_thread keeps running after its asyncio wrapper is cancelled.
+            # Drain maintenance before closing the connection used by reconcile.
+            await asyncio.gather(*startup_maintenance, return_exceptions=True)
             await drain_workspace_threads()
             close_db()
 

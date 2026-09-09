@@ -1,5 +1,6 @@
 """Archive service for generating structured output."""
 
+import asyncio
 import json
 import logging
 import os
@@ -9,7 +10,7 @@ from typing import Any
 
 from app.core.settings import get_runtime_settings
 from app.core.artifacts import get_artifact_store
-from app.core.paths import get_workspace_paths, iter_archive_directories
+from app.core.paths import get_workspace_paths
 from app.models import MediaMetadata
 
 logger = logging.getLogger(__name__)
@@ -191,8 +192,9 @@ class ArchiveService:
         dir_to_task: dict[str, dict[str, str]],
         *,
         lite: bool = False,
+        assume_directory: bool = False,
     ) -> dict[str, Any] | None:
-        if not task_dir.is_dir():
+        if not assume_directory and not task_dir.is_dir():
             return None
         if task_dir.name.startswith(".") or task_dir.name in (
             "settings.json",
@@ -202,11 +204,15 @@ class ArchiveService:
         ):
             return None
 
-        has_any_output = (
-            (task_dir / "metadata.json").exists()
-            or (task_dir / "transcript.srt").exists()
-            or (task_dir / "summary.md").exists()
-            or (task_dir / "source.md").exists()
+        try:
+            with os.scandir(task_dir) as entries:
+                directory_entries = list(entries)
+        except OSError:
+            return None
+        file_entries = [entry for entry in directory_entries if entry.is_file()]
+        file_names = {entry.name.casefold() for entry in file_entries}
+        has_any_output = bool(
+            file_names & {"metadata.json", "transcript.srt", "summary.md", "source.md"}
         )
         if not has_any_output:
             return None
@@ -223,17 +229,16 @@ class ArchiveService:
         media_file = None
         media_is_external = False
 
-        for f in task_dir.iterdir():
-            if not f.is_file():
-                continue
+        for entry in file_entries:
+            f = Path(entry.path)
             ext = f.suffix.lower()
             if ext in video_exts:
                 has_video = True
                 media_file = str(f)
-                break
-            if ext in audio_exts:
+            elif ext in audio_exts:
                 has_audio = True
-                media_file = str(f)
+                if not has_video:
+                    media_file = str(f)
             elif ext in image_exts and f.stem.lower() not in ("cover", "thumbnail"):
                 has_image = True
         if not has_image:
@@ -243,6 +248,23 @@ class ArchiveService:
                 for item in images_dir.iterdir()
             ):
                 has_image = True
+
+        extra = metadata.get("extra") if isinstance(metadata.get("extra"), dict) else {}
+        remote_thumbnail_values = (
+            metadata.get("thumbnail"),
+            extra.get("thumbnail"),
+            extra.get("cover"),
+            extra.get("cover_url"),
+        )
+        has_remote_thumbnail = any(
+            isinstance(value, str) and value.strip().startswith(("http://", "https://", "//"))
+            for value in remote_thumbnail_values
+        )
+        has_local_cover = any(
+            Path(name).suffix.casefold() in image_exts
+            and Path(name).stem.casefold() in {"cover", "thumbnail"}
+            for name in file_names
+        )
 
         # Portable synchronization omits media files by default. Preserve the
         # task's declared video/audio category from metadata in that case.
@@ -275,7 +297,7 @@ class ArchiveService:
         if not created_at:
             timestamp = (
                 metadata_path.stat().st_mtime
-                if metadata_path.exists()
+                if "metadata.json" in file_names
                 else task_dir.stat().st_mtime
             )
             created_at = datetime.fromtimestamp(timestamp).isoformat()
@@ -289,13 +311,18 @@ class ArchiveService:
             "date": datetime.fromisoformat(created_at).strftime("%Y-%m-%d"),
             "created_at": created_at,
             "title": metadata.get("title", task_dir.name),
-            "has_transcript": (task_dir / "transcript_polished.srt").exists()
-            or (task_dir / "transcript.srt").exists(),
-            "has_summary": (task_dir / "summary.md").exists(),
-            "has_mindmap": (task_dir / "mindmap.md").exists(),
+            "has_transcript": bool(
+                file_names & {"transcript_polished.srt", "transcript.srt"}
+            ),
+            "has_summary": "summary.md" in file_names,
+            "has_mindmap": "mindmap.md" in file_names,
             "has_video": has_video,
             "has_audio": has_audio,
             "has_image": has_image,
+            "has_thumbnail": has_local_cover
+            or has_image
+            or has_remote_thumbnail
+            or bool(media_file and has_video),
             "media_file": media_file,
             "media_is_external": media_is_external,
             "processing": processing,
@@ -457,8 +484,8 @@ async def archive_result(
 
 
 async def list_archives(lite: bool = False) -> list[dict[str, Any]]:
-    return get_archive_service().list_archives(lite=lite)
+    return await asyncio.to_thread(get_archive_service().list_archives, lite=lite)
 
 
 async def get_archive(path: str | Path, lite: bool = False) -> dict[str, Any] | None:
-    return get_archive_service().get_archive(path, lite=lite)
+    return await asyncio.to_thread(get_archive_service().get_archive, path, lite=lite)

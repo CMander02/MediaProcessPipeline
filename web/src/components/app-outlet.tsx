@@ -1,10 +1,10 @@
 import { lazy, Suspense } from "react"
 
+import { FilesPage } from "@/components/pages/files-page"
 import { LoadingState } from "@/components/ui/page-state"
 import type { ArchiveSort, MediaFilter, SourceFilter } from "@/lib/archive-filters"
 import type { Route } from "@/lib/router"
 
-const FilesPage = lazy(() => import("@/components/pages/files-page").then((module) => ({ default: module.FilesPage })))
 const SubmitPage = lazy(() => import("@/components/pages/submit-page").then((module) => ({ default: module.SubmitPage })))
 const BackendPage = lazy(() => import("@/components/pages/backend-page").then((module) => ({ default: module.BackendPage })))
 const ResultPageWrapper = lazy(() => import("@/components/pages/result-page-wrapper").then((module) => ({ default: module.ResultPageWrapper })))

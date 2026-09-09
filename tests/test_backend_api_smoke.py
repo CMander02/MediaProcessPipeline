@@ -20,7 +20,6 @@ from app.core import database, pipeline as pipeline_core, queue as queue_module,
 from app.core.events import EventBus  # noqa: E402
 from app.core.settings import RuntimeSettings  # noqa: E402
 from app.models import Task, TaskStatus, TaskType  # noqa: E402
-from app.services.ingestion import ytdlp  # noqa: E402
 from app.services.ingestion.platform.bilibili import auth as bilibili_auth  # noqa: E402
 from app.services.ingestion.platform.bilibili import collection as bilibili_collection  # noqa: E402
 
@@ -136,7 +135,10 @@ def test_batch_task_creation_uses_shared_options(tmp_path, monkeypatch):
             "https://www.bilibili.com/video/BV1DK4y1b7bY",
             "https://www.bilibili.com/video/BV1DK4y1b7bY?p=2",
         ],
-        "options": {"force_asr": True, "num_speakers": 2},
+        "options": {
+            "use_platform_subtitle_reference": True,
+            "num_speakers": 2,
+        },
     })
 
     assert response.status_code == 200
@@ -148,6 +150,11 @@ def test_batch_task_creation_uses_shared_options(tmp_path, monkeypatch):
         "https://www.bilibili.com/video/BV1DK4y1b7bY?p=2",
     ]
     assert all(task["options"]["num_speakers"] == 2 for task in created)
+    assert all(task["flow"]["id"] == "url_platform_video_asr" for task in created)
+    assert all(
+        task["options"]["use_platform_subtitle_reference"] is True
+        for task in created
+    )
 
 
 def test_bilibili_collection_api_returns_selection(tmp_path, monkeypatch):
@@ -243,7 +250,7 @@ def test_create_task_accepts_bare_bilibili_bvid(tmp_path, monkeypatch):
     data = task.json()
     assert data["source"] == "BV1XM411M7eD"
     assert data["platform"] == "bilibili_video"
-    assert data["flow"]["id"] == "url_platform_video_subtitle"
+    assert data["flow"]["id"] == "url_platform_video_asr"
     assert queue.submitted == [UUID(data["id"])]
 
 
@@ -252,7 +259,11 @@ def test_create_task_recovers_malformed_https_bilibili_bvid(tmp_path, monkeypatc
 
     task = client.post(
         "/api/tasks",
-        json={"task_type": "pipeline", "source": "https://BV1XM411M7eD"},
+        json={
+            "task_type": "pipeline",
+            "source": "https://BV1XM411M7eD",
+            "options": {"use_platform_subtitle_reference": False},
+        },
     )
 
     assert task.status_code == 200
@@ -363,6 +374,7 @@ def test_archive_thumbnail_uses_first_image_note_image(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("image/jpeg")
+    assert response.headers["cache-control"] == "private, max-age=604800"
     assert response.content == b"first-image"
 
 
@@ -384,6 +396,7 @@ def test_archive_thumbnail_caches_low_res_first_image(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("image/jpeg")
+    assert response.headers["cache-control"] == "private, max-age=604800"
     assert (archive_dir / "thumbnail.jpg").exists()
     assert response.content == (archive_dir / "thumbnail.jpg").read_bytes()
 
@@ -656,7 +669,7 @@ def test_ytdlp_upgrade_uses_uv_sync_to_persist_lock(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_real_task_queue_hands_downloaded_task_to_gpu_worker(tmp_path, monkeypatch):
+async def test_real_task_queue_runs_transcription_before_postprocessing(tmp_path, monkeypatch):
     settings = RuntimeSettings(
         data_root=str(tmp_path),
         max_download_concurrency=1,
@@ -678,13 +691,25 @@ async def test_real_task_queue_hands_downloaded_task_to_gpu_worker(tmp_path, mon
     store.save(task)
 
     task_queue = queue_module.TaskQueue()
-    calls: list[tuple[UUID, bool]] = []
+    calls: list[tuple[UUID, bool, bool]] = []
     done = asyncio.Event()
 
-    async def fake_pipeline(task_id: UUID, download_worker_call: bool) -> None:
-        calls.append((task_id, download_worker_call))
+    async def fake_pipeline(
+        task_id: UUID,
+        download_worker_call: bool,
+        stop_after_transcribe: bool = False,
+    ) -> None:
+        calls.append((task_id, download_worker_call, stop_after_transcribe))
         if download_worker_call:
             await task_queue.advance_to_gpu(task_id)
+            return
+        if stop_after_transcribe:
+            store.update_status(
+                task_id,
+                TaskStatus.PROCESSING,
+                completed_steps=["download", "transcribe"],
+            )
+            await task_queue.advance_to_postprocess(task_id)
             return
         store.update_status(task_id, TaskStatus.COMPLETED, completed_at=datetime.now())
         done.set()
@@ -697,8 +722,80 @@ async def test_real_task_queue_hands_downloaded_task_to_gpu_worker(tmp_path, mon
     finally:
         await task_queue.stop()
 
-    assert calls == [(task.id, True), (task.id, False)]
+    assert calls == [
+        (task.id, True, False),
+        (task.id, False, True),
+        (task.id, False, False),
+    ]
     assert store.get(task.id).status == TaskStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_real_task_queue_drains_all_transcripts_before_postprocessing(tmp_path, monkeypatch):
+    settings = RuntimeSettings(
+        data_root=str(tmp_path),
+        max_download_concurrency=1,
+        pipeline_overlap=True,
+    )
+    monkeypatch.setattr(settings_module, "_runtime_settings", settings)
+    monkeypatch.setattr(queue_module, "_flush_gpu_models", lambda: None)
+    monkeypatch.setattr(queue_module, "_release_transcription_models", lambda: None)
+    database.reset_db_path(tmp_path)
+
+    store = database.get_task_store()
+    task_ids = [uuid4(), uuid4()]
+    for task_id in task_ids:
+        store.save(
+            Task(
+                id=task_id,
+                task_type=TaskType.PIPELINE,
+                status=TaskStatus.PENDING,
+                source=f"{task_id}.mp4",
+            )
+        )
+
+    task_queue = queue_module.TaskQueue()
+    stages: list[tuple[UUID, str]] = []
+    done = asyncio.Event()
+
+    async def fake_pipeline(
+        task_id: UUID,
+        download_worker_call: bool,
+        stop_after_transcribe: bool = False,
+    ) -> None:
+        if download_worker_call:
+            stages.append((task_id, "download"))
+            store.update_status(task_id, TaskStatus.PROCESSING, completed_steps=["download"])
+            await task_queue.advance_to_gpu(task_id)
+        elif stop_after_transcribe:
+            stages.append((task_id, "transcribe"))
+            store.update_status(
+                task_id,
+                TaskStatus.PROCESSING,
+                completed_steps=["download", "transcribe"],
+            )
+            await task_queue.advance_to_postprocess(task_id)
+        else:
+            stages.append((task_id, "postprocess"))
+            store.update_status(task_id, TaskStatus.COMPLETED, completed_at=datetime.now())
+            if sum(stage == "postprocess" for _, stage in stages) == len(task_ids):
+                done.set()
+
+    task_queue.set_pipeline(fake_pipeline)
+    await task_queue.start()
+    try:
+        for task_id in task_ids:
+            await task_queue.submit(task_id)
+        await asyncio.wait_for(done.wait(), timeout=5)
+    finally:
+        await task_queue.stop()
+
+    stage_names = [stage for _, stage in stages]
+    assert stage_names.index("postprocess") > max(
+        index for index, stage in enumerate(stage_names) if stage == "transcribe"
+    )
+    assert stage_names.count("transcribe") == 2
+    assert stage_names.count("postprocess") == 2
 
 
 @pytest.mark.asyncio
@@ -760,6 +857,42 @@ async def test_real_task_queue_resume_failed_task_from_checkpoint(tmp_path, monk
     assert saved.completed_at is None
     assert task_queue.get_queue_snapshot() == [task.id]
     assert json.loads((output_dir / "metadata.json").read_text(encoding="utf-8"))["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_real_task_queue_checkpoint_rerun_cancelled_task(tmp_path, monkeypatch):
+    settings = RuntimeSettings(data_root=str(tmp_path), max_download_concurrency=1)
+    monkeypatch.setattr(settings_module, "_runtime_settings", settings)
+    monkeypatch.setattr(queue_module, "_flush_gpu_models", lambda: None)
+    database.reset_db_path(tmp_path)
+
+    store = database.get_task_store()
+    output_dir = tmp_path / "cancelled-output"
+    output_dir.mkdir()
+    (output_dir / "metadata.json").write_text(
+        json.dumps({"status": "cancelled"}), encoding="utf-8"
+    )
+    task = Task(
+        id=uuid4(),
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.CANCELLED,
+        source="https://example.com/video.mp4",
+        completed_steps=["download", "separate", "transcribe"],
+        current_step="polish",
+        result={"output_dir": str(output_dir)},
+        completed_at=datetime.now(),
+    )
+    store.save(task)
+
+    task_queue = queue_module.TaskQueue()
+
+    assert await task_queue.rerun_from_checkpoint(task.id) is True
+    saved = store.get(task.id)
+    assert saved.status == TaskStatus.QUEUED
+    assert saved.completed_steps == ["download", "separate", "transcribe"]
+    assert saved.current_step == "polish"
+    assert saved.completed_at is None
+    assert task_queue.get_queue_snapshot() == [task.id]
 
 
 @pytest.mark.asyncio
@@ -872,8 +1005,13 @@ async def test_process_task_dispatches_pipeline_and_publishes_completion(tmp_pat
     monkeypatch.setattr(pipeline_core, "get_event_bus", lambda: event_bus)
     monkeypatch.setattr("app.services.analysis.llm.offload_local_llm", lambda: None)
 
-    async def fake_run_pipeline(task: Task, _download_worker_call: bool = False) -> None:
+    async def fake_run_pipeline(
+        task: Task,
+        _download_worker_call: bool = False,
+        _stop_after_transcribe: bool = False,
+    ) -> None:
         assert _download_worker_call is False
+        assert _stop_after_transcribe is False
         task.result = {"output_dir": str(tmp_path / "demo-output")}
 
     monkeypatch.setattr(pipeline_core, "run_pipeline", fake_run_pipeline)
@@ -884,3 +1022,90 @@ async def test_process_task_dispatches_pipeline_and_publishes_completion(tmp_pat
     assert saved.status == TaskStatus.COMPLETED
     assert saved.result == {"output_dir": str(tmp_path / "demo-output")}
     assert [event.event_type for event in event_bus.get_recent_log()] == ["processing", "completed"]
+
+
+@pytest.mark.asyncio
+async def test_process_task_keeps_transcript_stage_processing(tmp_path, monkeypatch):
+    settings = RuntimeSettings(data_root=str(tmp_path))
+    monkeypatch.setattr(settings_module, "_runtime_settings", settings)
+    monkeypatch.setattr(pipeline_core, "get_runtime_settings", lambda: settings)
+    database.reset_db_path(tmp_path)
+
+    store = database.get_task_store()
+    task = Task(
+        id=uuid4(),
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.QUEUED,
+        source="demo.mp4",
+    )
+    store.save(task)
+
+    async def fake_run_pipeline(
+        task: Task,
+        _download_worker_call: bool = False,
+        _stop_after_transcribe: bool = False,
+    ) -> None:
+        assert _stop_after_transcribe is True
+        task.completed_steps.append("transcribe")
+        store.update_status(
+            task.id,
+            TaskStatus.PROCESSING,
+            completed_steps=task.completed_steps,
+        )
+
+    monkeypatch.setattr(pipeline_core, "run_pipeline", fake_run_pipeline)
+    monkeypatch.setattr("app.services.analysis.llm.offload_local_llm", lambda: None)
+
+    await pipeline_core.process_task(task.id, _stop_after_transcribe=True)
+
+    saved = store.get(task.id)
+    assert saved.status == TaskStatus.PROCESSING
+    assert saved.completed_at is None
+    assert saved.completed_steps == ["transcribe"]
+
+
+@pytest.mark.asyncio
+async def test_pause_during_model_release_does_not_start_postprocess(tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(settings_module, "_runtime_settings", RuntimeSettings(data_root=str(tmp_path)))
+    database.reset_db_path(tmp_path)
+    store = database.get_task_store()
+    task = Task(
+        task_type=TaskType.PIPELINE,
+        source="demo.mp4",
+        status=TaskStatus.PROCESSING,
+        completed_steps=["download", "transcribe"],
+    )
+    store.save(task)
+    entered = threading.Event()
+    released = threading.Event()
+
+    def release_models():
+        entered.set()
+        released.wait(5)
+
+    monkeypatch.setattr(queue_module, "_release_transcription_models", release_models)
+    calls = []
+
+    async def pipeline(*args):
+        calls.append(args)
+
+    queue = queue_module.TaskQueue()
+    queue.set_pipeline(pipeline)
+    queue._running = True
+    await queue.advance_to_postprocess(task.id)
+    worker = asyncio.create_task(queue._gpu_worker())
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        assert await queue.pause(task.id)
+        released.set()
+        await asyncio.wait_for(queue._postprocess_queue.join(), timeout=2)
+        assert calls == []
+        assert store.get(task.id).status == TaskStatus.PAUSED
+    finally:
+        released.set()
+        queue._running = False
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+        database.close_db()

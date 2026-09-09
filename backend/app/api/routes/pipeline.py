@@ -1,6 +1,5 @@
 """Direct pipeline operation routes."""
 
-import asyncio
 import json
 import logging
 import re
@@ -9,7 +8,7 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request, Query
+from fastapi import APIRouter, HTTPException, UploadFile, File, Request, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Any, Literal
@@ -95,6 +94,7 @@ _ALLOWED_MEDIA_EXTS = {
 
 _THUMBNAIL_MAX_BYTES = 12 * 1024 * 1024
 _RAW_IMAGE_FALLBACK_MAX_BYTES = 1024 * 1024
+_THUMBNAIL_CACHE_HEADERS = {"Cache-Control": "private, max-age=604800"}
 
 
 def _read_archive_metadata(archive_dir: Path) -> dict[str, Any]:
@@ -275,7 +275,6 @@ async def probe_url(url: str):
     """Extract metadata from a URL without downloading (for hotword suggestions)."""
     url = normalize_source_input(url)
     _validate_url(url)
-    import asyncio
 
     def _probe(url: str) -> dict[str, Any]:
         from app.services.ingestion.ytdlp import get_ytdlp_service
@@ -518,32 +517,32 @@ async def archive_thumbnail(path: str):
 
     cached = archive_dir / "thumbnail.jpg"
     if cached.exists():
-        return FileResponse(cached, media_type="image/jpeg")
+        return FileResponse(cached, media_type="image/jpeg", headers=_THUMBNAIL_CACHE_HEADERS)
 
     for candidate in ["cover.jpg", "cover.png", "cover.webp"]:
         cover = archive_dir / candidate
         if cover.exists():
-            thumb = create_image_thumbnail(cover, archive_dir)
+            thumb = await run_in_thread(create_image_thumbnail, cover, archive_dir)
             if thumb:
-                return FileResponse(thumb, media_type="image/jpeg")
+                return FileResponse(thumb, media_type="image/jpeg", headers=_THUMBNAIL_CACHE_HEADERS)
             if _can_return_raw_image(cover):
-                return FileResponse(cover, media_type=image_media_type(cover))
+                return FileResponse(cover, media_type=image_media_type(cover), headers=_THUMBNAIL_CACHE_HEADERS)
             break
 
     first_image = first_image_note_image(archive_dir)
     if first_image:
-        thumb = create_image_thumbnail(first_image, archive_dir)
+        thumb = await run_in_thread(create_image_thumbnail, first_image, archive_dir)
         if thumb:
-            return FileResponse(thumb, media_type="image/jpeg")
+            return FileResponse(thumb, media_type="image/jpeg", headers=_THUMBNAIL_CACHE_HEADERS)
         if _can_return_raw_image(first_image):
-            return FileResponse(first_image, media_type=image_media_type(first_image))
+            return FileResponse(first_image, media_type=image_media_type(first_image), headers=_THUMBNAIL_CACHE_HEADERS)
 
     meta = _read_archive_metadata(archive_dir)
     remote_thumb = _first_thumbnail_url(meta)
     if remote_thumb:
-        thumb = _cache_remote_thumbnail(remote_thumb, archive_dir)
+        thumb = await run_in_thread(_cache_remote_thumbnail, remote_thumb, archive_dir)
         if thumb:
-            return FileResponse(thumb, media_type="image/jpeg")
+            return FileResponse(thumb, media_type="image/jpeg", headers=_THUMBNAIL_CACHE_HEADERS)
 
     # Try to find video in archive directory
     video_exts = {".mp4", ".mkv", ".avi", ".webm", ".mov"}
@@ -569,7 +568,8 @@ async def archive_thumbnail(path: str):
     # Generate thumbnail via ffmpeg
     thumb_path = archive_dir / "thumbnail.jpg"
     try:
-        subprocess.run(
+        await run_in_thread(
+            subprocess.run,
             [
                 "ffmpeg", "-y", "-ss", "3", "-i", str(video_file),
                 "-vframes", "1", "-vf", "scale=480:-2",
@@ -583,7 +583,7 @@ async def archive_thumbnail(path: str):
         raise HTTPException(500, "Thumbnail generation failed")
 
     if thumb_path.exists():
-        return FileResponse(thumb_path, media_type="image/jpeg")
+        return FileResponse(thumb_path, media_type="image/jpeg", headers=_THUMBNAIL_CACHE_HEADERS)
 
     raise HTTPException(500, "Thumbnail generation produced no output")
 

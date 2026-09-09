@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import logging
+import re
 import shutil
 import socket
 from contextlib import suppress
@@ -28,6 +29,8 @@ from app.core.settings import RuntimeSettings, get_runtime_settings
 from app.models import Task, TaskStatus
 
 logger = logging.getLogger(__name__)
+
+_MAX_RETRY_DELAY_SEC = 15 * 60.0
 
 _PORTABLE_RESULT_FIELDS = {
     "metadata",
@@ -70,6 +73,21 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _retry_delay(interval: float, consecutive_failures: int) -> float:
+    """Back off repeated remote failures while still probing for recovery."""
+    if consecutive_failures <= 0:
+        return interval
+    # The minimum interval is 5s, so ten doublings already exceed the cap.
+    return min(_MAX_RETRY_DELAY_SEC, interval * (2 ** min(consecutive_failures, 10)))
+
+
+def _cloudflare_error_code(exc: BaseException) -> str | None:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+    match = re.search(r"error code:\s*(\d+)", exc.response.text, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
 class RemoteArchiveUploadService:
     """Upload one unsynchronized completed archive per background cycle."""
 
@@ -98,23 +116,39 @@ class RemoteArchiveUploadService:
             await runner
 
     async def _run(self) -> None:
+        consecutive_failures = 0
         while True:
             settings = self._settings_getter()
             interval = max(5.0, float(settings.remote_sync_interval_sec))
+            delay = interval
             if settings.remote_sync_enabled and settings.remote_sync_upload_results:
                 try:
                     await self.sync_once(settings)
+                    consecutive_failures = 0
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    consecutive_failures += 1
+                    delay = _retry_delay(interval, consecutive_failures)
+                    status_code = (
+                        exc.response.status_code
+                        if isinstance(exc, httpx.HTTPStatusError)
+                        else None
+                    )
                     log_event(
                         logger,
                         logging.WARNING,
                         "remote_archive_upload.cycle_failed",
                         error_type=type(exc).__name__,
                         error=exc,
+                        status_code=status_code,
+                        cloudflare_error_code=_cloudflare_error_code(exc),
+                        consecutive_failures=consecutive_failures,
+                        retry_in_sec=delay,
                     )
-            await asyncio.sleep(interval)
+            else:
+                consecutive_failures = 0
+            await asyncio.sleep(delay)
 
     @uses_workspace
     async def sync_once(self, settings: RuntimeSettings | None = None) -> bool:
@@ -127,11 +161,23 @@ class RemoteArchiveUploadService:
             output_dir = self._archive_dir(task, data_root)
             if output_dir is None or self._already_uploaded(task, server_url):
                 continue
+            await self._check_server_health(server_url)
             from app.core.media_retention import uploading_media
             with uploading_media(output_dir):
                 await self._upload(task, output_dir, server_url, settings, store)
             return True
         return False
+
+    @staticmethod
+    async def _check_server_health(server_url: str) -> None:
+        """Check the public endpoint before building a potentially large archive."""
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(15.0, connect=10.0),
+            follow_redirects=False,
+            **httpx_client_kwargs(server_url),
+        ) as client:
+            response = await client.get(f"{server_url}/health")
+        response.raise_for_status()
 
     @staticmethod
     def _already_uploaded(task: Task, server_url: str) -> bool:

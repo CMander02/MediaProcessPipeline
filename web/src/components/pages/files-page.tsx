@@ -178,13 +178,12 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
     try {
       const task = await api.tasks.get(archive.task_id)
       if (task.status === "queued" || task.status === "processing") {
-        handleOpen(archive.path, archive.task_id)
+        await refresh(true)
         return
       }
       await api.tasks.checkpointRerun(archive.task_id)
       setPage(1)
       await refresh(true)
-      navigate(`#/result/task/${archive.task_id}`)
     } catch (e) {
       window.alert(`断点续做失败：${e instanceof Error ? e.message : String(e)}`)
     } finally {
