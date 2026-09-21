@@ -31,17 +31,7 @@ async def test_agy_explicit_model_uses_cli_display_name_without_fallback(monkeyp
     prompt_file = tmp_path / "request.txt"
     prompt_file.write_text("test", encoding="utf-8")
 
-    class FixedTemporaryDirectory:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __enter__(self):
-            return str(tmp_path)
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(coding_plan_cli.tempfile, "TemporaryDirectory", FixedTemporaryDirectory)
+    monkeypatch.setattr(coding_plan_cli.tempfile, "mkdtemp", lambda **_kwargs: str(tmp_path))
     result = await coding_plan_cli._call_agy(
         Path("agy.exe"),
         "Gemini 3.1 Pro (High)",
@@ -57,8 +47,9 @@ async def test_agy_explicit_model_uses_cli_display_name_without_fallback(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_codex_call_uses_ephemeral_text_only_session(monkeypatch):
+async def test_codex_call_reads_long_request_in_ephemeral_session(monkeypatch):
     captured: dict[str, object] = {}
+    prompt = '中文字幕🎬 "引号" & <正文>\n' * 10_000
 
     async def fake_run(command, *, cwd, timeout_sec, stdin_text=None):
         captured.update(
@@ -67,6 +58,7 @@ async def test_codex_call_uses_ephemeral_text_only_session(monkeypatch):
                 "cwd": cwd,
                 "timeout_sec": timeout_sec,
                 "stdin_text": stdin_text,
+                "request": (cwd / "request.txt").read_text(encoding="utf-8"),
             }
         )
         output_path = Path(command[command.index("--output-last-message") + 1])
@@ -79,7 +71,7 @@ async def test_codex_call_uses_ephemeral_text_only_session(monkeypatch):
     result = await coding_plan_cli._call_codex(
         Path("codex.exe"),
         "default",
-        "总结这段文字",
+        prompt,
         120,
         reasoning_effort="max",
     )
@@ -92,7 +84,12 @@ async def test_codex_call_uses_ephemeral_text_only_session(monkeypatch):
     assert command[command.index("--model") + 1] == "gpt-current"
     assert command[command.index("--config") + 1] == 'model_reasoning_effort="max"'
     assert command[-1] == "-"
-    assert "总结这段文字" in captured["stdin_text"]
+    assert command[command.index("--sandbox") + 1] == "read-only"
+    assert "shell_tool" in command
+    assert captured["stdin_text"] == captured["request"]
+    assert captured["request"] == coding_plan_cli._text_backend_prompt(prompt)
+    assert sum(len(part) for part in command) < 2_048
+    assert not captured["cwd"].exists()
 
 
 @pytest.mark.asyncio
@@ -109,6 +106,7 @@ async def test_codex_call_attaches_staged_image(monkeypatch, tmp_path):
                 "staged_name": staged_path.name,
                 "staged_bytes": staged_path.read_bytes(),
                 "stdin_text": stdin_text,
+                "request": (cwd / "request.txt").read_text(encoding="utf-8"),
             }
         )
         output_path = Path(command[command.index("--output-last-message") + 1])
@@ -129,7 +127,8 @@ async def test_codex_call_attaches_staged_image(monkeypatch, tmp_path):
     assert result == "Image result"
     assert captured["staged_name"] == "image-01.png"
     assert captured["staged_bytes"] == b"test-image"
-    assert "图片文件：image-01.png" in captured["stdin_text"]
+    assert "图片文件：image-01.png" in captured["request"]
+    assert "描述图片" in captured["request"]
 
 
 @pytest.mark.asyncio
@@ -291,6 +290,7 @@ async def test_kimi_call_stages_long_prompt_in_file(monkeypatch, tmp_path):
     assert sum(len(part) for part in command) < 2_048
     assert captured["stdin_text"] is None
     assert captured["env_override"]["KIMI_MODEL_THINKING_EFFORT"] == "low"
+    assert not staging_dir.exists()
 
 
 @pytest.mark.asyncio
@@ -323,7 +323,12 @@ async def test_qoder_status_reads_models_and_nested_current_model(monkeypatch, t
 
 
 @pytest.mark.asyncio
-async def test_qoder_call_is_text_only_ephemeral_and_uses_stdin(monkeypatch):
+@pytest.mark.parametrize(
+    "prompt",
+    ["总结这段文字", '中文字幕🎬 "引号" & <正文>\n' * 10_000],
+    ids=["short", "long-unicode"],
+)
+async def test_qoder_call_reads_utf8_request_file(monkeypatch, prompt):
     captured: dict[str, object] = {}
 
     async def fake_run(
@@ -340,6 +345,7 @@ async def test_qoder_call_is_text_only_ephemeral_and_uses_stdin(monkeypatch):
                 "cwd": cwd,
                 "stdin_text": stdin_text,
                 "env_override": env_override,
+                "request": (cwd / "request.txt").read_text(encoding="utf-8"),
             }
         )
         return 0, "Qoder result", ""
@@ -349,20 +355,47 @@ async def test_qoder_call_is_text_only_ephemeral_and_uses_stdin(monkeypatch):
     result = await coding_plan_cli._call_qoder(
         Path("qoder.exe"),
         "performance",
-        "总结这段文字",
+        prompt,
         120,
     )
 
     command = captured["command"]
     assert result == "Qoder result"
     assert "--no-session-persistence" in command
-    assert command[command.index("--tools") + 1] == ""
+    assert command[command.index("--tools") + 1] == "Read"
+    assert command[command.index("--allowed-tools") + 1] == "Read"
+    assert command[command.index("--permission-mode") + 1] == "dont_ask"
     assert command[command.index("--model") + 1] == "performance"
     assert command[command.index("--max-model-request-retries") + 1] == "1"
+    assert command[command.index("--input-format") + 1] == "text"
     assert "HTTPS_PROXY" not in captured["env_override"]
-    assert command[-2] == "--"
-    assert "总结这段文字" in command[-1]
-    assert captured["stdin_text"] is None
+    assert prompt not in command
+    assert sum(len(part) for part in command) < 2_048
+    assert "request.txt" in captured["stdin_text"]
+    assert prompt not in captured["stdin_text"]
+    assert captured["request"] == coding_plan_cli._text_backend_prompt(prompt)
+    assert not captured["cwd"].exists()
+
+
+@pytest.mark.asyncio
+async def test_run_cli_preserves_large_utf8_stdin(tmp_path):
+    prompt = '中文字幕🎬 "引号" & <正文>\n' * 10_000 + "全文结束"
+    code, stdout, stderr = await coding_plan_cli._run_cli(
+        [
+            sys.executable,
+            "-X",
+            "utf8",
+            "-c",
+            "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())",
+        ],
+        cwd=tmp_path,
+        timeout_sec=30,
+        stdin_text=prompt,
+    )
+
+    assert code == 0
+    assert stdout == prompt
+    assert stderr == ""
 
 
 @pytest.mark.asyncio
@@ -385,6 +418,8 @@ async def test_qoder_call_attaches_staged_image(monkeypatch, tmp_path):
                 "command": command,
                 "staged_name": staged_path.name,
                 "staged_bytes": staged_path.read_bytes(),
+                "stdin_text": stdin_text,
+                "request": (cwd / "request.txt").read_text(encoding="utf-8"),
             }
         )
         return 0, "Image result", ""
@@ -402,7 +437,32 @@ async def test_qoder_call_attaches_staged_image(monkeypatch, tmp_path):
     assert result == "Image result"
     assert captured["staged_name"] == "image-01.jpg"
     assert captured["staged_bytes"] == b"test-image"
-    assert "图片文件：image-01.jpg" in captured["command"][-1]
+    assert "图片文件：image-01.jpg" in captured["request"]
+    assert "描述图片" in captured["request"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cli", ["codex", "agy", "kimi", "qoder"])
+@pytest.mark.parametrize("failure", ["error", "timeout", "cancel"])
+async def test_request_file_is_removed_after_cli_failure(monkeypatch, cli, failure):
+    captured = {}
+
+    async def fake_run(command, *, cwd, **kwargs):
+        captured["cwd"] = cwd
+        assert "测试正文🎬" in (cwd / "request.txt").read_text(encoding="utf-8")
+        if failure == "timeout":
+            raise asyncio.TimeoutError
+        if failure == "cancel":
+            raise asyncio.CancelledError
+        return 1, "", "failed"
+
+    monkeypatch.setattr(coding_plan_cli, "_run_cli", fake_run)
+    expected = asyncio.CancelledError if failure == "cancel" else coding_plan_cli.CodingPlanCLIError
+    with pytest.raises(expected):
+        await getattr(coding_plan_cli, f"_call_{cli}")(
+            Path(f"{cli}.exe"), "test-model", "测试正文🎬", 120,
+        )
+    assert not captured["cwd"].exists()
 
 
 @pytest.mark.asyncio

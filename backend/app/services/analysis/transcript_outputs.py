@@ -553,47 +553,13 @@ def _polish_timeline_context(
     return " / ".join(labels)
 
 
-def _polish_subtitle_reference(
-    context: dict[str, Any],
-    chunk_segments: list[dict],
-) -> str:
-    references = context.get("subtitle_reference_segments") or []
-    if not isinstance(references, list) or not chunk_segments:
-        return ""
-
-    first_start, _first_end = _timestamp_bounds(str(chunk_segments[0].get("timestamp") or ""))
-    _last_start, last_end = _timestamp_bounds(str(chunk_segments[-1].get("timestamp") or ""))
-    chunk_start = _timestamp_to_seconds(first_start)
-    chunk_end = _timestamp_to_seconds(last_end)
-    if chunk_start is None or chunk_end is None:
-        return ""
-
-    lines: list[str] = []
-    total_chars = 0
-    for item in references:
-        if not isinstance(item, dict):
-            continue
-        try:
-            start = float(item.get("start") or 0)
-            end = float(item.get("end") or start)
-        except (TypeError, ValueError):
-            continue
-        text = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()
-        if not text or end < chunk_start or start > chunk_end:
-            continue
-        line = f"[{_seconds_to_srt_timestamp(start)} --> {_seconds_to_srt_timestamp(end)}] {text}"
-        if total_chars + len(line) > 12_000:
-            break
-        lines.append(line)
-        total_chars += len(line)
-    return "\n".join(lines)
-
-
 def srt_to_markdown(srt_content: str, title: str = "") -> str:
     """
     Convert polished SRT to a clean Markdown document.
     Preserves SRT cue boundaries as readable paragraphs.
     """
+    from app.services.analysis.speaker_identity import is_placeholder_speaker
+
     segments = _parse_srt(srt_content)
     if not segments:
         return srt_content
@@ -616,7 +582,7 @@ def srt_to_markdown(srt_content: str, title: str = "") -> str:
     multi_speaker = len(speakers) > 1
 
     for para in paragraphs:
-        if multi_speaker and para["speaker"]:
+        if para["speaker"] and (multi_speaker or not is_placeholder_speaker(para["speaker"])):
             # Show speaker label for multi-speaker content
             lines.append(f"**[{para['speaker']}]** {para['text']}")
         else:

@@ -37,7 +37,8 @@ def _replace_json_strings(value: Any, old_name: str, new_name: str) -> Any:
         return [_replace_json_strings(item, old_name, new_name) for item in value]
     if isinstance(value, dict):
         return {
-            key: _replace_json_strings(item, old_name, new_name)
+            key: item if key in {"source_label", "person_id", "task_id"}
+            else _replace_json_strings(item, old_name, new_name)
             for key, item in value.items()
         }
     return value

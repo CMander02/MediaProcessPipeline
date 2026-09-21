@@ -77,6 +77,10 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultVi
     currentTime,
     seekTo,
     handleRenameSpeaker,
+    renamingSpeaker,
+    hasUnsavedTranscript,
+    setTranscriptEditing,
+    setTranscript,
     editingTitle,
     titleDraft,
     setTitleDraft,
@@ -221,6 +225,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultVi
           currentTime={currentTime}
           onSeek={seekTo}
           onRenameSpeaker={handleRenameSpeaker}
+          renaming={renamingSpeaker}
+          editingDisabled={hasUnsavedTranscript || Boolean(mergeInfo)}
         />
       )}
     </div>
@@ -511,6 +517,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultVi
                   currentTime={currentTime}
                   onSeek={seekTo}
                   onRenameSpeaker={handleRenameSpeaker}
+                  renaming={renamingSpeaker}
+                  editingDisabled={hasUnsavedTranscript || Boolean(mergeInfo)}
                 />
               )}
             </div>
@@ -678,6 +686,9 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultVi
                                   : (isPolished ? "transcript_polished.srt" : "transcript.srt")
                               )}
                               onSubtitlesChange={setSubtitles}
+                              onEditingChange={setTranscriptEditing}
+                              onSaved={setTranscript}
+                              editingDisabled={renamingSpeaker || Boolean(mergeInfo)}
                             />
                           ) : isProcessing ? (
                             <div className="flex items-center justify-center h-full text-muted-foreground">

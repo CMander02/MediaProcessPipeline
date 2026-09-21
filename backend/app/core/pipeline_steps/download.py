@@ -39,6 +39,10 @@ from app.core.pipeline_steps.state import (
     _update_step,
 )
 from app.core.pipeline_steps.subtitle_fast_path import _run_subtitle_fast_path
+from app.core.pipeline_steps.subtitles import (
+    restore_validated_subtitles,
+    validate_platform_subtitles,
+)
 from app.core.workspace_lifecycle import run_in_thread
 from app.models import MediaMetadata
 
@@ -75,8 +79,10 @@ async def prepare_download(ctx: PipelineContext) -> bool:
         ctx.restore_audio_paths()
         # Restore has_subtitle + platform_subtitle from disk
         if ctx.task_dir:
+            validated, ctx.platform_subtitle = restore_validated_subtitles(ctx.task_dir)
+            ctx.has_subtitle = ctx.platform_subtitle is not None and not ctx.force_asr
             sub_dir = ctx.task_dir / "subtitles"
-            if sub_dir.exists():
+            if not validated and sub_dir.exists():
                 for ext in ("*.srt", "*.ass", "*.vtt"):
                     srt_files = list(sub_dir.glob(ext))
                     if srt_files:
@@ -308,6 +314,9 @@ async def prepare_download(ctx: PipelineContext) -> bool:
                     try:
                         sub_dir = ctx.task_dir / "subtitles"
                         probe_subtitle = await download_subtitles(ctx.source, sub_dir)
+                        probe_subtitle = await validate_platform_subtitles(
+                            ctx.task, ctx.task_dir, probe_subtitle, probe_metadata,
+                        )
                         if not probe_subtitle or not probe_subtitle.get("subtitle_path"):
                             if probe_metadata and probe_subtitle:
                                 probe_metadata.extra["subtitle_engine"] = probe_subtitle.get(
@@ -547,7 +556,10 @@ async def prepare_download(ctx: PipelineContext) -> bool:
                 try:
                     sub_dir = ctx.task_dir / "subtitles"
                     ctx.platform_subtitle = await download_subtitles(ctx.source, sub_dir)
-                    if ctx.platform_subtitle.get("subtitle_path"):
+                    ctx.platform_subtitle = await validate_platform_subtitles(
+                        ctx.task, ctx.task_dir, ctx.platform_subtitle, ctx.metadata,
+                    )
+                    if ctx.platform_subtitle and ctx.platform_subtitle.get("subtitle_path"):
                         log_event(
                             logger,
                             logging.INFO,
@@ -556,12 +568,6 @@ async def prepare_download(ctx: PipelineContext) -> bool:
                             engine=ctx.platform_subtitle.get("subtitle_engine"),
                         )
                     else:
-                        ctx.metadata.extra["subtitle_engine"] = ctx.platform_subtitle.get(
-                            "subtitle_engine"
-                        )
-                        ctx.metadata.extra["subtitle_diagnostics"] = (
-                            ctx.platform_subtitle.get("diagnostics") or []
-                        )
                         ctx.platform_subtitle = None
                         if sub_dir.exists() and not any(sub_dir.iterdir()):
                             sub_dir.rmdir()
@@ -579,9 +585,7 @@ async def prepare_download(ctx: PipelineContext) -> bool:
                     completed=True,
                     level="info" if platform_subtitle_available else "warning",
                     message=(
-                        "平台字幕参考可用"
-                        if platform_subtitle_available and ctx.subtitle_reference_mode
-                        else "平台字幕可用"
+                        "平台字幕可用"
                         if platform_subtitle_available
                         else subtitle_unavailable_message
                     ),

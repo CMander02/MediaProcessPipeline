@@ -86,9 +86,9 @@ def http_json(url: str, cookie: str = "", referer: str = _REFERER) -> dict:
     return body
 
 
-def view(bvid: str) -> dict:
+def view(bvid: str, *, cookie: str | None = None) -> dict:
     """GET /x/web-interface/view — returns data dict."""
-    cookie = get_cookie()
+    cookie = get_cookie() if cookie is None else cookie
     url = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
     body = http_json(url, cookie=cookie)
     return body.get("data") or {}
@@ -104,15 +104,20 @@ def player_v2(bvid: str, aid: int, cid: int) -> dict:
     return body.get("data") or {}
 
 
-def playurl(bvid: str, aid: int, cid: int, qn: int = 64, fnval: int = 16) -> dict:
-    """GET /x/player/wbi/playurl — wbi-signed, returns data dict.
+def playurl(bvid: str, aid: int, cid: int, qn: int = 64, fnval: int = 16,
+            *, cookie: str | None = None) -> dict:
+    """Fetch signed playback data, or the ordinary endpoint for anonymous access.
 
-    fnval=16 → DASH, fnval=0 → FLV fallback.
+    fnval=16 requests DASH; fnval=1 requests progressive MP4.
     """
-    cookie = get_cookie()
-    params = wbi_sign({"bvid": bvid, "aid": aid, "cid": cid, "qn": qn, "fnval": fnval})
+    cookie = get_cookie() if cookie is None else cookie
+    params = {"bvid": bvid, "aid": aid, "cid": cid, "qn": qn, "fnval": fnval}
+    endpoint = "https://api.bilibili.com/x/player/playurl"
+    if cookie:
+        params = wbi_sign(params)
+        endpoint = "https://api.bilibili.com/x/player/wbi/playurl"
     qs = urllib.parse.urlencode(params)
-    url = f"https://api.bilibili.com/x/player/wbi/playurl?{qs}"
+    url = f"{endpoint}?{qs}"
     body = http_json(url, cookie=cookie, referer=f"https://www.bilibili.com/video/{bvid}")
     return body.get("data") or {}
 

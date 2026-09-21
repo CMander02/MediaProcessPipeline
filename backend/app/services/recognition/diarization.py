@@ -10,9 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from app.core.paths import get_workspace_paths
-
 from app.core.network import runtime_proxy_url
+from app.core.paths import get_workspace_paths
 from app.core.settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
@@ -300,20 +299,6 @@ class DiarizationService:
         temp_path.replace(cache_path)
 
     @staticmethod
-    def _split_text_by_weights(text: str, weights: list[float]) -> list[str]:
-        if len(weights) <= 1 or len(text) <= 1:
-            return [text]
-        total = sum(max(0.0, weight) for weight in weights) or float(len(weights))
-        boundaries = [0]
-        cumulative = 0.0
-        for weight in weights[:-1]:
-            cumulative += max(0.0, weight)
-            target = round(len(text) * cumulative / total)
-            boundaries.append(max(boundaries[-1], min(len(text), target)))
-        boundaries.append(len(text))
-        return [text[boundaries[index]:boundaries[index + 1]].strip() for index in range(len(weights))]
-
-    @staticmethod
     def assign_speakers(
         segments: list[dict[str, Any]],
         turns: list[dict[str, Any]],
@@ -340,38 +325,19 @@ class DiarizationService:
             if not indexes:
                 result.append(segment)
                 continue
-            if len({speakers[index] for index in indexes}) == 1:
-                segment["speaker"] = speakers[indexes[0]]
-                assigned += 1
-                result.append(segment)
-                continue
-
-            intervals = [
-                (
-                    max(start, float(starts[index])),
-                    min(end, float(ends[index])),
-                    speakers[index],
+            # ASR cue timestamps locate the entire utterance, not individual
+            # characters. Splitting text in proportion to diarization duration
+            # invents word boundaries and turns brief overlaps into broken words.
+            # Attribute the intact cue to its speaker with the most total overlap.
+            overlap_by_speaker: dict[str, float] = {}
+            for index in indexes:
+                speaker = speakers[index]
+                overlap_by_speaker[speaker] = (
+                    overlap_by_speaker.get(speaker, 0.0) + float(overlaps[index])
                 )
-                for index in indexes
-            ]
-            intervals.sort(key=lambda item: (item[0], item[1]))
-            text_parts = DiarizationService._split_text_by_weights(
-                str(segment.get("text") or ""),
-                [item[1] - item[0] for item in intervals],
-            )
-            for interval, text_part in zip(intervals, text_parts, strict=True):
-                if not text_part:
-                    continue
-                result.append(
-                    {
-                        **segment,
-                        "start": round(interval[0], 3),
-                        "end": round(interval[1], 3),
-                        "speaker": interval[2],
-                        "text": text_part,
-                    }
-                )
-                assigned += 1
+            segment["speaker"] = max(overlap_by_speaker, key=overlap_by_speaker.get)
+            result.append(segment)
+            assigned += 1
         logger.info(
             "Mapped global diarization to ASR segments: assigned=%d total=%d turns=%d",
             assigned,

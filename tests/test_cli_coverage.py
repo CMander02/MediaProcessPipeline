@@ -364,18 +364,11 @@ def test_common_submit_options_and_conflicts():
         "hotwords": ["Codex", "MPP"],
     }
 
-    reference_options = task_options(subtitle_reference=True)
-    assert reference_options == {
-        "force_asr": True,
-        "use_platform_subtitle_reference": True,
-    }
     assert task_options(force_asr=True) == {
         "force_asr": True,
-        "use_platform_subtitle_reference": False,
     }
     assert task_options(prefer_subtitles=True) == {
         "force_asr": False,
-        "use_platform_subtitle_reference": False,
     }
 
 

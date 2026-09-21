@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class CustomLLMProfile(BaseModel):
@@ -75,6 +75,14 @@ class RuntimeSettings(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
+    @model_validator(mode="before")
+    @classmethod
+    def discard_removed_subtitle_reference(cls, values: Any) -> Any:
+        if isinstance(values, dict):
+            values = dict(values)
+            values.pop("use_platform_subtitle_reference", None)
+        return values
+
     # LLM
     llm_provider: str = "anthropic"
     anthropic_api_key: str = ""
@@ -123,7 +131,15 @@ class RuntimeSettings(BaseModel):
     audio_processing_flow: str = "asr"
 
     # ASR
-    asr_provider: str = "sherpa_onnx"
+    asr_provider: str = "llama_cpp"
+
+    # Qwen3-ASR GGUF, served by an ASR-owned llama.cpp process.
+    llama_asr_model_path: str = ""
+    llama_asr_mmproj_path: str = ""
+    llama_asr_device: Literal["auto", "cuda", "cpu"] = "auto"
+    llama_asr_concurrency: int = Field(default=8, ge=1, le=16)
+    llama_asr_max_new_tokens: int = Field(default=512, ge=128, le=4096)
+    llama_asr_timeout_sec: float = Field(default=120.0, gt=0)
 
     # Unified local ASR through sherpa-onnx
     sherpa_model_id: str = "qwen3-asr-0.6b-int8"
@@ -186,7 +202,6 @@ class RuntimeSettings(BaseModel):
     prefer_platform_subtitles: bool = True  # Use platform subtitles when available
     subtitle_languages: str = "zh,en"  # Comma-separated language priority
     force_asr: bool = False  # Force ASR even when platform subtitles are available
-    use_platform_subtitle_reference: bool = True
 
     # UVR
     uvr_model: str = "UVR-MDX-NET-Inst_HQ_3"
@@ -209,16 +224,17 @@ class RuntimeSettings(BaseModel):
     local_llm_device: str = "cuda"  # "cuda" | "cpu" | "auto"
     local_llm_dtype: str = "bfloat16"  # "bfloat16" | "float16" | "float32" | "auto"
     local_llm_max_new_tokens: int = 4096  # Cap per generate() call
+    local_llm_thinking: bool = False  # llama.cpp text analysis; polish always disables thinking
     # Kept for backward compat with older settings.json; unused by the transformers backend
     local_llm_n_gpu_layers: int = -1
     local_llm_n_ctx: int = 16384
     local_llm_n_batch: int = 512
     local_llm_timeout_sec: float = 300.0
     local_llm_keepalive_sec: float = 600.0
-    local_llm_concurrency: int = 2
+    local_llm_concurrency: int = Field(default=2, ge=1, le=8)
     # "" = follow llm_provider, or local/anthropic/openai/custom
     polish_provider: str = "local"
-    llm_polish_concurrency: int = 4
+    llm_polish_concurrency: int = Field(default=4, ge=1, le=8)
 
     # Concurrency
     max_download_concurrency: int = 2  # max parallel downloads (I/O bound, set 1-4)
@@ -348,8 +364,8 @@ class RuntimeSettings(BaseModel):
         provider = value.strip().lower()
         if provider in {"qwen3", "qwen3_gguf"}:
             return "sherpa_onnx"
-        if provider not in {"sherpa_onnx", "siliconflow"}:
-            raise ValueError("asr_provider must be one of: sherpa_onnx, siliconflow")
+        if provider not in {"llama_cpp", "sherpa_onnx", "siliconflow"}:
+            raise ValueError("asr_provider must be one of: llama_cpp, sherpa_onnx, siliconflow")
         return provider
 
     @field_validator("audio_processing_flow")

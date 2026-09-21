@@ -1,0 +1,22 @@
+{
+  "name": "mpp-desktop",
+  "version": "0.6.6",
+  "private": true,
+  "description": "MediaProcessPipeline desktop launcher",
+  "author": "MediaProcessPipeline",
+  "main": "main.cjs",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.cjs",
+    "test:smoke": "node scripts/smoke.cjs",
+    "pack": "node scripts/build.cjs --dir",
+    "portable": "node scripts/build.cjs --portable",
+    "dist": "node scripts/build.cjs"
+  },
+  "devDependencies": {
+    "electron": "44.3.0",
+    "electron-builder": "26.15.3",
+    "playwright-core": "1.63.0"
+  }
+}

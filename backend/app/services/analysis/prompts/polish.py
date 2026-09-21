@@ -3,7 +3,9 @@
 from typing import Any
 
 POLISH_SYSTEM_PROMPT = """You are a constrained subtitle copy editor.
-You may correct recognition errors, punctuation, and light verbal clutter. Subtitle
+Actively remove non-semantic fillers, stutters, and abandoned false starts while
+preserving meaningful short replies, emphasis, negation, and factual details. Correct
+recognition errors and punctuation. Subtitle
 index, timestamp, speaker identity, and canonical entity spelling are read-only fields.
 Never add a speaker label when the input cue has none. Return only the requested JSON
 array."""
@@ -19,7 +21,6 @@ def get_polish_prompt(
     entities: list[dict[str, Any]] | None = None,
     speaker_ids: list[str] | None = None,
     timeline_context: str = "",
-    subtitle_reference: str = "",
 ) -> str:
     """
     Generate the polish prompt with context from analysis phase.
@@ -51,15 +52,6 @@ def get_polish_prompt(
         if speaker_ids
         else "输入没有说话人标签。所有输出都禁止新增任何 [SPEAKER]、人物名或角色前缀。"
     )
-    reference_section = ""
-    if subtitle_reference:
-        reference_section = f"""
-## 同时段平台原生字幕参考
-以下字幕只用于修正 ASR 正文中的识别错误、专有名词和漏词。说话人标签、条目数量、index 和
-timestamp 始终以待润色的 ASR 字幕为准。
-{subtitle_reference}
-"""
-
     return f"""你是专业的字幕校对编辑。请根据上下文信息润色下面的字幕片段。
 
 ## 内容分析
@@ -73,18 +65,21 @@ timestamp 始终以待润色的 ASR 字幕为准。
 
 ## 规范实体表
 {entities_str}
-{reference_section}
 
 ## 润色要求
 1. 修正语音识别错误和错别字
 2. 添加适当的标点符号
-3. 移除口语填充词（如"呃"、"那个"、"就是说"、"然后"等）
+3. 主动整理语气词和卡顿：删去没有语义作用的“呃、那个、就是说”等填充词；
+   合并口吃、起句卡顿和无意义的连续重复；说话人立即自我纠正时保留纠正后的完整意思
+   例如“我我觉得，呃，明天，不，后天交付”整理为“我觉得后天交付”。结合语义识别被放弃的起句和立即纠正，保留最终确定的信息
 4. 保持原意和说话者风格
 5. {speaker_rule}
 6. **不要**合并或拆分字幕条目；输入有 N 条，输出就必须有 N 条
 7. **不要**改写 timestamp，必须原样保留
 8. 实体表中的 canonical 拼写必须保持一致
-9. 平台字幕参考不得改变 ASR 的说话人归属、条目数量和时间戳
+9. 保留有意义的短回答（如“嗯、对、是、不是”）、强调性重复、否定、数量和条件。
+   “然后、就是、那个”等承担逻辑关系或指代时保留，结合上下文判断
+10. 输出自然、简洁的短语或句子字幕，保持原信息完整
 
 ## 输出格式（严格遵守）
 直接输出 JSON 数组，**不要**任何前后解释/markdown 代码块/废话引导句。
@@ -115,10 +110,11 @@ def get_simple_polish_prompt(text: str) -> str:
 要求:
 1. 修正错别字和语音识别错误
 2. 添加适当的标点符号
-3. 移除口语化的填充词（如"呃"、"那个"、"就是说"等）
+3. 主动删去无语义填充词，整理口吃、起句卡顿、无意义重复和立即自我纠正
 4. 保持原意和说话者的风格
 5. 如果有 [SPEAKER_XX] 标记，请保持不变
 6. 输出完整文本，不要总结
+7. 保留有意义的短回答、强调性重复、否定、数量和条件；“然后、那个”等有逻辑或指代作用时保留
 
 待处理文本:
 {text}"""

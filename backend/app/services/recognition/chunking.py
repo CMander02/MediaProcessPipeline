@@ -75,6 +75,7 @@ class ASRChunker:
         model_path: str | Path,
         max_duration: float = 30.0,
         min_silence_duration: float = 0.4,
+        samples: Any = None,
     ) -> list[AudioChunk]:
         """Stream decoded PCM through sherpa VAD with bounded memory usage."""
         import numpy as np
@@ -106,6 +107,28 @@ class ASRChunker:
             config,
             buffer_size_in_seconds=max(60.0, max_duration * 3.0),
         )
+        if samples is not None:
+            # Callers that already decoded 16 kHz mono audio can reuse it for VAD.
+            chunks: list[AudioChunk] = []
+            def collect() -> None:
+                while not vad.empty():
+                    segment = vad.front
+                    start = float(segment.start) / sample_rate
+                    end = min(start + len(segment.samples) / sample_rate, len(samples) / sample_rate)
+                    if end > start:
+                        chunks.append(AudioChunk(round(start, 3), round(end, 3)))
+                    vad.pop()
+            for offset in range(0, len(samples), window_size):
+                frame = samples[offset : offset + window_size]
+                if len(frame) < window_size:
+                    frame = np.pad(frame, (0, window_size - len(frame)))
+                vad.accept_waveform(frame)
+                collect()
+            vad.flush()
+            collect()
+            if not chunks:
+                chunks = [AudioChunk(0.0, len(samples) / sample_rate)]
+            return self._merge_vad_chunks(chunks, max_duration)
         command = [
             "ffmpeg",
             "-hide_banner",

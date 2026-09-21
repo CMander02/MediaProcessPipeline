@@ -12,6 +12,7 @@
 - **智能润色**: LLM 滑动窗口润色，修正错字、添加标点
 - **内容分析**: 自动提取关键信息、生成摘要和思维导图（支持 map-reduce 长文本）
 - **统一 Web/PWA/Android**: 同一 React 界面服务本机 PC、服务器浏览器和 Capacitor Android
+- **Electron 桌面入口**: 双击启动、自动连接或启动后端、最小化后台处理，复用现有 Python 环境和模型
 - **响应式体验**: PC/Pad 使用顶部导航，手机使用底部导航与触控布局
 
 ## 项目结构
@@ -34,6 +35,7 @@ MediaProcessPipeline/
 ├── web/                        # Vite + React 19 + shadcn/ui
 │   ├── src/                    # PC、服务器与 Android 的唯一 UI 源码
 │   └── android/                # Capacitor Android 轻量原生外壳
+├── desktop/                    # Electron 桌面入口和 Windows 安装包
 ├── scripts/                    # CLI 快捷脚本
 │   ├── mpp.ps1                 # PowerShell
 │   ├── start-web.ps1           # Windows Web 一键启动
@@ -51,7 +53,7 @@ MediaProcessPipeline/
 
 - Python 3.11 ~ 3.12
 - [uv](https://docs.astral.sh/uv/) (Python 包管理)
-- Node.js 18+
+- Node.js 22.12+
 - FFmpeg (必须在 PATH 中)
 - CUDA (可选，用于 sherpa-onnx ASR / UVR / HF 本地推理)
 
@@ -111,6 +113,18 @@ uv run playwright install chromium
 ```
 
 ### 启动
+
+**桌面应用（Windows）**
+
+双击 `start-desktop.bat`，或执行：
+
+```powershell
+.\scripts\start-desktop.ps1
+```
+
+桌面应用自动连接或启动现有 Python 后端。最小化后任务继续运行；关闭窗口会退出应用并停止由它启动的后端。也可使用 Windows 安装包，首次打开时选择已经配置好的项目目录。安装、打包、日志与进程管理说明见 [MPP 桌面应用](docs/desktop.md)。
+
+本机免安装使用可在 `desktop/` 执行 `npm run portable`，随后双击 `desktop/dist/MPP-Desktop-Portable.exe`。程序自动识别附近的项目，也会记住手动选择的目录。
 
 **方式 1：本机 Web**
 

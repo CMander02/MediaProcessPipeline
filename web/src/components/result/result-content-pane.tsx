@@ -96,6 +96,10 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
     chapterTocNodes,
     onManualScroll,
     setSubtitles,
+    setTranscriptEditing,
+    setTranscript,
+    renamingSpeaker,
+    mergeInfo,
     displayTitle,
     setMindmapFit,
   } = view
@@ -264,6 +268,9 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
                           : (isPolished ? "transcript_polished.srt" : "transcript.srt")
                       )}
                       onSubtitlesChange={setSubtitles}
+                      onEditingChange={setTranscriptEditing}
+                      onSaved={setTranscript}
+                      editingDisabled={renamingSpeaker || Boolean(mergeInfo)}
                     />
                   ) : isProcessing ? (
                     <div className="flex items-center justify-center h-full text-muted-foreground">

@@ -2,7 +2,7 @@ export const DEEPSEEK_STAGES = ["analyze", "polish", "summary", "mindmap"] as co
 
 export type DeepSeekStage = (typeof DEEPSEEK_STAGES)[number]
 export type LlmProvider = "local" | "deepseek" | "custom" | "anthropic" | "openai"
-export type AsrProvider = "moss_cpp" | "sherpa_onnx" | "siliconflow"
+export type AsrProvider = "moss_cpp" | "llama_cpp" | "sherpa_onnx" | "siliconflow"
 export type AudioProcessingFlow = "asr" | "moss"
 export type DeviceValue = "cuda" | "cpu" | "auto"
 export type ModelCapability = "llm" | "vlm" | "chat" | "fast" | "thinking" | "reasoning" | "vision" | "asr" | "embedding" | "rerank" | "local" | "json"
@@ -114,6 +114,12 @@ export interface RuntimeSettings {
   deepseek_mindmap_effort?: string
 
   sherpa_model_id?: string
+  llama_asr_model_path?: string
+  llama_asr_mmproj_path?: string
+  llama_asr_device?: string
+  llama_asr_concurrency?: number
+  llama_asr_max_new_tokens?: number
+  llama_asr_timeout_sec?: number
   sherpa_model_root?: string
   sherpa_device?: DeviceValue | string
   sherpa_num_threads?: number
@@ -160,12 +166,14 @@ export interface RuntimeSettings {
   local_llm_device?: DeviceValue | string
   local_llm_dtype?: string
   local_llm_max_new_tokens?: number
+  local_llm_thinking?: boolean
   local_llm_n_gpu_layers?: number
   local_llm_n_ctx?: number
   local_llm_n_batch?: number
   local_llm_timeout_sec?: number
   local_llm_keepalive_sec?: number
   local_llm_concurrency?: number
+  llm_polish_concurrency?: number
   polish_provider?: LlmProvider | "" | string
   vlm_api_base?: string
   vlm_api_key?: string
@@ -180,7 +188,6 @@ export interface RuntimeSettings {
   media_retention_policy?: "all" | "playback" | "text"
   network_proxy?: string
   ytdlp_auto_update?: boolean
-  use_platform_subtitle_reference?: boolean
 
   [key: string]: unknown
 }

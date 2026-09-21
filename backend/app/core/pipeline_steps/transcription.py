@@ -167,54 +167,18 @@ async def transcribe(ctx: PipelineContext) -> None:
     )
     ctx.analysis = source_context_to_analysis(ctx.source_context)
 
-    if ctx.subtitle_reference_mode and ctx.platform_subtitle:
-        reference_tracks = ctx.platform_subtitle.get("tracks") or []
-        if not reference_tracks and ctx.platform_subtitle.get("subtitle_path"):
-            reference_tracks = [
-                {
-                    "path": ctx.platform_subtitle["subtitle_path"],
-                    "lang": ctx.platform_subtitle.get("subtitle_lang") or "unknown",
-                    "format": ctx.platform_subtitle.get("subtitle_format") or "srt",
-                    "type": "cc",
-                }
-            ]
-        if reference_tracks:
-            selected_reference, reference_lang = await _select_polish_track(
-                reference_tracks,
-                detect_with_llm=False,
-            )
-            reference_result = await process_subtitles(
-                subtitle_path=selected_reference["path"],
-                subtitle_format=selected_reference.get("format") or "srt",
-                metadata=ctx.metadata,
-                source_context=ctx.source_context,
-                polish=False,
-            )
-            ctx.subtitle_reference_segments = reference_result.get("segments", [])
-            reference_manifest = _save_all_tracks_as_transcripts(
-                reference_tracks,
-                ctx.task_dir,
-            )
-            for item in reference_manifest:
-                item["role"] = "reference"
-            ctx.metadata.extra["subtitle_reference"] = {
-                "enabled": True,
-                "language": reference_lang,
-                "segments": len(ctx.subtitle_reference_segments),
-                "filename": Path(selected_reference["path"]).name,
-            }
-            ctx.metadata.extra["subtitle_engine"] = ctx.platform_subtitle.get("subtitle_engine")
-            ctx.metadata.extra["subtitle_diagnostics"] = (
-                ctx.platform_subtitle.get("diagnostics") or []
-            )
-            ctx.metadata.extra["subtitle_tracks"] = reference_manifest
-            log_event(
-                logger,
-                logging.INFO,
-                "subtitle.reference.loaded",
-                language=reference_lang,
-                segments=len(ctx.subtitle_reference_segments),
-            )
+    if ctx.has_subtitle and PipelineStep.TRANSCRIBE not in ctx.done:
+        from app.core.pipeline_steps.subtitles import validate_platform_subtitles
+
+        ctx.platform_subtitle = await validate_platform_subtitles(
+            ctx.task, ctx.task_dir, ctx.platform_subtitle, ctx.metadata,
+        )
+        ctx.has_subtitle = ctx.platform_subtitle is not None
+        ctx.source_flow = await _update_flow_from_metadata(
+            ctx.task, ctx.source_flow, ctx.metadata,
+            has_subtitle=ctx.has_subtitle, force_asr=ctx.force_asr,
+            current_step="transcribe",
+        )
 
     # ── Steps 2+3: SEPARATE + TRANSCRIBE — GPU-bound, serialised by semaphore ──
     gpu_sem = get_task_queue().gpu_semaphore

@@ -13,7 +13,7 @@ from typing import Any
 from app.core.settings import RuntimeSettings
 
 LLM_STAGES = {"analyze", "polish", "summary", "mindmap"}
-ASR_PROVIDERS = {"moss_cpp", "sherpa_onnx", "siliconflow"}
+ASR_PROVIDERS = {"moss_cpp", "llama_cpp", "sherpa_onnx", "siliconflow"}
 
 _DEFAULT_SHERPA_MODEL = "qwen3-asr-0.6b-int8"
 _DEFAULT_DEEPSEEK_API_BASE = "https://api.deepseek.com"
@@ -307,6 +307,7 @@ def resolve_llm_binding(
             "startup_timeout_sec": rt.local_llm_timeout_sec,
             "keepalive_sec": rt.local_llm_keepalive_sec,
             "max_new_tokens": rt.local_llm_max_new_tokens,
+            "enable_thinking": rt.local_llm_thinking,
         }
         return LLMBinding(
             provider="local",
@@ -848,8 +849,40 @@ def resolve_asr_binding(
             },
         )
 
+    if provider == "llama_cpp":
+        from app.services.recognition.llama_cpp_asr import validate_llama_asr_config
+
+        bound_model = (
+            _clean_text(asr_runtime_binding.get("model_id"))
+            if asr_runtime_binding.get("provider_id") == provider else ""
+        )
+        model_path = _clean_text(options.get("asr_model")) or bound_model or rt.llama_asr_model_path
+        chunk_strategy = _normalize_provider(options.get("asr_chunk_strategy") or rt.sherpa_chunk_strategy)
+        config = {
+            "binary_path": rt.llama_cpp_binary_path,
+            "model_path": model_path,
+            "mmproj_path": rt.llama_asr_mmproj_path,
+            "device": rt.llama_asr_device,
+            "parallel": rt.llama_asr_concurrency,
+            "max_new_tokens": rt.llama_asr_max_new_tokens,
+            "timeout_sec": rt.llama_asr_timeout_sec,
+            "max_chunk_sec": rt.sherpa_max_chunk_sec,
+            "vad_model_path": rt.sherpa_vad_model_path,
+            "model_root": rt.sherpa_model_root,
+            "chunk_strategy": chunk_strategy,
+            "timestamp_mode": _clean_text(options.get("asr_timestamp_mode") or rt.asr_timestamp_mode).lower(),
+            "aligner_model_path": rt.qwen3_aligner_model_path,
+        }
+        reason = validate_llama_asr_config(config)
+        return ASRBinding(
+            provider=provider, source=source, model=model_path, language=language,
+            diarize=bool(rt.enable_diarization and rt.pyannote_model_path and not options.get("disable_diarization", False)),
+            num_speakers=num_speakers, chunk_strategy=chunk_strategy,
+            configured=not reason, reason=reason, request_kwargs=config,
+        )
+
     if provider == "sherpa_onnx":
-        bound_model = _clean_text(asr_runtime_binding.get("model_id"))
+        bound_model = _clean_text(asr_runtime_binding.get("model_id")) if asr_runtime_binding.get("provider_id") == provider else ""
         model_id = (
             _clean_text(options.get("asr_model"))
             or bound_model

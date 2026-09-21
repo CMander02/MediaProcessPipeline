@@ -316,7 +316,7 @@ async def test_parallel_polish_retries_severely_incomplete_response(monkeypatch)
     async def fake_call(_prompt, **_kwargs):
         nonlocal calls
         calls += 1
-        returned = segments[:1] if calls == 1 else segments
+        returned = segments[:3] if calls == 1 else segments
         return json.dumps(returned, ensure_ascii=False)
 
     monkeypatch.setattr(service, "_call", fake_call)
@@ -331,6 +331,26 @@ async def test_parallel_polish_retries_severely_incomplete_response(monkeypatch)
 
     assert calls == 2
     assert all(polished.count(f"cue-{index}") == 1 for index in range(1, 5))
+
+
+@pytest.mark.asyncio
+async def test_parallel_polish_does_not_duplicate_an_overlap_only_tail(monkeypatch):
+    service = LLMService()
+    segments = [_srt_segment(index, f"cue-{index}.") for index in range(1, 24)]
+    monkeypatch.setattr(service, "_effective_provider", lambda _override="": "local")
+    monkeypatch.setattr(llm_module, "get_runtime_settings", lambda: SimpleNamespace(
+        llm_polish_concurrency=2, local_llm_engine="llama_cpp", local_llm_concurrency=2,
+    ))
+    calls = []
+
+    async def fake_call(prompt, **_kwargs):
+        calls.append(prompt)
+        return json.dumps(segments, ensure_ascii=False)
+
+    monkeypatch.setattr(service, "_call", fake_call)
+    polished = await service.polish_with_context_parallel(_srt(segments), {})
+    assert len(calls) == 1
+    assert len(service._parse_srt(polished)) == len(segments)
 
 
 @pytest.mark.asyncio
@@ -367,27 +387,37 @@ async def test_parallel_polish_keeps_original_chunk_after_retry_is_exhausted(mon
     assert all(polished.count(f"cue-{index}") == 1 for index in range(1, 5))
 
 
-def test_polish_reference_only_includes_overlapping_platform_cues():
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider,engine,slots,configured,expected", [
+    ("local", "llama_cpp", 8, 8, 8),
+    ("local", "llama_cpp", 2, 8, 2),
+    ("local", "transformers", 8, 8, 1),
+    ("deepseek", "", 2, 3, 3),
+    ("custom", "", 2, 8, 8),
+    ("kimi-oauth", "", 2, 4, 4),
+    ("codex-oauth", "", 2, 8, 8),
+])
+async def test_polish_obeys_configured_concurrency(monkeypatch, provider, engine, slots, configured, expected):
+    import asyncio
+
     service = LLMService()
-    context = {
-        "subtitle_reference_segments": [
-            {"start": 0.2, "end": 0.8, "text": "平台参考第一句"},
-            {"start": 8.0, "end": 9.0, "text": "范围外字幕"},
-        ]
-    }
-    chunk = [
-        {
-            "index": 1,
-            "timestamp": "00:00:00,000 --> 00:00:02,000",
-            "text": "[SPEAKER_00] ASR 第一局",
-        }
-    ]
+    segments = [_srt_segment(index, f"cue-{index}") for index in range(1, 17)]
+    monkeypatch.setattr(service, "_effective_provider", lambda _override="": provider)
+    monkeypatch.setattr(llm_module, "get_runtime_settings", lambda: SimpleNamespace(
+        llm_polish_concurrency=configured, local_llm_engine=engine, local_llm_concurrency=slots,
+    ))
+    active = peak = 0
 
-    reference = service._polish_subtitle_reference(context, chunk)
-    prompt = get_polish_prompt("ASR 字幕", subtitle_reference=reference)
+    async def fake_call(prompt, **_kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        cue_ids = {int(value) for value in re.findall(r"cue-(\d+)", prompt)}
+        active -= 1
+        return json.dumps([segment for segment in segments if segment["index"] in cue_ids])
 
-    assert "平台参考第一句" in reference
-    assert "范围外字幕" not in reference
-    assert "00:00:00,200 --> 00:00:00,800" in reference
-    assert "平台字幕参考不得改变 ASR 的说话人归属" in prompt
-    assert "平台参考第一句" in prompt
+    monkeypatch.setattr(service, "_call", fake_call)
+    result = await service.polish_with_context_parallel(_srt(segments), {}, chunk_size=1, overlap=0)
+    assert peak == expected
+    assert service._parse_srt(result) == segments

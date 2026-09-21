@@ -1,11 +1,14 @@
-"""Async task queue with batched transcription before LLM post-processing.
+"""Async task queue: parallel downloads, serial per-task GPU pipeline.
 
-New tasks enter a download queue consumed by N concurrent download workers
+New URL tasks enter a download queue consumed by N concurrent download workers
 (I/O-bound, configurable via settings.max_download_concurrency, default 2).
-After the DOWNLOAD step completes, each task is moved to the transcription
-queue. A single worker drains all ready transcription work before it starts
-the post-processing queue, keeping subtitle extraction ahead of long LLM
-polish and analysis calls.
+Local files and browser uploads need no network download, so they skip the
+download queue and go straight to the GPU queue.
+
+A single GPU worker runs one task at a time and always finishes a task's
+post-processing (polish/analyze/archive) before starting the next task's
+transcription, so each task completes end-to-end as early as possible instead
+of waiting for every queued transcription.
 
 On backend restart, tasks that already completed DOWNLOAD are restored
 directly into the GPU queue so they skip re-downloading.
@@ -21,6 +24,7 @@ from uuid import UUID
 
 from app.core.database import get_task_store
 from app.core.events import TaskEvent, get_event_bus
+from app.core.pipeline_steps.sources import _looks_like_local_path
 from app.core.logging_setup import (
     log_event,
     reset_context,
@@ -97,8 +101,25 @@ def _release_local_llm_runtime() -> None:
         log_event(logger, logging.WARNING, "gpu.local_llm.release_failed", error=e)
 
 
+def _needs_download_queue(task: Any) -> bool:
+    """Whether the task must pass through a download worker.
+
+    URL pipeline tasks need a network download; local files and browser
+    uploads only need a fast local move, so they go straight to the GPU
+    queue. Non-pipeline tasks (recognition/preprocessing/analysis) have no
+    download step at all and would otherwise occupy a download worker for
+    their whole runtime.
+    """
+    if task.task_type == TaskType.INGESTION:
+        return True
+    if task.task_type != TaskType.PIPELINE:
+        return False
+    source = str(task.source or "")
+    return not (source.startswith("upload://") or _looks_like_local_path(source))
+
+
 class TaskQueue:
-    """Three-stage queue: parallel download, batched transcription, post-processing."""
+    """Three-stage queue: parallel download, serial per-task transcription + post-processing."""
 
     def __init__(self):
         self._download_queue: asyncio.Queue[UUID] = asyncio.Queue()
@@ -148,20 +169,35 @@ class TaskQueue:
         self._pipeline_fn = fn
 
     async def submit(self, task_id: UUID) -> None:
-        """Enqueue a new task — it goes straight to the download queue."""
+        """Enqueue a new task.
+
+        URL sources go to the download queue; local files, browser uploads
+        and non-download task types skip it and go straight to the GPU queue.
+        """
         store = get_task_store()
         bus = get_event_bus()
         store.update_status(task_id, TaskStatus.QUEUED)
         await bus.publish(TaskEvent(task_id, "queued"))
+        task = store.get(task_id)
         t_token = set_task_context(str(task_id))
         try:
-            await self._download_queue.put(task_id)
-            log_event(
-                logger,
-                logging.INFO,
-                "queue.download.enqueued",
-                depth=self._download_queue.qsize(),
-            )
+            if task is not None and not _needs_download_queue(task):
+                await self._gpu_queue.put(task_id)
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "queue.gpu.enqueued",
+                    reason="no_download_needed",
+                    depth=self._gpu_queue.qsize(),
+                )
+            else:
+                await self._download_queue.put(task_id)
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "queue.download.enqueued",
+                    depth=self._download_queue.qsize(),
+                )
         finally:
             reset_context(t_token, task_id_var)
 
@@ -402,7 +438,9 @@ class TaskQueue:
         )
 
         if content_subtype in {"image_note", "text_note"}:
-            retained = {"download", "separate", "transcribe", "voiceprint", "polish"}
+            retained = {
+                "download", "separate", "transcribe", "voiceprint", "speaker_review", "polish",
+            }
             return [step for step in ordered if step in retained]
 
         has_download_artifact = (task_dir / "metadata.json").exists() or self._has_media_artifact(task_dir)
@@ -414,23 +452,33 @@ class TaskQueue:
             retained.add("download")
         if has_raw_transcript or has_polished_transcript:
             retained.update({"download", "separate", "transcribe", "voiceprint"})
+            if any(
+                (task_dir / name).exists()
+                for name in ("speaker_review.json", "subtitle_speakers.json")
+            ):
+                retained.add("speaker_review")
         if has_polished_transcript:
-            retained.add("polish")
+            retained.update({"speaker_review", "polish"})
         return [step for step in ordered if step in retained]
 
     def _pipeline_order(self, task: Any) -> list[str]:
         configured = [str(step) for step in (getattr(task, "steps", None) or []) if step]
         if configured:
+            if "polish" in configured and "speaker_review" not in configured:
+                configured.insert(configured.index("polish"), "speaker_review")
             return configured
-        return ["download", "separate", "transcribe", "voiceprint", "polish", "analyze", "archive"]
+        return [
+            "download", "separate", "transcribe", "voiceprint", "speaker_review",
+            "polish", "analyze", "archive",
+        ]
 
     def _checkpoint_progress(self, completed_steps: list[str]) -> float:
-        total = 7
+        total = 8
         return min(1.0, max(0.0, len(completed_steps) / total))
 
     def _next_pipeline_step(self, completed_steps: list[str]) -> str | None:
         completed = set(completed_steps)
-        for step in ["download", "separate", "transcribe", "voiceprint", "polish", "analyze", "archive"]:
+        for step in self._pipeline_order(None):
             if step not in completed:
                 return step
         return "archive"
@@ -525,14 +573,24 @@ class TaskQueue:
             else:
                 t_token = set_task_context(str(task.id))
                 try:
-                    await self._download_queue.put(task.id)
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "queue.download.restored",
-                        reason="restart",
-                        depth=self._download_queue.qsize(),
-                    )
+                    if not _needs_download_queue(task):
+                        await self._gpu_queue.put(task.id)
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "queue.gpu.restored",
+                            reason="no_download_needed",
+                            depth=self._gpu_queue.qsize(),
+                        )
+                    else:
+                        await self._download_queue.put(task.id)
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "queue.download.restored",
+                            reason="restart",
+                            depth=self._download_queue.qsize(),
+                        )
                 finally:
                     reset_context(t_token, task_id_var)
 
@@ -636,28 +694,25 @@ class TaskQueue:
         previous_stage: str | None = None
         try:
             while self._running:
+                # Post-processing first: finish each task end-to-end before
+                # starting the next task's transcription, so a steady stream
+                # of new downloads/transcriptions can no longer starve tasks
+                # that are one LLM pass away from completing.
                 try:
-                    task_id = self._gpu_queue.get_nowait()
-                    source_queue = self._gpu_queue
-                    stage = "transcribe"
+                    task_id = self._postprocess_queue.get_nowait()
+                    source_queue = self._postprocess_queue
+                    stage = "postprocess"
                 except asyncio.QueueEmpty:
-                    if (
-                        self._download_queue.empty()
-                        and not self._active_download_ids
-                        and self._gpu_queue.empty()
-                    ):
+                    try:
+                        task_id = self._gpu_queue.get_nowait()
+                        source_queue = self._gpu_queue
+                        stage = "transcribe"
+                    except asyncio.QueueEmpty:
                         try:
-                            task_id = self._postprocess_queue.get_nowait()
-                            source_queue = self._postprocess_queue
-                            stage = "postprocess"
-                        except asyncio.QueueEmpty:
                             await asyncio.sleep(0.2)
-                            continue
-                    else:
-                        await asyncio.sleep(0.2)
+                        except asyncio.CancelledError:
+                            break
                         continue
-                except asyncio.CancelledError:
-                    break
 
                 if stage != previous_stage:
                     if stage == "postprocess":
@@ -687,9 +742,10 @@ class TaskQueue:
                     source_queue.task_done()
                     continue
 
-                # Serial mode: wait until all downloads are idle before using GPU
+                # Serial mode: wait until all downloads are idle before transcribing.
+                # Post-processing never waits — downloads do not use the GPU.
                 from app.core.settings import get_runtime_settings
-                if not get_runtime_settings().pipeline_overlap:
+                if stage == "transcribe" and not get_runtime_settings().pipeline_overlap:
                     waited = 0
                     while self._active_download_ids and self._running:
                         if waited == 0:

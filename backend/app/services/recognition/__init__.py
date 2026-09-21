@@ -10,7 +10,7 @@ from app.services.recognition.base import ASRService
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_ASR_PROVIDERS = {"moss_cpp", "sherpa_onnx", "siliconflow"}
+SUPPORTED_ASR_PROVIDERS = {"moss_cpp", "llama_cpp", "sherpa_onnx", "siliconflow"}
 
 __all__ = [
     "SUPPORTED_ASR_PROVIDERS",
@@ -38,6 +38,10 @@ def get_asr_service(provider: str | None = None) -> ASRService:
             get_runtime_settings(),
             task_options={"asr_provider": provider} if provider else None,
         ).provider
+    if provider_id == "llama_cpp":
+        from app.services.recognition.llama_cpp_asr import get_llama_cpp_asr_service
+
+        return get_llama_cpp_asr_service()
     if provider_id == "sherpa_onnx":
         from app.services.recognition.sherpa_onnx_asr import get_sherpa_onnx_service
 
@@ -59,8 +63,10 @@ def release_asr_models() -> None:
     from app.services.recognition.moss_cpp_asr import release_moss_cpp_service
     from app.services.recognition.sherpa_onnx_asr import release_sherpa_onnx_service
     from app.services.recognition.siliconflow_asr import release_siliconflow_service
+    from app.services.recognition.llama_cpp_asr import release_llama_cpp_asr_service
 
     release_moss_cpp_service()
+    release_llama_cpp_asr_service()
     release_sherpa_onnx_service()
     release_siliconflow_service()
     from app.services.recognition.diarization import release_diarization_service
@@ -111,7 +117,7 @@ async def transcribe_audio(
     service = get_asr_service(provider_id)
 
     def _run_transcribe() -> dict[str, Any]:
-        if provider_id == "sherpa_onnx":
+        if provider_id in {"sherpa_onnx", "llama_cpp"}:
             return service.transcribe(
                 audio_path,
                 language=binding.language,

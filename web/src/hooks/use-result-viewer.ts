@@ -70,6 +70,10 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
   const [detail, setDetail] = useState<string | null>(null)
   const [mindmapFit, setMindmapFit] = useState<(() => void) | null>(null)
   const [subtitles, setSubtitles] = useState<Subtitle[]>([])
+  const [transcriptEditing, setTranscriptEditing] = useState(false)
+  const [renamingSpeaker, setRenamingSpeaker] = useState(false)
+  const speakerWritePending = useRef(false)
+  const speakerEditVersion = useRef(0)
   const [subtitleTracks, setSubtitleTracks] = useState<SubtitleTrackInfo[]>([])
   const [activeTrackLang, setActiveTrackLang] = useState<string | null>(null)
   const [polishedLang, setPolishedLang] = useState<string | null>(null)
@@ -104,6 +108,10 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
     setSummaryChapterNodes(null)
     setDetail(null)
     setSubtitles([])
+    setTranscriptEditing(false)
+    setRenamingSpeaker(false)
+    speakerWritePending.current = false
+    speakerEditVersion.current += 1
     setSubtitleTracks([])
     setActiveTrackLang(null)
     setPolishedLang(null)
@@ -122,6 +130,12 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
     setTimelineEvents([])
     setMediaUrl(null)
   }, [archivePath, taskIdProp])
+
+  const transcriptChanged = useMemo(
+    () => subtitlesToSRT(subtitles) !== subtitlesToSRT(parseSRT(transcript ?? "")),
+    [subtitles, transcript],
+  )
+  const hasUnsavedTranscript = transcriptEditing || transcriptChanged
 
   // Persist and restore viewing position
   const { updateMediaTime, updateActiveTab, getSavedPosition } = useViewPosition(archivePath)
@@ -165,7 +179,9 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
       setSubtitles(updated)
       const srtPath = archivePath + sep + (isPolished ? "transcript_polished.srt" : "transcript.srt")
       try {
-        await api.filesystem.write(srtPath, subtitlesToSRT(updated))
+        const content = subtitlesToSRT(updated)
+        const saved = await api.filesystem.write(srtPath, content)
+        if (saved.success) setTranscript(content)
       } catch (err) {
         console.warn("Failed to save SRT after speaker rename:", err)
       }
@@ -174,13 +190,17 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
   )
 
   const handleRenameSpeaker = async (oldName: string, newName: string) => {
-    if (!resolvedTaskId) {
-      // Legacy archive without taskId — fall back to local-only rename
-      await applyRenameLocally(oldName, newName)
-      return
-    }
+    if (speakerWritePending.current || hasUnsavedTranscript || mergeInfo) return
+    const request = speakerEditVersion.current
+    speakerWritePending.current = true
+    setRenamingSpeaker(true)
     try {
+      if (!resolvedTaskId) {
+        await applyRenameLocally(oldName, newName)
+        return
+      }
       const res = await api.voiceprints.renameTaskSpeaker(resolvedTaskId, oldName, newName, "ask")
+      if (request !== speakerEditVersion.current) return
       if (res.status === "conflict") {
         setMergeInfo({
           oldName,
@@ -195,12 +215,19 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
       const appliedName = res.person_name ?? newName
       await applyRenameLocally(oldName, appliedName)
     } catch (err) {
+      if (request !== speakerEditVersion.current) return
       console.warn("renameTaskSpeaker failed, falling back to local rename:", err)
       await applyRenameLocally(oldName, newName)
+    } finally {
+      if (request === speakerEditVersion.current) {
+        speakerWritePending.current = false
+        setRenamingSpeaker(false)
+      }
     }
   }
 
   const resolveMerge = async (choice: "merge" | "new" | "cancel") => {
+    if (speakerWritePending.current) return
     if (!mergeInfo || !resolvedTaskId) {
       setMergeInfo(null)
       return
@@ -209,6 +236,9 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
       setMergeInfo(null)
       return
     }
+    const request = speakerEditVersion.current
+    speakerWritePending.current = true
+    setRenamingSpeaker(true)
     try {
       const res = await api.voiceprints.renameTaskSpeaker(
         resolvedTaskId,
@@ -216,12 +246,18 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
         mergeInfo.newName,
         choice,
       )
+      if (request !== speakerEditVersion.current) return
       const appliedName = res.person_name ?? mergeInfo.newName
       await applyRenameLocally(mergeInfo.oldName, appliedName)
     } catch (err) {
       console.warn("Conflict resolution failed:", err)
+    } finally {
+      if (request === speakerEditVersion.current) {
+        speakerWritePending.current = false
+        setRenamingSpeaker(false)
+        setMergeInfo(null)
+      }
     }
-    setMergeInfo(null)
   }
 
   const applyMetadataState = useCallback((metadata: Record<string, unknown>) => {
@@ -917,6 +953,10 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
     currentTime,
     seekTo,
     handleRenameSpeaker,
+    renamingSpeaker,
+    hasUnsavedTranscript,
+    setTranscriptEditing,
+    setTranscript,
     sourceHref,
     handleOpenSource,
     sourceTabLabel,

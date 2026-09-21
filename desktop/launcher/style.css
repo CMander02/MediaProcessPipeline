@@ -1,0 +1,29 @@
+:root { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; color: #202028; background: #fafafa; color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 40px 24px; }
+main { width: min(600px, 100%); }
+header { display: flex; align-items: center; gap: 14px; font-size: 17px; font-weight: 600; margin-bottom: 48px; }
+section { position: relative; padding-left: 30px; }
+h1 { margin: 0 0 12px; font-size: 27px; font-weight: 600; line-height: 1.35; }
+p { margin: 0; line-height: 1.7; overflow-wrap: anywhere; }
+#message { color: #5c5c66; font-size: 15px; }
+.indicator { position: absolute; left: 0; top: 10px; width: 13px; height: 13px; border: 2px solid #ded9f6; border-top-color: #6042d8; border-radius: 50%; animation: spin 1s linear infinite; }
+.indicator.error { border: 0; background: #bc6634; animation: none; }
+.project { border-top: 1px solid #e3e3e8; margin-top: 28px; padding-top: 20px; }
+.project > span { color: #787882; font-size: 12px; }
+#project { font-size: 13px; margin-top: 6px; color: #4e4e58; user-select: text; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+button { background: #fff; color: #353540; border: 1px solid #d9d9e0; border-radius: 7px; padding: 10px 16px; font: inherit; font-size: 14px; cursor: pointer; }
+button:hover { background: #f0eef8; }
+button:focus-visible, summary:focus-visible { outline: 2px solid #6042d8; outline-offset: 3px; }
+button:disabled { cursor: wait; opacity: .6; }
+button.primary { background: #6042d8; color: white; border-color: #6042d8; }
+button.primary:hover { background: #4e31bd; }
+[hidden] { display: none !important; }
+details { margin-top: 24px; font-size: 12px; color: #666670; }
+summary { cursor: pointer; }
+pre { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 14px; background: #f0f0f3; border-radius: 6px; font-size: 12px; }
+footer { margin-top: 40px; display: flex; align-items: center; justify-content: space-between; gap: 16px; color: #80808a; font-size: 12px; }
+.text-button { border: 0; padding: 8px; color: #777782; background: none; font-size: 12px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .indicator { animation: none; } }

@@ -2,85 +2,39 @@
 
 ## Current ASR Runtime
 
-The product ASR runtime is selected through `asr_provider`. The lightweight
-default is `qwen3_gguf`, which starts an external llama.cpp server and talks to
-it through an OpenAI-compatible local HTTP endpoint. API ASR is available
-through `siliconflow`, and the in-process Qwen3 package remains available as
-`qwen3`.
+The default `asr_provider` is `llama_cpp`: Qwen3-ASR GGUF runs in an owned
+llama-server process with up to 8 concurrent audio requests. `sherpa_onnx` and
+`siliconflow` remain selectable providers.
 
-`backend/app/services/recognition/__init__.py` owns provider selection. The
-supported values are `qwen3_gguf`, `siliconflow`, and `qwen3`; unsupported
-values fail explicitly at settings validation/transcription startup.
+Configuration:
 
-Qwen3 package configuration remains intentionally scoped:
+- `llama_cpp_binary_path`: shared llama.cpp server executable.
+- `llama_asr_model_path`, `llama_asr_mmproj_path`: ASR GGUF and matching projector.
+- `llama_asr_device`: auto, cuda, or cpu.
+- `llama_asr_concurrency`: 1–16, default 8.
+- `llama_asr_max_new_tokens`: default 512; truncated responses fail explicitly.
+- `llama_asr_timeout_sec`: per-request timeout, default 120 seconds.
 
-- `qwen3_asr_model_path`
-- `qwen3_aligner_model_path`
-- `qwen3_enable_timestamps`
-- `qwen3_batch_size`
-- `qwen3_max_new_tokens`
-- `qwen3_device`
+The ASR binding mirrors the selected provider and model path. Audio is decoded
+once to 16 kHz mono; bounded workers transcribe chunks and restore source order.
+The server is released before speaker diarization and LLM postprocessing.
 
-GGUF/llama.cpp configuration is isolated from the PyTorch path:
+Local providers share the existing `sherpa_chunk_strategy`, VAD and chunk
+length settings. `auto` timestamps use VAD boundaries; `qwen_forced` applies the
+configured ForcedAligner. Speaker diarization continues through the common
+pyannote stage. Word-level timestamps require the optional aligner.
 
-- `llama_cpp_binary_path`
-- `qwen3_gguf_model_path`
-- `qwen3_gguf_mmproj_path`
-- `qwen3_gguf_hf_repo`
-- `qwen3_gguf_device`
-- `qwen3_gguf_chunk_strategy`
+## Performance Evidence
 
-Speaker diarization and voiceprint matching are optional capabilities attached
-to providers through narrow hooks:
-
-- `get_pyannote_pipeline()`
-- `get_last_diarization()`
-- `release()`
-
-This means pipeline code does not need to import Qwen3 or llama.cpp directly.
-
-## Dependency Profiles
-
-The base install is designed for API-first and VPS deployments:
-
-- Base: daemon, CLI, yt-dlp, OpenAI-compatible clients, LiteLLM, Playwright
-  Python package, Transformers utilities, and ffmpeg fixed ASR chunking.
-- `asr-api-vad`: adds `onnxruntime` for Silero ONNX VAD chunking.
-- `local-asr`: adds `torch`, `torchaudio`, `qwen-asr`, and `pyannote-audio`.
-- `uvr`: adds `torch`, `torchaudio`, and `audio-separator[gpu]`.
-- `hf-local-inference`: adds `torch` and `accelerate`; `transformers` is in
-  base.
-- `local-models`: installs the full local model stack.
-
-Playwright browser binaries are managed separately with
-`uv run playwright install chromium`.
-
-## Performance Path
-
-The current runtime uses the official in-process package and passes batching,
-device, dtype, max token, and optional ForcedAligner settings to
-`Qwen3ASRModel.from_pretrained(...)`.
-
-The Qwen3-ASR upstream project also documents a richer toolkit, including vLLM
-batch inference, asynchronous serving, streaming inference, timestamp
-prediction, Docker images, source installs with the `vllm` extra, and
-FlashAttention 2 as an optional speed/memory optimization. Those are not enabled
-in the product runtime yet. Treat them as a future server-mode backend, not a
-hidden optimization already active in this repo.
-
-Practical interpretation:
-
-- API ASR plus ffmpeg fixed chunking is the stable VPS path.
-- GGUF/llama.cpp keeps Python free of PyTorch for local ASR experiments.
-- In-process Qwen3 is the full local ASR path.
-- Silero ONNX VAD is an optional quality improvement for chunk boundaries.
-- ForcedAligner should be preferred when timestamp quality matters on the
-  in-process Qwen3 path.
+On the 2026-09-21 local 333-chunk / 2735-second benchmark, Qwen3-ASR-0.6B Q8
+with 8 llama.cpp slots took 36.0 seconds of inference; Transformers BF16 with
+batch size 16 took 92.6 seconds. These exclude preparation and later pipeline
+stages. See `agentspace/records/2026-09/2026-09-21-qwen-asr-parallel-benchmark.md`.
 
 ## Environment Isolation
 
 Do not build a ComfyUI-style node ecosystem yet. The product has one stable
-pipeline and one supported ASR provider; full per-node Python environments would
+pipeline and a small set of ASR providers; full per-node Python environments would
 add packaging, GPU ownership, observability, and recovery complexity before the
 need is proven.
 

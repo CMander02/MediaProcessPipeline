@@ -45,20 +45,24 @@ class LocalLlamaCppRuntime:
             port = self._free_port()
             args = [
                 binary,
-                "--host", "127.0.0.1",
+                "--host", "localhost",
                 "--port", str(port),
                 "--model", str(model_path),
             ]
             if mmproj_value:
                 args.extend(["--mmproj", mmproj_value])
+            parallel = max(1, int(config.get("parallel") or 1))
+            # llama.cpp divides total context across slots; ctx is per request.
             args.extend([
-                "-c", str(max(2048, int(config.get("ctx") or 8192))),
-                "-np", str(max(1, int(config.get("parallel") or 1))),
+                "-c", str(max(2048, int(config.get("ctx") or 8192)) * parallel),
+                "-np", str(parallel),
                 *self._device_args(config),
-                "--cache-type-k", "q8_0",
-                "--cache-type-v", "q8_0",
+                "--cache-type-k", str(config.get("cache_type") or "q8_0"),
+                "--cache-type-v", str(config.get("cache_type") or "q8_0"),
                 "-a", str(config.get("alias") or "Local-LLM"),
             ])
+            if config.get("cache_ram") is not None:
+                args.extend(["--cache-ram", str(config["cache_ram"])])
             logger.info("Starting local llama.cpp model: %s", " ".join(args))
             self._process = subprocess.Popen(
                 args,
@@ -92,6 +96,7 @@ class LocalLlamaCppRuntime:
                     process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     process.kill()
+                    process.wait(timeout=10)
 
     def _schedule_stop(self, keepalive_sec: float) -> None:
         if self._timer:
@@ -107,7 +112,7 @@ class LocalLlamaCppRuntime:
     def _signature_for(config: dict[str, Any]) -> tuple[Any, ...]:
         return tuple(config.get(key) for key in (
             "binary_path", "model_path", "mmproj_path", "device", "ctx",
-            "n_gpu_layers", "parallel", "alias",
+            "n_gpu_layers", "parallel", "alias", "cache_type", "cache_ram",
         ))
 
     @staticmethod

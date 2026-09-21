@@ -46,6 +46,9 @@ interface TranscriptTabProps {
   srtPath?: string
   /** Called when subtitles are modified */
   onSubtitlesChange?: (subtitles: Subtitle[]) => void
+  onEditingChange?: (editing: boolean) => void
+  onSaved?: (srt: string) => void
+  editingDisabled?: boolean
 }
 
 function formatChapterTime(seconds: number): string {
@@ -347,14 +350,24 @@ export function TranscriptTab({
   tocNodes,
   srtPath,
   onSubtitlesChange,
+  onEditingChange,
+  onSaved,
+  editingDisabled = false,
 }: TranscriptTabProps) {
   const [searchQuery, setSearchQuery] = useState("")
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [isNewInsert, setIsNewInsert] = useState(false) // track if editing a freshly inserted subtitle
+  const [savingCount, setSavingCount] = useState(0)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const segmentRefs = useRef<Map<number, HTMLDivElement>>(new Map())
   const isUserScrolling = useRef(false)
   const programmaticScroll = useRef(false)
+
+  useEffect(() => {
+    onEditingChange?.(editingIndex !== null || savingCount > 0)
+    return () => onEditingChange?.(false)
+  }, [editingIndex, savingCount, onEditingChange])
 
   // Filter subtitles by search
   const filteredIndices = useMemo(() => {
@@ -411,13 +424,20 @@ export function TranscriptTab({
     onSubtitlesChange?.(updated)
     if (srtPath) {
       const srt = subtitlesToSRT(updated)
+      setSavingCount((count) => count + 1)
+      setSaveError(null)
       try {
-        await api.filesystem.write(srtPath, srt)
+        const result = await api.filesystem.write(srtPath, srt)
+        if (!result.success) throw new Error(result.error || "文件保存失败")
+        onSaved?.(srt)
       } catch (err) {
         console.warn("Failed to save SRT:", err)
+        setSaveError("字幕尚未保存，请重新编辑并保存。")
+      } finally {
+        setSavingCount((count) => count - 1)
       }
     }
-  }, [srtPath, onSubtitlesChange])
+  }, [srtPath, onSubtitlesChange, onSaved])
 
   const handleEdit = useCallback((index: number, changes: Partial<Subtitle>) => {
     const updated = subtitles.map((sub, i) =>
@@ -489,6 +509,7 @@ export function TranscriptTab({
   return (
     <div className="flex h-full min-h-0">
       <div className="flex min-w-0 flex-1 flex-col">
+        {saveError && <p role="alert" className="px-3 pt-2 text-xs text-destructive">{saveError}</p>}
         <div className="flex items-center gap-2 border-b px-3 py-2">
           <div className="min-w-0 flex-1">
             <TranscriptSearch
@@ -500,7 +521,7 @@ export function TranscriptTab({
           {tocNodes?.length ? <MobileChapterToc nodes={tocNodes} currentTime={currentTime} onSeek={handleTocSeek} /> : null}
         </div>
         <ScrollArea className="flex-1 min-h-0" onScrollCapture={handleScroll}>
-          <div ref={scrollRef} className="flex flex-col gap-0.5 py-2">
+          <div ref={scrollRef} inert={editingDisabled} className="flex flex-col gap-0.5 py-2">
             {filteredIndices.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-8">
                 {searchQuery ? "无匹配结果" : "无字幕数据"}

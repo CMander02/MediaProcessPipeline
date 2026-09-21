@@ -77,7 +77,8 @@ async def test_uvr_fractional_progress_updates_task_flow_and_events(monkeypatch)
         },
     )
 
-    assert task.progress == pytest.approx((1 + 0.5) / 6)
+    # The public pipeline includes the speaker-review stage.
+    assert task.progress == pytest.approx((1 + 0.5) / 7)
     assert task.message == "分离人声：第 4/8 段"
     assert task.current_step == PipelineStep.SEPARATE
     assert task.flow["current_step"] == "transcribe"

@@ -8,7 +8,7 @@
 CLI (mpp) / HTTP
         ↓
   FastAPI Daemon (:18000)  ← 同时 serve 前端静态文件
-  ├─ TaskQueue    asyncio.Queue, 单 worker (GPU 瓶颈)
+  ├─ TaskQueue    下载队列并行 (max_download_concurrency) + 单 GPU worker 逐任务跑完转写→后处理；本地文件/上传跳过下载队列
   ├─ TaskStore    SQLite (由 core.paths 解析 data_root 内的布局)
   ├─ EventBus    in-process pub/sub → SSE
   └─ Services    ASR, UVR, LLM (不变)

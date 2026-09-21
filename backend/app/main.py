@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -235,7 +236,10 @@ app.include_router(logs.router, prefix="/api")
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "service": config.api_title, "version": __version__}
+    return {
+        "status": "healthy", "service": config.api_title, "version": __version__,
+        "app": "mpp", "pid": os.getpid(),
+    }
 
 
 # Serve frontend static files (built Vite output)

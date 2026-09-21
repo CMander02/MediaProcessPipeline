@@ -38,7 +38,6 @@ class PipelineContext:
     force_asr: bool = False
     use_platform_subtitles: bool = False
     collect_platform_subtitles: bool = False
-    subtitle_reference_mode: bool = False
     task_dir: Path | None = None
     done: set = field(default_factory=set)
     audio_path: str | None = None
@@ -47,12 +46,12 @@ class PipelineContext:
     has_subtitle: bool = False
     uvr_fallback_reason: str | None = None
     srt: str = ""
+    reviewed_srt: str = ""
     transcript: str = ""
     polished: str | None = None
     polished_md: str | None = None
     subtitle_source: str = "asr"
     recognition_segments: list = field(default_factory=list)
-    subtitle_reference_segments: list = field(default_factory=list)
     analysis: dict = field(default_factory=dict)
     summary: dict = field(default_factory=dict)
     mindmap: str = ""
@@ -178,19 +177,11 @@ async def create_context(task, rt, download_worker_call=False, stop_after_transc
         get_task_store().save(ctx.task)
     ctx.platform_subtitle = None
     ctx.source_type = _detect_source_type(ctx.source)
-    ctx.subtitle_reference_mode = bool(
-        ctx.task.options.get(
-            "use_platform_subtitle_reference",
-            ctx.rt.use_platform_subtitle_reference,
-        )
-    )
-    ctx.force_asr = bool(
-        ctx.rt.force_asr or ctx.task.options.get("force_asr", False) or ctx.subtitle_reference_mode
-    )
+    ctx.force_asr = bool(ctx.task.options.get("force_asr", ctx.rt.force_asr))
     ctx.initial_flow = resolve_source_flow(
         ctx.source,
         prefer_platform_subtitles=True,
-        force_asr=False if ctx.subtitle_reference_mode else ctx.force_asr,
+        force_asr=ctx.force_asr,
         task_options=ctx.task.options,
     )
     ctx.use_platform_subtitles = (
@@ -198,13 +189,7 @@ async def create_context(task, rt, download_worker_call=False, stop_after_transc
         and _platform_prefer_subtitles(ctx.initial_flow.route_type)
         and not ctx.force_asr
     )
-    ctx.collect_platform_subtitles = bool(
-        ctx.use_platform_subtitles
-        or (
-            ctx.subtitle_reference_mode
-            and (ctx.initial_flow.try_subtitles or ctx.source_type == "local_video")
-        )
-    )
+    ctx.collect_platform_subtitles = ctx.use_platform_subtitles
     ctx.source_flow = resolve_source_flow(
         ctx.source,
         prefer_platform_subtitles=ctx.use_platform_subtitles,

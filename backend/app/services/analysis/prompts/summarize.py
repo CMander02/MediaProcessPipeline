@@ -78,4 +78,6 @@ Rules:
 1. key_facts: 3-10 of the most important information points.
 2. action_items: only things explicitly proposed as actions; otherwise empty.
 3. topics: the main discussion topics.
-4. Return JSON only, no prose, no code fences."""
+4. Return JSON only, no prose, no code fences.
+5. timeline: use only the supplied source timeline and its exact timestamps.
+   If no source timeline is supplied, return an empty array. Never invent timestamps."""

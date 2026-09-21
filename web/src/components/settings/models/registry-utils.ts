@@ -39,7 +39,10 @@ export function bindingValue(
 }
 
 export function asrBindingValue(settings: Settings, binding: RuntimeModelBinding | undefined): string {
-  const provider = String(settings.asr_provider ?? "sherpa_onnx")
+  const provider = String(settings.asr_provider ?? "llama_cpp")
+  if (provider === "llama_cpp") {
+    return bindingValue(binding, "llama_cpp", settings.llama_asr_model_path, "")
+  }
   if (provider === "siliconflow") {
     return bindingValue(binding, "siliconflow", settings.siliconflow_asr_model, "FunAudioLLM/SenseVoiceSmall")
   }
@@ -99,6 +102,10 @@ export function buildProviderModelOptions(settings: Settings, capability: string
     }))
   })
   if (capability === "asr") {
+    options.push({
+      value: modelValue("llama_cpp", String(settings.llama_asr_model_path ?? "")),
+      label: "Qwen3-ASR GGUF · llama.cpp",
+    })
     const localModels = [
       ["qwen3-asr-0.6b-int8", "Qwen3-ASR 0.6B INT8"],
       ["qwen3-asr-1.7b-onnx", "Qwen3-ASR 1.7B INT8"],

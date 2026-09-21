@@ -1,4 +1,4 @@
-"""Bilibili DASH downloader — pure Python, stdlib only.
+"""Bilibili DASH downloader with anonymous progressive 360P fallback.
 
 Downloads Bilibili videos directly via the /x/player/wbi/playurl DASH API,
 then muxes video + audio with ffmpeg. No BBDown required.
@@ -14,16 +14,19 @@ Quality codes (qn):
 
 from __future__ import annotations
 
-import json
+import http.client
 import logging
 import re
+import ssl
 import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
-from app.core.network import urllib_urlopen
+import httpx
+
+from app.core.network import httpx_client_kwargs, urllib_urlopen
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +74,12 @@ def _download_stream(url: str, dest: Path, title: str, referer: str, cookie: str
                         break
                     f.write(chunk)
                     downloaded += len(chunk)
-            if total and downloaded < total:
+            if not downloaded or (total and downloaded < total):
                 raise RuntimeError(
                     f"Incomplete download: {downloaded}/{total} bytes for {title}"
                 )
         logger.info(f"Downloaded {title}: {downloaded:,} bytes -> {dest.name}")
-    except (urllib.error.URLError, RuntimeError) as e:
+    except Exception as e:
         logger.warning(f"Primary URL failed for {title}: {e} — dest will be incomplete/missing")
         if dest.exists():
             dest.unlink()
@@ -92,18 +95,78 @@ def _try_download_with_backup(
     cookie: str = "",
 ) -> None:
     """Try primary URL, then each backup URL in order until one succeeds."""
-    urls = [primary_url] + (backup_urls or [])
+    urls = list(dict.fromkeys(url for url in [primary_url, *(backup_urls or [])] if url))
     last_err: Exception | None = None
-    for attempt, url in enumerate(urls):
+    for url in urls:
         try:
             _download_stream(url, dest, title, referer, cookie)
             return
-        except Exception as e:
-            last_err = e
-            logger.warning(f"Download attempt {attempt + 1}/{len(urls)} failed for {title}: {e}")
-    raise RuntimeError(
+        except (urllib.error.URLError, ssl.SSLError, http.client.HTTPException,
+                ConnectionError, TimeoutError, RuntimeError) as exc:
+            last_err = exc
+        # A separate HTTP transport can recover urllib TLS/proxy EOF failures.
+        # Keep the configured proxy and certificate verification in both clients.
+        try:
+            _download_stream_httpx(url, dest, referer, cookie)
+            return
+        except (httpx.HTTPError, RuntimeError) as exc:
+            last_err = exc
+            logger.warning("CDN transfer failed for %s (%s)", title, type(exc).__name__)
+    raise DownloadError(
         f"All {len(urls)} download URLs failed for {title}. Last error: {last_err}"
-    )
+    ) from last_err
+
+
+class DownloadError(RuntimeError):
+    """All media transfer attempts failed."""
+
+
+def _download_stream_httpx(url: str, dest: Path, referer: str, cookie: str) -> None:
+    headers = {**_HEADERS, "Referer": referer, "Accept-Encoding": "identity"}
+    if cookie:
+        headers["Cookie"] = cookie
+    try:
+        with httpx.Client(**httpx_client_kwargs(url), timeout=60, follow_redirects=True) as client:
+            with client.stream("GET", url, headers=headers) as response:
+                response.raise_for_status()
+                total = int(response.headers.get("Content-Length", 0))
+                downloaded = 0
+                with dest.open("wb") as output:
+                    for chunk in response.iter_bytes(_CHUNK_SIZE):
+                        output.write(chunk)
+                        downloaded += len(chunk)
+                if not downloaded or (total and downloaded < total):
+                    raise RuntimeError(f"Incomplete download: {downloaded}/{total} bytes")
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
+
+
+def _download_media(play_data: dict, qn: int, output_dir: Path, title: str,
+                    referer: str, cookie: str, temporary: list[Path]) -> tuple[list[Path], int]:
+    dash = play_data.get("dash")
+    if dash:
+        video = _select_video_track(dash.get("video") or [], qn)
+        audio = _select_audio_track(dash.get("audio") or [])
+        tracks = [(video, "video"), (audio, "audio")]
+        actual_qn = int(video.get("id", qn))
+    else:
+        segments = play_data.get("durl") or []
+        if len(segments) != 1:
+            raise RuntimeError("Bilibili did not return a single progressive video stream")
+        tracks = [(segments[0], "progressive")]
+        actual_qn = int(play_data.get("quality", qn))
+    inputs = []
+    for track, label in tracks:
+        dest = output_dir / f"{title}_{label}.m4s"
+        temporary.append(dest)
+        _try_download_with_backup(
+            track.get("baseUrl") or track.get("base_url") or track.get("url") or "",
+            track.get("backupUrl") or track.get("backup_url") or [],
+            dest, f"{title} [{label}]", referer, cookie,
+        )
+        inputs.append(dest)
+    return inputs, actual_qn
 
 
 def _select_video_track(tracks: list[dict[str, Any]], qn: int) -> dict[str, Any]:
@@ -159,8 +222,7 @@ def download_video(
             title, aid, cid, duration, actual_qn
 
     Raises:
-        RuntimeError: If the video has no DASH streams (FLV-only), or if any
-            download/mux step fails.
+        RuntimeError: If both media download paths fail, or muxing fails.
     """
     # Lazy imports so module-level import doesn't crash if .api doesn't exist yet
     from .api import view as bili_view, playurl as bili_playurl  # noqa: PLC0415
@@ -171,10 +233,11 @@ def download_video(
 
     page_number = max(int(page_number or 1), 1)
     referer = f"https://www.bilibili.com/video/{bvid}" + (f"?p={page_number}" if page_number > 1 else "")
-    cookie = get_cookie() if is_logged_in() else ""
+    logged_in = is_logged_in()
+    cookie = get_cookie() if logged_in else ""
 
     # If not logged in, cap quality at 360P
-    if not is_logged_in() and qn > 16:
+    if not logged_in and qn > 16:
         logger.warning(
             f"Bilibili: not logged in, falling back from qn={qn} to qn=16 (360P)"
         )
@@ -182,7 +245,7 @@ def download_video(
 
     # ----- 1. Fetch video metadata -----
     logger.info(f"Fetching Bilibili view metadata for {bvid}")
-    view_data = bili_view(bvid)
+    view_data = bili_view(bvid, cookie=cookie)
     title_raw: str = view_data.get("title", bvid)
     aid: int = view_data.get("aid", 0)
     pages: list[dict] = view_data.get("pages", [])
@@ -203,82 +266,33 @@ def download_video(
         f"Video title: {display_title!r} aid={aid} cid={cid} page={selected_page_number} duration={duration}s"
     )
 
-    # ----- 2. Fetch DASH playurl -----
-    logger.info(f"Fetching DASH playurl for {bvid} qn={qn} fnval=16")
-    play_data = bili_playurl(bvid, aid, cid, qn=qn, fnval=16)
-
-    dash = play_data.get("dash")
-    if not dash:
-        raise RuntimeError(
-            "Video requires FLV download — not supported. "
-            "DASH playurl returned no 'dash' key."
-        )
-
-    video_tracks: list[dict] = dash.get("video", [])
-    audio_tracks: list[dict] = dash.get("audio", [])
-
-    # ----- 3. Select tracks -----
-    video_track = _select_video_track(video_tracks, qn)
-    audio_track = _select_audio_track(audio_tracks)
-    actual_qn: int = video_track.get("id", qn)
-
-    logger.info(
-        f"Selected video track: qn={actual_qn} codecs={video_track.get('codecs', 'unknown')}"
-    )
-    logger.info(
-        f"Selected audio track: id={audio_track.get('id')} codecs={audio_track.get('codecs', 'unknown')}"
-    )
-
-    # ----- 4. Download streams -----
-    video_dest = output_dir / f"{title}_video.m4s"
-    audio_dest = output_dir / f"{title}_audio.m4s"
-
-    logger.info(f"Downloading video stream -> {video_dest.name}")
-    _try_download_with_backup(
-        primary_url=video_track["baseUrl"],
-        backup_urls=video_track.get("backupUrl") or [],
-        dest=video_dest,
-        title=f"{title} [video]",
-        referer=referer,
-        cookie=cookie,
-    )
-
-    logger.info(f"Downloading audio stream -> {audio_dest.name}")
-    _try_download_with_backup(
-        primary_url=audio_track["baseUrl"],
-        backup_urls=audio_track.get("backupUrl") or [],
-        dest=audio_dest,
-        title=f"{title} [audio]",
-        referer=referer,
-        cookie=cookie,
-    )
-
-    # ----- 5. Mux with ffmpeg -----
+    temporary: list[Path] = []
     mp4_path = output_dir / f"{title}.mp4"
-    logger.info(f"Muxing -> {mp4_path.name}")
-    result = subprocess.run(
-        [
-            "ffmpeg",
-            "-i", str(video_dest),
-            "-i", str(audio_dest),
-            "-c", "copy",
-            str(mp4_path),
-            "-y",
-        ],
-        capture_output=True,
-        timeout=600,
-    )
-    if result.returncode != 0:
-        stderr = result.stderr.decode("utf-8", errors="replace")
-        raise RuntimeError(f"ffmpeg mux failed (rc={result.returncode}): {stderr[-500:]}")
-
-    # ----- 6. Clean up .m4s files -----
-    for tmp in (video_dest, audio_dest):
+    try:
         try:
-            tmp.unlink()
-            logger.debug(f"Cleaned up temp stream: {tmp.name}")
-        except Exception as e:
-            logger.warning(f"Failed to delete temp stream {tmp}: {e}")
+            play_data = bili_playurl(bvid, aid, cid, qn=qn,
+                                     fnval=16 if logged_in else 1, cookie=cookie)
+            inputs, actual_qn = _download_media(
+                play_data, qn, output_dir, title, referer, cookie, temporary)
+        except (RuntimeError, urllib.error.URLError, ssl.SSLError,
+                http.client.HTTPException, ConnectionError, TimeoutError) as exc:
+            logger.warning("Bilibili transfer failed (%s); refreshing anonymous 360P URL",
+                           type(exc).__name__)
+            play_data = bili_playurl(bvid, aid, cid, qn=16, fnval=1, cookie="")
+            inputs, actual_qn = _download_media(
+                play_data, 16, output_dir, title, referer, "", temporary)
+        command = ["ffmpeg", "-nostdin", "-y"]
+        for source in inputs:
+            command.extend(["-i", str(source)])
+        command.extend(["-c", "copy", str(mp4_path)])
+        result = subprocess.run(command, capture_output=True, timeout=600)
+        if result.returncode != 0:
+            mp4_path.unlink(missing_ok=True)
+            stderr = result.stderr.decode("utf-8", errors="replace")
+            raise RuntimeError(f"ffmpeg mux failed (rc={result.returncode}): {stderr[-500:]}")
+    finally:
+        for tmp in temporary:
+            tmp.unlink(missing_ok=True)
 
     logger.info(f"Bilibili download complete: {mp4_path.name}")
 

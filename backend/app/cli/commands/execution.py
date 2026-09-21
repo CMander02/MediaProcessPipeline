@@ -21,11 +21,6 @@ def run(
     hotword: list[str] = typer.Option(None, "--hotword", help="热词，可重复"),
     force_asr: bool = typer.Option(False, "--force-asr", help="强制 ASR，忽略平台字幕"),
     prefer_subtitles: bool = typer.Option(False, "--prefer-subtitles", help="优先使用平台字幕"),
-    subtitle_reference: bool = typer.Option(
-        False,
-        "--subtitle-reference",
-        help="运行完整 ASR，并在润色时按时间段参考平台字幕",
-    ),
     from_file: Optional[Path] = typer.Option(
         None, "--from-file", exists=True, dir_okay=False, readable=True
     ),
@@ -53,7 +48,6 @@ def run(
     options = task_options(
         force_asr=force_asr,
         prefer_subtitles=prefer_subtitles,
-        subtitle_reference=subtitle_reference,
         skip_separation=no_sep,
         speakers=speakers,
         hotwords=hotword or [],
@@ -149,11 +143,6 @@ def submit(
     hotword: list[str] = typer.Option(None, "--hotword", help="热词，可重复"),
     force_asr: bool = typer.Option(False, "--force-asr", help="强制 ASR"),
     prefer_subtitles: bool = typer.Option(False, "--prefer-subtitles", help="优先使用平台字幕"),
-    subtitle_reference: bool = typer.Option(
-        False,
-        "--subtitle-reference",
-        help="运行完整 ASR，并在润色时按时间段参考平台字幕",
-    ),
     from_file: Optional[Path] = typer.Option(
         None, "--from-file", exists=True, dir_okay=False, readable=True
     ),
@@ -184,7 +173,6 @@ def submit(
     options = task_options(
         force_asr=force_asr,
         prefer_subtitles=prefer_subtitles,
-        subtitle_reference=subtitle_reference,
         skip_separation=no_sep,
         speakers=speakers,
         hotwords=hotword or [],

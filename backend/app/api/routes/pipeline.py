@@ -664,7 +664,7 @@ async def bilibili_login_status():
             days_left = (expires_dt - now).days
 
         # Expiry metadata is advisory; the nav API is the source of truth for session validity.
-        logged = is_logged_in()
+        logged = await run_in_thread(is_logged_in)
         uid = uid_m.group(1) if uid_m else "unknown"
         if logged:
             return {
@@ -681,6 +681,32 @@ async def bilibili_login_status():
 
     except Exception as e:
         return {"logged_in": False, "message": str(e)}
+
+
+@router.post("/bilibili/auth/qr")
+async def bilibili_generate_qr():
+    from app.services.ingestion.platform.bilibili.login import get_bilibili_login_service
+
+    try:
+        return await run_in_thread(get_bilibili_login_service().generate)
+    except Exception as exc:
+        logger.warning("Bilibili QR generation failed: %s", type(exc).__name__)
+        raise HTTPException(502, "获取 B 站二维码失败，请检查网络后重试") from exc
+
+
+class BilibiliQrPollRequest(BaseModel):
+    session_id: str
+
+
+@router.post("/bilibili/auth/qr/poll")
+async def bilibili_poll_qr(request: BilibiliQrPollRequest):
+    from app.services.ingestion.platform.bilibili.login import get_bilibili_login_service
+
+    try:
+        return await run_in_thread(get_bilibili_login_service().poll, request.session_id)
+    except Exception as exc:
+        logger.warning("Bilibili QR poll failed: %s", type(exc).__name__)
+        raise HTTPException(502, "B 站登录确认失败，请检查网络后重新扫码") from exc
 
 
 @router.get("/xiaohongshu/auth/status")

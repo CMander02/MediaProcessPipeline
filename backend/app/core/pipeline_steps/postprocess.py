@@ -16,6 +16,10 @@ from app.core.pipeline_steps.artifacts import (
     write_metadata_json,
 )
 from app.core.pipeline_steps.context import PipelineContext
+from app.core.pipeline_steps.speaker_review import (
+    identify_transcript_speakers,
+    review_transcript_speakers,
+)
 from app.core.pipeline_steps.state import PipelineStep, _raise_if_cancelled, _update_step
 from app.core.pipeline_steps.transcript import _plain_text_from_srt, _user_language_hint
 
@@ -42,6 +46,7 @@ async def postprocess(ctx: PipelineContext) -> None:
             chars=len(ctx.transcript),
         )
         await _update_step(ctx.task, PipelineStep.POLISH, completed=True)
+        await _update_step(ctx.task, PipelineStep.SPEAKER_REVIEW, completed=True)
         await _update_step(ctx.task, PipelineStep.ANALYZE, completed=True)
 
         await _update_step(ctx.task, PipelineStep.ARCHIVE)
@@ -83,7 +88,9 @@ async def postprocess(ctx: PipelineContext) -> None:
         }
         return
 
-    # ── Step 4: Polish transcript (CPU/network) ────────────────────────────
+    await review_transcript_speakers(ctx)
+
+    # Polish the reviewed speaker labels, then generate downstream analysis.
     polish_ran = False
     if PipelineStep.POLISH in ctx.done:
         log_event(
@@ -114,9 +121,7 @@ async def postprocess(ctx: PipelineContext) -> None:
             elif hotwords:
                 ctx.analysis = {"proper_nouns": hotwords}
             polish_context = dict(ctx.analysis)
-            if ctx.subtitle_reference_segments:
-                polish_context["subtitle_reference_segments"] = ctx.subtitle_reference_segments
-            ctx.polished = await polish_text(ctx.srt, context=polish_context)
+            ctx.polished = await polish_text(ctx.reviewed_srt or ctx.srt, context=polish_context)
             await _raise_if_cancelled(ctx.task.id)
         if ctx.polished:
             from app.services.analysis import srt_to_markdown
@@ -138,6 +143,16 @@ async def postprocess(ctx: PipelineContext) -> None:
         await _update_step(ctx.task, PipelineStep.POLISH, completed=True)
         await _raise_if_cancelled(ctx.task.id)
     # end if POLISH not in done
+
+    from app.services.analysis.transcript_outputs import _parse_srt, _split_speaker_prefix
+
+    speakers = sorted({
+        speaker
+        for cue in _parse_srt(ctx.polished or ctx.reviewed_srt or ctx.srt)
+        if (speaker := _split_speaker_prefix(cue["text"])[0])
+    })
+    ctx.metadata.extra["speakers"] = speakers
+    ctx.metadata.extra["speaker_count"] = len(speakers)
 
     # ── Step 5: Analyze + Summarize + Mindmap from polished text ─────────────
     # If an older interrupted task already completed ANALYZE before POLISH,
@@ -195,6 +210,8 @@ async def postprocess(ctx: PipelineContext) -> None:
             analysis_text, ctx.metadata.title, metadata=video_metadata
         )
         ctx.analysis = merge_analysis_with_source(ctx.analysis, ctx.source_context)
+        if speakers:
+            ctx.analysis["speakers_detected"] = len(speakers)
         user_language = _user_language_hint(ctx.analysis)
 
         import json as _json
@@ -240,6 +257,10 @@ async def postprocess(ctx: PipelineContext) -> None:
 
         await _update_step(ctx.task, PipelineStep.ANALYZE, completed=True)
     # end if ANALYZE not in done
+
+    # Identify the presenter using the completed analysis and summary, then keep
+    # the in-memory outputs in sync with the files before final archiving.
+    await identify_transcript_speakers(ctx)
 
     # Step 6: Archive (finalize — writes any missing files, sets status to completed)
     await _raise_if_cancelled(ctx.task.id)

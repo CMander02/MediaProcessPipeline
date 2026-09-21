@@ -18,12 +18,15 @@ const mocks = vi.hoisted(() => {
     saved: vi.fn(() => ({ activeTab: "summary", mediaTime: 12 })),
     updateMediaTime: vi.fn(), updateActiveTab: vi.fn(),
     write: vi.fn(), rename: vi.fn(),
+    taskGet: vi.fn(), timeline: vi.fn(),
+    renameSpeaker: vi.fn(),
+    access: { online: true },
     sse: vi.fn(),
   }
 })
 vi.mock("@/platform/use-platform", () => ({ usePlatform: () => mocks.adapter }))
 vi.mock("@/repositories/archive-repository", () => ({ createArchiveRepository: () => mocks.repository }))
-vi.mock("@/hooks/use-app-access-context", () => ({ useAppAccess: () => ({ capabilities: {}, online: true }) }))
+vi.mock("@/hooks/use-app-access-context", () => ({ useAppAccess: () => ({ capabilities: {}, online: mocks.access.online }) }))
 vi.mock("@/hooks/use-archives", () => ({ useArchives: () => ({ archives: mocks.archives, refresh: mocks.refresh }) }))
 vi.mock("@/hooks/use-preferences", () => ({ usePreferences: () => ({ prefs: mocks.prefs, update: mocks.updatePrefs }) }))
 vi.mock("@/hooks/use-view-position", () => ({ useViewPosition: () => ({ getSavedPosition: mocks.saved, updateMediaTime: mocks.updateMediaTime, updateActiveTab: mocks.updateActiveTab }) }))
@@ -32,6 +35,8 @@ vi.mock("@/lib/api", () => ({
   api: {
     filesystem: { mediaUrl: (value: string) => `media:${value}`, write: mocks.write },
     archives: { rename: mocks.rename },
+    voiceprints: { renameTaskSpeaker: mocks.renameSpeaker },
+    tasks: { get: mocks.taskGet, timeline: mocks.timeline },
   },
 }))
 
@@ -49,6 +54,10 @@ beforeEach(() => {
   })
   mocks.rename.mockResolvedValue({ success: true })
   mocks.write.mockResolvedValue({ success: true })
+  mocks.access.online = true
+  mocks.renameSpeaker.mockReset()
+  mocks.taskGet.mockResolvedValue({ id: "task-1", status: "completed", result: { output_dir: mocks.archive.path }, error: null })
+  mocks.timeline.mockResolvedValue({ events: [] })
 })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
@@ -76,5 +85,77 @@ describe("result viewer state", () => {
     await act(async () => { await result.current.commitTitle() })
     expect(mocks.rename).toHaveBeenCalledWith("/library/fixture", "Edited title")
     expect(result.current.displayTitle).toBe("Edited title")
+  })
+
+  it("waits for pending subtitle edits to be saved before renaming speakers", async () => {
+    const { result } = renderHook(() => useResultViewer({ archivePath: mocks.archive.path, taskId: "task-1" }))
+    await waitFor(() => expect(result.current.subtitles).toHaveLength(1))
+    act(() => result.current.setTranscriptEditing(true))
+    await act(async () => { await result.current.handleRenameSpeaker("Speaker 1", "李华") })
+    expect(mocks.renameSpeaker).not.toHaveBeenCalled()
+    act(() => {
+      result.current.setTranscriptEditing(false)
+      result.current.setSubtitles([{ ...result.current.subtitles[0], text: "Edited draft" }])
+    })
+    await act(async () => { await result.current.handleRenameSpeaker("Speaker 1", "李华") })
+    expect(result.current.hasUnsavedTranscript).toBe(true)
+    expect(mocks.renameSpeaker).not.toHaveBeenCalled()
+  })
+
+  it("serializes manual renames until the file save finishes", async () => {
+    let finishRename!: (value: unknown) => void
+    let finishSave!: (value: unknown) => void
+    mocks.renameSpeaker.mockImplementation(() => new Promise((resolve) => { finishRename = resolve }))
+    mocks.write.mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve }))
+    const { result } = renderHook(() => useResultViewer({ archivePath: mocks.archive.path, taskId: "task-1" }))
+    await waitFor(() => expect(result.current.subtitles).toHaveLength(1))
+    let pending!: Promise<void>
+    act(() => { pending = result.current.handleRenameSpeaker("Speaker 1", "李华") })
+    expect(result.current.renamingSpeaker).toBe(true)
+    await act(async () => {
+      await result.current.handleRenameSpeaker("Speaker 1", "张明")
+    })
+    expect(mocks.renameSpeaker).toHaveBeenCalledOnce()
+    await act(async () => {
+      finishRename({ status: "renamed", person_name: "李华" })
+    })
+    expect(result.current.renamingSpeaker).toBe(true)
+    await act(async () => { await result.current.handleRenameSpeaker("李华", "张明") })
+    expect(mocks.renameSpeaker).toHaveBeenCalledOnce()
+    await act(async () => {
+      finishSave({ success: true })
+      await pending
+    })
+    expect(result.current.renamingSpeaker).toBe(false)
+    expect(result.current.hasUnsavedTranscript).toBe(false)
+    expect(result.current.subtitles[0].speaker).toBe("李华")
+  })
+
+  it("blocks additional renames while a name conflict is open and resolving", async () => {
+    mocks.renameSpeaker.mockResolvedValueOnce({ status: "conflict", conflict_person_id: "person-2", conflict_person_name: "李华", conflict_sample_count: 2 })
+    const { result } = renderHook(() => useResultViewer({ archivePath: mocks.archive.path, taskId: "task-1" }))
+    await waitFor(() => expect(result.current.subtitles).toHaveLength(1))
+    await act(async () => { await result.current.handleRenameSpeaker("Speaker 1", "李华") })
+    expect(result.current.mergeInfo).not.toBeNull()
+    await act(async () => { await result.current.handleRenameSpeaker("Speaker 1", "张明") })
+    expect(mocks.renameSpeaker).toHaveBeenCalledOnce()
+    let finishMerge!: (value: unknown) => void
+    mocks.renameSpeaker.mockImplementationOnce(() => new Promise((resolve) => { finishMerge = resolve }))
+    let pending!: Promise<void>
+    act(() => { pending = result.current.resolveMerge("merge") })
+    expect(result.current.renamingSpeaker).toBe(true)
+    await act(async () => {
+      await result.current.handleRenameSpeaker("Speaker 1", "张明")
+      await result.current.resolveMerge("cancel")
+    })
+    expect(mocks.renameSpeaker).toHaveBeenCalledTimes(2)
+    expect(result.current.mergeInfo).not.toBeNull()
+    await act(async () => {
+      finishMerge({ status: "merged", person_name: "李华" })
+      await pending
+    })
+    expect(result.current.renamingSpeaker).toBe(false)
+    expect(result.current.mergeInfo).toBeNull()
+    expect(result.current.subtitles[0].speaker).toBe("李华")
   })
 })

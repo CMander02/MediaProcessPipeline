@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import math
 import os
 import time
 from typing import Any
@@ -37,6 +36,11 @@ from app.services.analysis.prompts import (
     get_polish_prompt,
     get_simple_polish_prompt,
     get_summarize_prompt,
+)
+from app.services.analysis.text_attachments import (
+    anthropic_text_attachment,
+    call_openai_text_attachment,
+    text_attachment_provider,
 )
 from app.services.analysis.text_locale import normalize_chinese_script
 from app.services.analysis.transcript_outputs import _SENTENCE_END_RE as _SENTENCE_END_RE
@@ -363,9 +367,37 @@ class LLMService:
         temperature = self._static_settings.temperature
         if temperature > 0:
             request["temperature"] = temperature
+        if binding.stage == "polish":
+            request["temperature"] = 0.1
+        request["extra_body"] = {
+            "chat_template_kwargs": {
+                "enable_thinking": binding.stage != "polish"
+                and bool(binding.request_kwargs.get("enable_thinking", False)),
+            }
+        }
         async with client:
             response = await client.chat.completions.create(**request)
-        return (response.choices[0].message.content or "").strip()
+        choice = response.choices[0]
+        content = (choice.message.content or "").strip()
+        log_event(
+            logger,
+            logging.INFO,
+            "llm.local.call_completed",
+            stage=binding.stage,
+            model=binding.model,
+            finish_reason=choice.finish_reason,
+            chars=len(content),
+            prompt_tokens=getattr(response.usage, "prompt_tokens", None),
+            completion_tokens=getattr(response.usage, "completion_tokens", None),
+        )
+        if choice.finish_reason == "length":
+            raise RuntimeError(
+                f"本地模型 {binding.model} 的 {binding.stage} 输出被截断，"
+                "请缩短输入、关闭思考或增加上下文和输出长度。"
+            )
+        if not content:
+            raise RuntimeError(f"本地模型 {binding.model} 的 {binding.stage} 返回空正文。")
+        return content
 
     async def _call(
         self,
@@ -464,10 +496,15 @@ class LLMService:
             log_event(logger, logging.WARNING, "llm.not_configured", provider=provider)
             return "[LLM not configured]"
 
-        messages: list[dict[str, str]] = []
+        attachment_provider = text_attachment_provider(provider, str(params.get("api_base") or ""))
+        messages: list[dict[str, Any]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        messages.append({
+            "role": "user",
+            "content": anthropic_text_attachment(prompt) if attachment_provider == "anthropic"
+            else prompt,
+        })
         params["messages"] = messages
 
         model = params.get("model")
@@ -476,8 +513,13 @@ class LLMService:
             logger, logging.INFO, "llm.call.started", provider=provider, model=model, stage=stage
         )
         try:
-            response = await litellm.acompletion(**params)
-            content = response.choices[0].message.content or ""
+            if attachment_provider == "openai":
+                content = await call_openai_text_attachment(
+                    params, prompt, system_prompt=system_prompt, max_retries=max_retries,
+                )
+            else:
+                response = await litellm.acompletion(**params)
+                content = response.choices[0].message.content or ""
             log_event(
                 logger,
                 logging.INFO,
@@ -719,13 +761,6 @@ class LLMService:
     ) -> str:
         return _transcript_outputs._polish_timeline_context(context, chunk_segments)
 
-    def _polish_subtitle_reference(
-        self,
-        context: dict[str, Any],
-        chunk_segments: list[dict],
-    ) -> str:
-        return _transcript_outputs._polish_subtitle_reference(context, chunk_segments)
-
     async def polish_with_context_parallel(
         self,
         srt_content: str,
@@ -747,19 +782,19 @@ class LLMService:
             max_concurrency: Maximum parallel LLM calls (default 8)
             provider_override: If non-empty, use this provider instead of global llm_provider
         """
-        # Local GGUF is single-threaded; serialise chunks.
+        rt = get_runtime_settings()
         effective_provider = self._effective_provider(provider_override)
+        configured = int(getattr(rt, "llm_polish_concurrency", 4))
+        max_concurrency = max(1, min(max_concurrency, configured, 8))
         if effective_provider == "local":
-            max_concurrency = 1
-        else:
-            rt = get_runtime_settings()
-            try:
-                configured = int(
-                    getattr(rt, "llm_polish_concurrency", max_concurrency) or max_concurrency
-                )
-            except (TypeError, ValueError):
-                configured = max_concurrency
-            max_concurrency = max(1, min(max_concurrency, configured))
+            if getattr(rt, "local_llm_engine", "transformers") == "llama_cpp":
+                max_concurrency = min(max_concurrency, rt.local_llm_concurrency)
+                # Bound JSON output so a successful chunk covers every input cue.
+                chunk_size = min(chunk_size, 24)
+                overlap = min(overlap, 4)
+            else:
+                # Transformers shares one model.generate() instance.
+                max_concurrency = 1
 
         # Kimi Code produces subtitle JSON reliably at this bounded response
         # size. Larger chunks can exceed the OAuth CLI request timeout.
@@ -786,6 +821,8 @@ class LLMService:
             end = min(i + chunk_size, len(segments))
             chunks.append((chunk_idx, i, end, segments[i:end]))
             chunk_idx += 1
+            if end == len(segments):
+                break
             # Move forward by (chunk_size - overlap) to create overlap
             i += chunk_size - overlap
 
@@ -845,16 +882,12 @@ class LLMService:
                     entities=context.get("entities"),
                     speaker_ids=speaker_ids,
                     timeline_context=self._polish_timeline_context(context, chunk_segments),
-                    subtitle_reference=self._polish_subtitle_reference(
-                        context,
-                        chunk_segments,
-                    ),
                 )
 
-                # Retry once when a successful response ends far too early.
+                # Retry once when the response omits any requested cues.
                 # Keep the best partial result if the retry itself fails.
                 polished_segs: list[dict] = []
-                minimum_coverage = max(1, math.ceil(len(chunk_segments) * 0.75))
+                minimum_coverage = len(chunk_segments)
                 for response_attempt in range(2):
                     try:
                         polished_chunk = await self._call(
@@ -1093,6 +1126,8 @@ class LLMService:
                         }
                         for item in source_context["timeline"]
                     ]
+                else:
+                    result["timeline"] = []
                 return result
         except (json.JSONDecodeError, TypeError, ValueError):
             pass

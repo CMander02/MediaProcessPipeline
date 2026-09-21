@@ -9,6 +9,8 @@ interface SpeakerPanelProps {
   currentTime: number // seconds
   onSeek: (timeMs: number) => void
   onRenameSpeaker?: (oldName: string, newName: string) => void
+  renaming?: boolean
+  editingDisabled?: boolean
 }
 
 interface SpeakerInfo {
@@ -19,8 +21,11 @@ interface SpeakerInfo {
   segments: { startTime: number; endTime: number }[]
 }
 
-export function SpeakerPanel({ subtitles, duration, currentTime, onSeek, onRenameSpeaker }: SpeakerPanelProps) {
-  const durationMs = duration * 1000
+export function SpeakerPanel({
+  subtitles, duration, currentTime, onSeek, onRenameSpeaker,
+  renaming = false, editingDisabled = false,
+}: SpeakerPanelProps) {
+  const durationMs = duration * 1000 || subtitles.at(-1)?.endTime || 0
   const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null)
   const [editValue, setEditValue] = useState("")
   const inputRef = useRef<HTMLInputElement>(null)
@@ -85,9 +90,7 @@ export function SpeakerPanel({ subtitles, duration, currentTime, onSeek, onRenam
 
   return (
     <div className="space-y-2">
-      <h3 className="text-base font-semibold text-foreground">
-        说话人
-      </h3>
+      <h3 className="text-base font-semibold text-foreground">说话人</h3>
       <div
         className="grid gap-y-3 gap-x-2.5 items-center"
         style={{ gridTemplateColumns: "auto 1fr auto" }}
@@ -106,6 +109,8 @@ export function SpeakerPanel({ subtitles, duration, currentTime, onSeek, onRenam
               />
             ) : (
               <button
+                type="button"
+                disabled={renaming || editingDisabled}
                 className="text-xs font-medium hover:underline cursor-pointer text-left truncate max-w-[10rem]"
                 style={{ color: s.color }}
                 onClick={() => beginRename(s.name)}

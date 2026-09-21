@@ -98,6 +98,28 @@ export function PurposeModelBindings({ settings, updateSetting }: PurposeModelBi
 
   return (
     <CardLikeSection title="模型用途">
+      <div className="mb-4 flex items-center justify-between gap-4 rounded-lg border border-border/70 p-3">
+        <div className="space-y-1">
+          <Label htmlFor="polish-concurrency">润色并发数</Label>
+          <p className="text-xs leading-5 text-muted-foreground">
+            同时处理的字幕分块数，适用于本地 GGUF、模型 API 和 OAuth Coding Agent。
+            本地 GGUF 同时受本地模型并发槽位限制；Transformers 按 1 并发执行。
+          </p>
+        </div>
+        <Select
+          value={String(settings.llm_polish_concurrency ?? 4)}
+          onValueChange={(value) => void updateSetting("llm_polish_concurrency", Number(value))}
+        >
+          <SelectTrigger id="polish-concurrency" className="w-20 shrink-0" aria-label="润色并发数">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {Array.from({ length: 8 }, (_, index) => index + 1).map((value) => (
+              <SelectItem key={value} value={String(value)}>{value}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
       <div className="grid gap-3 lg:grid-cols-2">
         {bindings.map((binding) => (
           <PurposeBindingRow

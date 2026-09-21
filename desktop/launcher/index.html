@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+    <title>MediaProcessPipeline</title>
+    <link rel="stylesheet" href="./style.css">
+    <script defer src="./launcher.js"></script>
+  </head>
+  <body>
+    <main>
+      <header><img src="../assets/icon.png" alt="" width="52" height="52"><span>MediaProcessPipeline</span></header>
+      <section aria-live="polite" aria-atomic="true">
+        <div id="indicator" class="indicator" aria-hidden="true"></div>
+        <h1 id="title">正在连接 MPP</h1>
+        <p id="message">正在检查本机服务…</p>
+      </section>
+      <div class="project"><span>后端项目</span><p id="project">首次使用时，请选择已经配置好的 MPP 项目。</p></div>
+      <div class="actions">
+        <button id="retry" class="primary" hidden>重试</button>
+        <button id="choose-project" hidden>选择项目目录</button>
+        <button id="open-logs">打开日志</button>
+      </div>
+      <details id="details" hidden><summary>启动日志</summary><pre id="log"></pre></details>
+      <footer><span>关闭窗口将退出应用；最小化可继续处理任务。</span><button id="quit" class="text-button">退出</button></footer>
+    </main>
+  </body>
+</html>

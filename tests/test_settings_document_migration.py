@@ -66,8 +66,10 @@ def test_jina_reader_key_is_masked():
     assert data["jina_reader_api_key"] == "*" * len("jina-secret-1234")
 
 
-def test_platform_subtitle_reference_is_enabled_by_default():
-    assert core_settings.RuntimeSettings().use_platform_subtitle_reference is True
+def test_removed_subtitle_reference_setting_is_ignored():
+    settings = core_settings.RuntimeSettings(use_platform_subtitle_reference=True)
+    assert "use_platform_subtitle_reference" not in settings.model_dump()
+    assert settings.force_asr is False
 
 
 def test_oauth_llm_models_are_registered_for_vision():
@@ -475,8 +477,8 @@ def test_flat_config_load_migrates_default_service_registry(isolated_settings_fi
         "capability": "llm",
     }
     assert data["runtime_model_bindings"]["asr"] == {
-        "provider_id": "sherpa_onnx",
-        "model_id": "qwen3-asr-0.6b-int8",
+        "provider_id": "llama_cpp",
+        "model_id": "",
         "capability": "asr",
     }
 
@@ -730,6 +732,24 @@ def test_runtime_model_binding_patch_updates_flat_selection(isolated_settings_fi
     assert data["asr_provider"] == "siliconflow"
     assert data["siliconflow_asr_model"] == "SenseVoiceNew"
     assert data["deepseek_summary_model"] == "deepseek-bound-summary"
+
+
+def test_llama_asr_patch_and_binding_roundtrip(isolated_settings_file):
+    _write_config(isolated_settings_file, {"asr_provider": "sherpa_onnx"})
+    core_settings._runtime_settings = core_settings._load_settings_from_file()
+    updated = core_settings.patch_runtime_settings({
+        "asr_provider": "llama_cpp", "llama_asr_model_path": "D:/模型/asr.gguf",
+        "llama_asr_mmproj_path": "D:/模型/mmproj.gguf", "llama_asr_concurrency": 8,
+    })
+    assert updated.runtime_model_bindings["asr"].provider_id == "llama_cpp"
+    assert updated.runtime_model_bindings["asr"].model_id == "D:/模型/asr.gguf"
+    reloaded = core_settings._load_settings_from_file()
+    assert reloaded.asr_provider == "llama_cpp"
+    assert reloaded.llama_asr_concurrency == 8
+    updated = core_settings.patch_runtime_settings({"runtime_model_bindings": {
+        "asr": {"provider_id": "llama_cpp", "model_id": "D:/模型/other.gguf", "capability": "asr"},
+    }})
+    assert updated.llama_asr_model_path == "D:/模型/other.gguf"
 
 
 def test_sherpa_model_patch_updates_runtime_binding(isolated_settings_file):

@@ -180,22 +180,47 @@ export function AsrSettingsControls({
   saved,
   sherpaStatus,
 }: SharedSettingsProps & { sherpaStatus: LocalAsrModelsStatus | null }) {
-  const provider = String(settings.asr_provider ?? "sherpa_onnx")
+  const provider = String(settings.asr_provider ?? "llama_cpp")
   const installedCount = sherpaStatus?.models.filter((model) => model.installed && model.compatible).length ?? 0
 
   return (
     <div>
-      <SettingsSection title="语音识别" description="配置默认 ASR 服务及本地 sherpa-onnx 模型。">
+      <SettingsSection title="语音识别" description="配置默认 ASR 服务及模型。">
         <SelectSettingRow
           label="ASR 服务"
           value={provider}
           onChange={(value) => updateSetting("asr_provider", value)}
         >
+          <option value="llama_cpp">llama.cpp（本地 Qwen3-ASR）</option>
           <option value="sherpa_onnx">Sherpa ONNX（本地）</option>
           <option value="siliconflow">SiliconFlow</option>
         </SelectSettingRow>
 
-        {provider === "sherpa_onnx" ? (
+        {provider === "llama_cpp" ? (
+          <>
+            <PathPickerRow label="llama.cpp 引擎" settingKey="llama_cpp_binary_path"
+              value={String(settings.llama_cpp_binary_path ?? "")} onSave={updateSetting}
+              saving={saving} saved={saved} placeholder="llama-server.exe"
+              title="选择 llama-server" pickerLabel="选择文件" />
+            <PathPickerRow label="ASR 模型" settingKey="llama_asr_model_path"
+              value={String(settings.llama_asr_model_path ?? "")} onSave={updateSetting}
+              saving={saving} saved={saved} placeholder="Qwen3-ASR-0.6B-Q8_0.gguf"
+              title="选择 Qwen3-ASR GGUF 模型" pickerLabel="选择文件" />
+            <PathPickerRow label="音频编码器" settingKey="llama_asr_mmproj_path"
+              value={String(settings.llama_asr_mmproj_path ?? "")} onSave={updateSetting}
+              saving={saving} saved={saved} placeholder="mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"
+              title="选择与 ASR 模型配套的 mmproj" pickerLabel="选择文件" />
+            <SelectSettingRow label="运行设备" value={String(settings.llama_asr_device ?? "auto")}
+              onChange={(value) => updateSetting("llama_asr_device", value)}>
+              <option value="auto">自动</option><option value="cuda">CUDA</option><option value="cpu">CPU</option>
+            </SelectSettingRow>
+            <NumberSettingRow label="分段并发数" settingKey="llama_asr_concurrency" fallback={8} {...{ settings, updateSetting, saving, saved }} />
+            <AdvancedSettings>
+              <NumberSettingRow label="分段输出上限" settingKey="llama_asr_max_new_tokens" fallback={512} {...{ settings, updateSetting, saving, saved }} />
+              <NumberSettingRow label="请求超时（秒）" settingKey="llama_asr_timeout_sec" fallback={120} {...{ settings, updateSetting, saving, saved }} />
+            </AdvancedSettings>
+          </>
+        ) : provider === "sherpa_onnx" ? (
           <>
             <SelectSettingRow
               label="默认模型"
@@ -253,7 +278,7 @@ export function AsrSettingsControls({
         )}
       </SettingsSection>
 
-      {provider === "sherpa_onnx" ? (
+      {provider === "sherpa_onnx" || provider === "llama_cpp" ? (
         <>
           <SettingsSection title="时间戳" description="选择字幕时间戳来源。Qwen3 ForcedAligner 仅在强制对齐模式下加载。">
             <SelectSettingRow
@@ -262,7 +287,7 @@ export function AsrSettingsControls({
               onChange={(value) => updateSetting("asr_timestamp_mode", value)}
             >
               <option value="auto">自动</option>
-              <option value="native">模型原生时间戳</option>
+              {provider === "sherpa_onnx" ? <option value="native">模型原生时间戳</option> : null}
               <option value="vad">VAD 分段时间戳</option>
               <option value="qwen_forced">Qwen3 ForcedAligner</option>
             </SelectSettingRow>
@@ -297,13 +322,13 @@ export function AsrSettingsControls({
                 <option value="vad">VAD</option>
                 <option value="fixed">固定时长</option>
               </SelectSettingRow>
-              <NumberSettingRow label="CPU 线程" settingKey="sherpa_num_threads" fallback={4} {...{ settings, updateSetting, saving, saved }} />
+              {provider === "sherpa_onnx" ? <NumberSettingRow label="CPU 线程" settingKey="sherpa_num_threads" fallback={4} {...{ settings, updateSetting, saving, saved }} /> : null}
               <NumberSettingRow label="最大分段（秒）" settingKey="sherpa_max_chunk_sec" fallback={30} {...{ settings, updateSetting, saving, saved }} />
-              <SwitchSettingRow
+              {provider === "sherpa_onnx" ? <SwitchSettingRow
                 label="调试日志"
                 checked={Boolean(settings.sherpa_debug ?? false)}
                 onChange={(value) => updateSetting("sherpa_debug", value)}
-              />
+              /> : null}
             </AdvancedSettings>
           </SettingsSection>
 
@@ -418,10 +443,17 @@ export function LocalLlmSettingsControls({ settings, updateSetting, saving, save
       </SettingsSection>
 
       <SettingsSection title="高级设置" description="控制上下文、生成长度和模型进程保活时间。">
-        <NumberSettingRow label="Context" settingKey="local_llm_n_ctx" fallback={16384} {...{ settings, updateSetting, saving, saved }} />
+        {engine === "llama_cpp" ? (
+          <SwitchSettingRow
+            label="分析与总结启用思考"
+            checked={Boolean(settings.local_llm_thinking ?? false)}
+            onChange={(value) => updateSetting("local_llm_thinking", value)}
+          />
+        ) : null}
+        <NumberSettingRow label="每路上下文长度" settingKey="local_llm_n_ctx" fallback={16384} {...{ settings, updateSetting, saving, saved }} />
         {engine === "llama_cpp" ? <NumberSettingRow label="GPU 层" settingKey="local_llm_n_gpu_layers" fallback={-1} {...{ settings, updateSetting, saving, saved }} /> : null}
         {engine === "llama_cpp" ? <NumberSettingRow label="Batch" settingKey="local_llm_n_batch" fallback={512} {...{ settings, updateSetting, saving, saved }} /> : null}
-        <NumberSettingRow label="并发" settingKey="local_llm_concurrency" fallback={2} {...{ settings, updateSetting, saving, saved }} />
+        <NumberSettingRow label="并发槽位（1–8）" settingKey="local_llm_concurrency" fallback={2} {...{ settings, updateSetting, saving, saved }} />
         <NumberSettingRow label="最大输出" settingKey="local_llm_max_new_tokens" fallback={4096} {...{ settings, updateSetting, saving, saved }} />
         <NumberSettingRow label="超时（秒）" settingKey="local_llm_timeout_sec" fallback={300} {...{ settings, updateSetting, saving, saved }} />
         <NumberSettingRow label="保活（秒）" settingKey="local_llm_keepalive_sec" fallback={600} {...{ settings, updateSetting, saving, saved }} />

@@ -88,17 +88,16 @@ describe("SubmitPage Bilibili collection selection", () => {
       expect(createBatch).toHaveBeenCalledWith(
         ["https://www.bilibili.com/video/BV1DK4y1b7bY"],
         {
-          force_asr: true,
-          use_platform_subtitle_reference: true,
+          force_asr: false,
         },
       )
     })
     expect(navigate).toHaveBeenCalledWith("#/result/task/task-1")
   })
 
-  it("submits ASR with platform subtitle reference as one strategy", async () => {
+  it("submits the explicit ASR strategy", async () => {
     const createBatch = vi.spyOn(api.tasks, "createBatch").mockResolvedValue([
-      { id: "task-reference" },
+      { id: "task-asr" },
     ] as Awaited<ReturnType<typeof api.tasks.createBatch>>)
 
     render(<SubmitPage />)
@@ -107,7 +106,7 @@ describe("SubmitPage Bilibili collection selection", () => {
       target: { value: "https://www.youtube.com/watch?v=abcdefghijk" },
     })
     fireEvent.click(screen.getByRole("button", { name: "高级选项" }))
-    fireEvent.click(screen.getByRole("button", { name: /ASR \+ 原生字幕参考/ }))
+    fireEvent.click(screen.getByRole("button", { name: /强制 ASR/ }))
     fireEvent.click(screen.getByRole("button", { name: "开始处理" }))
 
     await waitFor(() => {
@@ -115,13 +114,12 @@ describe("SubmitPage Bilibili collection selection", () => {
         ["https://www.youtube.com/watch?v=abcdefghijk"],
         {
           force_asr: true,
-          use_platform_subtitle_reference: true,
         },
       )
     })
   })
 
-  it("lets the automatic strategy override the global subtitle reference default", async () => {
+  it("submits an explicit automatic strategy", async () => {
     const createBatch = vi.spyOn(api.tasks, "createBatch").mockResolvedValue([
       { id: "task-auto" },
     ] as Awaited<ReturnType<typeof api.tasks.createBatch>>)
@@ -138,7 +136,7 @@ describe("SubmitPage Bilibili collection selection", () => {
     await waitFor(() => {
       expect(createBatch).toHaveBeenCalledWith(
         ["https://www.youtube.com/watch?v=abcdefghijk"],
-        { use_platform_subtitle_reference: false },
+        { force_asr: false },
       )
     })
   })

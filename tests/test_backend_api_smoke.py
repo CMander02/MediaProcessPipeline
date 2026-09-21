@@ -136,7 +136,7 @@ def test_batch_task_creation_uses_shared_options(tmp_path, monkeypatch):
             "https://www.bilibili.com/video/BV1DK4y1b7bY?p=2",
         ],
         "options": {
-            "use_platform_subtitle_reference": True,
+            "force_asr": True,
             "num_speakers": 2,
         },
     })
@@ -152,7 +152,7 @@ def test_batch_task_creation_uses_shared_options(tmp_path, monkeypatch):
     assert all(task["options"]["num_speakers"] == 2 for task in created)
     assert all(task["flow"]["id"] == "url_platform_video_asr" for task in created)
     assert all(
-        task["options"]["use_platform_subtitle_reference"] is True
+        task["options"]["force_asr"] is True
         for task in created
     )
 
@@ -250,7 +250,7 @@ def test_create_task_accepts_bare_bilibili_bvid(tmp_path, monkeypatch):
     data = task.json()
     assert data["source"] == "BV1XM411M7eD"
     assert data["platform"] == "bilibili_video"
-    assert data["flow"]["id"] == "url_platform_video_asr"
+    assert data["flow"]["id"] == "url_platform_video_subtitle"
     assert queue.submitted == [UUID(data["id"])]
 
 
@@ -262,7 +262,7 @@ def test_create_task_recovers_malformed_https_bilibili_bvid(tmp_path, monkeypatc
         json={
             "task_type": "pipeline",
             "source": "https://BV1XM411M7eD",
-            "options": {"use_platform_subtitle_reference": False},
+            "options": {"force_asr": False},
         },
     )
 
@@ -684,7 +684,7 @@ async def test_real_task_queue_runs_transcription_before_postprocessing(tmp_path
         id=uuid4(),
         task_type=TaskType.PIPELINE,
         status=TaskStatus.PENDING,
-        source="demo.mp4",
+        source="https://example.com/demo.mp4",
         created_at=datetime.now(),
         updated_at=datetime.now(),
     )
@@ -731,7 +731,7 @@ async def test_real_task_queue_runs_transcription_before_postprocessing(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_real_task_queue_drains_all_transcripts_before_postprocessing(tmp_path, monkeypatch):
+async def test_real_task_queue_completes_each_task_before_next_transcription(tmp_path, monkeypatch):
     settings = RuntimeSettings(
         data_root=str(tmp_path),
         max_download_concurrency=1,
@@ -750,7 +750,7 @@ async def test_real_task_queue_drains_all_transcripts_before_postprocessing(tmp_
                 id=task_id,
                 task_type=TaskType.PIPELINE,
                 status=TaskStatus.PENDING,
-                source=f"{task_id}.mp4",
+                source=f"https://example.com/{task_id}.mp4",
             )
         )
 
@@ -791,11 +791,41 @@ async def test_real_task_queue_drains_all_transcripts_before_postprocessing(tmp_
         await task_queue.stop()
 
     stage_names = [stage for _, stage in stages]
-    assert stage_names.index("postprocess") > max(
-        index for index, stage in enumerate(stage_names) if stage == "transcribe"
+    by_task: dict[UUID, list[str]] = {}
+    for task_id, stage in stages:
+        by_task.setdefault(task_id, []).append(stage)
+    # Each task runs download -> transcribe -> postprocess in order...
+    for task_id in task_ids:
+        assert by_task[task_id] == ["download", "transcribe", "postprocess"]
+    # ...and the first task completes fully before the next transcription starts.
+    gpu_order = [(tid, stage) for tid, stage in stages if stage != "download"]
+    assert gpu_order.index((task_ids[0], "postprocess")) < gpu_order.index(
+        (task_ids[1], "transcribe")
     )
     assert stage_names.count("transcribe") == 2
     assert stage_names.count("postprocess") == 2
+
+
+@pytest.mark.asyncio
+async def test_local_file_task_skips_download_queue(tmp_path, monkeypatch):
+    settings = RuntimeSettings(data_root=str(tmp_path), max_download_concurrency=1)
+    monkeypatch.setattr(settings_module, "_runtime_settings", settings)
+    database.reset_db_path(tmp_path)
+
+    store = database.get_task_store()
+    task = Task(
+        id=uuid4(),
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.PENDING,
+        source="demo.mp4",
+    )
+    store.save(task)
+
+    task_queue = queue_module.TaskQueue()
+    await task_queue.submit(task.id)
+
+    assert list(task_queue._gpu_queue._queue) == [task.id]
+    assert task_queue._download_queue.empty()
 
 
 @pytest.mark.asyncio
@@ -810,7 +840,7 @@ async def test_real_task_queue_pause_and_resume_queued_task(tmp_path, monkeypatc
         id=uuid4(),
         task_type=TaskType.PIPELINE,
         status=TaskStatus.PENDING,
-        source="demo.mp4",
+        source="https://example.com/demo.mp4",
     )
     store.save(task)
 
@@ -934,7 +964,9 @@ async def test_real_task_queue_checkpoint_rerun_completed_image_note(tmp_path, m
     saved = store.get(task.id)
     assert saved.status == TaskStatus.QUEUED
     assert saved.completed_at is None
-    assert saved.completed_steps == ["download", "separate", "transcribe", "voiceprint", "polish"]
+    assert saved.completed_steps == [
+        "download", "separate", "transcribe", "voiceprint", "speaker_review", "polish",
+    ]
     assert saved.current_step == "analyze"
     assert task_queue.get_queue_snapshot() == [task.id]
     assert json.loads((output_dir / "metadata.json").read_text(encoding="utf-8"))["status"] == "queued"
@@ -959,7 +991,7 @@ async def test_real_task_queue_delete_running_task_removes_record_and_output_dir
         id=uuid4(),
         task_type=TaskType.PIPELINE,
         status=TaskStatus.PENDING,
-        source="demo.mp4",
+        source="https://example.com/demo.mp4",
         result={"output_dir": str(output_dir)},
     )
     store.save(task)

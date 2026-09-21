@@ -30,6 +30,7 @@ class PipelineStep(StrEnum):
     SEPARATE = "separate"
     TRANSCRIBE = "transcribe"
     VOICEPRINT = "voiceprint"
+    SPEAKER_REVIEW = "speaker_review"
     ANALYZE = "analyze"
     POLISH = "polish"
     ARCHIVE = "archive"
@@ -39,6 +40,7 @@ PIPELINE_STEPS = [
     {"id": PipelineStep.DOWNLOAD, "name": "下载媒体", "name_en": "Downloading"},
     {"id": PipelineStep.SEPARATE, "name": "分离人声", "name_en": "Separating vocals"},
     {"id": PipelineStep.TRANSCRIBE, "name": "转录音频", "name_en": "Transcribing"},
+    {"id": PipelineStep.SPEAKER_REVIEW, "name": "说话人修正", "name_en": "Reviewing speakers"},
     {"id": PipelineStep.POLISH, "name": "润色字幕", "name_en": "Polishing transcript"},
     {"id": PipelineStep.ANALYZE, "name": "分析+摘要+脑图", "name_en": "Analyzing & summarizing"},
     {"id": PipelineStep.ARCHIVE, "name": "归档保存", "name_en": "Archiving"},

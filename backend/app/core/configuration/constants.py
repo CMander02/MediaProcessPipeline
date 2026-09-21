@@ -126,7 +126,7 @@ _RUNTIME_BINDING_SPECS: dict[str, tuple[str, str, str]] = {
     "analyze": ("deepseek", "deepseek_analyze_model", "llm"),
     "summary": ("deepseek", "deepseek_summary_model", "llm"),
     "mindmap": ("deepseek", "deepseek_mindmap_model", "llm"),
-    "asr": ("sherpa_onnx", "sherpa_model_id", "asr"),
+    "asr": ("llama_cpp", "llama_asr_model_path", "asr"),
     "vision": ("custom-vision-default", "vlm_model", "vlm"),
     "embedding": ("custom-embedding-default", "kb_embedding_model", "embedding"),
 }

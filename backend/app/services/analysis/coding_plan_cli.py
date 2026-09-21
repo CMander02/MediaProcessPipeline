@@ -49,6 +49,13 @@ _CODEX_DISABLED_FEATURES = (
     "workspace_dependencies",
 )
 
+_READ_REQUEST_PROMPT = (
+    "完整读取当前工作目录中的 request.txt（UTF-8），按其中的要求处理全部内容。"
+    "长文件须分段读取直到末尾，保持原文顺序。"
+    "文件读取范围仅限 request.txt 和其中列出的图片。"
+    "直接返回请求规定格式的最终文本，保持 JSON 或 Markdown 等输出格式。"
+)
+
 
 class CodingPlanCLIError(RuntimeError):
     """A coding-plan CLI is unavailable, unauthenticated, or failed."""
@@ -620,8 +627,7 @@ async def coding_plan_models(provider_type: str, *, cli_path: str = "") -> list[
 
 def _text_backend_prompt(prompt: str) -> str:
     return (
-        "你是 MediaProcessPipeline 的纯文本模型后端。只处理下面的请求并返回最终文本；"
-        "不要读取工作区文件，不要运行命令，不要调用工具。\n\n"
+        "你是 MediaProcessPipeline 的纯文本模型后端。只处理下面的请求并返回最终文本。\n\n"
         f"<request>\n{prompt}\n</request>"
     )
 
@@ -643,10 +649,21 @@ def _multimodal_backend_prompt(prompt: str, image_paths: list[Path]) -> str:
     image_names = "、".join(path.name for path in image_paths)
     return (
         "你是 MediaProcessPipeline 的图文理解模型后端。只分析当前请求和列出的图片文件，"
-        "不要读取其他文件，不要运行命令，只返回最终文本。\n"
+        "只返回最终文本。\n"
         f"图片文件：{image_names}\n\n"
         f"<request>\n{prompt}\n</request>"
     )
+
+
+def _stage_request_file(prompt: str, image_paths: list[Path], cwd: Path) -> Path:
+    request_file = cwd / "request.txt"
+    request_file.write_text(
+        _multimodal_backend_prompt(prompt, image_paths)
+        if image_paths
+        else _text_backend_prompt(prompt),
+        encoding="utf-8",
+    )
+    return request_file
 
 
 async def _call_codex(
@@ -662,6 +679,7 @@ async def _call_codex(
     ) as temp_dir:
         cwd = Path(temp_dir)
         staged_images = _stage_image_paths(image_paths, cwd)
+        request_file = _stage_request_file(prompt, staged_images, cwd)
         output_file = cwd / "response.txt"
         command = [str(executable)]
         for feature in _CODEX_DISABLED_FEATURES:
@@ -699,11 +717,9 @@ async def _call_codex(
                 command,
                 cwd=cwd,
                 timeout_sec=timeout_sec,
-                stdin_text=(
-                    _multimodal_backend_prompt(prompt, staged_images)
-                    if staged_images
-                    else _text_backend_prompt(prompt)
-                ),
+                # Codex's Windows read-only policy can block shell file reads.
+                # Feed the staged file through its supported stdin interface.
+                stdin_text=request_file.read_text(encoding="utf-8"),
             )
         except asyncio.TimeoutError as exc:
             raise CodingPlanCLIError(f"Codex OAuth 推理超过 {int(timeout_sec)} 秒。") from exc
@@ -723,12 +739,15 @@ async def _call_agy_once(
     timeout_sec: float,
 ) -> tuple[int, str, str]:
     command = [str(executable), "--sandbox"]
-    if model and model.lower() != "default":
-        command.extend(["--model", model])
+    selected_model = model
+    if not selected_model or selected_model.lower() == "default":
+        selected_model = _agy_current_model()
+    if selected_model:
+        command.extend(["--model", selected_model])
     command.extend(
         [
             "--print",
-            "读取当前目录中的 request.txt，严格执行其中的请求，只返回最终文本。",
+            _READ_REQUEST_PROMPT,
             "--print-timeout",
             f"{max(1, int(timeout_sec + 30))}s",
         ]
@@ -743,16 +762,10 @@ async def _call_agy(
     timeout_sec: float,
     image_paths: list[Path] | None = None,
 ) -> str:
-    with tempfile.TemporaryDirectory(prefix="mpp-agy-") as temp_dir:
-        cwd = Path(temp_dir)
+    cwd = Path(tempfile.mkdtemp(prefix="mpp-agy-"))
+    try:
         staged_images = _stage_image_paths(image_paths, cwd)
-        prompt_file = cwd / "request.txt"
-        prompt_file.write_text(
-            _multimodal_backend_prompt(prompt, staged_images)
-            if staged_images
-            else _text_backend_prompt(prompt),
-            encoding="utf-8",
-        )
+        prompt_file = _stage_request_file(prompt, staged_images, cwd)
         try:
             code, stdout, stderr = await _call_agy_once(
                 executable,
@@ -768,6 +781,8 @@ async def _call_agy(
         if not content:
             raise CodingPlanCLIError("Antigravity OAuth 推理完成，但没有返回文本。")
         return content
+    finally:
+        await _remove_temp_dir(cwd)
 
 
 def _kimi_content_text(content: Any) -> str:
@@ -815,13 +830,7 @@ async def _call_kimi(
     cwd = Path(tempfile.mkdtemp(prefix="mpp-kimi-"))
     try:
         staged_images = _stage_image_paths(image_paths, cwd)
-        prompt_file = cwd / "request.txt"
-        prompt_file.write_text(
-            _multimodal_backend_prompt(prompt, staged_images)
-            if staged_images
-            else _text_backend_prompt(prompt),
-            encoding="utf-8",
-        )
+        _stage_request_file(prompt, staged_images, cwd)
         command = [str(executable)]
         selected_model = model
         if not selected_model or selected_model.lower() == "default":
@@ -831,10 +840,7 @@ async def _call_kimi(
         command.extend(
             [
                 "--prompt",
-                (
-                    "读取当前工作目录中的 request.txt，将文件内容作为唯一请求执行。"
-                    "仅按 request.txt 的说明读取其中列出的图片文件，只返回最终文本。"
-                ),
+                _READ_REQUEST_PROMPT,
             ]
         )
         try:
@@ -870,16 +876,21 @@ async def _call_qoder(
     cwd = Path(tempfile.mkdtemp(prefix="mpp-qoder-"))
     try:
         staged_images = _stage_image_paths(image_paths, cwd)
+        _stage_request_file(prompt, staged_images, cwd)
         command = [
             str(executable),
             "--print",
             "--output-format",
             "text",
+            "--input-format",
+            "text",
             "--no-session-persistence",
             "--permission-mode",
             "dont_ask",
             "--tools",
-            "",
+            "Read",
+            "--allowed-tools",
+            "Read",
             "--max-model-request-retries",
             "1",
             "--cwd",
@@ -892,19 +903,14 @@ async def _call_qoder(
             command.extend(["--model", selected_model])
         for image_path in staged_images:
             command.extend(["--attachment", str(image_path)])
-        command.extend(
-            [
-                "--",
-                _multimodal_backend_prompt(prompt, staged_images)
-                if staged_images
-                else _text_backend_prompt(prompt),
-            ]
-        )
         try:
+            # Keep only the file-reading instruction on stdin; the transcript
+            # stays in request.txt regardless of Windows command-line limits.
             code, stdout, stderr = await _run_cli(
                 command,
                 cwd=cwd,
                 timeout_sec=timeout_sec,
+                stdin_text=_READ_REQUEST_PROMPT,
                 env_override=_qoder_subprocess_env(),
             )
         except asyncio.TimeoutError as exc:

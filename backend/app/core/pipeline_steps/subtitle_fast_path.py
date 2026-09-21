@@ -14,6 +14,11 @@ from app.core.pipeline_steps.artifacts import (
     _write_summary_files,
     _write_text_artifact,
 )
+from app.core.pipeline_steps.context import PipelineContext
+from app.core.pipeline_steps.speaker_review import (
+    identify_transcript_speakers,
+    review_transcript_speakers,
+)
 from app.core.pipeline_steps.state import PipelineStep, _raise_if_cancelled, _update_step
 from app.core.pipeline_steps.transcript import (
     _plain_text_from_srt,
@@ -45,11 +50,14 @@ async def _run_subtitle_fast_path(
         analyze_content,
         generate_detail,
         generate_mindmap,
+        polish_text,
+        srt_to_markdown,
         summarize_text,
     )
     from app.services.analysis.source_context import (
         canonicalize_text,
         merge_analysis_with_source,
+        source_context_to_analysis,
     )
     from app.services.recognition.subtitle_processor import process_subtitles
 
@@ -92,22 +100,18 @@ async def _run_subtitle_fast_path(
         subtitle_format=selected_track.get("format") or "srt",
         metadata=metadata,
         source_context=source_context,
+        polish=False,
     )
     await _raise_if_cancelled(task.id)
     transcript = " ".join(s["text"] for s in sub_result.get("segments", []))
     srt = sub_result.get("srt", "")
-    polished = sub_result.get("polished_srt", "")
-    polished_md = sub_result.get("polished_md", "")
+    polished = ""
+    polished_md = ""
     recognition_segments = sub_result.get("segments", [])
 
     # Write transcript files
     if srt:
         await _write_text_artifact(task, task_dir, "transcript.srt", srt)
-    if polished:
-        await _write_text_artifact(task, task_dir, "transcript_polished.srt", polished)
-        if polished_md:
-            await _write_text_artifact(task, task_dir, "transcript_polished.md", polished_md)
-
     await _update_step(task, PipelineStep.TRANSCRIBE, completed=True)
 
     # Guard: skip LLM if transcript is empty
@@ -119,6 +123,7 @@ async def _run_subtitle_fast_path(
             reason="fast_path_transcript_too_short",
             chars=len(transcript),
         )
+        await _update_step(task, PipelineStep.SPEAKER_REVIEW, completed=True)
         await _update_step(task, PipelineStep.POLISH, completed=True)
         await _update_step(task, PipelineStep.ANALYZE, completed=True)
         empty_analysis = {
@@ -148,7 +153,40 @@ async def _run_subtitle_fast_path(
             "subtitle_source": "platform",
         }
 
-    # -- POLISH: platform subtitle was polished by process_subtitles above. --
+    # Share the caption-inference stage with the queued/resumable pipeline.
+    caption_context = PipelineContext(
+        task=task,
+        rt=get_runtime_settings(),
+        task_dir=task_dir,
+        metadata=metadata,
+        srt=srt,
+        has_subtitle=True,
+        subtitle_source="platform",
+        source_context=source_context,
+        analysis=source_context_to_analysis(source_context),
+        recognition_segments=recognition_segments,
+        done=set(task.completed_steps or []),
+    )
+    await review_transcript_speakers(caption_context)
+    await _update_step(task, PipelineStep.POLISH)
+    polished = await polish_text(
+        caption_context.reviewed_srt or srt, context=caption_context.analysis
+    )
+    await _raise_if_cancelled(task.id)
+    if polished:
+        polished_md = srt_to_markdown(polished, metadata.title)
+        await _write_text_artifact(task, task_dir, "transcript_polished.srt", polished)
+        await _write_text_artifact(task, task_dir, "transcript_polished.md", polished_md)
+    from app.services.analysis.transcript_outputs import _parse_srt, _split_speaker_prefix
+
+    speakers = sorted(
+        {
+            speaker
+            for cue in _parse_srt(polished or caption_context.reviewed_srt or srt)
+            if (speaker := _split_speaker_prefix(cue["text"])[0])
+        }
+    )
+    metadata.extra.update(speakers=speakers, speaker_count=len(speakers))
     await _update_step(task, PipelineStep.POLISH, completed=True)
     await _raise_if_cancelled(task.id)
 
@@ -189,6 +227,7 @@ async def _run_subtitle_fast_path(
 
     analysis = await analyze_content(analysis_text, metadata.title, metadata=video_metadata)
     analysis = merge_analysis_with_source(analysis, source_context)
+    analysis["speakers_detected"] = len(speakers)
     await _raise_if_cancelled(task.id)
     user_language = _user_language_hint(analysis)
 
@@ -232,6 +271,20 @@ async def _run_subtitle_fast_path(
         await _write_detail_file(task, task_dir, detail)
 
     await _update_step(task, PipelineStep.ANALYZE, completed=True)
+
+    caption_context.polished = polished
+    caption_context.analysis = analysis
+    caption_context.summary = summary
+    caption_context.mindmap = mindmap
+    caption_context.detail = detail
+    await identify_transcript_speakers(caption_context)
+    srt = caption_context.srt
+    polished = caption_context.polished or polished
+    polished_md = caption_context.polished_md or polished_md
+    analysis = caption_context.analysis
+    summary = caption_context.summary
+    mindmap = caption_context.mindmap
+    detail = caption_context.detail
 
     return {
         "transcript": transcript,

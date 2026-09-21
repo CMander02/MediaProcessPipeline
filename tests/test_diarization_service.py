@@ -32,7 +32,7 @@ def test_assign_speakers_uses_largest_global_turn_overlap():
     assert "speaker" not in segments[0]
 
 
-def test_assign_speakers_splits_a_cue_that_crosses_speaker_turns():
+def test_assign_speakers_preserves_words_when_a_cue_crosses_speaker_turns():
     mapped = DiarizationService.assign_speakers(
         [{"start": 0.0, "end": 10.0, "text": "前半段内容后半段内容"}],
         [
@@ -41,12 +41,22 @@ def test_assign_speakers_splits_a_cue_that_crosses_speaker_turns():
         ],
     )
 
-    assert len(mapped) == 2
+    assert len(mapped) == 1
     assert [(item["start"], item["end"], item["speaker"]) for item in mapped] == [
-        (0.0, 4.0, "SPEAKER_00"),
-        (4.0, 10.0, "SPEAKER_01"),
+        (0.0, 10.0, "SPEAKER_01"),
     ]
     assert "".join(item["text"] for item in mapped) == "前半段内容后半段内容"
+
+
+def test_assign_speakers_sums_overlap_and_ignores_brief_interjections():
+    original = [{"start": 0.0, "end": 5.0, "text": "没关系，然后我们继续。"}]
+    mapped = DiarizationService.assign_speakers(original, [
+        {"start": 0.0, "end": 2.0, "speaker": "SPEAKER_00"},
+        {"start": 2.0, "end": 2.2, "speaker": "SPEAKER_01"},
+        {"start": 2.2, "end": 5.0, "speaker": "SPEAKER_00"},
+        {"start": 0.4, "end": 3.4, "speaker": "SPEAKER_02"},
+    ])
+    assert mapped == [{**original[0], "speaker": "SPEAKER_00"}]
 
 
 def test_annotation_to_turns_supports_pyannote_3_annotation():

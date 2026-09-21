@@ -440,9 +440,8 @@ describe("SettingsPanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "处理管线与来源" }))
 
     expect(await screen.findByText("哔哩哔哩")).toBeInTheDocument()
-    expect(screen.getByText("登录凭据")).toBeInTheDocument()
-    expect(screen.getByPlaceholderText("必填：仅填写 SESSDATA 的值")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "检测登录" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "扫码登录" })).toBeInTheDocument()
+    expect(screen.getByText(/扫码后自动保存登录凭据/)).toBeInTheDocument()
     expect(screen.getByText("YouTube")).toBeInTheDocument()
     expect(screen.getByText("小宇宙")).toBeInTheDocument()
     expect(screen.getByText("小红书")).toBeInTheDocument()

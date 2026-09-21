@@ -78,6 +78,7 @@ def test_asr_api_flow_selects_siliconflow_and_disables_diarization():
 def test_sherpa_binding_includes_model_runtime_and_diarization_flags(tmp_path):
     _install_fake_sherpa_model(tmp_path)
     settings = RuntimeSettings(
+        asr_provider="sherpa_onnx",
         sherpa_model_id="qwen3-asr-1.7b-onnx",
         sherpa_model_root=str(tmp_path),
         sherpa_device="cuda",
@@ -109,7 +110,7 @@ def test_sherpa_binding_includes_model_runtime_and_diarization_flags(tmp_path):
 
 
 def test_sherpa_default_binding_reports_missing_model_bundle():
-    settings = RuntimeSettings(sherpa_model_root="Z:/missing/sherpa-models")
+    settings = RuntimeSettings(asr_provider="sherpa_onnx", sherpa_model_root="Z:/missing/sherpa-models")
 
     binding = resolve_asr_binding(settings)
 
@@ -123,6 +124,7 @@ def test_sherpa_default_binding_reports_missing_model_bundle():
 def test_sherpa_runtime_binding_precedes_flat_model_field(tmp_path):
     _install_fake_sherpa_model(tmp_path)
     settings = RuntimeSettings(
+        asr_provider="sherpa_onnx",
         sherpa_model_id="sensevoice-small-int8",
         sherpa_model_root=str(tmp_path),
         runtime_model_bindings={
@@ -159,7 +161,7 @@ def test_sherpa_task_model_override_selects_installed_bundle(tmp_path):
         ),
         encoding="utf-8",
     )
-    settings = RuntimeSettings(sherpa_model_root=str(tmp_path))
+    settings = RuntimeSettings(asr_provider="sherpa_onnx", sherpa_model_root=str(tmp_path))
 
     binding = resolve_asr_binding(
         settings,
@@ -222,6 +224,7 @@ def test_explicit_sherpa_provider_overrides_moss_audio_flow(tmp_path):
 def test_sherpa_binding_enables_global_pyannote_diarization(tmp_path):
     _install_fake_sherpa_model(tmp_path, model_id="qwen3-asr-0.6b-int8")
     settings = RuntimeSettings(
+        asr_provider="sherpa_onnx",
         sherpa_model_root=str(tmp_path),
         enable_diarization=True,
         pyannote_model_path="D:/models/pyannote-speaker-diarization-3.1",
@@ -315,14 +318,14 @@ def test_url_asr_fallback_prefers_configured_siliconflow(monkeypatch):
     assert is_api is True
 
 
-def test_url_asr_fallback_uses_sherpa_when_api_provider_missing(monkeypatch):
+def test_url_asr_fallback_uses_llama_cpp_when_api_provider_missing(monkeypatch):
     settings = RuntimeSettings(siliconflow_api_key="")
     monkeypatch.setattr("app.core.pipeline_steps.state.get_runtime_settings", lambda: settings)
     task = Task(task_type=TaskType.PIPELINE, source="https://example.com/video.mp4")
 
     provider, reason, is_api = pipeline_core._select_asr_provider_for_fallback(task)
 
-    assert provider == "sherpa_onnx"
+    assert provider == "llama_cpp"
     assert reason == "default_asr_provider"
     assert is_api is False
 

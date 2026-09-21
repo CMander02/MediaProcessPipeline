@@ -10,6 +10,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Literal
@@ -152,6 +153,18 @@ async def get_sample_clip(sample_id: str):
 
 # ---- Task speaker rename (voiceprint-aware) ----
 
+@router.post("/tasks/{task_id}/speakers/identify")
+async def identify_task_speaker_names(task_id: UUID):
+    from app.services.analysis.speaker_identity_artifacts import identify_task_speakers
+
+    try:
+        return await identify_task_speakers(task_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.patch("/tasks/{task_id}/speakers", response_model=SpeakerRenameResponse)
 async def rename_task_speaker(task_id: UUID, req: SpeakerRenameRequest):
     """Rename a speaker for a task, propagating to the voiceprint library.
@@ -199,6 +212,27 @@ async def rename_task_speaker(task_id: UUID, req: SpeakerRenameRequest):
             ),
             None,
         )
+    if not mapping:
+        # Text inference names only this task. Resolve its stable acoustic label
+        # when a later manual rename confirms a voiceprint identity.
+        task = get_task_store().get(task_id)
+        result = task.result if task and task.result else {}
+        output_dir = result.get("output_dir") or (result.get("archive") or {}).get("output_dir")
+        map_path = Path(output_dir) / "speaker_map.json" if output_dir else None
+        if map_path and map_path.is_file():
+            speaker_map = json.loads(map_path.read_text(encoding="utf-8"))
+            for item in speaker_map.get("mappings", []):
+                if item.get("current_name") != req.old_name:
+                    continue
+                source_label = item.get("source_label")
+                mapping = store.get_task_speaker(str(task_id), source_label)
+                if not mapping:
+                    mapping = next((
+                        person for person in store.list_task_speakers(str(task_id))
+                        if person.get("person_name") == source_label
+                    ), None)
+                if mapping:
+                    break
     if not mapping:
         logger.info(
             "No voiceprint mapping for task=%s speaker=%s; skipping library update",

@@ -59,6 +59,8 @@ def _default_runtime_model_bindings(data: dict[str, Any]) -> dict[str, dict[str,
         if provider_id in {"qwen3", "qwen3_gguf"}:
             provider_id = "sherpa_onnx"
             model_id = _str_value(data.get("sherpa_model_id") or "qwen3-asr-1.7b-onnx").strip()
+        elif provider_id == "llama_cpp" and key == "asr":
+            model_id = _str_value(data.get("llama_asr_model_path")).strip()
         elif provider_id == "sherpa_onnx":
             model_id = _str_value(
                 data.get("sherpa_model_id") or model_id or "qwen3-asr-0.6b-int8"
@@ -156,9 +158,11 @@ def _sync_flat_from_runtime_model_bindings(data: dict[str, Any]) -> None:
             data["custom_active_profile_id"] = llm_provider.removeprefix("custom-")
 
     asr = binding("asr")
-    if asr.get("provider_id") in {"sherpa_onnx", "siliconflow"}:
+    if asr.get("provider_id") in {"llama_cpp", "sherpa_onnx", "siliconflow"}:
         data["asr_provider"] = asr["provider_id"]
-        if asr["provider_id"] == "sherpa_onnx" and asr.get("model_id"):
+        if asr["provider_id"] == "llama_cpp" and asr.get("model_id"):
+            data["llama_asr_model_path"] = asr["model_id"]
+        elif asr["provider_id"] == "sherpa_onnx" and asr.get("model_id"):
             data["sherpa_model_id"] = asr["model_id"]
         elif asr["provider_id"] == "siliconflow" and asr.get("model_id"):
             data["siliconflow_asr_model"] = asr["model_id"]

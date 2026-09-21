@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { api, type Settings } from "@/lib/api"
+import { BilibiliLogin } from "./bilibili-login"
 import { ProxySetting, SettingRow } from "./setting-controls"
 
 function ComingSoonBadge() {
@@ -643,7 +644,7 @@ export function BilibiliCard({ settings, updateSetting, saving, saved, onAuthCha
               <span className="h-2 w-2 rounded-full bg-red-500" />
               <span>未登录</span>
             </div>
-            <p className="text-muted-foreground">字幕接口通常需要登录，请配置下方 B 站 Cookie。</p>
+            <p className="text-muted-foreground">字幕接口通常需要登录，可使用下方扫码登录。</p>
             {status.message && <p className="text-xs text-muted-foreground">检测结果：{status.message}</p>}
           </div>
         )}
@@ -651,12 +652,12 @@ export function BilibiliCard({ settings, updateSetting, saving, saved, onAuthCha
         <Separator />
         <div className="space-y-3">
           <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground">登录凭据</p>
-            <p className="text-xs text-muted-foreground">
-              从已登录 bilibili.com 的浏览器 Cookie 中复制。读取字幕通常只需 SESSDATA；其余两项建议一并保存。
-            </p>
+            <p className="text-xs font-medium text-muted-foreground">账号登录</p>
+            <BilibiliLogin onSuccess={refreshStatus} />
           </div>
 
+          <details className="space-y-3">
+            <summary className="cursor-pointer text-xs text-muted-foreground">手动配置 Cookie（可选）</summary>
           <SettingRow
             label="SESSDATA"
             settingKey="bilibili_sessdata"
@@ -687,8 +688,9 @@ export function BilibiliCard({ settings, updateSetting, saving, saved, onAuthCha
             masked
             placeholder="可选"
           />
+          </details>
           <div className="flex items-center justify-between gap-3">
-            <p className="text-xs text-muted-foreground">服务器部署可直接在此配置；桌面版仍可使用 BBDown 扫码登录。</p>
+            <p className="text-xs text-muted-foreground">登录失效后可重新扫码。</p>
             <Button type="button" size="sm" variant="outline" disabled={checkingAuth} onClick={() => void refreshStatus()}>
               {checkingAuth && <HugeiconsIcon icon={Loading03Icon} className="h-3.5 w-3.5 animate-spin" />}
               检测登录
@@ -731,21 +733,6 @@ export function BilibiliCard({ settings, updateSetting, saving, saved, onAuthCha
                   <Switch
                     checked={platformConfig.prefer_subtitle}
                     onCheckedChange={handleSubtitleChange}
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between gap-4">
-                <Label className="text-sm text-muted-foreground">默认使用 ASR + 原生字幕参考</Label>
-                <div className="flex items-center gap-2">
-                  {saved.use_platform_subtitle_reference && (
-                    <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
-                  )}
-                  <Switch
-                    checked={Boolean(settings.use_platform_subtitle_reference ?? true)}
-                    disabled={Boolean(saving.use_platform_subtitle_reference)}
-                    onCheckedChange={(value) =>
-                      updateSetting("use_platform_subtitle_reference", Boolean(value))}
                   />
                 </div>
               </div>

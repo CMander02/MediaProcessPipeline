@@ -195,11 +195,13 @@ def _normalize_settings_document_state(
 
     _normalize_runtime_model_bindings(data)
     if sync_flat_keys and "runtime_model_bindings" not in sync_flat_keys:
-        asr_binding_keys = {"asr_provider", "sherpa_model_id", "siliconflow_asr_model"}
+        asr_binding_keys = {"asr_provider", "llama_asr_model_path", "sherpa_model_id", "siliconflow_asr_model"}
         if sync_flat_keys & asr_binding_keys:
             provider_id = _canonical_provider_id(data.get("asr_provider"))
             model_id = (
-                data.get("sherpa_model_id")
+                data.get("llama_asr_model_path")
+                if provider_id == "llama_cpp"
+                else data.get("sherpa_model_id")
                 if provider_id == "sherpa_onnx"
                 else data.get("siliconflow_asr_model")
             )

@@ -183,12 +183,14 @@ export interface Settings extends RuntimeSettings {
   local_llm_device: string
   local_llm_dtype: string
   local_llm_max_new_tokens: number
+  local_llm_thinking: boolean
   local_llm_n_gpu_layers: number
   local_llm_n_ctx: number
   local_llm_n_batch: number
   local_llm_timeout_sec: number
   local_llm_keepalive_sec: number
   local_llm_concurrency: number
+  llm_polish_concurrency: number
   polish_provider: string
   [key: string]: unknown
 }
@@ -695,6 +697,11 @@ export const api = {
   },
 
   bilibili: {
+    generateQr: () => post<{ session_id: string; image: string; expires_in: number }>(
+      "/api/pipeline/bilibili/auth/qr", {}),
+    pollQr: (sessionId: string) => post<{
+      state: "waiting" | "scanned" | "expired" | "success"; message: string; uid?: string
+    }>("/api/pipeline/bilibili/auth/qr/poll", { session_id: sessionId }),
     status: () =>
       get<{ logged_in: boolean; uid?: string; expires?: string; days_left?: number; message?: string }>(
         "/api/pipeline/bilibili/status",
