@@ -53,7 +53,7 @@ export function SpeakerPanel({
       const totalMs = segs.reduce((acc, s) => acc + (s.endTime - s.startTime), 0)
       return {
         name,
-        color: getSpeakerColor(name),
+        color: getSpeakerColor(name, names),
         totalMs,
         percentage: totalDuration > 0 ? (totalMs / totalDuration) * 100 : 0,
         segments: segs.map((s) => ({ startTime: s.startTime, endTime: s.endTime })),

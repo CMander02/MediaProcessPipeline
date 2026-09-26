@@ -1,6 +1,6 @@
 import { HugeiconsIcon } from "@hugeicons/react"
 
-import { navigate, type Route } from "@/lib/router"
+import { libraryHash, navigate, type Route } from "@/lib/router"
 import { cn } from "@/lib/utils"
 import { PRIMARY_NAV_ITEMS } from "@/components/app-shell/navigation"
 
@@ -21,7 +21,7 @@ export function MobileBottomNav({ activePage }: MobileBottomNavProps) {
           <button
             type="button"
             key={item.page}
-            onClick={() => navigate(`#/${item.page}`)}
+            onClick={() => navigate(item.page === "files" ? libraryHash() : `#/${item.page}`)}
             aria-current={active ? "page" : undefined}
             className={cn(
               "mx-auto flex min-h-11 w-full max-w-28 flex-col items-center justify-center gap-0.5 rounded-lg text-[0.6875rem] font-medium transition-colors",

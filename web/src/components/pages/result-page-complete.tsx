@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
@@ -16,12 +17,16 @@ import {
   Gps01Icon,
   Note01Icon,
   ListTreeIcon,
+  Cancel01Icon,
+  PauseIcon,
+  PlayCircleIcon,
+  AiMagicIcon,
 } from "@hugeicons/core-free-icons"
 import { MediaPlayer } from "@/components/result/media-player"
 import { cn } from "@/lib/utils"
 import { ImageNoteViewer } from "@/components/result/image-note-viewer"
 import { SpeakerPanel } from "@/components/result/speaker-panel"
-import { navigate } from "@/lib/router"
+import { buildHash, libraryHash, navigate } from "@/lib/router"
 import { PlatformIcon } from "@/components/platform-icon"
 import {
   DropdownMenu,
@@ -37,6 +42,8 @@ import { SummaryTab } from "@/components/result/summary-tab"
 import { TranscriptTab } from "@/components/result/transcript-tab"
 import { MindmapViewer } from "@/components/result/mindmap-viewer"
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
+import { RerunConfirmDialog } from "@/components/rerun-confirm-dialog"
+import { checkpointAction } from "@/lib/task-display"
 import { SpeakerMergeDialog } from "@/components/speaker-merge-dialog"
 import { type ResultViewerProps, useResultViewer } from "../../hooks/use-result-viewer"
 import { ArticleNoteReader, NoteMarkdown } from "../result/note-content"
@@ -53,7 +60,6 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultVi
   const {
     mediaUrl,
     videoLoop,
-    toggleVideoLoop,
     mediaType,
     bindMedia,
     transcript,
@@ -144,23 +150,24 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultVi
     mergeInfo,
     resolveMerge,
   } = view
+  const [confirmRerun, setConfirmRerun] = useState(false)
+  const [errorExpanded, setErrorExpanded] = useState(false)
+  const resumeAction = taskStatus === "paused"
+    ? { label: "继续处理", hint: "从暂停的地方继续" }
+    : checkpointAction(taskStatus)
+  const canFullRerun = Boolean(resolvedTaskId) && !isProcessing
+  const taskFailed = taskStatus === "failed"
+  const taskStalled = taskFailed || taskStatus === "paused" || taskStatus === "cancelled"
+  const failedStepLabel = taskFailed
+    ? taskFlow?.steps?.find((step) => step.id === taskFlow.current_step)?.label
+    : undefined
+  const visibleStatusEvents = taskFailed && taskError
+    ? latestStatusEvents.filter((event) => event.level !== "error")
+    : latestStatusEvents
 
 
   const mediaPlayerBlock = mediaUrl ? (
-    <div className="sticky top-0 z-10 space-y-2 bg-background pb-2">
-      <div className="flex justify-end">
-        <Button
-          type="button"
-          variant={videoLoop ? "default" : "outline"}
-          size="icon-sm"
-          onClick={toggleVideoLoop}
-          aria-pressed={videoLoop}
-          aria-label={videoLoop ? "关闭循环播放" : "开启循环播放"}
-          title={videoLoop ? "关闭循环播放" : "开启循环播放"}
-        >
-          <HugeiconsIcon icon={RefreshIcon} className="h-4 w-4" />
-        </Button>
-      </div>
+    <div className="sticky top-0 z-10 bg-background pb-2">
       <MediaPlayer
         src={mediaUrl}
         type={mediaType}
@@ -240,7 +247,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultVi
     <div className="flex h-full flex-col">
       {/* Top bar */}
       <div className="flex shrink-0 items-center gap-2 border-b px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-2">
-        <Button className="h-11 md:h-8" variant="ghost" size="sm" onClick={() => navigate("#/files")}>
+        <Button className="h-11 md:h-8" variant="ghost" size="sm" onClick={() => navigate(libraryHash())}>
           <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4 mr-1" />
           返回
         </Button>
@@ -340,14 +347,21 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultVi
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem disabled={resuming} onClick={handleResumeFromCheckpoint}>
-              <HugeiconsIcon icon={resuming ? Loading03Icon : PlayIcon} className={resuming ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-              {resuming ? "续做中" : "断点续做"}
-            </DropdownMenuItem>
-            <DropdownMenuItem disabled={rerunning} onClick={handleFullRerun}>
-              <HugeiconsIcon icon={rerunning ? Loading03Icon : RefreshIcon} className={rerunning ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-              {rerunning ? "重做中" : "完整重做"}
-            </DropdownMenuItem>
+            {resumeAction && (
+              <DropdownMenuItem disabled={resuming} onClick={handleResumeFromCheckpoint} title={resumeAction.hint}>
+                <HugeiconsIcon
+                  icon={resuming ? Loading03Icon : taskStatus === "paused" ? PlayIcon : taskStatus === "completed" ? AiMagicIcon : PlayCircleIcon}
+                  className={resuming ? "h-4 w-4 animate-spin" : "h-4 w-4"}
+                />
+                {resuming ? "正在加入队列" : resumeAction.label}
+              </DropdownMenuItem>
+            )}
+            {canFullRerun && (
+              <DropdownMenuItem disabled={rerunning} onClick={() => setConfirmRerun(true)} title="删除已生成的字幕、说话人、摘要和导图后从头处理">
+                <HugeiconsIcon icon={rerunning ? Loading03Icon : RefreshIcon} className={rerunning ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+                {rerunning ? "正在加入队列" : "全部重新处理…"}
+              </DropdownMenuItem>
+            )}
             {(capabilities.open_local_folder || capabilities.archive_mutation) && <DropdownMenuSeparator className="hidden md:block" />}
             {capabilities.open_local_folder && (
               <DropdownMenuItem className="hidden md:flex" disabled={openingFolder} onClick={handleOpenLocalFolder}>
@@ -383,7 +397,10 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultVi
                 </div>
                 <span className="shrink-0 text-sm tabular-nums text-muted-foreground">{flowProgress}%</span>
               </div>
-              <Progress value={flowProgress} className="mt-2 h-1.5" />
+              <Progress
+                value={flowProgress}
+                className={cn("mt-2 h-1.5", taskFailed && "[&_[data-slot=progress-indicator]]:bg-destructive")}
+              />
             </>
           )}
           {taskFlow?.steps?.length ? (
@@ -391,18 +408,26 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultVi
               {taskFlow.steps.map((step) => {
                 const isDone = flowCompletedSteps.includes(step.id)
                 const isCurrent = taskFlow.current_step === step.id
+                const isFailedStep = isCurrent && !isDone && taskFailed
+                const isStalledStep = isCurrent && !isDone && taskStalled && !taskFailed
                 return (
                   <span
                     key={step.id}
                     className={cn(
                       "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs transition-colors",
                       isDone && "border-foreground/20 bg-muted text-foreground",
-                      isCurrent && !isDone && "border-foreground bg-foreground text-background",
+                      isFailedStep && "border-destructive bg-destructive/10 font-medium text-destructive",
+                      isStalledStep && "border-foreground/40 bg-muted text-foreground",
+                      isCurrent && !isDone && !taskStalled && "border-foreground bg-foreground text-background",
                       !isDone && !isCurrent && "border-border bg-muted/30 text-muted-foreground",
                     )}
                   >
                     {isDone ? (
                       <HugeiconsIcon icon={Tick02Icon} className="h-3 w-3" />
+                    ) : isFailedStep ? (
+                      <HugeiconsIcon icon={Cancel01Icon} className="h-3 w-3" />
+                    ) : isStalledStep ? (
+                      <HugeiconsIcon icon={PauseIcon} className="h-3 w-3" />
                     ) : isCurrent ? (
                       <HugeiconsIcon icon={Loading03Icon} className="h-3 w-3 animate-spin" />
                     ) : (
@@ -414,9 +439,9 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultVi
               })}
             </div>
           ) : null}
-          {latestStatusEvents.length > 0 && (
+          {visibleStatusEvents.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-1.5">
-              {latestStatusEvents.map((event) => (
+              {visibleStatusEvents.map((event) => (
                 <span
                   key={timelineEventKey(event)}
                   className={cn(
@@ -435,9 +460,32 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultVi
       )}
 
       {/* Error display */}
-      {taskStatus === "failed" && taskError && (
-        <div className="shrink-0 mx-4 mt-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-          {taskError}
+      {taskFailed && taskError && (
+        <div role="alert" className="mx-4 mt-2 shrink-0 space-y-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
+          <p className="font-medium text-destructive">处理失败{failedStepLabel ? `：${failedStepLabel}` : ""}</p>
+          <p className={cn("whitespace-pre-wrap break-words text-destructive/90", !errorExpanded && "line-clamp-3")}>{taskError}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            {resumeAction && (
+              <Button size="sm" onClick={handleResumeFromCheckpoint} disabled={resuming} title={resumeAction.hint}>
+                <HugeiconsIcon icon={resuming ? Loading03Icon : PlayCircleIcon} className={resuming ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+                {resumeAction.label}
+              </Button>
+            )}
+            {resolvedTaskId && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => navigate(buildHash("backend", { tab: "logs", q: resolvedTaskId.slice(0, 8) }))}
+              >
+                查看日志
+              </Button>
+            )}
+            {taskError.length > 160 && (
+              <Button size="sm" variant="ghost" onClick={() => setErrorExpanded((value) => !value)}>
+                {errorExpanded ? "收起" : "展开全部"}
+              </Button>
+            )}
+          </div>
         </div>
       )}
 
@@ -740,7 +788,17 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultVi
         archivePath={archivePath}
         taskId={resolvedTaskId ?? undefined}
         taskDelete={Boolean(isProcessing && resolvedTaskId)}
-        onDeleted={() => navigate("#/files")}
+        onDeleted={() => navigate(libraryHash())}
+      />
+
+      <RerunConfirmDialog
+        open={confirmRerun}
+        onOpenChange={setConfirmRerun}
+        title={displayTitle ?? ""}
+        onConfirm={() => {
+          setConfirmRerun(false)
+          void handleFullRerun()
+        }}
       />
 
       {/* Speaker merge confirmation */}

@@ -69,7 +69,8 @@ import {
   type Task,
   type TaskStats,
 } from "@/lib/api"
-import { navigate } from "@/lib/router"
+import { buildHash, navigate, useRoute } from "@/lib/router"
+import { taskDisplayTitle } from "@/lib/task-display"
 import { cn } from "@/lib/utils"
 
 type BackendTab = "overview" | "logs" | "tasks" | "models" | "diagnostics"
@@ -84,8 +85,7 @@ const backendTabs: Array<{ value: BackendTab; label: string }> = [
   { value: "diagnostics", label: "诊断" },
 ]
 
-function initialBackendTab(): BackendTab {
-  const requested = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("tab")
+function backendTabFromParam(requested: string | undefined): BackendTab {
   return backendTabs.some((tab) => tab.value === requested) ? requested as BackendTab : "overview"
 }
 
@@ -273,7 +273,7 @@ function TaskQueuePanel({ tasks }: { tasks: Task[] }) {
               >
                 <span className={cn("size-2 shrink-0 rounded-full", task.status === "processing" ? "bg-primary" : "bg-muted-foreground/50")} />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium">{task.source.split(/[/\\]/).pop() || task.id}</span>
+                  <span className="block truncate text-sm font-medium" title={task.source}>{taskDisplayTitle(task)}</span>
                   <span className="mt-1 block truncate text-xs text-muted-foreground">{task.message || task.current_step || "等待处理"}</span>
                 </span>
                 <span className="shrink-0 text-right">
@@ -379,7 +379,7 @@ function LogDetailsSheet({ entry, onOpenChange }: { entry: BackendLogEntry | nul
   )
 }
 
-function LogPanel({ active, online }: { active: boolean; online: boolean }) {
+function LogPanel({ active, online, initialSearch = "" }: { active: boolean; online: boolean; initialSearch?: string }) {
   const [files, setFiles] = useState<BackendLogFile[]>([])
   const [selectedFile, setSelectedFile] = useState("")
   const [entries, setEntries] = useState<BackendLogEntry[]>([])
@@ -388,7 +388,7 @@ function LogPanel({ active, online }: { active: boolean; online: boolean }) {
   const [autoScroll, setAutoScroll] = useState(true)
   const [level, setLevel] = useState("ALL")
   const [moduleName, setModuleName] = useState("ALL")
-  const [search, setSearch] = useState("")
+  const [search, setSearch] = useState(initialSearch)
   const [loading, setLoading] = useState(false)
   const [connected, setConnected] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -598,7 +598,8 @@ function LogPanel({ active, online }: { active: boolean; online: boolean }) {
 
 export function BackendPage() {
   const { online } = useAppAccess()
-  const [activeTab, setActiveTab] = useState<BackendTab>(initialBackendTab)
+  const route = useRoute()
+  const activeTab = backendTabFromParam(route.params.tab)
   const [health, setHealth] = useState<HealthInfo | null>(null)
   const [stats, setStats] = useState<TaskStats | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
@@ -678,9 +679,7 @@ export function BackendPage() {
         {error ? <div className="rounded-lg border border-destructive/30 px-3 py-2 text-sm text-destructive" role="alert">服务状态读取失败：{error}</div> : null}
 
         <Tabs value={activeTab} onValueChange={(value) => {
-          const nextTab = value as BackendTab
-          setActiveTab(nextTab)
-          window.history.replaceState(null, "", `#/backend?tab=${nextTab}`)
+          navigate(buildHash("backend", { tab: value }), { replace: true })
         }} className="gap-0">
           <div className="grid min-w-0 gap-4 lg:grid-cols-[11rem_minmax(0,1fr)] lg:items-start">
             <aside className="min-w-0 lg:sticky lg:top-4">
@@ -700,13 +699,13 @@ export function BackendPage() {
             </aside>
 
             <div className="flex min-w-0 flex-col gap-4">
-              <StatusStrip serviceHealthy={serviceHealthy} activeCount={activeCount} modelState={modelState} version={health?.version ?? "0.5.0"} />
+              <StatusStrip serviceHealthy={serviceHealthy} activeCount={activeCount} modelState={modelState} version={health?.version ?? "--"} />
 
               <TabsContent value="overview">
                 <OverviewPanel serviceHealthy={serviceHealthy} activeCount={activeCount} processingCount={processingCount} health={health} settings={settings} lastUpdateText={lastUpdateText} />
               </TabsContent>
               <TabsContent value="logs">
-                <LogPanel active={activeTab === "logs"} online={online} />
+                <LogPanel key={route.params.q ?? ""} active={activeTab === "logs"} online={online} initialSearch={route.params.q ?? ""} />
               </TabsContent>
               <TabsContent value="tasks"><TaskQueuePanel tasks={tasks} /></TabsContent>
               <TabsContent value="models"><ModelPanel settings={settings} processingCount={processingCount} /></TabsContent>

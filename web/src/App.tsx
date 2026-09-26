@@ -4,6 +4,7 @@ import { AppOutlet } from "@/components/app-outlet"
 import { AppShell } from "@/components/app-shell/app-shell"
 import { PageToolbar } from "@/components/app-shell/page-toolbar"
 import { PwaStatus } from "@/components/pwa-status"
+import { Toaster } from "@/components/ui/sonner"
 import { useAppStartup } from "@/hooks/use-app-startup"
 import { useLibraryControls } from "@/hooks/use-library-controls"
 import { AppAccessBoundary } from "@/hooks/use-app-access"
@@ -16,6 +17,7 @@ export default function App() {
         <AuthenticatedApp />
       </AppAccessBoundary>
       <PwaStatus />
+      <Toaster />
     </>
   )
 }
@@ -49,6 +51,8 @@ function AuthenticatedApp() {
           mediaFilter: library.mediaFilter,
           sourceFilter: library.sourceFilter,
           sort: library.sort,
+          page: library.page,
+          onPageChange: library.setPage,
         }}
       />
     </AppShell>

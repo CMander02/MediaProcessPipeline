@@ -10,6 +10,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { api } from "@/lib/api"
+import { notifyError } from "@/lib/notify"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Loading03Icon } from "@hugeicons/core-free-icons"
 
@@ -45,7 +46,7 @@ export function DeleteConfirmDialog({
       onOpenChange(false)
       onDeleted()
     } catch (err) {
-      console.error("Delete failed:", err)
+      notifyError("删除失败", err)
     } finally {
       setDeleting(false)
     }

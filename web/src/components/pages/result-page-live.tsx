@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { subscribeTaskEvents, api, type Task, type TaskFlowSnapshot, type TaskTimelineEvent } from "@/lib/api"
-import { navigate } from "@/lib/router"
+import { libraryHash, navigate } from "@/lib/router"
 import { STEP_NAME, usePipelineSteps } from "@/lib/constants"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -195,7 +195,7 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
       <div className="w-full max-w-3xl space-y-5 p-4 md:space-y-6 md:p-6">
         {/* Header */}
         <div className="flex flex-wrap items-center gap-3">
-          <Button className="h-11 md:h-8" variant="ghost" size="sm" onClick={() => navigate("#/files")}>
+          <Button className="h-11 md:h-8" variant="ghost" size="sm" onClick={() => navigate(libraryHash())}>
             <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4 mr-1" />
             返回
           </Button>

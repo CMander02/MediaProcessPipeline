@@ -1,4 +1,5 @@
 import { usePlatform } from "@/platform/use-platform"
+import { notifyError } from "@/lib/notify"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createArchiveRepository } from "@/repositories/archive-repository"
 import { useAppAccess } from "@/hooks/use-app-access-context"
@@ -26,7 +27,6 @@ import {
   normalizeArchivePath,
   firstHttpUrl,
   firstTextValue,
-  resolveRerunSource,
 } from "../lib/result-metadata"
 import { usePortraitResultLayout, useMobileResultLayout } from "./use-result-layout"
 
@@ -843,7 +843,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
     try {
       await platformAdapter.saveTextFile(filename, tab.content)
     } catch (error) {
-      window.alert(`下载失败：${error instanceof Error ? error.message : String(error)}`)
+      notifyError("下载失败", error)
     }
   }
 
@@ -855,7 +855,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
   const handleResumeFromCheckpoint = useCallback(async () => {
     if (resuming) return
     if (!resolvedTaskId) {
-      window.alert("找不到历史任务记录，无法断点续做。")
+      notifyError("无法继续处理", "找不到这个条目的任务记录。")
       return
     }
     setResuming(true)
@@ -867,7 +867,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
       await refreshArchives()
       navigate(`#/result/task/${resolvedTaskId}`)
     } catch (error) {
-      window.alert(`断点续做失败：${error instanceof Error ? error.message : String(error)}`)
+      notifyError("加入队列失败", error)
     } finally {
       setResuming(false)
     }
@@ -877,32 +877,19 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
     if (rerunning) return
     setRerunning(true)
     try {
-      let source = ""
-      let options: Record<string, unknown> = {}
-      if (resolvedTaskId) {
-        try {
-          const task = await api.tasks.get(resolvedTaskId)
-          source = task.source
-          options = task.options ?? {}
-        } catch {
-          source = ""
-        }
-      }
-      if (!source) {
-        source = resolveRerunSource((archive?.metadata ?? {}) as Record<string, unknown>, archive, sourceUrl)
-      }
-      if (!source) {
-        window.alert("找不到原始来源，无法重做。")
+      if (!resolvedTaskId) {
+        notifyError("无法重新处理", "找不到这个条目的任务记录。")
         return
       }
-      const task = await api.tasks.create(source, options)
-      navigate(`#/result/task/${task.id}`)
+      await api.tasks.fullRerun(resolvedTaskId)
+      await refreshArchives()
+      navigate(`#/result/task/${resolvedTaskId}`)
     } catch (error) {
-      window.alert(`完整重做失败：${error instanceof Error ? error.message : String(error)}`)
+      notifyError("重新处理失败", error)
     } finally {
       setRerunning(false)
     }
-  }, [archive, resolvedTaskId, rerunning, sourceUrl])
+  }, [refreshArchives, resolvedTaskId, rerunning])
 
   const handleOpenLocalFolder = useCallback(async () => {
     if (openingFolder) return
@@ -910,7 +897,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
     try {
       await api.filesystem.openFolder(archivePath)
     } catch (error) {
-      window.alert(`打开本地文件夹失败：${error instanceof Error ? error.message : String(error)}`)
+      notifyError("打开本地文件夹失败", error)
     } finally {
       setOpeningFolder(false)
     }

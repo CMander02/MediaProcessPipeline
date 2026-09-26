@@ -1,6 +1,6 @@
 import { HugeiconsIcon } from "@hugeicons/react"
 
-import { navigate, type Route } from "@/lib/router"
+import { libraryHash, navigate, type Route } from "@/lib/router"
 import { cn } from "@/lib/utils"
 import { PRIMARY_NAV_ITEMS } from "@/components/app-shell/navigation"
 
@@ -14,7 +14,7 @@ export function DesktopHeader({ activePage }: DesktopHeaderProps) {
       <button
         type="button"
         className="flex h-9 items-center gap-2 rounded-md px-1 text-foreground"
-        onClick={() => navigate("#/files")}
+        onClick={() => navigate(libraryHash())}
         aria-label="打开 MPP 文件页"
       >
         <img src="/favicon.svg" className="size-5" alt="" aria-hidden="true" />
@@ -28,7 +28,7 @@ export function DesktopHeader({ activePage }: DesktopHeaderProps) {
             <button
               type="button"
               key={item.page}
-              onClick={() => navigate(`#/${item.page}`)}
+              onClick={() => navigate(item.page === "files" ? libraryHash() : `#/${item.page}`)}
               aria-current={active ? "page" : undefined}
               className={cn(
                 "flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors",

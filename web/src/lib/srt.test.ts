@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { parseSRT, srtToVTT, subtitlesToMarkdown, type Subtitle } from "./srt"
+import { getSpeakerColor, parseSRT, srtToVTT, subtitlesToMarkdown, type Subtitle } from "./srt"
 
 describe("SRT parsing", () => {
   const windowsSrt = [
@@ -76,5 +76,21 @@ Bob: 第二段 继续
 
     expect(subtitlesToMarkdown(subtitles, { title: "无说话人" }))
       .toContain("\nSpeaker: 内容\n")
+  })
+})
+
+describe("getSpeakerColor", () => {
+  it("colors speakers by their order in this archive, not by what was viewed before", () => {
+    const first = ["Jared Kaplan", "Dario Amodei", "Chris Olah"]
+    // Viewing another archive first must not shift the colors of this one.
+    getSpeakerColor("SPEAKER_00", ["SPEAKER_00", "SPEAKER_01"])
+    getSpeakerColor("SPEAKER_01", ["SPEAKER_00", "SPEAKER_01"])
+    expect(getSpeakerColor("Jared Kaplan", first)).toBe(getSpeakerColor("SPEAKER_00", ["SPEAKER_00"]))
+    expect(getSpeakerColor("Dario Amodei", first)).not.toBe(getSpeakerColor("Jared Kaplan", first))
+    expect(getSpeakerColor("Chris Olah", first)).toBe(getSpeakerColor("Chris Olah", first))
+  })
+
+  it("is stable without a list", () => {
+    expect(getSpeakerColor("unknown")).toBe(getSpeakerColor("unknown"))
   })
 })

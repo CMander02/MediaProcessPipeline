@@ -517,6 +517,7 @@ export const api = {
     cancel: (id: string) => post<{ message: string }>(`/api/tasks/${id}/cancel`),
     pause: (id: string) => post<{ message: string }>(`/api/tasks/${id}/pause`),
     resume: (id: string) => post<{ message: string }>(`/api/tasks/${id}/resume`),
+    fullRerun: (id: string) => post<{ message: string }>(`/api/tasks/${id}/full-rerun`),
     checkpointRerun: (id: string) => post<{ message: string }>(`/api/tasks/${id}/checkpoint-rerun`),
     delete: (id: string) => httpDelete<{ message: string; deleted_paths?: string[]; errors?: Array<Record<string, string>> }>(`/api/tasks/${id}`),
     stats: () => get<TaskStats>("/api/tasks/stats"),

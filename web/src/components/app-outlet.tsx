@@ -17,6 +17,8 @@ interface AppOutletProps {
     mediaFilter: MediaFilter
     sourceFilter: SourceFilter
     sort: ArchiveSort
+    page: number
+    onPageChange: (page: number) => void
   }
 }
 

@@ -49,7 +49,7 @@ export function SpeakerTimeline({
               style={{
                 left: `${left}%`,
                 width: `${Math.max(width, 0.3)}%`,
-                backgroundColor: getSpeakerColor(sub.speaker),
+                backgroundColor: getSpeakerColor(sub.speaker, speakers),
               }}
             />
           )
@@ -68,7 +68,7 @@ export function SpeakerTimeline({
           <div key={name} className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <div
               className="w-2.5 h-2.5 rounded-sm"
-              style={{ backgroundColor: getSpeakerColor(name) }}
+              style={{ backgroundColor: getSpeakerColor(name, speakers) }}
             />
             <span>{formatSpeakerLabel(name)}</span>
           </div>

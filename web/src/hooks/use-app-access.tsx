@@ -98,6 +98,21 @@ export function AppAccessBoundary({ children }: { children: ReactNode }) {
     }
   }, [platform, refresh])
 
+  // The daemon can still be starting when the page loads (it takes several seconds):
+  // keep retrying quietly instead of waiting for a click on 重新连接.
+  useEffect(() => {
+    if (!connectionDown || !connection?.configured) return
+    let attempt = 0
+    let timer = 0
+    const retry = () => {
+      attempt += 1
+      void refresh()
+      timer = window.setTimeout(retry, Math.min(5000, 1000 * attempt))
+    }
+    timer = window.setTimeout(retry, 1000)
+    return () => window.clearTimeout(timer)
+  }, [connectionDown, connection?.configured, refresh])
+
   const handleNativeConnected = async () => {
     setConnection(await platform.getConnection())
     setEditingConnection(false)
@@ -165,7 +180,7 @@ export function AppAccessBoundary({ children }: { children: ReactNode }) {
       <AppShell activePage={route.page} runtimeControls={false}>
         <OfflineState
           title="当前处于离线状态"
-          description="应用外壳可以继续打开；连接恢复后即可读取归档和操作任务。"
+          description="正在自动重试连接；后端刚启动时通常几秒内就会连上。连接恢复后即可读取归档和操作任务。"
           action={(
             <div className="flex gap-2">
               <Button className="h-11" variant="outline" onClick={() => void refresh()}>重新连接</Button>

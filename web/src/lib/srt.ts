@@ -266,18 +266,17 @@ const SPEAKER_COLORS = [
   "#f97316", // orange
 ]
 
-// Global speaker → index mapping (assigned in order of first appearance)
-const _speakerIndex = new Map<string, number>()
-let _nextIndex = 0
-
 /**
- * Get a deterministic color for a speaker name (assigned by order of appearance)
+ * Color for a speaker. Pass the archive's speaker list (in order of first appearance,
+ * as returned by extractSpeakers) so each person keeps the same color on every visit and
+ * after a rename. Without a list, falls back to a hash of the name.
  */
-export function getSpeakerColor(speaker: string): string {
-  if (!_speakerIndex.has(speaker)) {
-    _speakerIndex.set(speaker, _nextIndex++)
-  }
-  return SPEAKER_COLORS[_speakerIndex.get(speaker)! % SPEAKER_COLORS.length]
+export function getSpeakerColor(speaker: string, speakers?: readonly string[]): string {
+  const index = speakers ? speakers.indexOf(speaker) : -1
+  if (index >= 0) return SPEAKER_COLORS[index % SPEAKER_COLORS.length]
+  let hash = 0
+  for (const char of speaker) hash = (hash * 31 + (char.codePointAt(0) ?? 0)) >>> 0
+  return SPEAKER_COLORS[hash % SPEAKER_COLORS.length]
 }
 
 /**

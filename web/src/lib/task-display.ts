@@ -1,0 +1,55 @@
+import type { Task } from "@/lib/api"
+
+/** Human-readable name for a task: its archive folder, else something recognizable from the source. */
+export function taskDisplayTitle(task: Pick<Task, "source" | "result">): string {
+  const outputDir = typeof task.result?.output_dir === "string" ? task.result.output_dir : ""
+  const folder = outputDir.replace(/[\\/]+$/, "").split(/[\\/]/).pop()
+  if (folder) return folder.replace(/\s\(\d+\)$/, "")
+  return sourceLabel(task.source)
+}
+
+export function sourceLabel(source: string): string {
+  const bv = source.match(/\bBV[0-9A-Za-z]{10}\b/)
+  if (bv) return `B站 ${bv[0]}`
+  // Only web links: "C:\\videos\\a.mp4" also parses as a URL with scheme "c:".
+  if (!/^https?:\/\//i.test(source)) return source.split(/[\\/]/).pop() || source
+  try {
+    const url = new URL(source)
+    const host = url.hostname.replace(/^www\./, "")
+    if (host.endsWith("youtube.com") && url.searchParams.get("v")) return `YouTube ${url.searchParams.get("v")}`
+    if (host === "youtu.be") return `YouTube ${url.pathname.replace(/^\//, "")}`
+    const tail = url.pathname.split("/").filter(Boolean).pop()
+    return tail ? `${host} · ${decodeURIComponent(tail)}` : host
+  } catch {
+    return source.split(/[\\/]/).pop() || source
+  }
+}
+
+function monthDay(value: string | null | undefined): string | null {
+  if (!value) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  return `${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
+}
+
+/** Short time hint for queue rows: when a task was paused, instead of hours since creation. */
+export function taskTimeHint(task: Pick<Task, "status" | "updated_at">): string | null {
+  if (task.status === "paused") {
+    const day = monthDay(task.updated_at)
+    return day ? `暂停于 ${day}` : "已暂停"
+  }
+  if (task.status === "queued") return "排队中"
+  return null
+}
+
+export interface CheckpointAction {
+  label: string
+  hint: string
+}
+
+/** What "rerun from checkpoint" means for a stopped task, or null when it doesn't apply. */
+export function checkpointAction(status: string | null | undefined): CheckpointAction | null {
+  if (status === "failed" || status === "cancelled") return { label: "从断点继续", hint: "已完成的步骤不重做" }
+  if (status === "completed") return { label: "重新生成摘要和导图", hint: "保留现有字幕和说话人" }
+  return null
+}

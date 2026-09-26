@@ -16,19 +16,8 @@ import {
 } from "@/components/ui/alert-dialog"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Delete01Icon, Loading03Icon, PauseIcon, PlayIcon, Task01Icon } from "@hugeicons/core-free-icons"
-
-function formatSource(source: string): string {
-  const parts = source.replace(/\\/g, "/").split("/")
-  const name = parts.at(-1) ?? source
-  return name.length > 40 ? `${name.slice(0, 37)}…` : name
-}
-
-function formatElapsed(created: string): string {
-  const secs = (Date.now() - new Date(created).getTime()) / 1000
-  if (secs < 60) return `${Math.floor(secs)}s`
-  if (secs < 3600) return `${Math.floor(secs / 60)}m`
-  return `${(secs / 3600).toFixed(1)}h`
-}
+import { notifyError } from "@/lib/notify"
+import { taskDisplayTitle, taskTimeHint } from "@/lib/task-display"
 
 function TaskRow({
   task,
@@ -63,8 +52,8 @@ function TaskRow({
           <span className={cn("h-2 w-2 rounded-full shrink-0", cfg.dot)} />
         )}
 
-        <span className="text-xs font-medium truncate flex-1 min-w-0" title={task.source}>
-          {formatSource(task.source)}
+        <span className="text-xs font-medium truncate flex-1 min-w-0" title={`${taskDisplayTitle(task)}\n${task.source}`}>
+          {taskDisplayTitle(task)}
         </span>
 
         <span className={cn("text-[11px] shrink-0", cfg.color)}>
@@ -83,9 +72,11 @@ function TaskRow({
           </div>
         )}
 
-        <span className="text-[10px] text-muted-foreground tabular-nums shrink-0 w-6 text-right">
-          {formatElapsed(task.created_at)}
-        </span>
+        {taskTimeHint(task) && (
+          <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
+            {taskTimeHint(task)}
+          </span>
+        )}
       </button>
 
       <div className="flex shrink-0 items-center gap-0.5">
@@ -171,7 +162,7 @@ export function TaskQueueDropdown() {
       if (action === "delete") await api.tasks.delete(task.id)
       await refresh()
     } catch (error) {
-      console.warn(`Task ${action} failed:`, error)
+      notifyError(action === "pause" ? "暂停失败" : action === "resume" ? "继续处理失败" : "删除失败", error)
     } finally {
       setBusyTaskId(null)
     }
@@ -221,7 +212,7 @@ export function TaskQueueDropdown() {
 
       {/* Dropdown panel */}
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-1.5 w-[min(20rem,calc(100vw-1.5rem))] rounded-lg border bg-background shadow-lg">
+        <div className="absolute right-0 top-full z-50 mt-1.5 w-[min(26rem,calc(100vw-1.5rem))] rounded-lg border bg-background shadow-lg">
           <div className="px-3 py-2 border-b">
             <span className="text-xs font-medium text-muted-foreground">
               处理队列 ({processingCount} 进行中
@@ -258,7 +249,7 @@ export function TaskQueueDropdown() {
           <AlertDialogHeader>
             <AlertDialogTitle>删除任务</AlertDialogTitle>
             <AlertDialogDescription>
-              将停止任务并删除已生成文件，此操作不可撤销。
+              {deleteTarget ? `将停止「${taskDisplayTitle(deleteTarget)}」并删除已生成文件，此操作不可撤销。` : "将停止任务并删除已生成文件，此操作不可撤销。"}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="border-t-0">

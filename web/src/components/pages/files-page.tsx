@@ -23,27 +23,41 @@ import { useAppAccess } from "@/hooks/use-app-access-context"
 import { OfflineSyncStatus } from "@/components/offline-sync-status"
 import { usePlatform } from "@/platform/use-platform"
 import { Button } from "@/components/ui/button"
+import { archiveGridLayout } from "@/lib/archive-grid-layout"
+import { RerunConfirmDialog } from "@/components/rerun-confirm-dialog"
+import { notifyError, notifySuccess } from "@/lib/notify"
 
 const PAGE_SIZE = 28
-const MIN_PAGE_SIZE = 1
 
 interface FilesPageProps {
   search: string
   mediaFilter: MediaFilter
   sourceFilter: SourceFilter
   sort: ArchiveSort
+  /** Current page, kept in the URL so 返回 / reload restore it */
+  page?: number
+  onPageChange?: (page: number) => void
 }
 
-export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPageProps) {
+// Archive opened from the grid; focused again when the library remounts after 返回.
+let returnFocusPath: string | null = null
+
+export function FilesPage({ search, mediaFilter, sourceFilter, sort, page: pageProp, onPageChange }: FilesPageProps) {
   const { capabilities, online } = useAppAccess()
   const platform = usePlatform()
   const { update: updatePrefs } = usePreferences()
+  // Fallback local page state for embeddings that don't route the page through the URL (tests).
   const filterKey = JSON.stringify([search, mediaFilter, sourceFilter, sort])
   const [pagination, setPagination] = useState({ filterKey, page: 1 })
-  if (pagination.filterKey !== filterKey) setPagination({ filterKey, page: 1 })
-  const page = pagination.filterKey === filterKey ? pagination.page : 1
-  const setPage = useCallback((value: number) => setPagination({ filterKey, page: value }), [filterKey])
+  if (!onPageChange && pagination.filterKey !== filterKey) setPagination({ filterKey, page: 1 })
+  const page = onPageChange ? (pageProp ?? 1) : (pagination.filterKey === filterKey ? pagination.page : 1)
+  const setPage = useCallback((value: number) => {
+    if (onPageChange) onPageChange(value)
+    else setPagination({ filterKey, page: value })
+  }, [filterKey, onPageChange])
   const [pageSize, setPageSize] = useState(PAGE_SIZE)
+  const [rerunTarget, setRerunTarget] = useState<ArchiveItem | null>(null)
+  const [gridLayout, setGridLayout] = useState<{ columns: number; rowGap: number } | null>(null)
   const { archives, total, page: resolvedPage, loading, error, indexing, lastReconciledAt,
     refresh, removeArchive } = useArchivePage({ page, page_size: pageSize, search,
     media: mediaFilter, source: sourceFilter, sort })
@@ -60,8 +74,19 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
     if (!loading && resolvedPage !== page) setPage(resolvedPage)
   }, [loading, page, resolvedPage, setPage])
 
-  // While any task is processing, poll for updates so the queue card progress stays fresh
-  const anyProcessing = archives.some((a) => a.processing)
+  // Coming back from a result page: focus the card that was opened so the eye lands where it left.
+  useEffect(() => {
+    if (loading || !returnFocusPath) return
+    const target = gridRef.current?.querySelector<HTMLElement>(`[data-archive-path="${CSS.escape(returnFocusPath)}"]`)
+    returnFocusPath = null
+    if (target) {
+      target.focus({ preventScroll: true })
+      target.scrollIntoView({ block: "nearest" })
+    }
+  }, [loading, archives])
+
+  // While a task is actively running, poll so card progress stays fresh. Paused tasks don't change.
+  const anyProcessing = archives.some((a) => a.processing && a.metadata?.status !== "paused")
   useEffect(() => {
     if (!anyProcessing && !indexing) return
     const id = window.setInterval(() => { refresh(true) }, 3000)
@@ -79,18 +104,15 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
       const firstCard = grid.firstElementChild
       if (!(firstCard instanceof HTMLElement)) return
 
-      const styles = window.getComputedStyle(grid)
-      const columns = styles.gridTemplateColumns.split(" ").filter(Boolean).length || 1
       setPaginationRangeSize(window.innerWidth >= 768 ? 7 : 3)
-      const rowGap = Number.parseFloat(styles.rowGap) || 0
-      const cardHeight = firstCard.getBoundingClientRect().height
-      if (cardHeight <= 0) return
-
-      const availableHeight = grid.getBoundingClientRect().height
-      const rowHeight = cardHeight + rowGap
-      const rows = Math.max(1, Math.floor((availableHeight + rowGap) / rowHeight))
-      const nextPageSize = Math.max(MIN_PAGE_SIZE, columns * rows)
-      setPageSize((current) => (current === nextPageSize ? current : nextPageSize))
+      const info = firstCard.querySelector<HTMLElement>("[data-archive-info]")
+      if (!info) return
+      const { width, height } = grid.getBoundingClientRect()
+      if (width <= 0 || height <= 0) return
+      const next = archiveGridLayout(width, height, info.getBoundingClientRect().height, window.innerWidth)
+      setGridLayout((current) => current?.columns === next.columns && current.rowGap === next.rowGap
+        ? current : { columns: next.columns, rowGap: next.rowGap })
+      setPageSize((current) => current === next.pageSize ? current : next.pageSize)
     }
 
     updatePageSize()
@@ -105,7 +127,7 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
       observer.disconnect()
       window.removeEventListener("resize", updatePageSize)
     }
-  }, [archives.length, total])
+  }, [archives.length, total, loading])
 
   const checkFiles = async () => {
     setChecking(true)
@@ -113,7 +135,7 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
       await api.archives.reconcile()
       await refresh(true)
     } catch (reason) {
-      window.alert(`检查文件失败：${String(reason)}`)
+      notifyError("检查文件失败", reason)
     } finally {
       setChecking(false)
     }
@@ -121,52 +143,24 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
 
   const handleOpen = (path: string, taskId?: string) => {
     updatePrefs({ lastArchivePath: path })
+    returnFocusPath = path
     const tid = taskId ? `&taskId=${encodeURIComponent(taskId)}` : ""
     navigate(`#/result/archive?path=${encodeURIComponent(path)}${tid}`)
   }
 
-  const sourceFromMetadata = (archive: ArchiveItem): string => {
-    const metadata = archive.metadata ?? {}
-    const extra = metadata.extra
-    const candidates = [
-      metadata.source_url,
-      metadata.original_url,
-      metadata.webpage_url,
-      metadata.file_path,
-      extra && typeof extra === "object" && "original_url" in extra ? (extra as Record<string, unknown>).original_url : undefined,
-      extra && typeof extra === "object" && "webpage_url" in extra ? (extra as Record<string, unknown>).webpage_url : undefined,
-    ]
-    for (const candidate of candidates) {
-      if (typeof candidate === "string" && candidate.trim()) return candidate.trim()
-    }
-    return ""
-  }
-
   const handleRerun = async (archive: ArchiveItem) => {
     if (rerunningPath) return
+    if (!archive.task_id) {
+      notifyError("无法重新处理", "找不到这个条目的任务记录。")
+      return
+    }
     setRerunningPath(archive.path)
     try {
-      let source = ""
-      let options: Record<string, unknown> = {}
-      if (archive.task_id) {
-        try {
-          const task = await api.tasks.get(archive.task_id)
-          source = task.source
-          options = task.options ?? {}
-        } catch {
-          source = ""
-        }
-      }
-      if (!source) source = sourceFromMetadata(archive)
-      if (!source) {
-        window.alert("找不到原始来源，无法重做。")
-        return
-      }
-      await api.tasks.create(source, options)
-      setPage(1)
+      await api.tasks.fullRerun(archive.task_id)
+      notifySuccess("已加入处理队列", `「${archive.title}」将从头重新处理。`)
       await refresh(true)
     } catch (e) {
-      window.alert(`重做失败：${e instanceof Error ? e.message : String(e)}`)
+      notifyError("重新处理失败", e)
     } finally {
       setRerunningPath(null)
     }
@@ -182,10 +176,10 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
         return
       }
       await api.tasks.checkpointRerun(archive.task_id)
-      setPage(1)
+      notifySuccess("已加入处理队列", `「${archive.title}」会跳过已完成的步骤。`)
       await refresh(true)
     } catch (e) {
-      window.alert(`断点续做失败：${e instanceof Error ? e.message : String(e)}`)
+      notifyError("加入队列失败", e)
     } finally {
       setCheckpointRerunningPath(null)
     }
@@ -199,7 +193,7 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
       if (action === "resume") await api.tasks.resume(archive.task_id)
       await refresh(true)
     } catch (e) {
-      window.alert(`${action === "pause" ? "暂停" : "恢复"}失败：${e instanceof Error ? e.message : String(e)}`)
+      notifyError(action === "pause" ? "暂停失败" : "继续处理失败", e)
     } finally {
       setTaskActionPath(null)
     }
@@ -222,7 +216,8 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
         <div
           ref={gridRef}
           data-testid="archive-grid"
-          className="grid h-full min-h-0 grid-cols-2 content-start gap-3 overflow-hidden sm:gap-x-5 sm:gap-y-4 lg:grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] min-[1972px]:grid-cols-7!"
+          className="grid h-full min-h-0 grid-cols-2 content-start items-start gap-3 overflow-x-hidden overflow-y-auto sm:gap-x-5 sm:gap-y-4 lg:grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] min-[1972px]:grid-cols-7"
+          style={gridLayout ? { gridTemplateColumns: `repeat(${gridLayout.columns}, minmax(0, 1fr))`, rowGap: gridLayout.rowGap } : undefined}
         >
           {archives.map((a) => (
             <ArchiveCard
@@ -239,7 +234,7 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
               onRenamed={capabilities.archive_mutation ? () => refresh(true) : undefined}
               onMediaRetention={capabilities.archive_mutation && !platform.isNative
                 ? () => setRetentionTarget(a) : undefined}
-              onRerun={online ? () => handleRerun(a) : undefined}
+              onRerun={online && a.task_id ? () => setRerunTarget(a) : undefined}
               onCheckpointRerun={online && a.task_id ? () => handleCheckpointRerun(a) : undefined}
               onPause={online && a.task_id ? () => handleTaskAction(a, "pause") : undefined}
               onResume={online && a.task_id ? () => handleTaskAction(a, "resume") : undefined}
@@ -323,6 +318,16 @@ export function FilesPage({ search, mediaFilter, sourceFilter, sort }: FilesPage
           onDeleted={removeArchive}
         />
       )}
+      <RerunConfirmDialog
+        open={rerunTarget !== null}
+        onOpenChange={(open) => { if (!open) setRerunTarget(null) }}
+        title={rerunTarget?.title ?? ""}
+        onConfirm={() => {
+          const target = rerunTarget
+          setRerunTarget(null)
+          if (target) void handleRerun(target)
+        }}
+      />
     </div>
   )
 }

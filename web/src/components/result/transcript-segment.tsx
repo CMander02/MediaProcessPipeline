@@ -45,7 +45,7 @@ export const TranscriptSegment = memo(function TranscriptSegment({
   onEditStart,
   onEditCancel,
 }: TranscriptSegmentProps) {
-  const speakerColor = subtitle.speaker ? getSpeakerColor(subtitle.speaker) : undefined
+  const speakerColor = subtitle.speaker ? getSpeakerColor(subtitle.speaker, speakers) : undefined
 
   const [speakerDropdownOpen, setSpeakerDropdownOpen] = useState(false)
 
@@ -125,9 +125,9 @@ export const TranscriptSegment = memo(function TranscriptSegment({
                   >
                     <span
                       className="inline-block w-2 h-2 rounded-full shrink-0"
-                      style={{ backgroundColor: getSpeakerColor(spk) }}
+                      style={{ backgroundColor: getSpeakerColor(spk, speakers) }}
                     />
-                    <span style={{ color: getSpeakerColor(spk) }} className="font-medium">
+                    <span style={{ color: getSpeakerColor(spk, speakers) }} className="font-medium">
                       {formatSpeakerLabel(spk)}
                     </span>
                     {spk === subtitle.speaker && <HugeiconsIcon icon={Tick02Icon} className="h-3 w-3 ml-auto" />}
@@ -206,9 +206,9 @@ export const TranscriptSegment = memo(function TranscriptSegment({
                     >
                       <span
                         className="inline-block w-2 h-2 rounded-full shrink-0"
-                        style={{ backgroundColor: getSpeakerColor(spk) }}
+                        style={{ backgroundColor: getSpeakerColor(spk, speakers) }}
                       />
-                      <span style={{ color: getSpeakerColor(spk) }} className="font-medium">
+                      <span style={{ color: getSpeakerColor(spk, speakers) }} className="font-medium">
                         {formatSpeakerLabel(spk)}
                       </span>
                       {spk === subtitle.speaker && <HugeiconsIcon icon={Tick02Icon} className="h-3 w-3 ml-auto" />}

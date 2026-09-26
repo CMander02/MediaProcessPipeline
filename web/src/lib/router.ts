@@ -1,6 +1,6 @@
 /**
  * Minimal hash-based router.
- * Routes: #/files, #/submit, #/backend, #/result/archive?path=..., #/result/task/<id>
+ * Routes: #/files?page=2&q=..., #/submit, #/backend?tab=logs, #/result/archive?path=..., #/result/task/<id>
  */
 import { useSyncExternalStore } from "react"
 
@@ -12,38 +12,63 @@ export interface Route {
   resultId?: string
   /** task id for SSE subscription (available on archive routes too) */
   taskId?: string
+  /** Query parameters after "?" (library filters, backend tab, ...) */
+  params: Record<string, string>
 }
 
-function parseHash(hash: string): Route {
-  const raw = hash.replace(/^#\/?/, "")
+function parseParams(query: string): Record<string, string> {
+  return Object.fromEntries(new URLSearchParams(query))
+}
 
-  if (raw.startsWith("submit")) return { page: "submit" }
-  if (raw.startsWith("backend")) return { page: "backend" }
-  if (raw.startsWith("settings")) return { page: "settings" }
+export function parseHash(hash: string): Route {
+  const raw = hash.replace(/^#\/?/, "")
+  const query = raw.includes("?") ? raw.slice(raw.indexOf("?") + 1) : ""
+  const params = parseParams(query)
+
+  if (raw.startsWith("submit")) return { page: "submit", params }
+  if (raw.startsWith("backend")) return { page: "backend", params }
+  if (raw.startsWith("settings")) return { page: "settings", params }
 
   if (raw.startsWith("result/archive")) {
-    const params = new URLSearchParams(raw.split("?")[1] ?? "")
     return {
       page: "result",
       resultType: "archive",
-      resultId: params.get("path") ?? undefined,
-      taskId: params.get("taskId") ?? undefined,
+      resultId: params.path ?? undefined,
+      taskId: params.taskId ?? undefined,
+      params,
     }
   }
 
   if (raw.startsWith("result/task/")) {
     const id = raw.replace("result/task/", "").split("?")[0]
-    return { page: "result", resultType: "task", resultId: id || undefined }
+    return { page: "result", resultType: "task", resultId: id || undefined, params }
   }
 
-  return { page: "files" }
+  return { page: "files", params }
+}
+
+/** Build a hash for a page plus query params, dropping empty values. */
+export function buildHash(page: string, params: Record<string, string | number | null | undefined> = {}): string {
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === null || value === undefined || value === "") continue
+    search.set(key, String(value))
+  }
+  const query = search.toString()
+  return query ? `#/${page}?${query}` : `#/${page}`
 }
 
 let currentRoute: Route = parseHash(window.location.hash)
+let lastLibraryHash = currentRoute.page === "files" ? normalizedLibraryHash(window.location.hash) : "#/files"
 const listeners = new Set<() => void>()
+
+function normalizedLibraryHash(hash: string): string {
+  return hash && hash !== "#" && hash !== "#/" ? hash : "#/files"
+}
 
 function handleHashChange() {
   currentRoute = parseHash(window.location.hash)
+  if (currentRoute.page === "files") lastLibraryHash = normalizedLibraryHash(window.location.hash)
   listeners.forEach((l) => l())
 }
 window.addEventListener("hashchange", handleHashChange)
@@ -59,6 +84,11 @@ function getSnapshot() {
 
 export function useRoute(): Route {
   return useSyncExternalStore(subscribe, getSnapshot)
+}
+
+/** Where "文件" / "返回" should go: the library with the page and filters last used. */
+export function libraryHash(): string {
+  return lastLibraryHash
 }
 
 export function navigate(hash: string, options?: { replace?: boolean }) {
