@@ -1,20 +1,16 @@
 import { useEffect } from "react"
-import { HugeiconsIcon } from "@hugeicons/react"
-import { Clock01Icon, Link01Icon } from "@hugeicons/core-free-icons"
-
-import { useSubmitHistory } from "@/hooks/use-submit-history"
 import { openComposer } from "@/lib/composer-store"
 import { isDesktopApp } from "@/lib/desktop-bridge"
 import { notifySuccess } from "@/lib/notify"
 import { openTask } from "@/lib/open-task"
 import { navigate } from "@/lib/router"
 import { usePlatform } from "@/platform/use-platform"
+import { RecentSubmissions } from "@/components/composer/recent-submissions"
 import { SourceComposer } from "@/components/composer/source-composer"
 
-/** The 处理 page: the same composer as the Ctrl+N dialog, with room to breathe and recent links on phones. */
+/** The 处理 page: the same composer as the Ctrl+N dialog, with room to breathe and the latest tasks below. */
 export function SubmitPage() {
   const platform = usePlatform()
-  const submitHistory = useSubmitHistory()
 
   // Text shared to the Android app lands here.
   useEffect(() => {
@@ -55,41 +51,7 @@ export function SubmitPage() {
           }}
         />
 
-        <section className="space-y-2 md:hidden" aria-labelledby="recent-submit-title">
-          <div className="flex items-center justify-between gap-3">
-            <h2 id="recent-submit-title" className="flex items-center gap-2 text-sm font-medium">
-              <HugeiconsIcon icon={Clock01Icon} className="size-4 text-muted-foreground" />
-              最近提交
-            </h2>
-            {submitHistory.items.length > 0 ? (
-              <button type="button" className="min-h-11 px-2 text-xs text-muted-foreground" onClick={submitHistory.clear}>
-                清空
-              </button>
-            ) : null}
-          </div>
-          {submitHistory.items.length > 0 ? (
-            <div className="divide-y rounded-lg border bg-card">
-              {submitHistory.items.map((item) => (
-                <button
-                  type="button"
-                  key={`${item.source}-${item.submittedAt}`}
-                  className="flex min-h-12 w-full items-center gap-3 px-3 text-left active:bg-muted"
-                  onClick={() => openComposer({ text: item.source })}
-                >
-                  <HugeiconsIcon icon={Link01Icon} className="size-4 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1 truncate text-sm">{item.source}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {new Date(item.submittedAt).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}
-                  </span>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="rounded-lg border border-dashed px-4 py-5 text-center text-sm text-muted-foreground">
-              成功提交链接后会显示在这里。
-            </p>
-          )}
-        </section>
+        <RecentSubmissions />
       </div>
     </div>
   )

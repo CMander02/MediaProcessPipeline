@@ -9,6 +9,7 @@ import { api } from "@/lib/api"
 import { navigate } from "@/lib/router"
 
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }))
+vi.mock("@/hooks/use-active-tasks", () => ({ useActiveTasks: () => ({ tasks: [], loaded: true }) }))
 vi.mock("@/hooks/use-app-access-context", () => ({
   useAppAccess: () => ({
     online: true,
@@ -32,6 +33,7 @@ vi.mock("@/hooks/use-app-access-context", () => ({
 const linkBox = () => screen.getByPlaceholderText(/粘贴视频或网页链接/)
 
 beforeEach(() => {
+  vi.spyOn(api.tasks, "list").mockResolvedValue([])
   vi.spyOn(api.archives, "lookup").mockResolvedValue({ matches: {} })
   vi.spyOn(api.pipeline, "probe").mockRejectedValue(new Error("offline"))
 })
