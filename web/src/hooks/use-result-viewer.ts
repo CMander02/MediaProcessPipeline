@@ -16,11 +16,15 @@ import { type SpeakerMergeInfo } from "@/components/speaker-merge-dialog"
 import { useTaskSSE, type FileReadyEvent, type StepEvent } from "@/hooks/use-task-sse"
 import { navigate } from "@/lib/router"
 import { Video01Icon, MusicNote01Icon, Image01Icon, Note01Icon } from "@hugeicons/core-free-icons"
+import { buildChapterTree, parseChapterTimeline } from "../lib/result-chapters"
 import {
-  collectLegacyMindmapChapters,
-  completeChapterRanges,
-  parseChapterTimeline,
-} from "../lib/result-chapters"
+  alignSecondary,
+  carrySpeakers,
+  DEFAULT_TRACK,
+  languageName,
+  parseSubtitleFile,
+  type SubtitleTrackInfo,
+} from "@/lib/subtitle-tracks"
 import { timelineEventKey, timelineStatusText } from "../lib/result-timeline"
 import {
   resolveSourceUrl,
@@ -31,12 +35,6 @@ import {
 } from "../lib/result-metadata"
 import { usePortraitResultLayout, useMobileResultLayout } from "./use-result-layout"
 
-interface SubtitleTrackInfo {
-  lang: string
-  type: string
-  filename: string
-  polished: boolean
-}
 
 export interface ResultViewerProps {
   archivePath: string
@@ -78,6 +76,10 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
   const [subtitleTracks, setSubtitleTracks] = useState<SubtitleTrackInfo[]>([])
   const [activeTrackLang, setActiveTrackLang] = useState<string | null>(null)
   const [polishedLang, setPolishedLang] = useState<string | null>(null)
+  // A second language shown under each line, and the default track kept for its speakers.
+  const [secondaryTrackLang, setSecondaryTrackLang] = useState<string | null>(null)
+  const [secondarySubtitles, setSecondarySubtitles] = useState<Subtitle[] | null>(null)
+  const primarySubtitles = useRef<Subtitle[]>([])
   const [subtitleSourceType, setSubtitleSourceType] = useState<"platform" | "asr" | null>(null)
   const [sourceUrl, setSourceUrl] = useState<string | null>(null)
   const [platform, setPlatform] = useState<string | null>(null)
@@ -155,10 +157,11 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
       onTimeUpdate: updateMediaTime,
     })
 
-  const chapterTocNodes = useMemo(() => {
-    const preferred = sourceChapterNodes ?? summaryChapterNodes ?? collectLegacyMindmapChapters(mindmapTree)
-    return completeChapterRanges(preferred, duration)
-  }, [duration, mindmapTree, sourceChapterNodes, summaryChapterNodes])
+  // Chapters with their sections and sub-sections (from the mindmap's timed points).
+  const chapterTocNodes = useMemo(
+    () => buildChapterTree(sourceChapterNodes ?? summaryChapterNodes, mindmapTree, duration),
+    [duration, mindmapTree, sourceChapterNodes, summaryChapterNodes],
+  )
 
   const mergeTimelineEvent = useCallback((event: TaskTimelineEvent) => {
     setTimelineEvents((prev) => {
@@ -384,9 +387,11 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
   }, [archivePath, readFilePath])
 
   const applyTranscriptContent = useCallback((content: string, polished: boolean) => {
+    const parsed = parseSRT(content)
+    primarySubtitles.current = parsed
     setTranscript(content)
     setIsPolished(polished)
-    setSubtitles(parseSRT(content))
+    setSubtitles(parsed)
     setSubtitleSourceType((prev) => prev ?? (polished ? "platform" : "asr"))
   }, [])
 
@@ -660,26 +665,86 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
     },
   })
 
+  const trackFile = useCallback(async (track: SubtitleTrackInfo) => (
+    track.polished ? loadFile("transcript_polished.srt") : loadFile(track.filename)
+  ), [loadFile])
+
+  // Platform tracks keep the platform's format (YouTube json3 under an .srt name); our own
+  // recognition marks speakers in brackets.
+  const readTrackLines = useCallback(async (track: SubtitleTrackInfo) => {
+    const content = await trackFile(track)
+    const lines = track.type === "asr" ? parseSRT(content) : parseSubtitleFile(content)
+    if (!lines.length) notifyError(`${languageName(track.lang)}字幕读不出内容`, track.filename)
+    return lines
+  }, [trackFile])
+
   const selectTrack = useCallback(async (lang: string) => {
+    if (lang === DEFAULT_TRACK) {
+      // Older archives list their platform tracks without marking the polished default.
+      const polished = await loadFile("transcript_polished.srt")
+      const content = polished || await loadFile("transcript.srt")
+      if (!content) return
+      const parsed = parseSRT(content)
+      primarySubtitles.current = parsed
+      setActiveTrackLang(null)
+      setTranscript(content)
+      setIsPolished(Boolean(polished))
+      setSubtitles(parsed)
+      return
+    }
     const track = subtitleTracks.find((t) => t.lang === lang)
     if (!track) return
-    setActiveTrackLang(lang)
     if (track.polished) {
-      const c = await loadFile("transcript_polished.srt")
-      if (c) {
-        setTranscript(c)
-        setIsPolished(true)
-        setSubtitles(parseSRT(c))
-      }
+      const content = await trackFile(track)
+      if (!content) return
+      const parsed = parseSRT(content)
+      primarySubtitles.current = parsed
+      setActiveTrackLang(lang)
+      setTranscript(content)
+      setIsPolished(true)
+      setSubtitles(parsed)
     } else {
-      const c = await loadFile(track.filename)
-      if (c) {
-        setTranscript(c)
-        setIsPolished(false)
-        setSubtitles(parseSRT(c))
-      }
+      const parsed = await readTrackLines(track)
+      if (!parsed.length) return
+      // Other languages have no speakers of their own: borrow them from the default track.
+      const lines = carrySpeakers(parsed, primarySubtitles.current)
+      setActiveTrackLang(lang)
+      setTranscript(subtitlesToSRT(lines))
+      setIsPolished(false)
+      setSubtitles(lines)
     }
-  }, [subtitleTracks, loadFile])
+    if (secondaryTrackLang === lang) {
+      setSecondaryTrackLang(null)
+      setSecondarySubtitles(null)
+    }
+  }, [loadFile, readTrackLines, secondaryTrackLang, subtitleTracks, trackFile])
+
+  const selectSecondaryTrack = useCallback(async (lang: string | null) => {
+    const track = lang ? subtitleTracks.find((t) => t.lang === lang) : undefined
+    if (!track) {
+      setSecondaryTrackLang(null)
+      setSecondarySubtitles(null)
+      return
+    }
+    const lines = track.polished ? parseSRT(await trackFile(track)) : await readTrackLines(track)
+    if (!lines.length) return
+    setSecondaryTrackLang(track.lang)
+    setSecondarySubtitles(lines)
+  }, [readTrackLines, subtitleTracks, trackFile])
+
+  const shownTrackLang = activeTrackLang ?? polishedLang
+  // Edits and speaker renames go to the default (polished) track only.
+  const isPrimaryTrack = !activeTrackLang || activeTrackLang === polishedLang
+    || Boolean(subtitleTracks.find((t) => t.lang === activeTrackLang)?.polished)
+  useEffect(() => {
+    if (isPrimaryTrack) primarySubtitles.current = subtitles
+  }, [isPrimaryTrack, subtitles])
+  const secondaryTexts = useMemo(
+    () => secondarySubtitles && secondaryTrackLang && secondaryTrackLang !== shownTrackLang
+      ? alignSecondary(subtitles, secondarySubtitles)
+      : null,
+    [secondarySubtitles, secondaryTrackLang, shownTrackLang, subtitles],
+  )
 
   const mediaType: "video" | "audio" = archive?.has_video ? "video" : "audio"
   const sourceHref = firstHttpUrl(sourceUrl)
@@ -1007,6 +1072,10 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
     activeTrackLang,
     polishedLang,
     selectTrack,
+    isPrimaryTrack,
+    secondaryTrackLang,
+    selectSecondaryTrack,
+    secondaryTexts,
     currentSegmentIndex,
     autoScroll,
     chapterTocNodes,

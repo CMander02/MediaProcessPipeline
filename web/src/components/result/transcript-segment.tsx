@@ -21,7 +21,13 @@ import { PencilEdit01Icon, Delete01Icon, ArrowUp01Icon, ArrowDown01Icon, Copy01I
 interface TranscriptSegmentProps {
   subtitle: Subtitle
   isActive: boolean
+  /** The find result the cursor is on */
+  isCurrentMatch?: boolean
   searchQuery: string
+  /** The same moment in a second language */
+  secondaryText?: string
+  /** Other-language tracks: seek and copy only */
+  readOnly?: boolean
   editing: boolean
   speakers: string[]
   onClick: () => void
@@ -35,7 +41,10 @@ interface TranscriptSegmentProps {
 export const TranscriptSegment = memo(function TranscriptSegment({
   subtitle,
   isActive,
+  isCurrentMatch = false,
   searchQuery,
+  secondaryText,
+  readOnly = false,
   editing,
   speakers,
   onClick,
@@ -165,7 +174,7 @@ export const TranscriptSegment = memo(function TranscriptSegment({
             isActive
               ? "bg-primary/15 border-l-3 border-primary shadow-sm"
               : "hover:bg-muted/50 border-l-3 border-transparent"
-          }`}
+          } ${isCurrentMatch ? "ring-2 ring-amber-400/70" : ""}`}
           onClick={onClick}
         >
           {/* Timestamp + Speaker + Text — inline */}
@@ -182,7 +191,15 @@ export const TranscriptSegment = memo(function TranscriptSegment({
               {formatTimeShort(subtitle.startTime)}
             </button>
 
-            {subtitle.speaker && (
+            {subtitle.speaker && readOnly && (
+              <span
+                className="text-xs font-medium shrink-0 px-1.5 py-0.5 rounded"
+                style={{ color: speakerColor, backgroundColor: speakerColor ? `${speakerColor}15` : undefined }}
+              >
+                {formatSpeakerLabel(subtitle.speaker)}
+              </span>
+            )}
+            {subtitle.speaker && !readOnly && (
               <DropdownMenu open={speakerDropdownOpen} onOpenChange={setSpeakerDropdownOpen}>
                 <DropdownMenuTrigger asChild>
                   <button
@@ -218,14 +235,28 @@ export const TranscriptSegment = memo(function TranscriptSegment({
               </DropdownMenu>
             )}
 
-            <span className={`text-sm leading-relaxed ${isActive ? "text-foreground font-medium" : ""}`}>
-              {searchQuery ? highlightText(subtitle.text, searchQuery) : subtitle.text}
+            <span className="min-w-0 flex-1">
+              <span className={`block text-sm leading-relaxed ${isActive ? "text-foreground font-medium" : ""}`}>
+                {searchQuery ? highlightText(subtitle.text, searchQuery) : subtitle.text}
+              </span>
+              {secondaryText && (
+                <span className="mt-0.5 block text-[13px] leading-relaxed text-muted-foreground">
+                  {searchQuery ? highlightText(secondaryText, searchQuery) : secondaryText}
+                </span>
+              )}
             </span>
           </div>
         </div>
       </ContextMenuTrigger>
 
       <ContextMenuContent>
+        {readOnly ? (
+          <ContextMenuItem onClick={handleCopy}>
+            <HugeiconsIcon icon={Copy01Icon} className="h-4 w-4" />
+            复制
+          </ContextMenuItem>
+        ) : (
+        <>
         <ContextMenuItem onClick={beginEdit}>
           <HugeiconsIcon icon={PencilEdit01Icon} className="h-4 w-4" />
           编辑
@@ -248,6 +279,8 @@ export const TranscriptSegment = memo(function TranscriptSegment({
           <HugeiconsIcon icon={Delete01Icon} className="h-4 w-4" />
           删除
         </ContextMenuItem>
+        </>
+        )}
       </ContextMenuContent>
     </ContextMenu>
   )

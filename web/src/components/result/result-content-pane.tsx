@@ -1,5 +1,4 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
@@ -7,7 +6,6 @@ import {
   Copy01Icon,
   Download01Icon,
   Loading03Icon,
-  Link01Icon,
   Gps01Icon,
   ArrowDown01Icon,
 } from "@hugeicons/core-free-icons"
@@ -26,21 +24,13 @@ import { TranscriptTab } from "@/components/result/transcript-tab"
 import { MindmapViewer } from "@/components/result/mindmap-viewer"
 import { useResultViewer } from "../../hooks/use-result-viewer"
 import { NoteMarkdown } from "./note-content"
+import { flattenChapterTree } from "@/lib/result-chapters"
 
 export function ResultSourcePane({ view }: { view: ReturnType<typeof useResultViewer> }) {
-  const { sourceHref, handleOpenSource, noteText, archivePath, sep, isProcessing, sourceTabLabel } = view
+  const { noteText, archivePath, sep, isProcessing, sourceTabLabel } = view
   return (
     <TabsContent value="source" className="mt-3 relative flex-1">
       <div className="absolute inset-0 flex flex-col overflow-hidden rounded-md border">
-        <div className="flex min-h-11 shrink-0 items-center justify-between gap-2 border-b px-4 py-2">
-          <Badge variant="secondary">来源原文</Badge>
-          {sourceHref ? (
-            <Button type="button" variant="ghost" size="sm" onClick={handleOpenSource}>
-              <HugeiconsIcon icon={Link01Icon} data-icon="inline-start" />
-              打开来源
-            </Button>
-          ) : null}
-        </div>
         <ScrollArea className="min-h-0 flex-1">
           <div className="p-5 text-sm leading-7">
             {noteText ? (
@@ -157,6 +147,10 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
     activeTrackLang,
     polishedLang,
     selectTrack,
+    isPrimaryTrack,
+    secondaryTrackLang,
+    selectSecondaryTrack,
+    secondaryTexts,
     subtitles,
     currentSegmentIndex,
     autoScroll,
@@ -280,30 +274,6 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
                 )
               ) : (
                 <>
-                  {subtitleTracks.length > 1 && (
-                    <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b bg-muted/20 overflow-x-auto">
-                      <span className="text-[10px] text-muted-foreground shrink-0">语言：</span>
-                      {subtitleTracks.map((t) => {
-                        const active = (activeTrackLang ?? polishedLang) === t.lang
-                        return (
-                          <button
-                            key={t.lang}
-                            onClick={() => selectTrack(t.lang)}
-                            className={cn(
-                              "shrink-0 rounded px-2 py-0.5 text-[11px] transition-colors",
-                              active
-                                ? "bg-primary text-primary-foreground"
-                                : "bg-muted hover:bg-muted/70 text-foreground",
-                            )}
-                            title={t.polished ? "已润色" : "原始字幕"}
-                          >
-                            {t.lang}
-                            {t.polished && <span className="ml-1 text-[9px] opacity-80">✓</span>}
-                          </button>
-                        )
-                      })}
-                    </div>
-                  )}
                   {subtitles.length > 0 ? (
                     <TranscriptTab
                       subtitles={subtitles}
@@ -312,6 +282,13 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
                       onSegmentClick={(sub) => seekTo(sub.startTime)}
                       currentTime={currentTime}
                       tocNodes={chapterTocNodes}
+                      tracks={subtitleTracks}
+                      shownTrackLang={activeTrackLang ?? polishedLang}
+                      onSelectTrack={(lang) => void selectTrack(lang)}
+                      secondaryTrackLang={secondaryTrackLang}
+                      onSelectSecondary={(lang) => void selectSecondaryTrack(lang)}
+                      secondaryTexts={secondaryTexts}
+                      readOnly={!isPrimaryTrack}
                       onTocSeek={seekTo}
                       onManualScroll={onManualScroll}
                       srtPath={archivePath + sep + (
@@ -348,7 +325,7 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
                 fillContainer
                 title={displayTitle}
                 onFitReady={(fn) => setMindmapFit(() => fn)}
-                chapters={chapterTocNodes}
+                chapters={flattenChapterTree(chapterTocNodes).map(({ node }) => node)}
                 currentTime={currentTime}
                 onSeek={seekTo}
               />

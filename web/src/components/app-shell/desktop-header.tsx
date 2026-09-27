@@ -9,13 +9,13 @@ interface DesktopHeaderProps {
   activePage: Route["page"]
 }
 
-/** MPP menu and main navigation; the navigation steps aside while a page fills the title bar. */
+/** MPP menu and main navigation. */
 export function DesktopHeader({ activePage }: DesktopHeaderProps) {
   return (
     <div className="hidden shrink-0 items-center gap-2 md:flex" data-desktop-header>
       <AppMenu />
 
-      <nav className="flex items-center gap-0.5 group-has-[[data-header-slot]>*]/header:hidden" aria-label="主导航">
+      <nav className="flex items-center gap-0.5" aria-label="主导航">
         {PRIMARY_NAV_ITEMS.map((item) => {
           const active = activePage === item.page
           return (

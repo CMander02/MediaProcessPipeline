@@ -42,8 +42,7 @@ import { SpeakerMergeDialog } from "@/components/speaker-merge-dialog"
 import { type ResultViewerProps, useResultViewer } from "../../hooks/use-result-viewer"
 import { ArticleNoteReader, NoteMarkdown } from "../result/note-content"
 import { ResultContentPane } from "../result/result-content-pane"
-import { HeaderContext } from "@/components/app-shell/header-slot"
-import { useMediaQuery } from "@/hooks/use-media-query"
+import { usePreferences } from "@/hooks/use-preferences"
 import {
   timelineEventKey,
   timelineStatusClass,
@@ -53,6 +52,7 @@ import {
 
 export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultViewerProps) {
   const view = useResultViewer({ archivePath, taskId: taskIdProp })
+  const { prefs, update: updatePrefs } = usePreferences()
   const {
     mediaUrl,
     videoLoop,
@@ -158,9 +158,14 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultVi
 
   const mediaPane = (
     <div className={cn(
-      "h-full min-h-0 space-y-3",
-      isPortraitLayout || isMobileLayout ? "overflow-y-auto p-0" : "overflow-y-auto p-4",
+      "h-full min-h-0 overflow-y-auto",
+      isPortraitLayout || isMobileLayout ? "p-0" : "p-4",
     )}>
+      <div className={cn(
+        "space-y-3",
+        // Video results: keep the player near eye level rather than at the top edge.
+        !isNoteContent && !isPortraitLayout && !isMobileLayout && "flex min-h-full flex-col justify-center",
+      )}>
       {isArticleNote ? (
         <ArticleNoteReader
           content={noteText}
@@ -207,11 +212,13 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultVi
           onRenameSpeaker={handleRenameSpeaker}
           renaming={renamingSpeaker}
           editingDisabled={hasUnsavedTranscript || Boolean(mergeInfo)}
+          collapsed={prefs.speakerPanelCollapsed}
+          onCollapsedChange={(value) => updatePrefs({ speakerPanelCollapsed: value })}
         />
       )}
+      </div>
     </div>
   )
-  const isDesktop = useMediaQuery("(min-width: 768px)")
   const contentPane = <ResultContentPane view={view} />
 
   // Phones: player pinned on top, one row of speakers, then the tabs fill the rest. Only the tab body scrolls.
@@ -369,30 +376,16 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultVi
 
   return (
     <div className="flex h-full flex-col">
-      {/* Desktop: back, title and actions live in the app title bar; phones keep their own bar. */}
-      {isDesktop ? (
-        <HeaderContext>
-          <div className="flex min-w-0 flex-1 items-center gap-1.5">
-            <Button className="h-8 shrink-0 px-2" variant="ghost" size="sm" onClick={() => navigate(libraryHash())}>
-              <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
-              文件库
-            </Button>
-            {titleArea}
-            {processingBadge}
-            {moreMenu}
-          </div>
-        </HeaderContext>
-      ) : (
-        <div className="flex shrink-0 items-center gap-2 border-b px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-2">
-          <Button className="h-11 md:h-8" variant="ghost" size="sm" onClick={() => navigate(libraryHash())}>
-            <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4 mr-1" />
-            返回
-          </Button>
-          {titleArea}
-          {processingBadge}
-          {moreMenu}
-        </div>
-      )}
+      {/* Title bar */}
+      <div className="flex shrink-0 items-center gap-2 border-b px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-2">
+        <Button className="h-11 md:h-8" variant="ghost" size="sm" onClick={() => navigate(libraryHash())}>
+          <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4 mr-1" />
+          返回
+        </Button>
+        {titleArea}
+        {processingBadge}
+        {moreMenu}
+      </div>
 
       {showFlowDiagnostics && (taskFlow || recentTimelineEvents.length > 0) && (
         <div className="shrink-0 border-b bg-background px-4 py-3">

@@ -12,6 +12,8 @@ interface Preferences {
   videoLoop: boolean
   /** Offer to process links found on the clipboard when returning to MPP */
   clipboardDetect: boolean
+  /** Result page: speaker timeline folded to one row */
+  speakerPanelCollapsed: boolean
 }
 
 const STORAGE_KEY = "mpp-preferences"
@@ -27,7 +29,7 @@ function load(): Preferences {
 }
 
 function defaults(): Preferences {
-  return { startupPage: "files", lastArchivePath: null, videoLoop: false, clipboardDetect: true }
+  return { startupPage: "files", lastArchivePath: null, videoLoop: false, clipboardDetect: true, speakerPanelCollapsed: false }
 }
 
 let current = load()

@@ -14,6 +14,9 @@ interface SpeakerPanelProps {
   editingDisabled?: boolean
   /** Phones: one row of speaker chips; the full timeline opens on demand. */
   compact?: boolean
+  /** Desktop: collapsed to the chips row; the choice is kept by the caller */
+  collapsed?: boolean
+  onCollapsedChange?: (collapsed: boolean) => void
 }
 
 interface SpeakerInfo {
@@ -26,9 +29,13 @@ interface SpeakerInfo {
 
 export function SpeakerPanel({
   subtitles, duration, currentTime, onSeek, onRenameSpeaker,
-  renaming = false, editingDisabled = false, compact = false,
+  renaming = false, editingDisabled = false, compact = false, collapsed, onCollapsedChange,
 }: SpeakerPanelProps) {
-  const [expanded, setExpanded] = useState(false)
+  const [expandedLocal, setExpandedLocal] = useState(false)
+  const controlled = onCollapsedChange !== undefined
+  const collapsible = controlled || compact
+  const expanded = controlled ? !collapsed : expandedLocal
+  const setExpanded = (value: boolean) => (controlled ? onCollapsedChange(!value) : setExpandedLocal(value))
   const durationMs = duration * 1000 || subtitles.at(-1)?.endTime || 0
   const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null)
   const [editValue, setEditValue] = useState("")
@@ -92,7 +99,7 @@ export function SpeakerPanel({
 
   const playheadPct = durationMs > 0 ? ((currentTime * 1000) / durationMs) * 100 : 0
 
-  if (compact && !expanded) {
+  if (collapsible && !expanded) {
     const nowMs = currentTime * 1000
     const speaking = findSubtitleAtTime(subtitles, nowMs)?.speaker
     // Tapping a chip jumps to that person's next turn, so a conversation can be skimmed by speaker.
@@ -129,7 +136,7 @@ export function SpeakerPanel({
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-base font-semibold text-foreground">说话人</h3>
-        {compact && (
+        {collapsible && (
           <button type="button" onClick={() => setExpanded(false)} className="h-7 px-1.5 text-xs text-primary">
             收起
           </button>
