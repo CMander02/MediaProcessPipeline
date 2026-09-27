@@ -341,6 +341,62 @@ class TaskQueue:
         """Queue an in-place checkpoint rerun from any durable stopped state."""
         return await self.resume(task_id, force=True)
 
+    async def rerun_full(self, task_id: UUID) -> bool:
+        """Restart all processing stages in the task's existing directory."""
+        store = get_task_store()
+        task = store.get(task_id)
+        if not task or task.status not in {
+            TaskStatus.FAILED, TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.PAUSED,
+        } or task_id in self._running_tasks:
+            return False
+        task_dir = next((p for p in self._task_output_dirs(task) if p.is_dir()), None)
+        if task_dir:
+            from app.core.paths import managed_child
+            from app.core.settings import get_runtime_settings
+            task_dir = managed_child(task_dir, get_runtime_settings().data_root)
+            # Drop generated outputs and their fallback copies; retain source media,
+            # downloaded subtitles, metadata, and user files for the new run.
+            generated = (
+                "transcript.srt", "transcript_polished.srt", "transcript_polished.md",
+                "speaker_map.json", "speaker_review.json", "subtitle_speakers.json",
+                "speaker_identity.json", "analysis.json", "summary.json", "summary.md",
+                "mindmap.json", "mindmap.md", "detail.md", "subtitle_validation.json",
+                "source_context.json", "source_context.asr.json",
+            )
+            for filename in generated:
+                (task_dir / filename).unlink(missing_ok=True)
+                store.delete_artifact(task_id, filename)
+            descriptions = task_dir / "descriptions"
+            if descriptions.is_dir():
+                for path in descriptions.glob("*.md"):
+                    path.unlink()
+                    store.delete_artifact(task_id, path.relative_to(task_dir).as_posix())
+            # Local staging sources may already have been moved into the archive.
+            from app.core.pipeline_steps.sources import _looks_like_local_path
+            if _looks_like_local_path(task.source) and not Path(task.source).is_file():
+                local_source = task_dir / Path(task.source).name
+                if local_source.is_file():
+                    task.source = str(local_source)
+        task.result = {"output_dir": str(task_dir)} if task_dir else None
+        task.completed_steps = []
+        task.current_step = None
+        task.flow = None
+        task.steps = []
+        task.error = None
+        task.completed_at = None
+        task.progress = 0
+        task.status = TaskStatus.QUEUED
+        task.message = "已重新排队，将在原文件夹完整重做"
+        store.save(task)
+        if task_dir:
+            from app.core.pipeline import update_metadata_status
+            update_metadata_status(task_dir, "queued")
+        await get_event_bus().publish(TaskEvent(task_id, "resumed", {
+            "status": "queued", "message": task.message,
+        }))
+        await self.submit(task_id)
+        return True
+
     async def delete(self, task_id: UUID) -> dict[str, Any] | None:
         """Stop a task and remove its outputs through the recoverable archive lifecycle."""
         store = get_task_store()

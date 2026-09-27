@@ -367,6 +367,17 @@ async def checkpoint_rerun_task(task_id: UUID):
     raise HTTPException(400, f"Cannot checkpoint-rerun task in status: {task.status}")
 
 
+@router.post("/{task_id}/full-rerun")
+async def full_rerun_task(task_id: UUID):
+    """Restart processing in the original archive directory."""
+    if await get_task_queue().rerun_full(task_id):
+        return {"message": "Full rerun queued", "task_id": str(task_id)}
+    task = get_task_store().get(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    raise HTTPException(400, "请等待任务停止后再完整重做")
+
+
 @router.delete("/{task_id}")
 async def delete_task(task_id: UUID):
     """Delete a task and its output directory when it is under data_root."""

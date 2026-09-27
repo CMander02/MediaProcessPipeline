@@ -511,6 +511,13 @@ class TaskStore:
             "SELECT * FROM task_artifacts WHERE task_id = ? ORDER BY filename", (str(task_id),)
         ).fetchall()]
 
+    def delete_artifact(self, task_id: UUID | str, filename: str) -> None:
+        with _db_lock:
+            conn = _get_conn()
+            conn.execute("DELETE FROM task_artifacts WHERE task_id = ? AND filename = ?",
+                         (str(task_id), filename))
+            conn.commit()
+
     def find_task_by_output_dir(self, output_dir: Path | str) -> Task | None:
         """Resolve stored output paths directly without loading thousands of task models."""
         import os
