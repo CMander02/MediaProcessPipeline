@@ -306,6 +306,10 @@ class YtdlpService:
                 subprocess.run(
                     [
                         "ffmpeg",
+                        # Only errors on stderr, so the logged excerpt is the error itself.
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
                         "-i",
                         str(video_file),
                         "-vn",

@@ -556,6 +556,15 @@ class TaskStore:
             cur = conn.execute("SELECT COUNT(*) FROM tasks")
         return cur.fetchone()[0]
 
+    def count_since(self, status: str, since: datetime) -> int:
+        """Tasks in `status` that finished at or after `since` (local time, like completed_at)."""
+        conn = _get_conn()
+        cur = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status = ? AND completed_at >= ?",
+            (status, since.isoformat()),
+        )
+        return cur.fetchone()[0]
+
     def stats(self) -> dict[str, int]:
         """Return a status → count mapping."""
         conn = _get_conn()

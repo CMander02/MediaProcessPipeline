@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core.workspace_lifecycle import run_in_thread, WorkspaceActivityMiddleware, drain_workspace_threads
 
-from app.api.routes import auth, filesystem, logs, pipeline, sync, tasks, voiceprints
+from app.api.routes import auth, filesystem, logs, pipeline, sync, system, tasks, voiceprints
 from app.api.routes import kb as kb_router
 from app.api.routes import settings as settings_router
 from app.core.config import get_settings
@@ -232,6 +232,7 @@ app.include_router(kb_router.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(sync.router, prefix="/api")
 app.include_router(logs.router, prefix="/api")
+app.include_router(system.router, prefix="/api")
 
 
 @app.get("/health")

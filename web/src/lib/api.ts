@@ -102,6 +102,49 @@ export interface BackendLogFilesResponse {
   files: BackendLogFile[]
 }
 
+export interface SystemGpuDevice {
+  index: number
+  name: string
+  memory_total_mb: number | null
+  memory_used_mb: number | null
+  utilization: number | null
+  temperature: number | null
+}
+
+export interface SystemError {
+  time: string
+  module: string
+  event: string
+  message: string
+  task_id: string
+  /** Times the same error was logged */
+  count: number
+}
+
+/** GET /api/system: what the machine and the daemon are doing now. */
+export interface SystemStatus {
+  version: string
+  pid: number
+  started_at: string | null
+  gpu: {
+    available: boolean
+    devices: SystemGpuDevice[]
+    error: string | null
+    /** CUDA memory this daemon holds through PyTorch, when it uses the GPU */
+    mpp_reserved_mb: number | null
+  }
+  models: Array<{ kind: string; name: string; pid?: number }>
+  workers: {
+    gpu: { busy: boolean; task_id: string | null; title: string | null; step: string | null }
+    downloads: { active: number; slots: number }
+    waiting: number
+    paused: number
+  }
+  disk: { path: string; total: number | null; used: number | null; free: number | null; error: string | null }
+  errors: { since: string; count: number; recent: SystemError[] }
+  failed_tasks_24h: number
+}
+
 export interface BackendLogResponse {
   file: string
   active: boolean
@@ -495,6 +538,8 @@ async function httpDelete<T>(path: string, body?: unknown): Promise<T> {
 
 export const api = {
   health: () => get<HealthInfo>("/health"),
+
+  system: () => get<SystemStatus>("/api/system"),
 
   logs: {
     files: () => get<BackendLogFilesResponse>("/api/logs/files"),

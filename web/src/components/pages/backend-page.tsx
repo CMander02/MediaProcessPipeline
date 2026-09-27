@@ -8,27 +8,17 @@ import {
 } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
-  Activity01Icon,
-  AiBrain01Icon,
-  Alert02Icon,
-  CheckmarkCircle02Icon,
-  Clock01Icon,
   ComputerTerminal01Icon,
   Copy01Icon,
-  Database01Icon,
   Download01Icon,
-  File01Icon,
-  InformationCircleIcon,
   Loading03Icon,
   PauseIcon,
   PlayIcon,
-  RefreshIcon,
   Search01Icon,
-  ServerStack01Icon,
-  Task01Icon,
 } from "@hugeicons/core-free-icons"
 
 import { ActivityContent } from "@/components/activity/activity-content"
+import { SystemPanel } from "@/components/backend/system-panel"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -60,33 +50,23 @@ import {
 } from "@/components/ui/sheet"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { useActiveTasks } from "@/hooks/use-active-tasks"
 import { useAppAccess } from "@/hooks/use-app-access-context"
-import {
-  api,
-  type BackendLogEntry,
-  type BackendLogFile,
-  type HealthInfo,
-  type Settings,
-  type Task,
-  type TaskStats,
-} from "@/lib/api"
+import { api, type BackendLogEntry, type BackendLogFile } from "@/lib/api"
 import { buildHash, navigate, useRoute } from "@/lib/router"
 import { cn } from "@/lib/utils"
 
-type BackendTab = "overview" | "logs" | "tasks" | "models" | "diagnostics"
-type IconData = Parameters<typeof HugeiconsIcon>[0]["icon"]
+type BackendTab = "system" | "tasks" | "logs"
 
-const activeStatuses = new Set<Task["status"]>(["queued", "processing", "paused"])
 const backendTabs: Array<{ value: BackendTab; label: string }> = [
-  { value: "overview", label: "概览" },
-  { value: "logs", label: "实时日志" },
+  { value: "system", label: "系统" },
   { value: "tasks", label: "任务队列" },
-  { value: "models", label: "模型运行" },
-  { value: "diagnostics", label: "诊断" },
+  { value: "logs", label: "实时日志" },
 ]
 
+// Older links point at tabs that are now part of 系统.
 function backendTabFromParam(requested: string | undefined): BackendTab {
-  return backendTabs.some((tab) => tab.value === requested) ? requested as BackendTab : "overview"
+  return backendTabs.some((tab) => tab.value === requested) ? requested as BackendTab : "system"
 }
 
 function formatBytes(value: number) {
@@ -99,152 +79,9 @@ function formatLogTime(value: string) {
   return value.length >= 23 ? value.slice(5, 23) : value || "--"
 }
 
-function InfoRow({
-  icon,
-  label,
-  value,
-  detail,
-}: {
-  icon: IconData
-  label: string
-  value: string
-  detail?: string
-}) {
-  return (
-    <div className="flex min-h-14 items-center gap-3 py-2.5">
-      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-        <HugeiconsIcon icon={icon} />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block text-xs text-muted-foreground">{label}</span>
-        <span className="mt-0.5 block truncate text-sm font-medium" title={value}>{value}</span>
-      </span>
-      {detail ? <span className="hidden shrink-0 text-xs text-muted-foreground sm:block">{detail}</span> : null}
-    </div>
-  )
-}
-
-function StatusStrip({
-  serviceHealthy,
-  activeCount,
-  modelState,
-  version,
-}: {
-  serviceHealthy: boolean
-  activeCount: number
-  modelState: string
-  version: string
-}) {
-  const items = [
-    { icon: ServerStack01Icon, label: serviceHealthy ? "服务正常" : "检查中" },
-    { icon: Task01Icon, label: `${activeCount} 个活动任务` },
-    { icon: AiBrain01Icon, label: `模型${modelState}` },
-    { icon: InformationCircleIcon, label: version },
-  ]
-
-  return (
-    <Card size="sm" className="shadow-none">
-      <CardContent className="grid grid-cols-2 p-0 xl:grid-cols-4">
-        {items.map((item, index) => (
-          <div
-            key={item.label}
-            className={cn(
-              "flex min-h-12 items-center gap-2 px-4",
-              index % 2 === 0 ? "border-r" : "",
-              index < 2 ? "border-b xl:border-b-0" : "",
-              index > 0 ? "xl:border-l" : "",
-              index % 2 === 0 ? "xl:border-r-0" : "",
-            )}
-          >
-            <HugeiconsIcon icon={item.icon} className="size-4 text-muted-foreground" />
-            <span className="truncate text-sm font-medium">{item.label}</span>
-          </div>
-        ))}
-      </CardContent>
-    </Card>
-  )
-}
-
-function RuntimeCard({
-  title,
-  description,
-  icon,
-  rows,
-}: {
-  title: string
-  description: string
-  icon: IconData
-  rows: Array<{ icon: IconData; label: string; value: string; detail?: string }>
-}) {
-  return (
-    <Card className="gap-0 py-0 shadow-none">
-      <CardHeader className="border-b py-4">
-        <span className="flex items-center gap-2">
-          <span className="flex size-9 items-center justify-center rounded-lg bg-muted text-primary">
-            <HugeiconsIcon icon={icon} />
-          </span>
-          <span>
-            <CardTitle>{title}</CardTitle>
-            <CardDescription>{description}</CardDescription>
-          </span>
-        </span>
-      </CardHeader>
-      <CardContent>
-        {rows.map((row, index) => (
-          <div key={row.label}>
-            {index > 0 ? <Separator /> : null}
-            <InfoRow {...row} />
-          </div>
-        ))}
-      </CardContent>
-    </Card>
-  )
-}
-
-function OverviewPanel({
-  serviceHealthy,
-  activeCount,
-  processingCount,
-  health,
-  settings,
-  lastUpdateText,
-}: {
-  serviceHealthy: boolean
-  activeCount: number
-  processingCount: number
-  health: HealthInfo | null
-  settings: Settings | null
-  lastUpdateText: string
-}) {
-  return (
-    <div className="grid gap-4 xl:grid-cols-2">
-      <RuntimeCard
-        title="服务信息"
-        description="当前后端实例与任务运行状态"
-        icon={ServerStack01Icon}
-        rows={[
-          { icon: CheckmarkCircle02Icon, label: "服务状态", value: serviceHealthy ? "运行正常" : "等待检查" },
-          { icon: Task01Icon, label: "活动任务", value: `${activeCount} 个`, detail: `${processingCount} 个正在处理` },
-          { icon: InformationCircleIcon, label: "服务版本", value: health?.version ?? "--" },
-          { icon: Clock01Icon, label: "最后检查", value: lastUpdateText },
-        ]}
-      />
-      <RuntimeCard
-        title="处理配置"
-        description="当前生效的识别与分析模型"
-        icon={AiBrain01Icon}
-        rows={[
-          { icon: Activity01Icon, label: "ASR", value: settings?.asr_provider || "未配置" },
-          { icon: AiBrain01Icon, label: "LLM", value: settings?.llm_provider || "未配置" },
-          { icon: ComputerTerminal01Icon, label: "工作器", value: processingCount > 0 ? "处理中" : "空闲" },
-          { icon: Database01Icon, label: "任务存储", value: "SQLite", detail: "活动与历史统一存储" },
-        ]}
-      />
-    </div>
-  )
-}
-
-function TaskQueuePanel({ count }: { count: number }) {
+function TaskQueuePanel() {
+  const { tasks } = useActiveTasks()
+  const count = tasks.length
   return (
     <Card className="gap-0 py-0 shadow-none">
       <CardHeader className="border-b py-4">
@@ -256,46 +93,6 @@ function TaskQueuePanel({ count }: { count: number }) {
         <ActivityContent />
       </CardContent>
     </Card>
-  )
-}
-
-function ModelPanel({ settings, processingCount }: { settings: Settings | null; processingCount: number }) {
-  return (
-    <RuntimeCard
-      title="模型运行"
-      description="当前模型选择与单 GPU 工作器状态"
-      icon={AiBrain01Icon}
-      rows={[
-        { icon: Activity01Icon, label: "语音识别提供方", value: settings?.asr_provider || "未配置" },
-        { icon: File01Icon, label: "音频处理流程", value: settings?.audio_processing_flow || "未配置" },
-        { icon: AiBrain01Icon, label: "文本分析提供方", value: settings?.llm_provider || "未配置" },
-        { icon: ComputerTerminal01Icon, label: "GPU 工作器", value: processingCount > 0 ? "占用中" : "空闲", detail: "单工作器串行处理" },
-      ]}
-    />
-  )
-}
-
-function DiagnosticsPanel({
-  serviceHealthy,
-  settings,
-  processingCount,
-}: {
-  serviceHealthy: boolean
-  settings: Settings | null
-  processingCount: number
-}) {
-  return (
-    <RuntimeCard
-      title="运行诊断"
-      description="后端核心链路的当前可用状态"
-      icon={Activity01Icon}
-      rows={[
-        { icon: serviceHealthy ? CheckmarkCircle02Icon : Alert02Icon, label: "HTTP API", value: serviceHealthy ? "连接正常" : "等待响应", detail: "localhost:18000" },
-        { icon: File01Icon, label: "文件日志", value: "已启用", detail: "支持实时读取与历史文件切换" },
-        { icon: Database01Icon, label: "运行配置", value: settings ? "已加载" : "等待加载" },
-        { icon: ComputerTerminal01Icon, label: "任务工作器", value: processingCount > 0 ? "正在处理任务" : "等待任务" },
-      ]}
-    />
   )
 }
 
@@ -570,60 +367,7 @@ export function BackendPage() {
   const { online } = useAppAccess()
   const route = useRoute()
   const activeTab = backendTabFromParam(route.params.tab)
-  const [health, setHealth] = useState<HealthInfo | null>(null)
-  const [stats, setStats] = useState<TaskStats | null>(null)
-  const [tasks, setTasks] = useState<Task[]>([])
-  const [settings, setSettings] = useState<Settings | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [refreshing, setRefreshing] = useState(false)
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
-
-  const refresh = useCallback(async (showBusy = false) => {
-    if (!online) return
-    if (showBusy) setRefreshing(true)
-    try {
-      const [healthInfo, taskStats, queued, processing, paused, runtimeSettings] = await Promise.all([
-        api.health(),
-        api.tasks.stats(),
-        api.tasks.list("queued", 50),
-        api.tasks.list("processing", 50),
-        api.tasks.list("paused", 50),
-        api.settings.get(),
-      ])
-      setHealth(healthInfo)
-      setStats(taskStats)
-      setTasks(
-        [...processing, ...queued, ...paused]
-          .filter((task, index, all) => activeStatuses.has(task.status) && all.findIndex((item) => item.id === task.id) === index)
-          .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)),
-      )
-      setSettings(runtimeSettings)
-      setError(null)
-      setLastUpdated(new Date())
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : String(requestError))
-    } finally {
-      if (showBusy) setRefreshing(false)
-    }
-  }, [online])
-
-  useEffect(() => {
-    if (!online) return
-    void refresh()
-    const timer = window.setInterval(() => void refresh(), 10_000)
-    return () => window.clearInterval(timer)
-  }, [online, refresh])
-
-  const processingCount = stats?.processing ?? tasks.filter((task) => task.status === "processing").length
-  const activeCount = stats
-    ? (stats.processing ?? 0) + (stats.queued ?? 0) + (stats.paused ?? 0)
-    : tasks.length
-  const serviceHealthy = health?.status === "ok" || health?.status === "healthy"
-  const modelState = processingCount > 0 ? "占用中" : "空闲"
-  const lastUpdateText = useMemo(
-    () => lastUpdated?.toLocaleTimeString("zh-CN", { hour12: false }) ?? "等待首次检查",
-    [lastUpdated],
-  )
+  const showTab = (value: string) => navigate(buildHash("backend", { tab: value }), { replace: true })
 
   if (!online) {
     return <OfflineState className="h-full" title="后端当前离线" description="连接服务器后可查看运行状态、日志和任务控制。" />
@@ -632,29 +376,19 @@ export function BackendPage() {
   return (
     <section className="h-full min-h-0 overflow-y-auto bg-background">
       <div className="mx-auto flex w-full max-w-[1920px] flex-col gap-4 p-3 pb-8 sm:p-6">
-        <header className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-lg font-semibold md:text-xl">
-              <HugeiconsIcon icon={ComputerTerminal01Icon} className="size-5 text-primary" />
-              后端运行中心
-            </div>
-            <p className="mt-1 text-sm text-muted-foreground">服务状态、完整日志、任务队列与模型运行统一查看。</p>
+        <header className="min-w-0">
+          <div className="flex items-center gap-2 text-lg font-semibold md:text-xl">
+            <HugeiconsIcon icon={ComputerTerminal01Icon} className="size-5 text-primary" />
+            后端
           </div>
-          <Button className="h-11 md:h-9" variant="outline" onClick={() => void refresh(true)} disabled={refreshing}>
-            <HugeiconsIcon icon={RefreshIcon} data-icon="inline-start" className={cn(refreshing && "animate-spin")} />
-            刷新状态
-          </Button>
+          <p className="mt-1 text-sm text-muted-foreground">GPU、磁盘、任务队列和日志。</p>
         </header>
 
-        {error ? <div className="rounded-lg border border-destructive/30 px-3 py-2 text-sm text-destructive" role="alert">服务状态读取失败：{error}</div> : null}
-
-        <Tabs value={activeTab} onValueChange={(value) => {
-          navigate(buildHash("backend", { tab: value }), { replace: true })
-        }} className="gap-0">
+        <Tabs value={activeTab} onValueChange={showTab} className="gap-0">
           <div className="grid min-w-0 gap-4 lg:grid-cols-[11rem_minmax(0,1fr)] lg:items-start">
             <aside className="min-w-0 lg:sticky lg:top-4">
               <div className="overflow-x-auto rounded-lg border p-1">
-                <TabsList className="flex min-w-[520px] w-full justify-start gap-1 bg-transparent p-0 group-data-horizontal/tabs:h-auto lg:min-w-0 lg:flex-col">
+                <TabsList className="flex w-full justify-start gap-1 bg-transparent p-0 group-data-horizontal/tabs:h-auto lg:flex-col">
                   {backendTabs.map((tab) => (
                     <TabsTrigger
                       key={tab.value}
@@ -669,17 +403,13 @@ export function BackendPage() {
             </aside>
 
             <div className="flex min-w-0 flex-col gap-4">
-              <StatusStrip serviceHealthy={serviceHealthy} activeCount={activeCount} modelState={modelState} version={health?.version ?? "--"} />
-
-              <TabsContent value="overview">
-                <OverviewPanel serviceHealthy={serviceHealthy} activeCount={activeCount} processingCount={processingCount} health={health} settings={settings} lastUpdateText={lastUpdateText} />
+              <TabsContent value="system">
+                <SystemPanel active={activeTab === "system"} onShowQueue={() => showTab("tasks")} />
               </TabsContent>
+              <TabsContent value="tasks"><TaskQueuePanel /></TabsContent>
               <TabsContent value="logs">
                 <LogPanel key={route.params.q ?? ""} active={activeTab === "logs"} online={online} initialSearch={route.params.q ?? ""} />
               </TabsContent>
-              <TabsContent value="tasks"><TaskQueuePanel count={activeCount} /></TabsContent>
-              <TabsContent value="models"><ModelPanel settings={settings} processingCount={processingCount} /></TabsContent>
-              <TabsContent value="diagnostics"><DiagnosticsPanel serviceHealthy={serviceHealthy} settings={settings} processingCount={processingCount} /></TabsContent>
             </div>
           </div>
         </Tabs>

@@ -158,6 +158,15 @@ class TaskQueue:
         return ids
 
     @property
+    def gpu_task_id(self) -> UUID | None:
+        """The task transcribing or post-processing now."""
+        return self._active_gpu_id
+
+    @property
+    def download_task_ids(self) -> set[UUID]:
+        return set(self._active_download_ids)
+
+    @property
     def pending_count(self) -> int:
         return (
             self._download_queue.qsize()
