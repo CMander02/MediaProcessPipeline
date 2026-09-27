@@ -30,6 +30,11 @@ describe("alignSecondary", () => {
     expect(alignSecondary(polished, english)).toEqual(["Hi everyone", "Let me start", "Sure"])
   })
 
+  it("joins Chinese cues without spaces, after full stops too", () => {
+    const chinese = [cue(1, 0, 1500, "首位？"), cue(2, 1500, 2500, "我选贾里德。"), cue(3, 2500, 3500, "任意地。")]
+    expect(alignSecondary(polished, chinese)[0]).toBe("首位？我选贾里德。任意地。")
+  })
+
   it("does not repeat rolling captions", () => {
     const rolling = [cue(1, 0, 2000, "Hi everyone"), cue(2, 1000, 3000, "Hi everyone")]
     expect(alignSecondary(polished, rolling)[0]).toBe("Hi everyone")
