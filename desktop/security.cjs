@@ -15,4 +15,16 @@ function isLauncherSender(event, window, launcherUrl) {
     && event.senderFrame.url === launcherUrl;
 }
 
-module.exports = { isAppUrl, isExternalUrl, isLauncherSender };
+// The MPP page itself (served by the backend), in our window's main frame.
+function isAppSender(event, window, serverUrl) {
+  return !window.isDestroyed() && event.sender === window.webContents
+    && event.senderFrame === window.webContents.mainFrame
+    && isAppUrl(event.senderFrame.url, serverUrl);
+}
+
+// Window button overlay colours come from the page; only plain #rrggbb is passed on.
+function isHexColor(value) {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value);
+}
+
+module.exports = { isAppSender, isAppUrl, isExternalUrl, isHexColor, isLauncherSender };

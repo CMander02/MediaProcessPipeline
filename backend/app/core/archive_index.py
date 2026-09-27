@@ -141,7 +141,11 @@ ORDERING = {
     "published_desc": "published_at DESC",
     "title_asc": "title COLLATE ARCHIVE_TITLE ASC",
 }
-STATUSES = ("all", "processing", "paused", "failed", "completed", "duplicates")
+STATUSES = ("processing", "paused", "failed", "completed")
+SOURCES = (
+    "xiaohongshu", "bilibili", "youtube", "x", "webpage", "zhihu",
+    "xiaoyuzhou", "apple_podcast", "local", "other",
+)
 
 # Library status of an indexed archive, derived from the task status copied into metadata.json.
 # Cancelled runs are grouped with failed ones: both left an unfinished archive behind.
@@ -230,62 +234,80 @@ def _ids_param(ids) -> str:
     return json.dumps(sorted(ids))
 
 
-def _conditions(groups: LibraryGroups, *, search, media, source, status):
-    where = ["deleted=0", MEDIA_CONDITIONS[media]]
+def filter_values(value, allowed, name: str) -> list[str]:
+    """Normalise one filter: "all", "", a comma list or a list of values."""
+    if value is None:
+        return []
+    items = value.split(",") if isinstance(value, str) else list(value)
+    chosen = sorted({str(item).strip() for item in items} - {"", "all"})
+    unknown = [item for item in chosen if item not in allowed]
+    if unknown:
+        raise ValueError(f"Unknown {name} filter: {', '.join(unknown)}")
+    return chosen
+
+
+def _in_clause(column: str, values: list[str]) -> str:
+    return f"{column} IN ({','.join('?' * len(values))})"
+
+
+def _conditions(groups: LibraryGroups, *, search, media, source, status, duplicates):
+    """WHERE clause for the library; values within a filter are OR-ed, filters are AND-ed."""
+    where = ["deleted=0"]
     values: list = []
+    if media:
+        where.append("(" + " OR ".join(MEDIA_CONDITIONS[item] for item in media) + ")")
     if search.strip():
         where.append("instr(title_search, ?) > 0")
         values.append(search.lower())
-    if source != "all":
-        where.append("platform=?")
-        values.append(source)
-    if status == "duplicates":
-        # Show every attempt so they can be compared and cleaned up.
+    if source:
+        where.append(_in_clause("platform", source))
+        values.extend(source)
+    if duplicates:
+        # Every run of sources processed more than once, so they can be compared and cleaned up.
         where.append("archive_id IN (SELECT value FROM json_each(?))")
         values.append(_ids_param(groups.members))
-    else:
-        if groups.hidden:
-            where.append("archive_id NOT IN (SELECT value FROM json_each(?))")
-            values.append(_ids_param(groups.hidden))
-        if status != "all":
-            where.append(f"({STATUS_BUCKET_SQL})=?")
-            values.append(status)
+    elif groups.hidden:
+        where.append("archive_id NOT IN (SELECT value FROM json_each(?))")
+        values.append(_ids_param(groups.hidden))
+    if status:
+        where.append(_in_clause(f"({STATUS_BUCKET_SQL})", status))
+        values.extend(status)
     return " AND ".join(where), values
 
 
-def _facets(conn, groups: LibraryGroups, *, search, media, source, status) -> dict:
-    """Counts for the status chips and filter menus, each ignoring its own filter."""
-    clause, values = _conditions(groups, search=search, media=media, source=source, status="all")
-    status_counts = {name: 0 for name in STATUSES}
+def _count(conn, clause: str, values: list) -> int:
+    return conn.execute(f"SELECT COUNT(*) FROM archive_sync_index WHERE {clause}", values).fetchone()[0]
+
+
+def _facets(conn, groups: LibraryGroups, *, search, media, source, status, duplicates) -> dict:
+    """Counts for each filter option, each computed as if its own filter were cleared."""
+    filters = {"search": search, "media": media, "source": source, "status": status, "duplicates": duplicates}
+
+    clause, values = _conditions(groups, **{**filters, "status": []})
+    status_counts = {name: 0 for name in ("all", *STATUSES, "duplicates")}
     for bucket, count in conn.execute(
         f"SELECT {STATUS_BUCKET_SQL} AS bucket, COUNT(*) FROM archive_sync_index "
         f"WHERE {clause} GROUP BY bucket", values
     ).fetchall():
         status_counts[bucket] = count
         status_counts["all"] += count
-    with_copies = [archive_id for archive_id, count in groups.attempts.items() if count > 1]
-    status_counts["duplicates"] = conn.execute(
-        f"SELECT COUNT(*) FROM archive_sync_index WHERE {clause} "
-        "AND archive_id IN (SELECT value FROM json_each(?))",
-        (*values, _ids_param(with_copies)),
-    ).fetchone()[0] if with_copies else 0
+    # How many cards the duplicates switch would show with the other filters kept.
+    status_counts["duplicates"] = _count(conn, *_conditions(groups, **{**filters, "duplicates": True}))
 
-    clause, values = _conditions(groups, search=search, media=media, source="all", status=status)
+    clause, values = _conditions(groups, **{**filters, "source": []})
     source_counts = dict(conn.execute(
         f"SELECT platform, COUNT(*) FROM archive_sync_index WHERE {clause} GROUP BY platform", values
     ).fetchall())
 
-    clause, values = _conditions(groups, search=search, media="all", source=source, status=status)
+    clause, values = _conditions(groups, **{**filters, "media": []})
     sums = ", ".join(
         f"SUM(CASE WHEN {condition} THEN 1 ELSE 0 END)" for condition in MEDIA_CONDITIONS.values()
     )
     counts = conn.execute(f"SELECT {sums} FROM archive_sync_index WHERE {clause}", values).fetchone()
     media_counts = {name: int(count or 0) for name, count in zip(MEDIA_CONDITIONS, counts)}
 
-    clause, values = _conditions(groups, search="", media="all", source="all", status="all")
-    library_total = conn.execute(
-        f"SELECT COUNT(*) FROM archive_sync_index WHERE {clause}", values
-    ).fetchone()[0]
+    library_total = _count(conn, *_conditions(
+        groups, search="", media=[], source=[], status=[], duplicates=False))
     return {
         "status": status_counts,
         "source": source_counts,
@@ -296,20 +318,27 @@ def _facets(conn, groups: LibraryGroups, *, search, media, source, status) -> di
 
 def query_library(
     conn, *, page=1, page_size=28, search="", media="all", source="all",
-    sort="created_desc", status="all",
+    sort="created_desc", status="all", duplicates=False,
 ) -> dict:
-    if media not in MEDIA_CONDITIONS or sort not in ORDERING or status not in STATUSES:
-        raise ValueError("Unknown archive filter or ordering")
+    """One page of the library. media, source and status take one value, a comma list or a list."""
+    if sort not in ORDERING:
+        raise ValueError("Unknown archive ordering")
+    media = filter_values(media, [name for name in MEDIA_CONDITIONS if name != "all"], "media")
+    source = filter_values(source, SOURCES, "source")
+    status = filter_values(status, (*STATUSES, "duplicates"), "status")
+    if "duplicates" in status:  # older clients sent the duplicates view as a status
+        status = [item for item in status if item != "duplicates"]
+        duplicates = True
+    filters = {"search": search, "media": media, "source": source, "status": status,
+               "duplicates": bool(duplicates)}
     groups = library_groups(conn)
-    clause, values = _conditions(groups, search=search, media=media, source=source, status=status)
-    total = conn.execute(
-        "SELECT COUNT(*) FROM archive_sync_index WHERE " + clause, values
-    ).fetchone()[0]
+    clause, values = _conditions(groups, **filters)
+    total = _count(conn, clause, values)
     page = max(1, min(page, max(1, (total + page_size - 1) // page_size)))
-    # Attempts of the same source sit next to each other when listing duplicates.
+    # Runs of the same source sit next to each other when listing duplicates.
     order = (
         "title COLLATE ARCHIVE_TITLE ASC, created_at DESC"
-        if status == "duplicates" else f"processing DESC, {ORDERING[sort]}"
+        if filters["duplicates"] else f"processing DESC, {ORDERING[sort]}"
     )
     rows = conn.execute(
         "SELECT archive_id, snapshot FROM archive_sync_index WHERE "
@@ -322,7 +351,8 @@ def query_library(
         "total": total,
         "page": page,
         "attempts": groups.attempts,
-        "facets": _facets(conn, groups, search=search, media=media, source=source, status=status),
+        "duplicates": filters["duplicates"],
+        "facets": _facets(conn, groups, **filters),
     }
 
 

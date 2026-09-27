@@ -8,32 +8,39 @@ import { MobileFilterSheet } from "@/components/app-shell/mobile-filter-sheet"
 
 afterEach(cleanup)
 
-describe("MobileFilterSheet", () => {
-  it("applies filter choices and restores the shared defaults", () => {
-    const onMediaFilterChange = vi.fn()
-    const onSourceFilterChange = vi.fn()
-    const onSortChange = vi.fn()
+function library() {
+  return {
+    statuses: ["failed" as const],
+    media: ["video" as const],
+    sources: ["bilibili" as const],
+    duplicates: false,
+    sort: "title_asc" as const,
+    setStatuses: vi.fn(),
+    setMedia: vi.fn(),
+    setSources: vi.fn(),
+    setDuplicates: vi.fn(),
+    setSort: vi.fn(),
+    resetFilters: vi.fn(),
+  }
+}
 
-    render(
-      <MobileFilterSheet
-        open
-        onOpenChange={vi.fn()}
-        mediaFilter="video"
-        sourceFilter="bilibili"
-        sort="title_asc"
-        onMediaFilterChange={onMediaFilterChange}
-        onSourceFilterChange={onSourceFilterChange}
-        onSortChange={onSortChange}
-      />,
-    )
+describe("MobileFilterSheet", () => {
+  it("adds and removes values within a group and restores the defaults", () => {
+    const controls = library()
+    render(<MobileFilterSheet open onOpenChange={vi.fn()} library={controls} />)
 
     expect(screen.getByRole("button", { name: "视频" })).toHaveAttribute("aria-pressed", "true")
     fireEvent.click(screen.getByRole("button", { name: "音频" }))
-    expect(onMediaFilterChange).toHaveBeenCalledWith("audio")
+    expect(controls.setMedia).toHaveBeenCalledWith(["video", "audio"])
+
+    fireEvent.click(screen.getByRole("button", { name: "失败" }))
+    expect(controls.setStatuses).toHaveBeenCalledWith([])
+
+    fireEvent.click(screen.getByRole("button", { name: "只看处理过多次的来源" }))
+    expect(controls.setDuplicates).toHaveBeenCalledWith(true)
 
     fireEvent.click(screen.getByRole("button", { name: "恢复默认" }))
-    expect(onMediaFilterChange).toHaveBeenCalledWith("all")
-    expect(onSourceFilterChange).toHaveBeenCalledWith("all")
-    expect(onSortChange).toHaveBeenCalledWith("created_desc")
+    expect(controls.resetFilters).toHaveBeenCalled()
+    expect(controls.setSort).toHaveBeenCalledWith("created_desc")
   })
 })

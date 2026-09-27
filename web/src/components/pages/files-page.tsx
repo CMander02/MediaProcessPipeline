@@ -8,17 +8,12 @@ import { useMediaQuery } from "@/hooks/use-media-query"
 import { navigate } from "@/lib/router"
 import { api, type Task } from "@/lib/api"
 import { cn } from "@/lib/utils"
-import {
-  type ArchiveSort,
-  type MediaFilter,
-  type SourceFilter,
-  type StatusFilter,
-} from "@/lib/archive-filters"
+import { hasActiveFilters, type LibraryFilters } from "@/lib/archive-filters"
+import { archiveQueryFilters } from "@/hooks/use-library-controls"
 import { archiveStatus } from "@/lib/archive-query"
 import { publishLibraryFacets } from "@/lib/library-facets"
 import type { ArchiveItem } from "@/hooks/use-archives"
 import { ArchiveCard } from "@/components/archive-card"
-import { StatusChips } from "@/components/status-chips"
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
 import { MediaRetentionDialog } from "@/components/media-retention-dialog"
 import { BatchMediaRetentionDialog } from "@/components/batch-media-retention-dialog"
@@ -65,13 +60,8 @@ const MAX_QUERY = 500
 const AUTO_CHECK_AFTER_MS = 30 * 60 * 1000
 
 interface FilesPageProps {
-  search: string
-  mediaFilter: MediaFilter
-  sourceFilter: SourceFilter
-  sort: ArchiveSort
-  /** Status chip; kept in the URL like the other filters */
-  status?: StatusFilter
-  onStatusChange?: (status: StatusFilter) => void
+  /** Search, status, type, source and sort from the title bar */
+  filters: LibraryFilters
   /** Current page, kept in the URL so 返回 / reload restore it */
   page?: number
   onPageChange?: (page: number) => void
@@ -83,14 +73,14 @@ let returnFocusPath: string | null = null
 let autoCheckDone = false
 
 export function FilesPage({
-  search, mediaFilter, sourceFilter, sort, status = "all", onStatusChange, page: pageProp, onPageChange,
+  filters, page: pageProp, onPageChange,
 }: FilesPageProps) {
   const { capabilities, online } = useAppAccess()
   const platform = usePlatform()
   const isPhone = useMediaQuery("(max-width: 767px)")
   const { update: updatePrefs } = usePreferences()
   // Fallback local page state for embeddings that don't route the page through the URL (tests).
-  const filterKey = JSON.stringify([search, mediaFilter, sourceFilter, sort, status])
+  const filterKey = JSON.stringify(filters)
   const [pagination, setPagination] = useState({ filterKey, page: 1 })
   if (!onPageChange && pagination.filterKey !== filterKey) setPagination({ filterKey, page: 1 })
   const page = onPageChange ? (pageProp ?? 1) : (pagination.filterKey === filterKey ? pagination.page : 1)
@@ -108,8 +98,7 @@ export function FilesPage({
     ? { page: 1, page_size: phoneLimit }
     : { page, page_size: pageSize }
   const { archives, total, page: resolvedPage, loading, error, indexing, lastReconciledAt, facets,
-    refresh, removeArchive } = useArchivePage({ ...query, search,
-    media: mediaFilter, source: sourceFilter, sort, status })
+    refresh, removeArchive } = useArchivePage({ ...query, ...archiveQueryFilters(filters) })
   const [checking, setChecking] = useState(false)
   const [paginationRangeSize, setPaginationRangeSize] = useState(7)
   const [deleteTarget, setDeleteTarget] = useState<{ title: string; path: string; taskId?: string; taskDelete?: boolean } | null>(null)
@@ -365,7 +354,7 @@ export function FilesPage({
       const found: ArchiveItem[] = []
       for (let next = 1; ; next += 1) {
         const result = await api.archives.page({
-          page: next, page_size: MAX_QUERY, search, media: mediaFilter, source: sourceFilter, sort, status: "failed",
+          page: next, page_size: MAX_QUERY, ...archiveQueryFilters({ ...filters, statuses: ["failed"], duplicates: false }),
         })
         found.push(...(result.archives as ArchiveItem[]))
         if (found.length >= result.total || result.archives.length === 0) break
@@ -504,8 +493,7 @@ export function FilesPage({
   }
 
   const pageItems = getPaginationItems(safePage, totalPages, paginationRangeSize)
-  const statusCounts = facets?.status
-  const filtered = Boolean(search.trim()) || mediaFilter !== "all" || sourceFilter !== "all" || status !== "all"
+  const filtered = hasActiveFilters(filters)
 
   if (loading && !retentionTarget && shown.length === 0) {
     return <LoadingState title="正在加载文件" className="h-full" />
@@ -514,16 +502,9 @@ export function FilesPage({
   return (
     <div className={cn(
       "grid h-full min-h-0 gap-2 px-3 pt-3 pb-1 sm:px-4",
-      platform.isNative
-        ? (isPhone ? "grid-rows-[auto_auto_minmax(0,1fr)_auto]" : "grid-rows-[auto_minmax(0,1fr)_auto]")
-        : (isPhone ? "grid-rows-[auto_minmax(0,1fr)_auto]" : "grid-rows-[minmax(0,1fr)_auto]"),
+      platform.isNative ? "grid-rows-[auto_minmax(0,1fr)_auto]" : "grid-rows-[minmax(0,1fr)_auto]",
     )}>
       {platform.isNative && <OfflineSyncStatus compact />}
-
-      {/* On phones the status chips live in the page; on larger screens they sit in the header */}
-      {isPhone && (
-        <StatusChips status={status} onChange={(next) => onStatusChange?.(next)} counts={statusCounts} className="-mx-1 px-1" />
-      )}
 
       {/* Grid */}
       {shown.length > 0 ? (
@@ -656,12 +637,12 @@ export function FilesPage({
           )}
           {!platform.isNative && (
             <div className="flex min-w-40 shrink-0 items-center justify-end gap-1 max-md:min-w-0">
-              {status === "failed" && online && total > 0 && (
+              {filters.statuses.includes("failed") && !filters.duplicates && online && total > 0 && (
                 <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => void openRetryAll()}>
                   全部重试…
                 </Button>
               )}
-              {status === "duplicates" && capabilities.archive_mutation && (
+              {filters.duplicates && capabilities.archive_mutation && (
                 <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => void openCleanup()}>
                   清理失败副本…
                 </Button>

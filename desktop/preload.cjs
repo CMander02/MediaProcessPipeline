@@ -15,4 +15,12 @@ if (window.location.protocol === 'file:' && window.location.pathname.endsWith('/
       return () => ipcRenderer.removeListener('desktop:state', listener);
     },
   });
+} else if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
+  // The MPP page gets the old native menu's actions and the title bar colours.
+  // The main process only answers when the sender is the MPP page in our window.
+  contextBridge.exposeInMainWorld('mppDesktopApp', {
+    action: (name) => ipcRenderer.invoke('desktop:app-action', name),
+    info: () => ipcRenderer.invoke('desktop:app-info'),
+    setTitleBarColors: (colors) => ipcRenderer.invoke('desktop:title-bar', colors),
+  });
 }

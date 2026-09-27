@@ -2,15 +2,21 @@ export type MediaFilter = "all" | "video" | "audio" | "image"
 
 export type ArchiveSort = "created_desc" | "created_asc" | "published_desc" | "title_asc"
 
-/** Library status chips; "duplicates" lists every run of sources processed more than once. */
-export type StatusFilter = "all" | "processing" | "paused" | "failed" | "completed" | "duplicates"
+/** Library status of an archive; cancelled runs count as failed, as in the server index. */
+export type ArchiveStatus = "processing" | "paused" | "failed" | "completed"
 
-export const STATUS_FILTER_OPTIONS: Array<{ value: StatusFilter; label: string; hint?: string }> = [
-  { value: "all", label: "全部" },
+export const STATUS_OPTIONS: Array<{ value: ArchiveStatus; label: string; hint?: string }> = [
   { value: "processing", label: "处理中" },
   { value: "paused", label: "已暂停" },
-  { value: "failed", label: "失败", hint: "处理失败或被取消的条目" },
-  { value: "duplicates", label: "重复", hint: "同一个来源处理过多次" },
+  { value: "failed", label: "失败", hint: "处理失败或被取消" },
+  { value: "completed", label: "已完成" },
+]
+
+export const SORT_OPTIONS: Array<{ value: ArchiveSort; label: string }> = [
+  { value: "created_desc", label: "最新创建" },
+  { value: "created_asc", label: "最早创建" },
+  { value: "published_desc", label: "最新发布" },
+  { value: "title_asc", label: "标题排序" },
 ]
 
 export type SourceFilter =
@@ -36,6 +42,10 @@ export interface SourceFilterOption {
   label: string
   platform?: string
 }
+
+/** A media type or source that can be picked in the filter (everything except "all"). */
+export type MediaType = Exclude<MediaFilter, "all">
+export type SourceKey = Exclude<SourceFilter, "all">
 
 export const MEDIA_FILTER_OPTIONS: MediaFilterOption[] = [
   { value: "all", label: "全部" },
@@ -90,4 +100,32 @@ export function sourceFilterFromMetadata(metadata: Record<string, unknown> | und
     if (normalized !== "other") return normalized
   }
   return "other"
+}
+
+export const MEDIA_TYPE_OPTIONS = MEDIA_FILTER_OPTIONS.filter(
+  (option): option is MediaFilterOption & { value: MediaType } => option.value !== "all",
+)
+export const SOURCE_KEY_OPTIONS = SOURCE_FILTER_OPTIONS.filter(
+  (option): option is SourceFilterOption & { value: SourceKey } => option.value !== "all",
+)
+
+/** Everything that narrows the library, as kept in the URL. */
+export interface LibraryFilters {
+  search: string
+  media: MediaType[]
+  sources: SourceKey[]
+  statuses: ArchiveStatus[]
+  /** Show every run of sources processed more than once */
+  duplicates: boolean
+  sort: ArchiveSort
+}
+
+export const DEFAULT_LIBRARY_FILTERS: LibraryFilters = {
+  search: "", media: [], sources: [], statuses: [], duplicates: false, sort: "created_desc",
+}
+
+/** True when anything but the sort order narrows the list. */
+export function hasActiveFilters(filters: LibraryFilters): boolean {
+  return Boolean(filters.search.trim()) || filters.media.length > 0 || filters.sources.length > 0
+    || filters.statuses.length > 0 || filters.duplicates
 }

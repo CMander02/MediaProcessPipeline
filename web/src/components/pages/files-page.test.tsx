@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { ArchiveItem } from "@/hooks/use-archives"
 import { FilesPage } from "@/components/pages/files-page"
+import { DEFAULT_LIBRARY_FILTERS } from "@/lib/archive-filters"
 
 const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
@@ -102,7 +103,7 @@ beforeEach(() => {
 describe("FilesPage checkpoint rerun", () => {
   it("keeps the library visible after restarting a completed task", async () => {
     mocks.getTask.mockResolvedValue({ status: "completed" })
-    render(<FilesPage search="" mediaFilter="all" sourceFilter="all" sort="created_desc" />)
+    render(<FilesPage filters={DEFAULT_LIBRARY_FILTERS} />)
 
     fireEvent.click(screen.getByRole("button", { name: "断点续做 断点任务" }))
 
@@ -113,7 +114,7 @@ describe("FilesPage checkpoint rerun", () => {
 
   it("keeps the library visible when the task is already active", async () => {
     mocks.getTask.mockResolvedValue({ status: "processing" })
-    render(<FilesPage search="" mediaFilter="all" sourceFilter="all" sort="created_desc" />)
+    render(<FilesPage filters={DEFAULT_LIBRARY_FILTERS} />)
 
     fireEvent.click(screen.getByRole("button", { name: "断点续做 断点任务" }))
 

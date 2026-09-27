@@ -7,6 +7,7 @@ import { notifyError, notifySuccess } from "@/lib/notify"
 import { taskDisplayTitle } from "@/lib/task-display"
 import { refreshActiveTasks, useActiveTasks } from "@/hooks/use-active-tasks"
 import { openTask } from "@/lib/open-task"
+import { isDesktopApp } from "@/lib/desktop-bridge"
 import { ActivityTaskRow, type TaskRowAction } from "@/components/activity/activity-task-row"
 import { Button } from "@/components/ui/button"
 import {
@@ -189,7 +190,7 @@ export function ActivityContent({ onNavigate }: ActivityContentProps) {
     <div className="flex flex-col gap-3">
       {nothingActive && (
         <p className="rounded-md border border-dashed px-3 py-4 text-center text-[13px] text-muted-foreground">
-          现在没有正在处理的任务。按 Ctrl+N 或把链接粘贴到文件库里即可新建。
+          现在没有正在处理的任务。{isDesktopApp ? "按 Ctrl+N、" : ""}把链接粘贴到文件库里或把音视频拖进窗口即可新建。
         </p>
       )}
       {processing.length > 0 && <Section title="进行中" count={processing.length}>{processing.map((task) => row(task))}</Section>}

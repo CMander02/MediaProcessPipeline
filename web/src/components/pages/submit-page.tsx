@@ -4,6 +4,7 @@ import { Clock01Icon, Link01Icon } from "@hugeicons/core-free-icons"
 
 import { useSubmitHistory } from "@/hooks/use-submit-history"
 import { openComposer } from "@/lib/composer-store"
+import { isDesktopApp } from "@/lib/desktop-bridge"
 import { notifySuccess } from "@/lib/notify"
 import { openTask } from "@/lib/open-task"
 import { navigate } from "@/lib/router"
@@ -33,7 +34,7 @@ export function SubmitPage() {
         <div className="hidden md:block">
           <h1 className="text-lg font-semibold">新建处理</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            在任何页面都可以直接粘贴链接或拖入文件开始处理{/Electron\//.test(navigator.userAgent) ? "，或按 Ctrl+N" : ""}。
+            在任何页面都可以直接粘贴链接或拖入文件开始处理{isDesktopApp ? "，或按 Ctrl+N" : ""}。
           </p>
         </div>
 

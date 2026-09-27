@@ -2,7 +2,7 @@ import { lazy, Suspense } from "react"
 
 import { FilesPage } from "@/components/pages/files-page"
 import { LoadingState } from "@/components/ui/page-state"
-import type { ArchiveSort, MediaFilter, SourceFilter, StatusFilter } from "@/lib/archive-filters"
+import type { LibraryFilters } from "@/lib/archive-filters"
 import type { Route } from "@/lib/router"
 
 const SubmitPage = lazy(() => import("@/components/pages/submit-page").then((module) => ({ default: module.SubmitPage })))
@@ -13,12 +13,7 @@ const SettingsPage = lazy(() => import("@/components/pages/settings-page").then(
 interface AppOutletProps {
   route: Route
   library: {
-    search: string
-    mediaFilter: MediaFilter
-    sourceFilter: SourceFilter
-    sort: ArchiveSort
-    status: StatusFilter
-    onStatusChange: (status: StatusFilter) => void
+    filters: LibraryFilters
     page: number
     onPageChange: (page: number) => void
   }

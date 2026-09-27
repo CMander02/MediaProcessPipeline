@@ -385,18 +385,23 @@ async def archives(
     page: int | None = Query(None, ge=1),
     page_size: int = Query(28, ge=1, le=500),
     search: str = "",
-    media: Literal["all", "video", "audio", "image"] = "all",
-    source: str = "all",
+    media: str = Query("all", description="all, or comma-separated video,audio,image"),
+    source: str = Query("all", description="all, or comma-separated source keys"),
     sort: Literal["created_desc", "created_asc", "published_desc", "title_asc"] = "created_desc",
-    status: Literal["all", "processing", "paused", "failed", "completed", "duplicates"] = "all",
+    status: str = Query("all", description="all, or comma-separated processing,paused,failed,completed"),
+    duplicates: bool = Query(False, description="List every run of sources processed more than once"),
 ):
     """List archived content (all, sorted by mtime desc)."""
     from app.services.archiving import list_archives
     if page is not None:
         from app.core.archive_sync import get_archive_sync_service
-        return await run_in_thread(get_archive_sync_service().list_page, page=page,
-                                   page_size=page_size, search=search, media=media,
-                                   source=source, sort=sort, status=status)
+        try:
+            return await run_in_thread(get_archive_sync_service().list_page, page=page,
+                                       page_size=page_size, search=search, media=media,
+                                       source=source, sort=sort, status=status,
+                                       duplicates=duplicates)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     return {"archives": await list_archives(lite=lite)}
 
 

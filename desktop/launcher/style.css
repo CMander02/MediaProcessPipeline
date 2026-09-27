@@ -1,6 +1,9 @@
 :root { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; color: #202028; background: #fafafa; color-scheme: light; }
 * { box-sizing: border-box; }
-body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 40px 24px; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 56px 24px 40px; }
+/* The window has no native title bar: the page background drags it; controls stay clickable. */
+html { -webkit-app-region: drag; }
+button, summary, pre, #project { -webkit-app-region: no-drag; }
 main { width: min(600px, 100%); }
 header { display: flex; align-items: center; gap: 14px; font-size: 17px; font-weight: 600; margin-bottom: 48px; }
 section { position: relative; padding-left: 30px; }

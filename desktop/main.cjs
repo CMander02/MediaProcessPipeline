@@ -4,7 +4,10 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { BackendController, SERVER_URL } = require('./backend.cjs');
 const { discoverProject } = require('./project.cjs');
-const { isAppUrl, isExternalUrl, isLauncherSender } = require('./security.cjs');
+const { isAppSender, isAppUrl, isExternalUrl, isHexColor, isLauncherSender } = require('./security.cjs');
+
+// The MPP page draws its own title bar at this height; Windows draws the window buttons over it.
+const TITLE_BAR_HEIGHT = 44;
 
 app.setName('MPP Desktop');
 app.setAppUserModelId('com.mediaprocesspipeline.desktop');
@@ -46,6 +49,8 @@ function updateState(next) {
 async function showLauncher(next) {
   updateState(next);
   if (window && !window.isDestroyed() && window.webContents.getURL() !== launcherUrl) {
+    // The launcher is always light; match the window buttons to it again.
+    window.setTitleBarOverlay?.({ color: '#fafafa', symbolColor: '#202028', height: TITLE_BAR_HEIGHT });
     await window.loadFile(launcherFile);
   }
 }
@@ -176,6 +181,9 @@ async function start() {
     title: 'MediaProcessPipeline', width: Math.min(1440, workArea.width), height: Math.min(960, workArea.height),
     minWidth: 800, minHeight: 600, show: false, backgroundColor: '#fafafa', icon: iconFile,
     autoHideMenuBar: true,
+    // One title bar row: the page draws it, the native menu moves into its MPP menu.
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: '#fafafa', symbolColor: '#202028', height: TITLE_BAR_HEIGHT },
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
   secureWindow();
@@ -195,6 +203,26 @@ async function start() {
     if (action === 'choose-project') return chooseProject();
     if (action === 'open-logs') return openLogs();
     if (action === 'quit') app.quit();
+  });
+  // The MPP page's own menu (logo) offers what the hidden native menu had.
+  ipcMain.handle('desktop:app-info', (event) => {
+    if (!isAppSender(event, window, SERVER_URL)) throw new Error('Unsupported sender');
+    return { owned: backend.owned, version: app.getVersion() };
+  });
+  ipcMain.handle('desktop:app-action', async (event, action) => {
+    if (!isAppSender(event, window, SERVER_URL)) throw new Error('Unsupported sender');
+    if (action === 'open-browser') return shell.openExternal(SERVER_URL);
+    if (action === 'reconnect') return connect();
+    if (action === 'choose-project') return chooseProject();
+    if (action === 'open-logs') return openLogs();
+    if (action === 'quit') return app.quit();
+    throw new Error('Unsupported action');
+  });
+  ipcMain.handle('desktop:title-bar', (event, colors) => {
+    if (!isAppSender(event, window, SERVER_URL)) throw new Error('Unsupported sender');
+    if (!isHexColor(colors?.color) || !isHexColor(colors?.symbolColor)) return false;
+    window.setTitleBarOverlay?.({ color: colors.color, symbolColor: colors.symbolColor, height: TITLE_BAR_HEIGHT });
+    return true;
   });
   await window.loadFile(launcherFile);
   await connect();

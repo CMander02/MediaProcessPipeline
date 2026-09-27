@@ -62,6 +62,70 @@ export function ResultSourcePane({ view }: { view: ReturnType<typeof useResultVi
   )
 }
 
+
+/** 复制 and 导出 act on the tab that is open, so they sit in the tab row. */
+function ContentActions({ view }: { view: ReturnType<typeof useResultViewer> }) {
+  const { getTabContent, handleCopy, copied, handleExport, canExportZip, hasExportableContent, subtitles } = view
+  const tabContent = getTabContent()
+  return (
+    <>
+    {tabContent?.content && (
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        onClick={handleCopy}
+        className="h-7 shrink-0 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+        title={`复制「${tabContent.suffix}」的全部内容`}
+      >
+        <HugeiconsIcon icon={copied ? Tick02Icon : Copy01Icon} className={cn("size-3.5", copied && "text-emerald-500")} />
+        {copied ? "已复制" : "复制"}
+      </Button>
+    )}
+    {hasExportableContent && (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 shrink-0 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+          >
+            <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
+            导出
+            <HugeiconsIcon icon={ArrowDown01Icon} className="size-3" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-52">
+          <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">保存为文件</DropdownMenuLabel>
+          <DropdownMenuItem disabled={!tabContent?.content} onClick={() => void handleExport("markdown")}>
+            <span className="flex-1">{tabContent?.suffix ?? "当前标签"}</span>
+            <span className="text-xs text-muted-foreground">Markdown</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem disabled={subtitles.length === 0} onClick={() => void handleExport("srt")}>
+            <span className="flex-1">字幕（带时间轴）</span>
+            <span className="text-xs text-muted-foreground">SRT</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem disabled={subtitles.length === 0} onClick={() => void handleExport("txt")}>
+            <span className="flex-1">字幕（纯文本）</span>
+            <span className="text-xs text-muted-foreground">TXT</span>
+          </DropdownMenuItem>
+          {canExportZip && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => void handleExport("zip")}>
+                <span className="flex-1">全部打包</span>
+                <span className="text-xs text-muted-foreground">zip</span>
+              </DropdownMenuItem>
+            </>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    )}
+    </>
+  )
+}
+
 export function ResultContentPane({ view }: { view: ReturnType<typeof useResultViewer> }) {
   const {
     isPortraitLayout,
@@ -82,12 +146,6 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
     mindmap,
     detail,
     mindmapFit,
-    getTabContent,
-    handleCopy,
-    copied,
-    handleExport,
-    canExportZip,
-    hasExportableContent,
     summary,
     imageDescriptions,
     activeImageIdx,
@@ -115,7 +173,6 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
     setMindmapFit,
   } = view
   const renderSourceTab = () => <ResultSourcePane view={view} />
-  const tabContent = getTabContent()
 
 
   const contentPane = (
@@ -150,59 +207,7 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
               <HugeiconsIcon icon={Gps01Icon} className="h-3.5 w-3.5" />
             </button>
           )}
-          {tabContent?.content && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={handleCopy}
-              className="h-7 shrink-0 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
-              title={`复制「${tabContent.suffix}」的全部内容`}
-            >
-              <HugeiconsIcon icon={copied ? Tick02Icon : Copy01Icon} className={cn("size-3.5", copied && "text-emerald-500")} />
-              {copied ? "已复制" : "复制"}
-            </Button>
-          )}
-          {hasExportableContent && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 shrink-0 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
-                >
-                  <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
-                  导出
-                  <HugeiconsIcon icon={ArrowDown01Icon} className="size-3" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="min-w-52">
-                <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">保存为文件</DropdownMenuLabel>
-                <DropdownMenuItem disabled={!tabContent?.content} onClick={() => void handleExport("markdown")}>
-                  <span className="flex-1">{tabContent?.suffix ?? "当前标签"}</span>
-                  <span className="text-xs text-muted-foreground">Markdown</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem disabled={subtitles.length === 0} onClick={() => void handleExport("srt")}>
-                  <span className="flex-1">字幕（带时间轴）</span>
-                  <span className="text-xs text-muted-foreground">SRT</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem disabled={subtitles.length === 0} onClick={() => void handleExport("txt")}>
-                  <span className="flex-1">字幕（纯文本）</span>
-                  <span className="text-xs text-muted-foreground">TXT</span>
-                </DropdownMenuItem>
-                {canExportZip && (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={() => void handleExport("zip")}>
-                      <span className="flex-1">全部打包</span>
-                      <span className="text-xs text-muted-foreground">zip</span>
-                    </DropdownMenuItem>
-                  </>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
+          <ContentActions view={view} />
         </div>
 
         <TabsContent value="summary" className="mt-3 relative flex-1">

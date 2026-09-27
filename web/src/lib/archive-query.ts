@@ -10,16 +10,26 @@ export function archiveStatus(item: Pick<ArchiveItem, "processing" | "metadata">
   return "completed"
 }
 
+function listValues(value: string | undefined): string[] {
+  return (value ?? "").split(",").map((item) => item.trim()).filter((item) => item && item !== "all")
+}
+
+function mediaMatches(item: ArchiveItem, media: string): boolean {
+  if (media === "video") return item.has_video
+  if (media === "audio") return !item.has_video && !item.has_image && item.has_audio
+  return item.has_image || ["image_note", "text_note"].includes(String(item.metadata.content_subtype))
+}
+
+/** Offline copy of the library filters; values within one filter are OR-ed, like the server. */
 export function queryLocalArchives(archives: ArchiveItem[], query: ArchiveQuery) {
   const search = query.search.toLowerCase()
+  const media = listValues(query.media)
+  const sources = listValues(query.source)
+  const statuses = listValues(query.status).filter((item) => item !== "duplicates")
   const items = archives.filter((item) => {
-    if (query.media === "video" && !item.has_video) return false
-    if (query.media === "audio" && (item.has_video || item.has_image || !item.has_audio)) return false
-    if (query.media === "image" && !item.has_image
-      && !["image_note", "text_note"].includes(String(item.metadata.content_subtype))) return false
-    if (query.source !== "all" && sourceFilterFromMetadata(item.metadata) !== query.source) return false
-    if (query.status && query.status !== "all" && query.status !== "duplicates"
-      && archiveStatus(item) !== query.status) return false
+    if (media.length && !media.some((value) => mediaMatches(item, value))) return false
+    if (sources.length && !sources.includes(sourceFilterFromMetadata(item.metadata))) return false
+    if (statuses.length && !statuses.includes(archiveStatus(item))) return false
     return !query.search.trim() || item.title.toLowerCase().includes(search)
   })
   const timestamp = (value: unknown) => typeof value === "string" ? new Date(value).getTime() || 0 : 0

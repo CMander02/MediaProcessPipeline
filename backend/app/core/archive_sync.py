@@ -196,18 +196,19 @@ class ArchiveSyncService:
 
     @uses_workspace
     def list_page(self, *, page=1, page_size=28, search="", media="all", source="all",
-                  sort="created_desc", status="all") -> dict:
+                  sort="created_desc", status="all", duplicates=False) -> dict:
         from app.core.archive_index import query_library
 
         self.flush_changes()
         result = query_library(_get_conn(), page=page, page_size=page_size, search=search,
-                               media=media, source=source, sort=sort, status=status)
+                               media=media, source=source, sort=sort, status=status,
+                               duplicates=duplicates)
         root = Path(get_runtime_settings().data_root).resolve()
         archives = []
         for row in result["rows"]:
             item = self.decode_snapshot(json.loads(row["snapshot"]), root)
             attempts = result["attempts"].get(row["archive_id"])
-            if attempts and status != "duplicates":
+            if attempts and not result["duplicates"]:
                 item["attempts"] = attempts
             archives.append(item)
         return {"archives": archives, "total": result["total"], "page": result["page"],

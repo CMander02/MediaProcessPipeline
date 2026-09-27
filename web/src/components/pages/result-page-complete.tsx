@@ -42,6 +42,8 @@ import { SpeakerMergeDialog } from "@/components/speaker-merge-dialog"
 import { type ResultViewerProps, useResultViewer } from "../../hooks/use-result-viewer"
 import { ArticleNoteReader, NoteMarkdown } from "../result/note-content"
 import { ResultContentPane } from "../result/result-content-pane"
+import { HeaderContext } from "@/components/app-shell/header-slot"
+import { useMediaQuery } from "@/hooks/use-media-query"
 import {
   timelineEventKey,
   timelineStatusClass,
@@ -209,167 +211,188 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultVi
       )}
     </div>
   )
+  const isDesktop = useMediaQuery("(min-width: 768px)")
   const contentPane = <ResultContentPane view={view} />
 
   // Phones: player pinned on top, one row of speakers, then the tabs fill the rest. Only the tab body scrolls.
   const phoneAvLayout = isMobileLayout && !isNoteContent
 
 
-  return (
-    <div className="flex h-full flex-col">
-      {/* Top bar */}
-      <div className="flex shrink-0 items-center gap-2 border-b px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-2">
-        <Button className="h-11 md:h-8" variant="ghost" size="sm" onClick={() => navigate(libraryHash())}>
-          <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4 mr-1" />
-          返回
-        </Button>
-        {editingTitle ? (
-          <input
-            className="flex-1 text-sm font-medium bg-transparent border-b border-primary outline-none truncate"
-            value={titleDraft}
-            autoFocus
-            onChange={(e) => setTitleDraft(e.target.value)}
-            onBlur={commitTitle}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") commitTitle()
-              if (e.key === "Escape") setEditingTitle(false)
-            }}
-          />
-        ) : (
-          <div className="flex-1 flex items-center gap-1.5 min-w-0">
-            <span className="truncate text-sm font-medium md:hidden">{displayTitle}</span>
+  const titleArea = editingTitle ? (
+    <input
+      className="flex-1 text-sm font-medium bg-transparent border-b border-primary outline-none truncate"
+      value={titleDraft}
+      autoFocus
+      onChange={(e) => setTitleDraft(e.target.value)}
+      onBlur={commitTitle}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commitTitle()
+        if (e.key === "Escape") setEditingTitle(false)
+      }}
+    />
+  ) : (
+    <div className="flex-1 flex items-center gap-1.5 min-w-0">
+      <span className="truncate text-sm font-medium md:hidden">{displayTitle}</span>
+      <button
+        className="group hidden min-w-0 items-center gap-1 truncate text-left text-sm font-medium transition-colors hover:text-primary md:flex"
+        onClick={startEditTitle}
+        title="点击编辑标题"
+      >
+        <span className="truncate">{displayTitle}</span>
+        <HugeiconsIcon icon={PencilEdit01Icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+      </button>
+      <div className="hidden shrink-0 items-center gap-1.5 text-muted-foreground sm:flex">
+        {platform ? (
+          sourceHref ? (
             <button
-              className="group hidden min-w-0 items-center gap-1 truncate text-left text-sm font-medium transition-colors hover:text-primary md:flex"
-              onClick={startEditTitle}
-              title="点击编辑标题"
+              type="button"
+              onClick={handleOpenSource}
+              className="rounded p-1 transition-colors hover:bg-muted hover:text-primary"
+              title={uploader ? `打开 ${uploader}` : "打开原始来源"}
             >
-              <span className="truncate">{displayTitle}</span>
-              <HugeiconsIcon icon={PencilEdit01Icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+              <PlatformIcon platform={platform} uploader={uploader} className="h-4 w-4" />
             </button>
-            <div className="hidden shrink-0 items-center gap-1.5 text-muted-foreground sm:flex">
-              {platform ? (
-                sourceHref ? (
-                  <button
-                    type="button"
-                    onClick={handleOpenSource}
-                    className="rounded p-1 transition-colors hover:bg-muted hover:text-primary"
-                    title={uploader ? `打开 ${uploader}` : "打开原始来源"}
-                  >
-                    <PlatformIcon platform={platform} uploader={uploader} className="h-4 w-4" />
-                  </button>
-                ) : (
-                  <span className="p-1" title={uploader ?? platform}>
-                    <PlatformIcon platform={platform} uploader={uploader} className="h-4 w-4" />
-                  </span>
-                )
-              ) : sourceHref ? (
-                <button
-                  type="button"
-                  onClick={handleOpenSource}
-                  className="rounded p-1 transition-colors hover:bg-muted hover:text-primary"
-                  title="打开原始链接"
-                >
-                  <HugeiconsIcon icon={Link01Icon} className="h-3.5 w-3.5" />
-                </button>
-              ) : null}
-              <AttemptsMenu source={sourceHref} currentPath={archivePath} />
-              <span className="rounded p-1" title={headerMediaLabel}>
-                <HugeiconsIcon icon={headerMediaIcon} className="h-3.5 w-3.5" strokeWidth={1.75} />
-              </span>
-              {summary && (
-                <span className="rounded p-1" title="摘要">
-                  <HugeiconsIcon icon={Note01Icon} className="h-3.5 w-3.5" strokeWidth={1.75} />
-                </span>
-              )}
-              {mindmap && (
-                <span className="rounded p-1" title="导图">
-                  <HugeiconsIcon icon={ListTreeIcon} className="h-3.5 w-3.5" strokeWidth={1.75} />
-                </span>
-              )}
-              {subtitleSourceType && (
-                <span
-                  className={cn(
-                    "rounded px-1.5 py-0.5 text-[10px] font-medium",
-                    subtitleSourceType === "platform"
-                      ? "text-foreground"
-                      : "text-muted-foreground",
-                  )}
-                  title={subtitleSourceType === "platform" ? "字幕来自平台" : "字幕由 ASR 生成"}
-                >
-                  {subtitleSourceType === "platform" ? "平台" : "ASR"}
-                </span>
-              )}
-              {isPolished && (
-                <span className="rounded p-1 text-primary" title="已润色">
-                  <HugeiconsIcon icon={PencilEdit01Icon} className="h-3.5 w-3.5" strokeWidth={1.75} />
-                </span>
-              )}
-            </div>
-          </div>
-        )}
-        {isProcessing && (
-          <span className="text-xs text-foreground flex items-center gap-1">
-            <HugeiconsIcon icon={Loading03Icon} className="h-3 w-3 animate-spin" />
-            处理中
+          ) : (
+            <span className="p-1" title={uploader ?? platform}>
+              <PlatformIcon platform={platform} uploader={uploader} className="h-4 w-4" />
+            </span>
+          )
+        ) : sourceHref ? (
+          <button
+            type="button"
+            onClick={handleOpenSource}
+            className="rounded p-1 transition-colors hover:bg-muted hover:text-primary"
+            title="打开原始链接"
+          >
+            <HugeiconsIcon icon={Link01Icon} className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
+        <AttemptsMenu source={sourceHref} currentPath={archivePath} />
+        <span className="rounded p-1" title={headerMediaLabel}>
+          <HugeiconsIcon icon={headerMediaIcon} className="h-3.5 w-3.5" strokeWidth={1.75} />
+        </span>
+        {summary && (
+          <span className="rounded p-1" title="摘要">
+            <HugeiconsIcon icon={Note01Icon} className="h-3.5 w-3.5" strokeWidth={1.75} />
           </span>
         )}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button className="h-11 w-11 md:h-8 md:w-8" variant="ghost" size="icon-sm" aria-label="更多操作" title="更多操作">
-              <HugeiconsIcon icon={MoreHorizontalIcon} className="h-4 w-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            align="end"
-            onCloseAutoFocus={(event) => {
-              if (renameFromMenu.current) {
-                renameFromMenu.current = false
-                event.preventDefault()
-              }
-            }}
+        {mindmap && (
+          <span className="rounded p-1" title="导图">
+            <HugeiconsIcon icon={ListTreeIcon} className="h-3.5 w-3.5" strokeWidth={1.75} />
+          </span>
+        )}
+        {subtitleSourceType && (
+          <span
+            className={cn(
+              "rounded px-1.5 py-0.5 text-[10px] font-medium",
+              subtitleSourceType === "platform"
+                ? "text-foreground"
+                : "text-muted-foreground",
+            )}
+            title={subtitleSourceType === "platform" ? "字幕来自平台" : "字幕由 ASR 生成"}
           >
-            {capabilities.archive_mutation && !editingTitle && (
-              <DropdownMenuItem onClick={() => { renameFromMenu.current = true; startEditTitle() }}>
-                <HugeiconsIcon icon={PencilEdit01Icon} className="h-4 w-4" />
-                重命名
-              </DropdownMenuItem>
-            )}
-            {capabilities.archive_mutation && !editingTitle && (resumeAction || canFullRerun) && <DropdownMenuSeparator />}
-            {resumeAction && (
-              <DropdownMenuItem disabled={resuming} onClick={handleResumeFromCheckpoint} title={resumeAction.hint}>
-                <HugeiconsIcon
-                  icon={resuming ? Loading03Icon : taskStatus === "paused" ? PlayIcon : taskStatus === "completed" ? AiMagicIcon : PlayCircleIcon}
-                  className={resuming ? "h-4 w-4 animate-spin" : "h-4 w-4"}
-                />
-                {resuming ? "正在加入队列" : resumeAction.label}
-              </DropdownMenuItem>
-            )}
-            {canFullRerun && (
-              <DropdownMenuItem disabled={rerunning} onClick={() => setConfirmRerun(true)} title="删除已生成的字幕、说话人、摘要和导图后从头处理">
-                <HugeiconsIcon icon={rerunning ? Loading03Icon : RefreshIcon} className={rerunning ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-                {rerunning ? "正在加入队列" : "全部重新处理…"}
-              </DropdownMenuItem>
-            )}
-            {(capabilities.open_local_folder || capabilities.archive_mutation) && <DropdownMenuSeparator className="hidden md:block" />}
-            {capabilities.open_local_folder && (
-              <DropdownMenuItem className="hidden md:flex" disabled={openingFolder} onClick={handleOpenLocalFolder}>
-                <HugeiconsIcon icon={openingFolder ? Loading03Icon : FolderOpenIcon} className={openingFolder ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-                打开本地文件夹
-              </DropdownMenuItem>
-            )}
-            {capabilities.archive_mutation && (
-              <DropdownMenuItem
-                className="hidden md:flex"
-                variant="destructive"
-                onClick={() => setShowDeleteDialog(true)}
-              >
-                <HugeiconsIcon icon={Delete01Icon} className="h-4 w-4" />
-                删除
-              </DropdownMenuItem>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
+            {subtitleSourceType === "platform" ? "平台" : "ASR"}
+          </span>
+        )}
+        {isPolished && (
+          <span className="rounded p-1 text-primary" title="已润色">
+            <HugeiconsIcon icon={PencilEdit01Icon} className="h-3.5 w-3.5" strokeWidth={1.75} />
+          </span>
+        )}
       </div>
+    </div>
+  )
+  const processingBadge = isProcessing && (
+    <span className="text-xs text-foreground flex items-center gap-1">
+      <HugeiconsIcon icon={Loading03Icon} className="h-3 w-3 animate-spin" />
+      处理中
+    </span>
+  )
+  const moreMenu = (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button className="h-11 w-11 md:h-8 md:w-8" variant="ghost" size="icon-sm" aria-label="更多操作" title="更多操作">
+          <HugeiconsIcon icon={MoreHorizontalIcon} className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        onCloseAutoFocus={(event) => {
+          if (renameFromMenu.current) {
+            renameFromMenu.current = false
+            event.preventDefault()
+          }
+        }}
+      >
+        {capabilities.archive_mutation && !editingTitle && (
+          <DropdownMenuItem onClick={() => { renameFromMenu.current = true; startEditTitle() }}>
+            <HugeiconsIcon icon={PencilEdit01Icon} className="h-4 w-4" />
+            重命名
+          </DropdownMenuItem>
+        )}
+        {capabilities.archive_mutation && !editingTitle && (resumeAction || canFullRerun) && <DropdownMenuSeparator />}
+        {resumeAction && (
+          <DropdownMenuItem disabled={resuming} onClick={handleResumeFromCheckpoint} title={resumeAction.hint}>
+            <HugeiconsIcon
+              icon={resuming ? Loading03Icon : taskStatus === "paused" ? PlayIcon : taskStatus === "completed" ? AiMagicIcon : PlayCircleIcon}
+              className={resuming ? "h-4 w-4 animate-spin" : "h-4 w-4"}
+            />
+            {resuming ? "正在加入队列" : resumeAction.label}
+          </DropdownMenuItem>
+        )}
+        {canFullRerun && (
+          <DropdownMenuItem disabled={rerunning} onClick={() => setConfirmRerun(true)} title="删除已生成的字幕、说话人、摘要和导图后从头处理">
+            <HugeiconsIcon icon={rerunning ? Loading03Icon : RefreshIcon} className={rerunning ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+            {rerunning ? "正在加入队列" : "全部重新处理…"}
+          </DropdownMenuItem>
+        )}
+        {(capabilities.open_local_folder || capabilities.archive_mutation) && <DropdownMenuSeparator className="hidden md:block" />}
+        {capabilities.open_local_folder && (
+          <DropdownMenuItem className="hidden md:flex" disabled={openingFolder} onClick={handleOpenLocalFolder}>
+            <HugeiconsIcon icon={openingFolder ? Loading03Icon : FolderOpenIcon} className={openingFolder ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+            打开本地文件夹
+          </DropdownMenuItem>
+        )}
+        {capabilities.archive_mutation && (
+          <DropdownMenuItem
+            className="hidden md:flex"
+            variant="destructive"
+            onClick={() => setShowDeleteDialog(true)}
+          >
+            <HugeiconsIcon icon={Delete01Icon} className="h-4 w-4" />
+            删除
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+
+  return (
+    <div className="flex h-full flex-col">
+      {/* Desktop: back, title and actions live in the app title bar; phones keep their own bar. */}
+      {isDesktop ? (
+        <HeaderContext>
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            <Button className="h-8 shrink-0 px-2" variant="ghost" size="sm" onClick={() => navigate(libraryHash())}>
+              <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+              文件库
+            </Button>
+            {titleArea}
+            {processingBadge}
+            {moreMenu}
+          </div>
+        </HeaderContext>
+      ) : (
+        <div className="flex shrink-0 items-center gap-2 border-b px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-2">
+          <Button className="h-11 md:h-8" variant="ghost" size="sm" onClick={() => navigate(libraryHash())}>
+            <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4 mr-1" />
+            返回
+          </Button>
+          {titleArea}
+          {processingBadge}
+          {moreMenu}
+        </div>
+      )}
 
       {showFlowDiagnostics && (taskFlow || recentTimelineEvents.length > 0) && (
         <div className="shrink-0 border-b bg-background px-4 py-3">

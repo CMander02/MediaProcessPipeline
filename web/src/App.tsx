@@ -1,4 +1,4 @@
-import { useDeferredValue } from "react"
+import { useDeferredValue, useMemo } from "react"
 
 import { AppOutlet } from "@/components/app-outlet"
 import { AppShell } from "@/components/app-shell/app-shell"
@@ -31,35 +31,21 @@ function AuthenticatedApp() {
 
   useAppStartup()
 
-  const toolbar = route.page === "files" ? (
-    <PageToolbar
-      search={library.search}
-      mediaFilter={library.mediaFilter}
-      sourceFilter={library.sourceFilter}
-      sort={library.sort}
-      status={library.status}
-      onSearchChange={library.setSearch}
-      onMediaFilterChange={library.setMediaFilter}
-      onSourceFilterChange={library.setSourceFilter}
-      onSortChange={library.setSort}
-      onStatusChange={library.setStatus}
-    />
-  ) : undefined
+  const toolbar = route.page === "files" ? <PageToolbar library={library} /> : undefined
+  const filters = useMemo(() => ({
+    search: deferredSearch,
+    media: library.media,
+    sources: library.sources,
+    statuses: library.statuses,
+    duplicates: library.duplicates,
+    sort: library.sort,
+  }), [deferredSearch, library.duplicates, library.media, library.sort, library.sources, library.statuses])
 
   return (
     <AppShell activePage={route.page} toolbar={toolbar}>
       <AppOutlet
         route={route}
-        library={{
-          search: deferredSearch,
-          mediaFilter: library.mediaFilter,
-          sourceFilter: library.sourceFilter,
-          sort: library.sort,
-          status: library.status,
-          onStatusChange: library.setStatus,
-          page: library.page,
-          onPageChange: library.setPage,
-        }}
+        library={{ filters, page: library.page, onPageChange: library.setPage }}
       />
       <ComposerDialog />
       <GlobalIntake />

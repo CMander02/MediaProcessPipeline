@@ -1,22 +1,30 @@
 import { useState } from "react"
-import { FilterHorizontalIcon, Search01Icon, FolderOpenIcon } from "@hugeicons/core-free-icons"
+import { Cancel01Icon, FilterHorizontalIcon, FolderOpenIcon, Search01Icon, SortingDownIcon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 
 import { MobileFilterSheet } from "@/components/app-shell/mobile-filter-sheet"
+import { FacetFilter, type FacetOption } from "@/components/library/facet-filter"
 import { PlatformIcon } from "@/components/platform-icon"
-import { StatusChips } from "@/components/status-chips"
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger } from "@/components/ui/select"
+import type { LibraryControls } from "@/hooks/use-library-controls"
 import { useLibraryFacets } from "@/lib/library-facets"
 import {
-  MEDIA_FILTER_OPTIONS,
-  SOURCE_FILTER_OPTIONS,
+  MEDIA_TYPE_OPTIONS,
+  SORT_OPTIONS,
+  SOURCE_KEY_OPTIONS,
+  STATUS_OPTIONS,
+  hasActiveFilters,
   type ArchiveSort,
-  type MediaFilter,
-  type SourceFilter,
-  type SourceFilterOption,
-  type StatusFilter,
+  type SourceKey,
 } from "@/lib/archive-filters"
 
 const SOURCE_ICON_PLATFORMS = new Set([
@@ -29,174 +37,132 @@ const SOURCE_ICON_PLATFORMS = new Set([
   "zhihu",
 ])
 
-const SORT_LABELS: Record<ArchiveSort, string> = {
-  created_desc: "最新创建",
-  created_asc: "最早创建",
-  published_desc: "最新发布",
-  title_asc: "标题排序",
-}
-
-interface PageToolbarProps {
-  search: string
-  mediaFilter: MediaFilter
-  sourceFilter: SourceFilter
-  sort: ArchiveSort
-  status?: StatusFilter
-  onSearchChange: (value: string) => void
-  onMediaFilterChange: (value: MediaFilter) => void
-  onSourceFilterChange: (value: SourceFilter) => void
-  onSortChange: (value: ArchiveSort) => void
-  onStatusChange?: (value: StatusFilter) => void
-}
-
-function SourceFilterIcon({ option, className }: { option: SourceFilterOption; className?: string }) {
-  if (option.platform && SOURCE_ICON_PLATFORMS.has(option.platform)) {
-    return <PlatformIcon platform={option.platform} className={className ?? "size-4 shrink-0"} iconOnly />
+export function SourceIcon({ source, className }: { source: SourceKey; className?: string }) {
+  if (SOURCE_ICON_PLATFORMS.has(source)) {
+    return <PlatformIcon platform={source} className={className ?? "size-4 shrink-0"} iconOnly />
   }
   return <HugeiconsIcon icon={FolderOpenIcon} className={className ?? "size-4 shrink-0 text-muted-foreground"} />
 }
 
-export function PageToolbar({
-  search,
-  mediaFilter,
-  sourceFilter,
-  sort,
-  status = "all",
-  onSearchChange,
-  onMediaFilterChange,
-  onSourceFilterChange,
-  onSortChange,
-  onStatusChange,
-}: PageToolbarProps) {
+const SOURCE_FACETS: Array<FacetOption<SourceKey>> = SOURCE_KEY_OPTIONS.map((option) => ({
+  value: option.value,
+  label: option.label,
+  icon: <SourceIcon source={option.value} className="size-3.5 shrink-0" />,
+}))
+
+interface PageToolbarProps {
+  library: LibraryControls
+}
+
+/** Library search and filters: inline in the title bar on desktop, a search row plus sheet on phones. */
+export function PageToolbar({ library }: PageToolbarProps) {
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
   const facets = useLibraryFacets()
-  const sourceCount = (value: SourceFilter) => {
-    if (!facets) return null
-    if (value === "all") return Object.values(facets.source).reduce<number>((sum, count) => sum + (count ?? 0), 0)
-    return facets.source[value] ?? 0
-  }
-  const selectedMediaFilter = MEDIA_FILTER_OPTIONS.find((option) => option.value === mediaFilter) ?? MEDIA_FILTER_OPTIONS[0]
-  const selectedSourceFilter = SOURCE_FILTER_OPTIONS.find((option) => option.value === sourceFilter) ?? SOURCE_FILTER_OPTIONS[0]
-  const activeFilterCount = Number(mediaFilter !== "all") + Number(sourceFilter !== "all") + Number(sort !== "created_desc")
+  const active = hasActiveFilters(library)
+  const sortLabel = SORT_OPTIONS.find((option) => option.value === library.sort)?.label ?? "最新创建"
+  const mobileCount = library.statuses.length + library.media.length + library.sources.length
+    + Number(library.duplicates) + Number(library.sort !== "created_desc")
+
+  const search = (className: string, inputClassName: string) => (
+    <div className={className}>
+      <HugeiconsIcon
+        icon={Search01Icon}
+        className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+      />
+      <Input
+        value={library.search}
+        onChange={(event) => library.setSearch(event.target.value)}
+        placeholder="搜索标题…"
+        className={inputClassName}
+        autoComplete="off"
+        aria-label="搜索文件"
+      />
+    </div>
+  )
 
   return (
     <div className="min-w-0" role="search" aria-label="文件搜索与筛选">
       <div className="flex min-w-0 items-center gap-2 md:hidden">
-        <div className="relative min-w-0 flex-1">
-          <HugeiconsIcon
-            icon={Search01Icon}
-            className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-          />
-          <Input
-            value={search}
-            onChange={(event) => onSearchChange(event.target.value)}
-            placeholder="搜索标题、话题、关键词..."
-            className="h-11 pl-9 text-sm"
-            autoComplete="off"
-            aria-label="搜索文件"
-          />
-        </div>
+        {search("relative min-w-0 flex-1", "h-11 pl-9 text-sm")}
         <Button
           type="button"
           variant="outline"
           className="relative size-11 px-0"
           onClick={() => setMobileFiltersOpen(true)}
-          aria-label={activeFilterCount > 0 ? `筛选，已启用 ${activeFilterCount} 项` : "筛选"}
+          aria-label={mobileCount > 0 ? `筛选，已启用 ${mobileCount} 项` : "筛选"}
         >
           <HugeiconsIcon icon={FilterHorizontalIcon} className="size-4" />
-          {activeFilterCount > 0 ? (
+          {mobileCount > 0 ? (
             <span className="absolute -right-1 -top-1 flex size-5 items-center justify-center rounded-full bg-primary text-[0.625rem] text-primary-foreground">
-              {activeFilterCount}
+              {mobileCount}
             </span>
           ) : null}
         </Button>
       </div>
 
-      <div className="hidden min-w-0 items-center gap-2 md:flex">
-      <div className="relative min-w-0 flex-1 max-w-xs">
-        <HugeiconsIcon
-          icon={Search01Icon}
-          className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+      <div className="hidden min-w-0 items-center gap-1.5 overflow-x-auto md:flex">
+        {search("relative w-44 shrink-0 lg:w-64", "h-8 pl-8 text-[13px]")}
+        <FacetFilter
+          title="状态"
+          options={STATUS_OPTIONS}
+          selected={library.statuses}
+          onChange={library.setStatuses}
+          counts={facets?.status}
+          extraLabel={library.duplicates ? "重复" : null}
+          extra={(
+            <DropdownMenuCheckboxItem
+              checked={library.duplicates}
+              onCheckedChange={(checked) => library.setDuplicates(checked === true)}
+              onSelect={(event) => event.preventDefault()}
+              title="同一个来源处理过多次时，把每一次都列出来，方便比较和清理"
+            >
+              <span className="flex-1">只看处理过多次的来源</span>
+              {facets && <span className="pl-4 text-xs tabular-nums text-muted-foreground">{facets.status.duplicates ?? 0}</span>}
+            </DropdownMenuCheckboxItem>
+          )}
         />
-        <Input
-          value={search}
-          onChange={(event) => onSearchChange(event.target.value)}
-          placeholder="搜索标题、话题、关键词..."
-          className="h-9 pl-9 text-sm"
-          autoComplete="off"
-          aria-label="搜索文件"
+        <FacetFilter
+          title="类型"
+          options={MEDIA_TYPE_OPTIONS}
+          selected={library.media}
+          onChange={library.setMedia}
+          counts={facets?.media}
         />
-      </div>
-
-      {onStatusChange ? (
-        <StatusChips status={status} onChange={onStatusChange} counts={facets?.status} className="flex-1 px-1" />
-      ) : <div className="flex-1" />}
-
-      <div className="flex min-w-0 shrink-0 gap-2">
-        <Select value={mediaFilter} onValueChange={(value) => onMediaFilterChange(value as MediaFilter)}>
-          <SelectTrigger size="sm" className="min-w-0 w-full data-[size=sm]:h-11 md:w-24 md:data-[size=sm]:h-9">
-            <span className="truncate">{selectedMediaFilter.label}</span>
-          </SelectTrigger>
-          <SelectContent position="popper" align="end">
-            <SelectGroup>
-              {MEDIA_FILTER_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  <span className="flex w-full items-center justify-between gap-4">
-                    <span>{option.label}</span>
-                    {facets && <span className="text-xs tabular-nums text-muted-foreground">{facets.media[option.value] ?? 0}</span>}
-                  </span>
-                </SelectItem>
+        <FacetFilter
+          title="来源"
+          options={SOURCE_FACETS}
+          selected={library.sources}
+          onChange={library.setSources}
+          counts={facets?.source}
+        />
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button type="button" variant="ghost" size="sm" className="h-8 shrink-0 gap-1.5 px-2 text-[13px] font-normal text-muted-foreground">
+              <HugeiconsIcon icon={SortingDownIcon} className="size-3.5" />
+              {sortLabel}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuRadioGroup value={library.sort} onValueChange={(value) => library.setSort(value as ArchiveSort)}>
+              {SORT_OPTIONS.map((option) => (
+                <DropdownMenuRadioItem key={option.value} value={option.value}>{option.label}</DropdownMenuRadioItem>
               ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
-
-        <Select value={sourceFilter} onValueChange={(value) => onSourceFilterChange(value as SourceFilter)}>
-          <SelectTrigger size="sm" className="min-w-0 w-full data-[size=sm]:h-11 md:w-36 md:data-[size=sm]:h-9">
-            <span className="flex min-w-0 items-center gap-1.5">
-              <SourceFilterIcon option={selectedSourceFilter} />
-              <span className="truncate">{selectedSourceFilter.label}</span>
-            </span>
-          </SelectTrigger>
-          <SelectContent position="popper" align="end">
-            <SelectGroup>
-              {SOURCE_FILTER_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  <span className="flex w-full items-center gap-2">
-                    <SourceFilterIcon option={option} />
-                    <span className="flex-1">{option.label}</span>
-                    {facets && <span className="pl-3 text-xs tabular-nums text-muted-foreground">{sourceCount(option.value)}</span>}
-                  </span>
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
-
-        <Select value={sort} onValueChange={(value) => onSortChange(value as ArchiveSort)}>
-          <SelectTrigger size="sm" className="min-w-0 w-full data-[size=sm]:h-11 md:w-32 md:data-[size=sm]:h-9">
-            <span className="truncate">{SORT_LABELS[sort]}</span>
-          </SelectTrigger>
-          <SelectContent position="popper" align="end">
-            <SelectGroup>
-              {(Object.entries(SORT_LABELS) as Array<[ArchiveSort, string]>).map(([value, label]) => (
-                <SelectItem key={value} value={value}>{label}</SelectItem>
-              ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
-      </div>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {active && (
+          <Button type="button" variant="ghost" size="sm" className="h-8 shrink-0 gap-1 px-2 text-[13px] font-normal" onClick={library.resetFilters}>
+            重置
+            <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
+          </Button>
+        )}
       </div>
 
       <MobileFilterSheet
         open={mobileFiltersOpen}
         onOpenChange={setMobileFiltersOpen}
-        mediaFilter={mediaFilter}
-        sourceFilter={sourceFilter}
-        sort={sort}
-        onMediaFilterChange={onMediaFilterChange}
-        onSourceFilterChange={onSourceFilterChange}
-        onSortChange={onSortChange}
+        library={library}
+        facets={facets}
       />
     </div>
   )

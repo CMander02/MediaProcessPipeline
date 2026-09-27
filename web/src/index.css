@@ -248,3 +248,10 @@ html[data-platform="android"] [data-mobile-bottom-nav] {
 g.mpp-chapter-node > .markmap-foreign { cursor: pointer; }
 g.mpp-chapter-node > .markmap-foreign:hover div { text-decoration: underline; text-underline-offset: 2px; }
 g.mpp-current-chapter > .markmap-foreign div { color: var(--primary); font-weight: 600; }
+
+/* Desktop app: the title bar drags the window; controls inside it stay clickable. */
+.app-drag { -webkit-app-region: drag; app-region: drag; }
+.app-drag :is(button, a, input, select, textarea, label, [role="button"], [role="combobox"], [role="checkbox"], [data-no-drag]) {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}

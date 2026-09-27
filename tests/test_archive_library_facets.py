@@ -78,7 +78,8 @@ def test_status_filter_and_counts(populated):
     _root, service = populated
     facets = service.list_page()["facets"]
     assert facets["status"] == {
-        "all": 5, "processing": 0, "paused": 1, "failed": 1, "completed": 3, "duplicates": 1,
+        # duplicates: cards the 重复 switch would list (every run of Ryan's video)
+        "all": 5, "processing": 0, "paused": 1, "failed": 1, "completed": 3, "duplicates": 3,
     }
     assert titles(service, status="failed") == ["Solo failed"]
     assert titles(service, status="paused") == ["Paused"]
@@ -87,6 +88,34 @@ def test_status_filter_and_counts(populated):
     assert facets["source"]["bilibili"] == 3
     assert facets["source"]["youtube"] == 1
     assert facets["media"]["all"] == 5
+
+
+def test_several_values_per_filter_are_combined_with_or(populated):
+    _root, service = populated
+    assert titles(service, status="failed,paused") == ["Paused", "Solo failed"]
+    assert titles(service, status=["paused", "failed"]) == ["Paused", "Solo failed"]
+    assert titles(service, source="youtube,local") == ["Local recording", "Solo failed"]
+    # Filters still combine with AND across groups.
+    assert titles(service, status="failed", source="bilibili") == []
+    facets = service.list_page(status="failed", source="youtube,bilibili")["facets"]
+    # Each group's counts ignore that group's own selection.
+    assert facets["status"]["completed"] == 2
+    assert facets["source"] == {"youtube": 1}
+
+
+def test_duplicates_switch_combines_with_status(populated):
+    _root, service = populated
+    assert titles(service, duplicates=True, status="failed") == ["Ryan failed 1", "Ryan failed 2"]
+    facets = service.list_page(status="failed")["facets"]
+    assert facets["status"]["duplicates"] == 2  # failed runs among repeated sources
+
+
+def test_unknown_filter_values_are_rejected(populated):
+    _root, service = populated
+    with pytest.raises(ValueError):
+        service.list_page(status="broken")
+    with pytest.raises(ValueError):
+        service.list_page(source="myspace")
 
 
 def test_duplicates_view_lists_every_attempt(populated):

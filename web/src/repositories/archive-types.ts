@@ -40,16 +40,21 @@ export interface ArchiveItem {
   /** Number of runs of the same source collapsed into this card (2+ only). */
   attempts?: number
 }
-import type { ArchiveSort, MediaFilter, SourceFilter, StatusFilter } from "@/lib/archive-filters"
+import type { ArchiveSort, ArchiveStatus, MediaFilter } from "@/lib/archive-filters"
 
 export interface ArchiveQuery {
   page: number
   page_size: number
   search: string
-  media: MediaFilter
-  source: SourceFilter
+  /** "all" or a comma list of video, audio, image */
+  media: string
+  /** "all" or a comma list of source keys */
+  source: string
   sort: ArchiveSort
-  status?: StatusFilter
+  /** "all" or a comma list of processing, paused, failed, completed */
+  status?: string
+  /** List every run of sources processed more than once */
+  duplicates?: boolean
 }
 
 export interface ArchiveIndexStatus {
@@ -60,7 +65,8 @@ export interface ArchiveIndexStatus {
 }
 
 export interface ArchiveFacets {
-  status: Record<StatusFilter, number>
+  /** Per status, plus "all" and how many cards the duplicates switch would list */
+  status: Record<ArchiveStatus | "all" | "duplicates", number>
   source: Partial<Record<string, number>>
   media: Record<MediaFilter, number>
   /** Every card in the library, ignoring all filters */
