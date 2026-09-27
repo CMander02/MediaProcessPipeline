@@ -46,7 +46,7 @@ export function trackKind(track: Pick<SubtitleTrackInfo, "type" | "polished" | "
   return "字幕"
 }
 
-const CJK = /[　-ヿ㐀-鿿가-힯＀-￯]/
+const CJK = /[\u3000-\u30ff\u3400-\u9fff\uac00-\ud7af\uff00-\uffef]/
 const TIMESTAMP = /(?:(\d+):)?(\d{1,2}):(\d{2})[,.](\d{3})/g
 
 /** Caption lines as one sentence, without a space between CJK characters. */
