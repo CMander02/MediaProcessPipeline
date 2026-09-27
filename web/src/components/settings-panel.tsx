@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { api, type Settings, type YtdlpStatus } from "@/lib/api"
 import { usePreferences } from "@/hooks/use-preferences"
+import { systemNotificationsAvailable } from "@/hooks/use-task-notifications"
 import { ProxySetting, SettingRow } from "@/components/settings/setting-controls"
 import { LocalModelSettings, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
 import { BilibiliCard, PlaceholderSection, TwitterCard, XiaohongshuCard, YoutubeCard, ZhihuCard } from "@/components/settings/source-cards"
@@ -54,6 +55,9 @@ export function SettingsPanel() {
   const [themePreference, setThemePreferenceState] = useState<ThemePreference>(getThemePreference)
   const [darkMode, setDarkMode] = useState(() => document.documentElement.classList.contains("dark"))
   const { prefs, update: updatePrefs } = usePreferences()
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
+    () => (systemNotificationsAvailable() ? Notification.permission : "unsupported"),
+  )
   const [activeTab, setActiveTab] = useState<TabId>("overall")
   const [uvrDetecting, setUvrDetecting] = useState(false)
   const [uvrDetection, setUvrDetection] = useState<string | null>(null)
@@ -430,6 +434,26 @@ export function SettingsPanel() {
                       id="clipboard-detect"
                       checked={prefs.clipboardDetect !== false}
                       onCheckedChange={(v) => updatePrefs({ clipboardDetect: v })}
+                    />
+                  </div>
+                  <div className="mt-4 flex items-center justify-between gap-4 border-t pt-4">
+                    <div>
+                      <Label htmlFor="task-notifications">完成或失败时通知</Label>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        在 MPP 里弹出提示，点「打开」看结果；MPP 不在前台时发系统通知。
+                        {notificationPermission === "denied" && " 系统通知已被浏览器禁止，需要在浏览器的网站设置里允许。"}
+                      </p>
+                    </div>
+                    <Switch
+                      id="task-notifications"
+                      checked={prefs.taskNotifications !== false}
+                      onCheckedChange={(v) => {
+                        updatePrefs({ taskNotifications: v })
+                        // Browsers ask once, and only in response to a click.
+                        if (v && notificationPermission === "default") {
+                          void Notification.requestPermission().then(setNotificationPermission)
+                        }
+                      }}
                     />
                   </div>
                 </CardContent>

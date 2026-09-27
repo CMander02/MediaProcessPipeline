@@ -87,6 +87,39 @@ describe("API client", () => {
     )
   })
 
+  it("shares one connection between everyone listening to all task events", () => {
+    const sources: Array<{ url: string; closed: boolean; onmessage: ((event: { data: string }) => void) | null }> = []
+    vi.stubGlobal("EventSource", class {
+      url: string
+      closed = false
+      onmessage: ((event: { data: string }) => void) | null = null
+      constructor(url: string) {
+        this.url = url
+        sources.push(this)
+      }
+      close() {
+        this.closed = true
+      }
+    })
+    const payload = { task_id: "task-1", type: "completed", data: {}, timestamp: "2026-09-27T00:00:00Z" }
+    const first = vi.fn()
+    const second = vi.fn()
+
+    const stopFirst = subscribeAllEvents(first)
+    const stopSecond = subscribeAllEvents(second)
+    sources[0].onmessage?.({ data: JSON.stringify(payload) })
+    stopFirst()
+
+    expect(sources).toHaveLength(1)
+    expect(sources[0].url).toBe("/api/tasks/events")
+    expect(first).toHaveBeenCalledWith(payload)
+    expect(second).toHaveBeenCalledWith(payload)
+    expect(sources[0].closed).toBe(false)
+    stopSecond()
+    expect(sources[0].closed).toBe(true)
+    vi.unstubAllGlobals()
+  })
+
   it("marks Android mutations with the native request source", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([]), { status: 200 }))
     configureApiClient({ requestedWith: "mpp-android" })

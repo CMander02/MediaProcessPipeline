@@ -14,6 +14,8 @@ interface Preferences {
   clipboardDetect: boolean
   /** Result page: speaker timeline folded to one row */
   speakerPanelCollapsed: boolean
+  /** Say when a task finishes or fails (toast; system notification while in the background) */
+  taskNotifications: boolean
 }
 
 const STORAGE_KEY = "mpp-preferences"
@@ -29,7 +31,14 @@ function load(): Preferences {
 }
 
 function defaults(): Preferences {
-  return { startupPage: "files", lastArchivePath: null, videoLoop: false, clipboardDetect: true, speakerPanelCollapsed: false }
+  return {
+    startupPage: "files",
+    lastArchivePath: null,
+    videoLoop: false,
+    clipboardDetect: true,
+    speakerPanelCollapsed: false,
+    taskNotifications: true,
+  }
 }
 
 let current = load()

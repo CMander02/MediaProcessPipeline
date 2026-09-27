@@ -793,13 +793,27 @@ export function subscribeTaskEvents(
   return subscribeEvents(`/api/tasks/${taskId}/events`, onEvent)
 }
 
-export function subscribeAllEvents(
-  onEvent: (event: { task_id: string; type: string; data: Record<string, unknown>; timestamp: string }) => void,
-): () => void {
-  return subscribeEvents("/api/tasks/events", onEvent)
-}
-
 type TaskEventPayload = { task_id: string; type: string; data: Record<string, unknown>; timestamp: string }
+
+// Everyone listening to the global stream shares one connection: browsers allow only a few
+// open connections per host, and each EventSource keeps one.
+const allEventListeners = new Set<{ onEvent: (event: TaskEventPayload) => void }>()
+let closeAllEvents: (() => void) | null = null
+
+export function subscribeAllEvents(onEvent: (event: TaskEventPayload) => void): () => void {
+  const entry = { onEvent }
+  allEventListeners.add(entry)
+  if (!closeAllEvents) {
+    closeAllEvents = subscribeEvents("/api/tasks/events", (event) => {
+      allEventListeners.forEach((listener) => listener.onEvent(event))
+    })
+  }
+  return () => {
+    if (!allEventListeners.delete(entry) || allEventListeners.size > 0) return
+    closeAllEvents?.()
+    closeAllEvents = null
+  }
+}
 
 function subscribeEvents(path: string, onEvent: (event: TaskEventPayload) => void): () => void {
   const subscriptionHeaders = headers()

@@ -9,6 +9,7 @@ import { PwaStatus } from "@/components/pwa-status"
 import { Toaster } from "@/components/ui/sonner"
 import { useAppStartup } from "@/hooks/use-app-startup"
 import { useLibraryControls } from "@/hooks/use-library-controls"
+import { useTaskNotifications } from "@/hooks/use-task-notifications"
 import { AppAccessBoundary } from "@/hooks/use-app-access"
 import { useRoute } from "@/lib/router"
 
@@ -30,6 +31,7 @@ function AuthenticatedApp() {
   const deferredSearch = useDeferredValue(library.search)
 
   useAppStartup()
+  useTaskNotifications()
 
   const toolbar = route.page === "files" ? <PageToolbar library={library} /> : undefined
   const filters = useMemo(() => ({
