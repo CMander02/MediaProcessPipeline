@@ -233,6 +233,7 @@ class StorageMigration:
             "pyannote",
             "download",
             "uvr",
+            "search",
         ):
             add(paths.temporary(owner), target_paths.temporary(owner), "temporary")
         add(paths.logs, target_paths.logs, "logs")

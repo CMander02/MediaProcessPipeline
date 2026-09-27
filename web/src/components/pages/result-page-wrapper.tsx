@@ -9,6 +9,12 @@ import { ResultPageLive } from "./result-page-live"
 import { ResultPageComplete } from "./result-page-complete"
 import { LoadingState } from "@/components/ui/page-state"
 
+/** `t` in the link: open the transcript at this second (from search results). */
+function startSeconds(value: string | undefined): number | undefined {
+  const seconds = Number(value)
+  return value && Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined
+}
+
 export function ResultPageWrapper() {
   const route = useRoute()
 
@@ -18,6 +24,7 @@ export function ResultPageWrapper() {
       <ResultPageComplete
         archivePath={route.resultId}
         taskId={route.taskId}
+        startAt={startSeconds(route.params.t)}
       />
     )
   }

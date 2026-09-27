@@ -102,6 +102,22 @@ export interface BackendLogFilesResponse {
   files: BackendLogFile[]
 }
 
+export interface TranscriptHit {
+  start_ms: number
+  speaker: string | null
+  text: string
+}
+
+/** GET /api/search/transcripts: lines that contain the query, grouped by archive. */
+export interface TranscriptSearchResult {
+  query: string
+  groups: Array<{ path: string; title: string; count: number; hits: TranscriptHit[] }>
+  speakers: Array<{ path: string; title: string; speaker: string }>
+  /** The index is catching up with the library; [done, total] of the transcripts to add */
+  indexing: boolean
+  progress: [number, number] | null
+}
+
 export interface SystemGpuDevice {
   index: number
   name: string
@@ -540,6 +556,9 @@ export const api = {
   health: () => get<HealthInfo>("/health"),
 
   system: () => get<SystemStatus>("/api/system"),
+
+  searchTranscripts: (query: string, limit = 20) =>
+    get<TranscriptSearchResult>(`/api/search/transcripts?${new URLSearchParams({ q: query, limit: String(limit) })}`),
 
   logs: {
     files: () => get<BackendLogFilesResponse>("/api/logs/files"),

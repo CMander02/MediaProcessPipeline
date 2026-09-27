@@ -50,8 +50,8 @@ import {
   timelineTime,
 } from "../../lib/result-timeline"
 
-export function ResultPageComplete({ archivePath, taskId: taskIdProp }: ResultViewerProps) {
-  const view = useResultViewer({ archivePath, taskId: taskIdProp })
+export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt }: ResultViewerProps) {
+  const view = useResultViewer({ archivePath, taskId: taskIdProp, startAt })
   const { prefs, update: updatePrefs } = usePreferences()
   const {
     mediaUrl,

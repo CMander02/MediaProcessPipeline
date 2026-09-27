@@ -1,5 +1,5 @@
 import { useEffect, useRef, type CSSProperties, type ReactNode, type RefObject } from "react"
-import { Settings01Icon } from "@hugeicons/core-free-icons"
+import { Search01Icon, Settings01Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 
 import { ActivityPanel } from "@/components/activity/activity-panel"
@@ -9,6 +9,7 @@ import { MobileBottomNav } from "@/components/app-shell/mobile-bottom-nav"
 import { PAGE_TITLES } from "@/components/app-shell/navigation"
 import { cssColorToHex, desktopApp } from "@/lib/desktop-bridge"
 import { navigate, type Route } from "@/lib/router"
+import { openSearch } from "@/lib/search-store"
 import { cn } from "@/lib/utils"
 
 interface AppShellProps {
@@ -86,6 +87,18 @@ export function AppShell({ activePage, toolbar, children, runtimeControls = true
             )}
 
             <div className="ml-auto flex shrink-0 items-center gap-1">
+              {runtimeControls && (
+                <button
+                  type="button"
+                  onClick={openSearch}
+                  aria-label="搜索"
+                  title="搜索标题、说话人和字幕（Ctrl+K）"
+                  className="flex size-11 items-center justify-center gap-1.5 rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground md:h-8 md:w-auto md:px-2"
+                >
+                  <HugeiconsIcon icon={Search01Icon} className="size-4" />
+                  <kbd className="hidden font-sans text-[11px] md:inline">Ctrl K</kbd>
+                </button>
+              )}
               {runtimeControls && <ActivityPanel />}
               {runtimeControls && (
                 <button

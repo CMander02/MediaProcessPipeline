@@ -5,6 +5,7 @@ import { AppShell } from "@/components/app-shell/app-shell"
 import { PageToolbar } from "@/components/app-shell/page-toolbar"
 import { ComposerDialog } from "@/components/composer/composer-dialog"
 import { GlobalIntake } from "@/components/composer/global-intake"
+import { CommandSearch } from "@/components/search/command-search"
 import { PwaStatus } from "@/components/pwa-status"
 import { Toaster } from "@/components/ui/sonner"
 import { useAppStartup } from "@/hooks/use-app-startup"
@@ -51,6 +52,7 @@ function AuthenticatedApp() {
       />
       <ComposerDialog />
       <GlobalIntake />
+      <CommandSearch />
     </AppShell>
   )
 }

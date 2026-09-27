@@ -39,9 +39,11 @@ import { usePortraitResultLayout, useMobileResultLayout } from "./use-result-lay
 export interface ResultViewerProps {
   archivePath: string
   taskId?: string | null
+  /** Open the transcript at this second instead of where it was last left */
+  startAt?: number
 }
 
-export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewerProps) {
+export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: ResultViewerProps) {
   const platformAdapter = usePlatform()
   const archiveRepository = useMemo(() => createArchiveRepository(platformAdapter), [platformAdapter])
   const { capabilities, online } = useAppAccess()
@@ -153,9 +155,16 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
   const { bindMedia, currentTime, duration, currentSegmentIndex, autoScroll, seekTo, onManualScroll } =
     useMediaSync({
       subtitles,
-      initialTime: savedPos.current.mediaTime,
+      initialTime: startAt ?? savedPos.current.mediaTime,
       onTimeUpdate: updateMediaTime,
     })
+
+  // A search result opens the transcript at its line, also when this archive is already open.
+  useEffect(() => {
+    if (startAt === undefined) return
+    setActiveTab("transcript")
+    seekTo(startAt * 1000)
+  }, [archivePath, seekTo, startAt])
 
   // Chapters with their sections and sub-sections (from the mindmap's timed points).
   const chapterTocNodes = useMemo(
