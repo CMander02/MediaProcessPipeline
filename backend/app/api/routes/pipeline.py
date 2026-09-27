@@ -288,6 +288,9 @@ async def probe_url(url: str):
                 "tags": info.get("tags") or [],
                 "uploader": info.get("uploader") or info.get("channel"),
                 "duration": info.get("duration"),
+                # Languages with uploaded subtitles; auto captions are reported separately.
+                "subtitles": sorted((info.get("subtitles") or {}).keys()),
+                "auto_captions": bool(info.get("automatic_captions")),
             }
         except Exception as e:
             logger.warning(f"Probe failed for {url}: {e}")
@@ -385,6 +388,7 @@ async def archives(
     media: Literal["all", "video", "audio", "image"] = "all",
     source: str = "all",
     sort: Literal["created_desc", "created_asc", "published_desc", "title_asc"] = "created_desc",
+    status: Literal["all", "processing", "paused", "failed", "completed", "duplicates"] = "all",
 ):
     """List archived content (all, sorted by mtime desc)."""
     from app.services.archiving import list_archives
@@ -392,8 +396,48 @@ async def archives(
         from app.core.archive_sync import get_archive_sync_service
         return await run_in_thread(get_archive_sync_service().list_page, page=page,
                                    page_size=page_size, search=search, media=media,
-                                   source=source, sort=sort)
+                                   source=source, sort=sort, status=status)
     return {"archives": await list_archives(lite=lite)}
+
+
+@router.get("/archives/duplicates/cleanup")
+async def duplicate_cleanup_preview():
+    """Failed attempts that a later run of the same source replaced."""
+    from app.core.archive_sync import get_archive_sync_service
+    items = await run_in_thread(get_archive_sync_service().duplicate_cleanup_candidates)
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/archives/duplicates/cleanup")
+async def duplicate_cleanup():
+    """Delete failed attempts whose source also has a completed archive."""
+    from app.core.archive_lifecycle import ArchiveBusyError, get_archive_lifecycle
+    from app.core.archive_sync import get_archive_sync_service
+
+    items = await run_in_thread(get_archive_sync_service().duplicate_cleanup_candidates)
+    deleted: list[str] = []
+    errors: list[dict] = []
+    for item in items:
+        try:
+            await run_in_thread(get_archive_lifecycle().delete, item["path"])
+            deleted.append(item["path"])
+        except (ArchiveBusyError, FileNotFoundError, ValueError, OSError) as exc:
+            errors.append({"path": item["path"], "title": item["title"], "error": str(exc)})
+    return {"deleted": len(deleted), "errors": errors}
+
+
+class ArchiveLookupRequest(BaseModel):
+    sources: list[str]
+
+
+@router.post("/archives/lookup")
+async def lookup_archives(req: ArchiveLookupRequest):
+    """Archives already made from each submitted link."""
+    from app.core.archive_sync import get_archive_sync_service
+    if len(req.sources) > 200:
+        raise HTTPException(400, "Too many sources")
+    matches = await run_in_thread(get_archive_sync_service().lookup_sources, req.sources)
+    return {"matches": matches}
 
 
 @router.get("/archives/index")

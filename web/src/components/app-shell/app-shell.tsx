@@ -5,7 +5,7 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import { DesktopHeader } from "@/components/app-shell/desktop-header"
 import { MobileBottomNav } from "@/components/app-shell/mobile-bottom-nav"
 import { PAGE_TITLES } from "@/components/app-shell/navigation"
-import { TaskQueueDropdown } from "@/components/task-queue-dropdown"
+import { ActivityPanel } from "@/components/activity/activity-panel"
 import { navigate, type Route } from "@/lib/router"
 import { cn } from "@/lib/utils"
 
@@ -39,7 +39,7 @@ export function AppShell({ activePage, toolbar, children, runtimeControls = true
           )}
 
           <div className="ml-auto flex shrink-0 items-center gap-1">
-            {runtimeControls && <TaskQueueDropdown />}
+            {runtimeControls && <ActivityPanel />}
             {runtimeControls && (
               <button
                 type="button"

@@ -112,6 +112,27 @@ export interface BackendLogResponse {
   entries: BackendLogEntry[]
 }
 
+/** An archive already made from a submitted link. */
+export interface LibraryMatch {
+  path: string
+  title: string
+  task_id?: string | null
+  created_at?: string | null
+  status: string | null
+  processing: boolean
+}
+
+export interface ProbeResult {
+  title?: string
+  description?: string
+  tags?: string[]
+  uploader?: string
+  duration?: number
+  /** Languages with uploaded platform subtitles */
+  subtitles?: string[]
+  auto_captions?: boolean
+}
+
 export interface BilibiliCollectionItem {
   id: string
   bvid: string
@@ -576,6 +597,12 @@ export const api = {
     },
     indexStatus: () => get<ArchiveIndexStatus>("/api/pipeline/archives/index"),
     reconcile: () => post<ArchiveIndexStatus>("/api/pipeline/archives/reconcile"),
+    duplicateCleanupPreview: () =>
+      get<{ items: Array<{ path: string; title: string }>; count: number }>("/api/pipeline/archives/duplicates/cleanup"),
+    cleanupDuplicates: () =>
+      post<{ deleted: number; errors: Array<{ path: string; title: string; error: string }> }>("/api/pipeline/archives/duplicates/cleanup"),
+    lookup: (sources: string[]) =>
+      post<{ matches: Record<string, LibraryMatch[]> }>("/api/pipeline/archives/lookup", { sources }),
     list: (options: { lite?: boolean } = {}) => {
       const params = new URLSearchParams()
       if (options.lite) params.set("lite", "true")
@@ -654,9 +681,7 @@ export const api = {
     deleteStaged: (stagingId: string) =>
       httpDelete<{ deleted: boolean }>(`/api/pipeline/stage/${stagingId}`),
     probe: (url: string) =>
-      get<{ title?: string; description?: string; tags?: string[]; uploader?: string; duration?: number }>(
-        `/api/pipeline/probe?url=${encodeURIComponent(url)}`,
-      ),
+      get<ProbeResult>(`/api/pipeline/probe?url=${encodeURIComponent(url)}`),
     bilibiliCollection: (url: string) =>
       get<BilibiliCollectionResult>(
         `/api/pipeline/bilibili/collection?url=${encodeURIComponent(url)}`,

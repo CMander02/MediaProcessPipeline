@@ -6,7 +6,8 @@ import { useAppAccess } from "@/hooks/use-app-access-context"
 import { useArchives, type ArchiveItem } from "@/hooks/use-archives"
 import { usePreferences } from "@/hooks/use-preferences"
 import { type TranscriptTocNode } from "@/components/result/transcript-tab"
-import { parseSRT, subtitlesToMarkdown, subtitlesToSRT, type Subtitle } from "@/lib/srt"
+import { parseSRT, subtitlesToMarkdown, subtitlesToPlainText, subtitlesToSRT, type Subtitle } from "@/lib/srt"
+import { createZip, downloadBytes, safeFileName, type ZipEntry } from "@/lib/zip"
 import { type ImageDescription } from "@/components/result/image-note-viewer"
 import { api, type Task, type TaskFlowSnapshot, type TaskTimelineEvent } from "@/lib/api"
 import { useViewPosition } from "@/hooks/use-view-position"
@@ -847,6 +848,43 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
     }
   }
 
+  /** 导出 menu: the current tab as Markdown, subtitles as SRT or plain text, or everything as a zip. */
+  const canExportZip = !platformAdapter.isNative
+  const hasExportableContent = Boolean(summary || subtitles.length > 0 || mindmap || detail || noteText)
+  const handleExport = async (kind: "markdown" | "srt" | "txt" | "zip") => {
+    const baseName = safeFileName(displayTitle ?? "output", "output")
+    try {
+      if (kind === "markdown") {
+        await handleDownload()
+        return
+      }
+      if (kind === "srt") {
+        await platformAdapter.saveTextFile(`${baseName}.srt`, subtitlesToSRT(subtitles))
+        return
+      }
+      if (kind === "txt") {
+        await platformAdapter.saveTextFile(`${baseName}.txt`, subtitlesToPlainText(subtitles))
+        return
+      }
+      const entries: ZipEntry[] = []
+      if (summary) entries.push({ name: "摘要.md", content: summary })
+      if (subtitles.length > 0) {
+        entries.push(
+          { name: "字幕.md", content: getTranscriptMarkdown() },
+          { name: "字幕.srt", content: subtitlesToSRT(subtitles) },
+          { name: "字幕.txt", content: subtitlesToPlainText(subtitles) },
+        )
+      }
+      if (mindmap) entries.push({ name: "导图.md", content: mindmap })
+      if (detail) entries.push({ name: "视频详情.md", content: detail })
+      if (noteText) entries.push({ name: `${safeFileName(sourceTabLabel || "正文")}.md`, content: noteText })
+      if (entries.length === 0) return
+      downloadBytes(`${baseName}.zip`, createZip(entries.map((entry) => ({ ...entry, name: `${baseName}/${entry.name}` }))))
+    } catch (error) {
+      notifyError("导出失败", error)
+    }
+  }
+
   const handleOpenSource = useCallback(() => {
     if (!sourceHref) return
     void platformAdapter.openExternal(sourceHref)
@@ -961,6 +999,9 @@ export function useResultViewer({ archivePath, taskId: taskIdProp }: ResultViewe
     handleCopy,
     copied,
     handleDownload,
+    handleExport,
+    canExportZip,
+    hasExportableContent,
     summary,
     subtitleTracks,
     activeTrackLang,

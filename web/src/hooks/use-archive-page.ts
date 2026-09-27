@@ -79,6 +79,6 @@ export function useArchivePage(query: ArchiveQuery) {
 
   return { archives: data?.archives ?? [], total: data?.total ?? 0, page: data?.page ?? query.page,
     loading: !data && error?.key !== requestKey, error: error?.key === requestKey ? error.message : null,
-    indexing: data?.indexing ?? false, lastReconciledAt: data?.last_reconciled_at,
+    indexing: data?.indexing ?? false, lastReconciledAt: data?.last_reconciled_at, facets: data?.facets,
     refresh, removeArchive }
 }

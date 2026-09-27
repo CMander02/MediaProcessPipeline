@@ -2,6 +2,17 @@ export type MediaFilter = "all" | "video" | "audio" | "image"
 
 export type ArchiveSort = "created_desc" | "created_asc" | "published_desc" | "title_asc"
 
+/** Library status chips; "duplicates" lists every run of sources processed more than once. */
+export type StatusFilter = "all" | "processing" | "paused" | "failed" | "completed" | "duplicates"
+
+export const STATUS_FILTER_OPTIONS: Array<{ value: StatusFilter; label: string; hint?: string }> = [
+  { value: "all", label: "全部" },
+  { value: "processing", label: "处理中" },
+  { value: "paused", label: "已暂停" },
+  { value: "failed", label: "失败", hint: "处理失败或被取消的条目" },
+  { value: "duplicates", label: "重复", hint: "同一个来源处理过多次" },
+]
+
 export type SourceFilter =
   | "all"
   | "xiaohongshu"

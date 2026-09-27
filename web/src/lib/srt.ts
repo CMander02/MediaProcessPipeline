@@ -197,6 +197,27 @@ export function subtitlesToMarkdown(
 }
 
 /**
+ * Plain-text transcript: consecutive lines of one speaker become one paragraph.
+ */
+export function subtitlesToPlainText(subtitles: Subtitle[]): string {
+  const paragraphs: Array<{ speaker: string; lines: string[] }> = []
+  for (const subtitle of subtitles) {
+    const text = subtitle.text.trim().replace(/\s*\n\s*/g, " ")
+    if (!text) continue
+    const speaker = subtitle.speaker?.trim() ?? ""
+    const last = paragraphs.at(-1)
+    if (last && last.speaker === speaker) last.lines.push(text)
+    else paragraphs.push({ speaker, lines: [text] })
+  }
+  return paragraphs
+    .map(({ speaker, lines }) => {
+      const body = lines.join(" ")
+      return speaker ? `${formatSpeakerLabel(speaker)}：${body}` : body
+    })
+    .join("\n\n") + (paragraphs.length ? "\n" : "")
+}
+
+/**
  * Find subtitle at given time using binary search (ms)
  */
 export function findSubtitleAtTime(

@@ -163,11 +163,13 @@ async function start() {
   backend.on('backend-exit', ({ code, signal }) => {
     if (state.phase === 'ready' && !quitting) void report(new Error(`后端已退出（${code ?? signal}）。请查看日志，然后重试。`));
   });
+  // The app copies results and can offer to process a link found on the clipboard (a setting in the app).
+  const appPermissions = new Set(['clipboard-sanitized-write', 'clipboard-read']);
   session.defaultSession.setPermissionRequestHandler((contents, permission, callback) => {
-    callback(isAppUrl(contents.getURL(), SERVER_URL) && permission === 'clipboard-sanitized-write');
+    callback(isAppUrl(contents.getURL(), SERVER_URL) && appPermissions.has(permission));
   });
   session.defaultSession.setPermissionCheckHandler((_contents, permission, origin) => (
-    isAppUrl(origin, SERVER_URL) && permission === 'clipboard-sanitized-write'
+    isAppUrl(origin, SERVER_URL) && appPermissions.has(permission)
   ));
   const workArea = screen.getPrimaryDisplay().workAreaSize;
   window = new BrowserWindow({

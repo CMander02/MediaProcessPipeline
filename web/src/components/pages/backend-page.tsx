@@ -28,6 +28,7 @@ import {
   Task01Icon,
 } from "@hugeicons/core-free-icons"
 
+import { ActivityContent } from "@/components/activity/activity-content"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -70,7 +71,6 @@ import {
   type TaskStats,
 } from "@/lib/api"
 import { buildHash, navigate, useRoute } from "@/lib/router"
-import { taskDisplayTitle } from "@/lib/task-display"
 import { cn } from "@/lib/utils"
 
 type BackendTab = "overview" | "logs" | "tasks" | "models" | "diagnostics"
@@ -87,13 +87,6 @@ const backendTabs: Array<{ value: BackendTab; label: string }> = [
 
 function backendTabFromParam(requested: string | undefined): BackendTab {
   return backendTabs.some((tab) => tab.value === requested) ? requested as BackendTab : "overview"
-}
-
-function statusLabel(status: Task["status"]) {
-  if (status === "processing") return "处理中"
-  if (status === "queued") return "排队中"
-  if (status === "paused") return "已暂停"
-  return status
 }
 
 function formatBytes(value: number) {
@@ -251,39 +244,16 @@ function OverviewPanel({
   )
 }
 
-function TaskQueuePanel({ tasks }: { tasks: Task[] }) {
+function TaskQueuePanel({ count }: { count: number }) {
   return (
     <Card className="gap-0 py-0 shadow-none">
       <CardHeader className="border-b py-4">
         <CardTitle>任务队列</CardTitle>
-        <CardDescription>排队、处理和暂停中的任务</CardDescription>
-        <CardAction><Badge variant="secondary">{tasks.length}</Badge></CardAction>
+        <CardDescription>与标题栏「活动」面板相同：进行中、排队、暂停和最近失败的任务</CardDescription>
+        <CardAction><Badge variant="secondary">{count}</Badge></CardAction>
       </CardHeader>
-      <CardContent>
-        {tasks.length === 0 ? (
-          <EmptyState title="当前队列为空" description="新任务提交后会显示在这里。" className="min-h-[320px]" />
-        ) : (
-          tasks.map((task, index) => (
-            <div key={task.id}>
-              {index > 0 ? <Separator /> : null}
-              <button
-                type="button"
-                onClick={() => navigate(`#/result/task/${task.id}`)}
-                className="flex min-h-16 w-full items-center gap-3 py-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <span className={cn("size-2 shrink-0 rounded-full", task.status === "processing" ? "bg-primary" : "bg-muted-foreground/50")} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium" title={task.source}>{taskDisplayTitle(task)}</span>
-                  <span className="mt-1 block truncate text-xs text-muted-foreground">{task.message || task.current_step || "等待处理"}</span>
-                </span>
-                <span className="shrink-0 text-right">
-                  <Badge variant="outline">{statusLabel(task.status)}</Badge>
-                  <span className="mt-1 block text-xs tabular-nums text-muted-foreground">{Math.round((task.progress ?? 0) * 100)}%</span>
-                </span>
-              </button>
-            </div>
-          ))
-        )}
+      <CardContent className="py-2">
+        <ActivityContent />
       </CardContent>
     </Card>
   )
@@ -707,7 +677,7 @@ export function BackendPage() {
               <TabsContent value="logs">
                 <LogPanel key={route.params.q ?? ""} active={activeTab === "logs"} online={online} initialSearch={route.params.q ?? ""} />
               </TabsContent>
-              <TabsContent value="tasks"><TaskQueuePanel tasks={tasks} /></TabsContent>
+              <TabsContent value="tasks"><TaskQueuePanel count={activeCount} /></TabsContent>
               <TabsContent value="models"><ModelPanel settings={settings} processingCount={processingCount} /></TabsContent>
               <TabsContent value="diagnostics"><DiagnosticsPanel serviceHealthy={serviceHealthy} settings={settings} processingCount={processingCount} /></TabsContent>
             </div>

@@ -1,10 +1,13 @@
 import type { Task } from "@/lib/api"
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 /** Human-readable name for a task: its archive folder, else something recognizable from the source. */
 export function taskDisplayTitle(task: Pick<Task, "source" | "result">): string {
   const outputDir = typeof task.result?.output_dir === "string" ? task.result.output_dir : ""
-  const folder = outputDir.replace(/[\\/]+$/, "").split(/[\\/]/).pop()
-  if (folder) return folder.replace(/\s\(\d+\)$/, "")
+  const folder = outputDir.replace(/[\\/]+$/, "").split(/[\\/]/).pop()?.replace(/\s\(\d+\)$/, "")
+  // Runs that failed before metadata arrived are archived under their UUID; the source says more.
+  if (folder && !UUID_RE.test(folder)) return folder
   return sourceLabel(task.source)
 }
 
@@ -23,6 +26,17 @@ export function sourceLabel(source: string): string {
   } catch {
     return source.split(/[\\/]/).pop() || source
   }
+}
+
+/** Title for a card: runs that failed before metadata arrived are named after their UUID folder. */
+export function archiveDisplayTitle(archive: { title: string; metadata?: Record<string, unknown> }): {
+  title: string
+  untitled: boolean
+} {
+  const title = (archive.title ?? "").trim()
+  if (title && !UUID_RE.test(title)) return { title, untitled: false }
+  const source = typeof archive.metadata?.source_url === "string" ? archive.metadata.source_url : ""
+  return { title: source ? sourceLabel(source) : "未命名条目", untitled: true }
 }
 
 function monthDay(value: string | null | undefined): string | null {

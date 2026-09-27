@@ -2,7 +2,7 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import "@testing-library/jest-dom/vitest"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { SubmitPage } from "./submit-page"
 import { api } from "@/lib/api"
@@ -29,6 +29,13 @@ vi.mock("@/hooks/use-app-access-context", () => ({
   }),
 }))
 
+const linkBox = () => screen.getByPlaceholderText(/粘贴视频或网页链接/)
+
+beforeEach(() => {
+  vi.spyOn(api.archives, "lookup").mockResolvedValue({ matches: {} })
+  vi.spyOn(api.pipeline, "probe").mockRejectedValue(new Error("offline"))
+})
+
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
@@ -36,7 +43,7 @@ afterEach(() => {
 })
 
 describe("SubmitPage Bilibili collection selection", () => {
-  it("opens the collection list and submits the selected entries as one batch", async () => {
+  it("opens the part list and submits the selected parts as one batch", async () => {
     const inspect = vi.spyOn(api.pipeline, "bilibiliCollection").mockResolvedValue({
       is_bilibili: true,
       is_collection: true,
@@ -70,9 +77,7 @@ describe("SubmitPage Bilibili collection selection", () => {
 
     render(<SubmitPage />)
 
-    fireEvent.change(screen.getByPlaceholderText("粘贴视频或网页链接"), {
-      target: { value: "https://www.bilibili.com/video/BV1DK4y1b7bY/" },
-    })
+    fireEvent.change(linkBox(), { target: { value: "https://www.bilibili.com/video/BV1DK4y1b7bY/" } })
     fireEvent.click(screen.getByRole("button", { name: "开始处理" }))
 
     expect(await screen.findByText("零基础平面设计入门系列")).toBeInTheDocument()
@@ -85,16 +90,13 @@ describe("SubmitPage Bilibili collection selection", () => {
     fireEvent.click(screen.getByRole("button", { name: "开始处理" }))
 
     await waitFor(() => {
-      expect(createBatch).toHaveBeenCalledWith(
-        ["https://www.bilibili.com/video/BV1DK4y1b7bY"],
-        {
-          force_asr: false,
-        },
-      )
+      expect(createBatch).toHaveBeenCalledWith(["https://www.bilibili.com/video/BV1DK4y1b7bY"], { force_asr: false })
     })
     expect(navigate).toHaveBeenCalledWith("#/result/task/task-1")
   })
+})
 
+describe("SubmitPage options", () => {
   it("submits the explicit ASR strategy", async () => {
     const createBatch = vi.spyOn(api.tasks, "createBatch").mockResolvedValue([
       { id: "task-asr" },
@@ -102,20 +104,12 @@ describe("SubmitPage Bilibili collection selection", () => {
 
     render(<SubmitPage />)
 
-    fireEvent.change(screen.getByPlaceholderText("粘贴视频或网页链接"), {
-      target: { value: "https://www.youtube.com/watch?v=abcdefghijk" },
-    })
-    fireEvent.click(screen.getByRole("button", { name: "高级选项" }))
-    fireEvent.click(screen.getByRole("button", { name: /强制 ASR/ }))
+    fireEvent.change(linkBox(), { target: { value: "https://www.youtube.com/watch?v=abcdefghijk" } })
+    fireEvent.click(screen.getByRole("radio", { name: "强制 ASR" }))
     fireEvent.click(screen.getByRole("button", { name: "开始处理" }))
 
     await waitFor(() => {
-      expect(createBatch).toHaveBeenCalledWith(
-        ["https://www.youtube.com/watch?v=abcdefghijk"],
-        {
-          force_asr: true,
-        },
-      )
+      expect(createBatch).toHaveBeenCalledWith(["https://www.youtube.com/watch?v=abcdefghijk"], { force_asr: true })
     })
   })
 
@@ -126,18 +120,67 @@ describe("SubmitPage Bilibili collection selection", () => {
 
     render(<SubmitPage />)
 
-    fireEvent.change(screen.getByPlaceholderText("粘贴视频或网页链接"), {
-      target: { value: "https://www.youtube.com/watch?v=abcdefghijk" },
-    })
-    fireEvent.click(screen.getByRole("button", { name: "高级选项" }))
-    fireEvent.click(screen.getByRole("button", { name: /^自动/ }))
+    fireEvent.change(linkBox(), { target: { value: "https://www.youtube.com/watch?v=abcdefghijk" } })
+    fireEvent.click(screen.getByRole("radio", { name: "强制 ASR" }))
+    fireEvent.click(screen.getByRole("radio", { name: "自动" }))
     fireEvent.click(screen.getByRole("button", { name: "开始处理" }))
 
     await waitFor(() => {
+      expect(createBatch).toHaveBeenCalledWith(["https://www.youtube.com/watch?v=abcdefghijk"], { force_asr: false })
+    })
+  })
+})
+
+describe("SubmitPage several links", () => {
+  it("queues every pasted link in one batch and stays on the page", async () => {
+    const createBatch = vi.spyOn(api.tasks, "createBatch").mockResolvedValue([
+      { id: "a" }, { id: "b" },
+    ] as Awaited<ReturnType<typeof api.tasks.createBatch>>)
+
+    render(<SubmitPage />)
+
+    fireEvent.change(linkBox(), {
+      target: { value: "【分享】 https://youtu.be/aaaaaaaaaaa 看看\nhttps://www.xiaohongshu.com/explore/123" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "开始处理（2 个）" }))
+
+    await waitFor(() => {
       expect(createBatch).toHaveBeenCalledWith(
-        ["https://www.youtube.com/watch?v=abcdefghijk"],
+        ["https://youtu.be/aaaaaaaaaaa", "https://www.xiaohongshu.com/explore/123"],
         { force_asr: false },
       )
+    })
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it("skips links already in the library unless asked to process them again", async () => {
+    vi.mocked(api.archives.lookup).mockResolvedValue({
+      matches: {
+        "https://youtu.be/aaaaaaaaaaa": [
+          { path: "D:/MPP/archives/done", title: "已处理的视频", task_id: "t0", status: "completed", processing: false },
+        ],
+      },
+    })
+    const createBatch = vi.spyOn(api.tasks, "createBatch").mockResolvedValue([
+      { id: "c" },
+    ] as Awaited<ReturnType<typeof api.tasks.createBatch>>)
+
+    render(<SubmitPage />)
+
+    fireEvent.change(linkBox(), { target: { value: "https://youtu.be/aaaaaaaaaaa\nhttps://youtu.be/bbbbbbbbbbb" } })
+
+    expect(await screen.findByText("已在库中")).toBeInTheDocument()
+    expect(screen.getByText("1 个已在库中，不会重复处理")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "开始处理" }))
+    await waitFor(() => {
+      expect(createBatch).toHaveBeenCalledWith(["https://youtu.be/bbbbbbbbbbb"], { force_asr: false })
+    })
+
+    fireEvent.change(linkBox(), { target: { value: "https://youtu.be/aaaaaaaaaaa" } })
+    fireEvent.click(await screen.findByRole("button", { name: "仍然重新处理" }))
+    fireEvent.click(screen.getByRole("button", { name: "开始处理" }))
+    await waitFor(() => {
+      expect(createBatch).toHaveBeenLastCalledWith(["https://youtu.be/aaaaaaaaaaa"], { force_asr: false })
     })
   })
 })

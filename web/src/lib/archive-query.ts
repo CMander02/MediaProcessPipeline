@@ -1,6 +1,15 @@
 import { sourceFilterFromMetadata } from "@/lib/archive-filters"
 import type { ArchiveItem, ArchiveQuery } from "@/repositories/archive-types"
 
+/** Same buckets as the server index: paused, processing, failed (incl. cancelled), completed. */
+export function archiveStatus(item: Pick<ArchiveItem, "processing" | "metadata">): "processing" | "paused" | "failed" | "completed" {
+  const status = typeof item.metadata?.status === "string" ? item.metadata.status : ""
+  if (status === "paused") return "paused"
+  if (item.processing) return "processing"
+  if (status === "failed" || status === "cancelled") return "failed"
+  return "completed"
+}
+
 export function queryLocalArchives(archives: ArchiveItem[], query: ArchiveQuery) {
   const search = query.search.toLowerCase()
   const items = archives.filter((item) => {
@@ -9,6 +18,8 @@ export function queryLocalArchives(archives: ArchiveItem[], query: ArchiveQuery)
     if (query.media === "image" && !item.has_image
       && !["image_note", "text_note"].includes(String(item.metadata.content_subtype))) return false
     if (query.source !== "all" && sourceFilterFromMetadata(item.metadata) !== query.source) return false
+    if (query.status && query.status !== "all" && query.status !== "duplicates"
+      && archiveStatus(item) !== query.status) return false
     return !query.search.trim() || item.title.toLowerCase().includes(search)
   })
   const timestamp = (value: unknown) => typeof value === "string" ? new Date(value).getTime() || 0 : 0

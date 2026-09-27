@@ -3,6 +3,8 @@ import { useDeferredValue } from "react"
 import { AppOutlet } from "@/components/app-outlet"
 import { AppShell } from "@/components/app-shell/app-shell"
 import { PageToolbar } from "@/components/app-shell/page-toolbar"
+import { ComposerDialog } from "@/components/composer/composer-dialog"
+import { GlobalIntake } from "@/components/composer/global-intake"
 import { PwaStatus } from "@/components/pwa-status"
 import { Toaster } from "@/components/ui/sonner"
 import { useAppStartup } from "@/hooks/use-app-startup"
@@ -35,10 +37,12 @@ function AuthenticatedApp() {
       mediaFilter={library.mediaFilter}
       sourceFilter={library.sourceFilter}
       sort={library.sort}
+      status={library.status}
       onSearchChange={library.setSearch}
       onMediaFilterChange={library.setMediaFilter}
       onSourceFilterChange={library.setSourceFilter}
       onSortChange={library.setSort}
+      onStatusChange={library.setStatus}
     />
   ) : undefined
 
@@ -51,10 +55,14 @@ function AuthenticatedApp() {
           mediaFilter: library.mediaFilter,
           sourceFilter: library.sourceFilter,
           sort: library.sort,
+          status: library.status,
+          onStatusChange: library.setStatus,
           page: library.page,
           onPageChange: library.setPage,
         }}
       />
+      <ComposerDialog />
+      <GlobalIntake />
     </AppShell>
   )
 }

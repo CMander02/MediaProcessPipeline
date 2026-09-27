@@ -1,705 +1,95 @@
-import { useEffect, useState, useRef, useCallback, type FormEvent, type KeyboardEvent } from "react"
-import { useDropZone } from "@/hooks/use-drop-zone"
-import { useSubmitHistory } from "@/hooks/use-submit-history"
-import { useAppAccess } from "@/hooks/use-app-access-context"
-import { navigate } from "@/lib/router"
-import { api, type BilibiliCollectionItem } from "@/lib/api"
-import { Input } from "@/components/ui/input"
-import { Button } from "@/components/ui/button"
-import { Label } from "@/components/ui/label"
-import { FolderQueueDialog } from "@/components/folder-queue-dialog"
+import { useEffect } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
-import {
-  Upload01Icon, Link01Icon, Loading03Icon, PlayIcon, ArrowDown01Icon, ArrowUp01Icon,
-  FileVideoIcon, FileAudioIcon, FolderOpenIcon, Folder01Icon, Cancel01Icon, CheckmarkCircle02Icon, Clock01Icon,
-} from "@hugeicons/core-free-icons"
-import { cn } from "@/lib/utils"
-import { formatDuration } from "@/lib/format"
+import { Clock01Icon, Link01Icon } from "@hugeicons/core-free-icons"
+
+import { useSubmitHistory } from "@/hooks/use-submit-history"
+import { openComposer } from "@/lib/composer-store"
+import { notifySuccess } from "@/lib/notify"
+import { openTask } from "@/lib/open-task"
+import { navigate } from "@/lib/router"
 import { usePlatform } from "@/platform/use-platform"
+import { SourceComposer } from "@/components/composer/source-composer"
 
-interface QueuedFile {
-  id: string
-  name: string
-  size: number
-  duration: number | null
-  stagingId: string
-  stagingPath: string
-  uploading: boolean
-  error: string
-}
-
-interface CollectionSelection {
-  sourceUrl: string
-  title: string
-  items: BilibiliCollectionItem[]
-  selectedIds: string[]
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
-}
-
-function getMediaDuration(file: File): Promise<number | null> {
-  return new Promise((resolve) => {
-    const url = URL.createObjectURL(file)
-    const el = file.type.startsWith("video/") ? document.createElement("video") : document.createElement("audio")
-    el.preload = "metadata"
-    el.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve(isFinite(el.duration) ? el.duration : null) }
-    el.onerror = () => { URL.revokeObjectURL(url); resolve(null) }
-    el.src = url
-  })
-}
-
-function isVideoFile(name: string) {
-  return /\.(mp4|mkv|avi|webm|mov|flv|wmv)$/i.test(name)
-}
-
-function looksLikeBilibiliVideo(value: string) {
-  return /(?:bilibili\.com\/video\/|b23\.tv\/|\bBV[0-9A-Za-z]{10}\b)/i.test(value)
-}
-
-type SubtitleStrategy = "auto" | "force_asr"
-
+/** The 处理 page: the same composer as the Ctrl+N dialog, with room to breathe and recent links on phones. */
 export function SubmitPage() {
-  const { capabilities, online } = useAppAccess()
   const platform = usePlatform()
   const submitHistory = useSubmitHistory()
-  const [source, setSource] = useState("")
-  const [queuedFiles, setQueuedFiles] = useState<QueuedFile[]>([])
-  const [strategy, setStrategy] = useState<SubtitleStrategy>("auto")
-  const forceAsr = strategy !== "auto"
-  const [numSpeakers, setNumSpeakers] = useState("")
-  const [hotwordTags, setHotwordTags] = useState<string[]>([])
-  const [hotwordInput, setHotwordInput] = useState("")
-  const [showAdvanced, setShowAdvanced] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-  const [checkingCollection, setCheckingCollection] = useState(false)
-  const [error, setError] = useState("")
-  const [collection, setCollection] = useState<CollectionSelection | null>(null)
-  const [showFolderDialog, setShowFolderDialog] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const folderInputRef = useRef<HTMLInputElement>(null)
-  const hotwordInputRef = useRef<HTMLInputElement>(null)
-  const abortControllers = useRef<Map<string, AbortController>>(new Map())
 
+  // Text shared to the Android app lands here.
   useEffect(() => {
-    const applyShare = (text: string) => {
-      setSource(text)
-      setCollection(null)
-    }
     const pending = platform.consumeSharedText()
-    if (pending) applyShare(pending)
+    if (pending) openComposer({ text: pending })
     const handleShare = (event: Event) => {
       const text = (event as CustomEvent<{ text?: string }>).detail?.text?.trim()
-      if (text) applyShare(text)
+      if (text) openComposer({ text })
     }
     window.addEventListener("mpp:share-received", handleShare)
     return () => window.removeEventListener("mpp:share-received", handleShare)
   }, [platform])
 
-  const buildOptions = () => {
-    const opts: Record<string, unknown> = {}
-    opts.force_asr = forceAsr
-    const ns = parseInt(numSpeakers, 10)
-    if (ns > 0) opts.num_speakers = ns
-    if (hotwordTags.length > 0) opts.hotwords = hotwordTags
-    return opts
-  }
-  const uploadAndQueue = useCallback(async (file: File) => {
-    const id = `${file.name}-${Date.now()}-${Math.random()}`
-    const controller = new AbortController()
-    abortControllers.current.set(id, controller)
-    setQueuedFiles((prev) => [...prev, {
-      id, name: file.name, size: file.size, duration: null,
-      stagingId: "", stagingPath: "", uploading: true, error: "",
-    }])
-    try {
-      const [duration, staged] = await Promise.all([
-        getMediaDuration(file),
-        api.pipeline.stage(file, controller.signal),
-      ])
-      setQueuedFiles((prev) => prev.map((f) =>
-        f.id === id
-          ? { ...f, duration, stagingId: staged.staging_id, stagingPath: staged.path, uploading: false }
-          : f
-      ))
-    } catch {
-      if (controller.signal.aborted) {
-        setQueuedFiles((prev) => prev.filter((f) => f.id !== id))
-      } else {
-        setQueuedFiles((prev) => prev.map((f) =>
-          f.id === id ? { ...f, uploading: false, error: "上传失败" } : f
-        ))
-      }
-    } finally {
-      abortControllers.current.delete(id)
-    }
-  }, [])
-
-  const handleFileSelect = useCallback((files: File[]) => {
-    for (const f of files) uploadAndQueue(f)
-  }, [uploadAndQueue])
-
-  const removeQueued = (id: string) => {
-    abortControllers.current.get(id)?.abort()
-    abortControllers.current.delete(id)
-    setQueuedFiles((prev) => {
-      const target = prev.find((f) => f.id === id)
-      if (target?.stagingId) {
-        api.pipeline.deleteStaged(target.stagingId).catch(() => {})
-      }
-      return prev.filter((f) => f.id !== id)
-    })
-  }
-  const clearAll = () => {
-    for (const controller of abortControllers.current.values()) controller.abort()
-    abortControllers.current.clear()
-    setQueuedFiles((prev) => {
-      for (const f of prev) {
-        if (f.stagingId) api.pipeline.deleteStaged(f.stagingId).catch(() => {})
-      }
-      return []
-    })
-  }
-
-  const toggleCollectionItem = (id: string) => {
-    setCollection((current) => {
-      if (!current) return current
-      const selected = current.selectedIds.includes(id)
-      return {
-        ...current,
-        selectedIds: selected
-          ? current.selectedIds.filter((itemId) => itemId !== id)
-          : [...current.selectedIds, id],
-      }
-    })
-  }
-
-  const selectAllCollectionItems = () => {
-    setCollection((current) => current ? {
-      ...current,
-      selectedIds: current.items.map((item) => item.id),
-    } : current)
-  }
-
-  const clearCollectionItems = () => {
-    setCollection((current) => current ? { ...current, selectedIds: [] } : current)
-  }
-
-  const handleSubmitAll = async () => {
-    const readyFiles = queuedFiles.filter((f) => f.stagingPath && !f.uploading && !f.error)
-    const urlSource = source.trim()
-    if (!urlSource && !readyFiles.length) return
-    if (submitting) return
-
-    setSubmitting(true)
-    setError("")
-    try {
-      const opts = buildOptions()
-
-      if (
-        urlSource
-        && collection?.sourceUrl !== urlSource
-        && looksLikeBilibiliVideo(urlSource)
-      ) {
-        setCheckingCollection(true)
-        const inspection = await api.pipeline.bilibiliCollection(urlSource)
-        setCheckingCollection(false)
-        if (inspection.is_collection && inspection.items.length > 1) {
-          setCollection({
-            sourceUrl: urlSource,
-            title: inspection.title || "哔哩哔哩合集",
-            items: inspection.items,
-            selectedIds: inspection.items.map((item) => item.id),
-          })
-          setSubmitting(false)
-          return
-        }
-      }
-
-      // Options are captured here, at submit time — so users editing
-      // advanced options after dropping files still gets their picks applied.
-      const sources = readyFiles.map((file) => file.stagingPath)
-      if (collection?.sourceUrl === urlSource) {
-        const selectedIds = new Set(collection.selectedIds)
-        sources.push(...collection.items
-          .filter((item) => selectedIds.has(item.id))
-          .map((item) => item.url))
-      } else if (urlSource) {
-        sources.push(urlSource)
-      }
-      if (sources.length === 0) {
-        setSubmitting(false)
-        return
-      }
-      const tasks = await api.tasks.createBatch(sources, opts)
-      submitHistory.add(urlSource)
-      const firstTask = tasks[0]
-      navigate(firstTask ? `#/result/task/${firstTask.id}` : "#/files")
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "提交失败")
-      setCheckingCollection(false)
-      setSubmitting(false)
-    }
-  }
-
-  const handleURLSubmit = (e: FormEvent) => { e.preventDefault(); handleSubmitAll() }
-
-  const addHotword = useCallback((word: string) => {
-    const w = word.trim()
-    if (w && !hotwordTags.includes(w)) setHotwordTags((prev) => [...prev, w])
-  }, [hotwordTags])
-
-  const removeHotword = useCallback((word: string) => {
-    setHotwordTags((prev) => prev.filter((t) => t !== word))
-  }, [])
-
-  const handleHotwordKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" || e.key === "," || e.key === "、") {
-      e.preventDefault()
-      const val = hotwordInput.replace(/[,，、]/g, "").trim()
-      if (val) { addHotword(val); setHotwordInput("") }
-    } else if (e.key === "Backspace" && !hotwordInput && hotwordTags.length > 0) {
-      setHotwordTags((prev) => prev.slice(0, -1))
-    }
-  }
-
-  const { isDragging, dropZoneProps } = useDropZone({ accept: ["video/*", "audio/*"], onDrop: handleFileSelect })
-
-  const anyUploading = queuedFiles.some((f) => f.uploading)
-  const readyCount = queuedFiles.filter((f) => f.stagingPath && !f.error).length
-  const uploadingCount = queuedFiles.filter((f) => f.uploading).length
-  const selectedCollectionCount = collection?.selectedIds.length ?? 0
-  const totalCount = readyCount + (
-    collection?.sourceUrl === source.trim()
-      ? selectedCollectionCount
-      : source.trim() ? 1 : 0
-  )
-  const canSubmit = online && totalCount > 0 && !submitting && !anyUploading
-  const hasFiles = queuedFiles.length > 0
-  const hasRightPanel = hasFiles || collection !== null
-  const activeOptions = [strategy !== "auto", !!numSpeakers, hotwordTags.length > 0].filter(Boolean).length
-
   return (
-    <div className="flex h-full flex-col overflow-y-auto md:flex-row md:overflow-hidden">
-      <FolderQueueDialog
-        open={showFolderDialog && capabilities.filesystem_browse}
-        onOpenChange={setShowFolderDialog}
-        options={buildOptions()}
-        onSubmitted={(taskId) => navigate(taskId ? `#/result/task/${taskId}` : "#/files")}
-      />
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 py-5 sm:px-6 md:py-8">
+        <div className="hidden md:block">
+          <h1 className="text-lg font-semibold">新建处理</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            在任何页面都可以直接粘贴链接或拖入文件开始处理{/Electron\//.test(navigator.userAgent) ? "，或按 Ctrl+N" : ""}。
+          </p>
+        </div>
 
-      {/* ── Left panel: controls ── */}
-      <div className={cn(
-        "flex w-full flex-col gap-4 px-4 py-5 transition-[width,border-color] duration-200 sm:px-6 md:shrink-0 md:overflow-y-auto",
-        hasRightPanel ? "md:w-80 md:border-r" : "md:w-full md:items-center md:justify-center",
-      )}>
-        <div className={cn("flex w-full flex-col gap-4", !hasRightPanel && "md:max-w-xl")}>
-
-          {/* Drop zone */}
-          {capabilities.browser_file_upload && <div
-            {...dropZoneProps}
-            className={cn(
-              "hidden flex-col items-center justify-center gap-3 rounded-lg border border-dashed transition-colors duration-150 cursor-pointer md:flex",
-              hasRightPanel ? "py-5 px-4" : "py-12 px-4",
-              isDragging ? "border-primary bg-primary/5" : "border-muted-foreground/25 hover:border-muted-foreground/40 hover:bg-muted/20",
-              submitting && "pointer-events-none opacity-60",
-            )}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <HugeiconsIcon icon={Upload01Icon} className={cn("text-muted-foreground/40", hasRightPanel ? "h-6 w-6" : "h-9 w-9")} />
-            <div className="text-center pointer-events-none">
-              <p className="text-sm font-medium text-muted-foreground">
-                {isDragging ? "松开鼠标放下文件" : hasRightPanel ? "继续拖入或点击添加" : "拖放音视频文件到这里"}
-              </p>
-              {!hasRightPanel && (
-                <p className="mt-0.5 text-xs text-muted-foreground/60">支持 MP4、MKV、MP3、WAV、FLAC 等，可多选</p>
-              )}
-            </div>
-            <div className="flex items-center gap-2 pointer-events-auto" onClick={(e) => e.stopPropagation()}>
-              <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
-                <HugeiconsIcon icon={Upload01Icon} className="h-3.5 w-3.5 mr-1.5" />
-                选择文件
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => capabilities.filesystem_browse ? setShowFolderDialog(true) : folderInputRef.current?.click()}
-              >
-                <HugeiconsIcon icon={FolderOpenIcon} className="h-3.5 w-3.5 mr-1.5" />
-                选择文件夹
-              </Button>
-            </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="video/*,audio/*"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files) { handleFileSelect(Array.from(e.target.files)); e.target.value = "" }
-              }}
-            />
-            <input
-              ref={folderInputRef}
-              type="file"
-              accept="video/*,audio/*"
-              multiple
-              className="hidden"
-              {...({ webkitdirectory: "", directory: "" } as React.InputHTMLAttributes<HTMLInputElement>)}
-              onChange={(event) => {
-                if (event.target.files) {
-                  handleFileSelect(Array.from(event.target.files))
-                  event.target.value = ""
-                }
-              }}
-            />
-          </div>}
-
-          {/* Divider */}
-          <div className={cn("hidden items-center gap-3", capabilities.browser_file_upload && "md:flex")}>
-            <div className="h-px flex-1 bg-border" />
-            <span className="text-xs text-muted-foreground">或输入链接</span>
-            <div className="h-px flex-1 bg-border" />
-          </div>
-
-          {/* URL input */}
-          <form onSubmit={handleURLSubmit} className="flex gap-2">
-            <div className="relative flex-1">
-              <HugeiconsIcon icon={Link01Icon} className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-              <Input
-                value={source}
-                onChange={(e) => {
-                  setSource(e.target.value)
-                  setCollection(null)
-                }}
-                placeholder="粘贴视频或网页链接"
-                className="h-11 pl-9 md:h-9"
-                disabled={submitting || !online}
-                autoComplete="off"
-                inputMode="url"
-                autoCapitalize="none"
-                spellCheck={false}
-              />
-            </div>
-          </form>
-
-          {/* Submit */}
-          <Button size="lg" disabled={!canSubmit} onClick={handleSubmitAll} className="h-11 w-full">
-            {submitting
-              ? <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />
-              : <HugeiconsIcon icon={PlayIcon} className="h-4 w-4 mr-2" />
+        <SourceComposer
+          mode="page"
+          onSubmitted={(tasks) => {
+            // One item: follow it live. Several: stay here and let 活动 show progress.
+            if (tasks.length === 1) {
+              navigate(`#/result/task/${tasks[0].id}`)
+              return
             }
-            {checkingCollection
-              ? "检测合集..."
-              : submitting
-                ? "提交中..."
-              : totalCount > 1
-                ? `开始处理（${totalCount} 个）`
-                : "开始处理"
+            if (tasks.length > 1) {
+              notifySuccess(`${tasks.length} 项已加入处理队列`, "进度在标题栏「活动」里查看。", {
+                label: "查看第一项",
+                onClick: () => openTask(tasks[0]),
+              })
             }
-          </Button>
+          }}
+        />
 
-          {!online && <p className="text-center text-sm text-muted-foreground">连接服务器后可提交链接和控制任务。</p>}
-
-          {error && <p className="text-sm text-destructive text-center">{error}</p>}
-
-          {/* Advanced options */}
-          <div className="hidden md:block">
-            <button
-              type="button"
-              aria-label="高级选项"
-              className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-              onClick={() => setShowAdvanced(!showAdvanced)}
-            >
-              {showAdvanced ? <HugeiconsIcon icon={ArrowUp01Icon} className="h-3.5 w-3.5" /> : <HugeiconsIcon icon={ArrowDown01Icon} className="h-3.5 w-3.5" />}
-              高级选项
-              {activeOptions > 0 && (
-                <span className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] text-primary-foreground font-medium">
-                  {activeOptions}
-                </span>
-              )}
-            </button>
-
-            {showAdvanced && (
-              <div className="mt-3 space-y-4 rounded-lg border p-4 bg-muted/30">
-                <div className="space-y-1.5">
-                  <Label className="text-sm">字幕来源</Label>
-                  <div className="grid grid-cols-1 gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setStrategy("auto")}
-                      className={cn(
-                        "flex flex-col items-start gap-0.5 rounded-md border px-2.5 py-2 text-left transition-colors",
-                        strategy === "auto"
-                          ? "border-primary bg-primary/5"
-                          : "border-border hover:bg-muted",
-                      )}
-                    >
-                      <span className="text-xs font-medium">自动</span>
-                      <span className="text-[10px] text-muted-foreground leading-tight">有字幕用字幕，无则 ASR</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setStrategy("force_asr")}
-                      className={cn(
-                        "flex flex-col items-start gap-0.5 rounded-md border px-2.5 py-2 text-left transition-colors",
-                        strategy === "force_asr"
-                          ? "border-primary bg-primary/5"
-                          : "border-border hover:bg-muted",
-                      )}
-                    >
-                      <span className="text-xs font-medium">强制 ASR</span>
-                      <span className="text-[10px] text-muted-foreground leading-tight">忽略平台字幕自行转录</span>
-                    </button>
-                  </div>
-                  <p className="text-[10px] text-muted-foreground mt-1">
-                    {strategy === "auto"
-                      ? "优先使用已有字幕；需要转录时执行 ASR 和说话人分离，再整理字幕、生成摘要与导图。"
-                      : "阶段：下载 → 人声分离 → ASR → 说话人分离 → 说话人修正 → 润色 → 摘要与导图 → 归档"}
-                  </p>
-                </div>
-
-                <div className="space-y-1.5">
-                  <Label htmlFor="num-speakers" className="text-sm">说话人数量</Label>
-                  <Input
-                    id="num-speakers"
-                    type="number" min="1" max="20"
-                    value={numSpeakers}
-                    onChange={(e) => setNumSpeakers(e.target.value)}
-                    placeholder="留空自动检测"
-                    className="max-w-36 h-8"
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <Label className="text-sm">热词</Label>
-                  <div
-                    className="flex flex-wrap gap-1.5 min-h-[2.25rem] rounded-md border bg-background px-2 py-1.5 cursor-text"
-                    onClick={() => hotwordInputRef.current?.focus()}
-                  >
-                    {hotwordTags.map((tag) => (
-                      <span key={tag} className="inline-flex items-center gap-0.5 rounded-md bg-primary/10 text-primary px-2 py-0.5 text-xs font-medium">
-                        {tag}
-                        <button type="button" onClick={(e) => { e.stopPropagation(); removeHotword(tag) }} className="ml-0.5 rounded-full hover:bg-primary/20 p-0.5">
-                          <HugeiconsIcon icon={Cancel01Icon} className="h-2.5 w-2.5" />
-                        </button>
-                      </span>
-                    ))}
-                    <input
-                      ref={hotwordInputRef}
-                      value={hotwordInput}
-                      onChange={(e) => setHotwordInput(e.target.value)}
-                      onKeyDown={handleHotwordKeyDown}
-                      onBlur={() => { const v = hotwordInput.replace(/[,，、]/g, "").trim(); if (v) { addHotword(v); setHotwordInput("") } }}
-                      placeholder={hotwordTags.length === 0 ? "按回车添加..." : ""}
-                      className="flex-1 min-w-[6rem] bg-transparent text-xs outline-none placeholder:text-muted-foreground/60 py-0.5"
-                    />
-                  </div>
-                </div>
-
-                {totalCount > 1 && (
-                  <p className="text-xs text-muted-foreground">以上选项将应用于全部 {totalCount} 个条目</p>
-                )}
-              </div>
-            )}
+        <section className="space-y-2 md:hidden" aria-labelledby="recent-submit-title">
+          <div className="flex items-center justify-between gap-3">
+            <h2 id="recent-submit-title" className="flex items-center gap-2 text-sm font-medium">
+              <HugeiconsIcon icon={Clock01Icon} className="size-4 text-muted-foreground" />
+              最近提交
+            </h2>
+            {submitHistory.items.length > 0 ? (
+              <button type="button" className="min-h-11 px-2 text-xs text-muted-foreground" onClick={submitHistory.clear}>
+                清空
+              </button>
+            ) : null}
           </div>
-
-          <section className="space-y-2 md:hidden" aria-labelledby="recent-submit-title">
-            <div className="flex items-center justify-between gap-3">
-              <h2 id="recent-submit-title" className="flex items-center gap-2 text-sm font-medium">
-                <HugeiconsIcon icon={Clock01Icon} className="size-4 text-muted-foreground" />
-                最近提交
-              </h2>
-              {submitHistory.items.length > 0 ? (
+          {submitHistory.items.length > 0 ? (
+            <div className="divide-y rounded-lg border bg-card">
+              {submitHistory.items.map((item) => (
                 <button
                   type="button"
-                  className="min-h-11 px-2 text-xs text-muted-foreground"
-                  onClick={submitHistory.clear}
+                  key={`${item.source}-${item.submittedAt}`}
+                  className="flex min-h-12 w-full items-center gap-3 px-3 text-left active:bg-muted"
+                  onClick={() => openComposer({ text: item.source })}
                 >
-                  清空
-                </button>
-              ) : null}
-            </div>
-            {submitHistory.items.length > 0 ? (
-              <div className="divide-y rounded-lg border bg-card">
-                {submitHistory.items.map((item) => (
-                  <button
-                    type="button"
-                    key={`${item.source}-${item.submittedAt}`}
-                    className="flex min-h-12 w-full items-center gap-3 px-3 text-left active:bg-muted"
-                    onClick={() => {
-                      setSource(item.source)
-                      setCollection(null)
-                    }}
-                  >
-                    <HugeiconsIcon icon={Link01Icon} className="size-4 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1 truncate text-sm">{item.source}</span>
-                    <span className="shrink-0 text-[0.6875rem] text-muted-foreground">
-                      {new Date(item.submittedAt).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <p className="rounded-lg border border-dashed px-4 py-5 text-center text-sm text-muted-foreground">
-                成功提交链接后会显示在这里。
-              </p>
-            )}
-          </section>
-        </div>
-      </div>
-
-      {/* ── Right panel: file and collection list ── */}
-      {hasRightPanel && (
-        <div className="flex min-h-72 flex-none flex-col overflow-hidden border-t md:min-h-0 md:flex-1 md:border-t-0">
-          {/* Header */}
-          <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b">
-            <div className="flex items-center gap-2 text-sm">
-              <span className="font-medium">
-                {collection ? collection.title : `${queuedFiles.length} 个文件`}
-              </span>
-              {collection && (
-                <span className="text-muted-foreground">
-                  已选 {selectedCollectionCount}/{collection.items.length}
-                </span>
-              )}
-              {uploadingCount > 0 && (
-                <span className="text-muted-foreground flex items-center gap-1">
-                  <HugeiconsIcon icon={Loading03Icon} className="h-3.5 w-3.5 animate-spin" />
-                  {uploadingCount} 个上传中
-                </span>
-              )}
-              {uploadingCount === 0 && readyCount > 0 && (
-                <span className="text-foreground flex items-center gap-1">
-                  <HugeiconsIcon icon={CheckmarkCircle02Icon} className="h-3.5 w-3.5" />
-                  全部就绪
-                </span>
-              )}
-            </div>
-            <div className="flex items-center gap-3">
-              {collection && (
-                <>
-                  <button
-                    className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                    onClick={selectAllCollectionItems}
-                  >
-                    全选
-                  </button>
-                  <button
-                    className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                    onClick={clearCollectionItems}
-                  >
-                    清空选择
-                  </button>
-                </>
-              )}
-              {hasFiles && (
-                <button
-                  className="text-xs text-muted-foreground hover:text-destructive transition-colors"
-                  onClick={clearAll}
-                >
-                  清空文件
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Scrollable list */}
-          <div className="max-h-[50dvh] flex-1 overflow-y-auto px-2 py-2 sm:px-4 md:max-h-none">
-            <div className="space-y-1">
-              {collection?.items.map((item, index) => {
-                const selected = collection.selectedIds.includes(item.id)
-                return (
-                  <label
-                    key={item.id}
-                    className={cn(
-                      "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm cursor-pointer transition-colors",
-                      selected ? "bg-primary/5 hover:bg-primary/10" : "hover:bg-muted/60",
-                    )}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selected}
-                      onChange={() => toggleCollectionItem(item.id)}
-                      aria-label={`选择 ${item.title}`}
-                      className="h-4 w-4 shrink-0 accent-primary"
-                    />
-                    <span className="w-7 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-                      {index + 1}
-                    </span>
-                    <HugeiconsIcon icon={FileVideoIcon} className="h-4 w-4 text-muted-foreground shrink-0" />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate">{item.title}</p>
-                      {item.section && (
-                        <p className="truncate text-xs text-muted-foreground">{item.section}</p>
-                      )}
-                    </div>
-                    {item.duration != null && (
-                      <span className="text-xs text-muted-foreground shrink-0 tabular-nums">
-                        {formatDuration(item.duration)}
-                      </span>
-                    )}
-                  </label>
-                )
-              })}
-
-              {collection && hasFiles && <div className="my-2 h-px bg-border" />}
-
-              {queuedFiles.map((f) => (
-                <div
-                  key={f.id}
-                  className={cn(
-                    "flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm group",
-                    f.error ? "bg-destructive/10 text-destructive" : "hover:bg-muted/60",
-                  )}
-                >
-                  {f.uploading ? (
-                    <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin text-muted-foreground shrink-0" />
-                  ) : f.error ? (
-                    <HugeiconsIcon icon={Cancel01Icon} className="h-4 w-4 shrink-0" />
-                  ) : isVideoFile(f.name) ? (
-                    <HugeiconsIcon icon={FileVideoIcon} className="h-4 w-4 text-muted-foreground shrink-0" />
-                  ) : (
-                    <HugeiconsIcon icon={FileAudioIcon} className="h-4 w-4 text-muted-foreground shrink-0" />
-                  )}
-
-                  <span className="flex-1 truncate">{f.name}</span>
-
-                  <span className="text-xs text-muted-foreground shrink-0 tabular-nums">
-                    {f.error ? f.error : f.uploading ? "上传中..." : (
-                      <>
-                        {formatFileSize(f.size)}
-                        {f.duration != null && <span className="ml-1.5">{formatDuration(f.duration)}</span>}
-                      </>
-                    )}
+                  <HugeiconsIcon icon={Link01Icon} className="size-4 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate text-sm">{item.source}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {new Date(item.submittedAt).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}
                   </span>
-
-                  <button
-                    onClick={() => removeQueued(f.id)}
-                    className="p-0.5 rounded text-muted-foreground/40 hover:text-muted-foreground opacity-0 group-hover:opacity-100 transition-[color,opacity] duration-150 shrink-0"
-                  >
-                    <HugeiconsIcon icon={Cancel01Icon} className="h-3.5 w-3.5" />
-                  </button>
-                </div>
+                </button>
               ))}
             </div>
-          </div>
-
-          {/* Footer hint */}
-          {(capabilities.filesystem_browse || capabilities.browser_folder_upload) && <div className="shrink-0 px-4 py-2 border-t">
-            <button
-              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-              onClick={() => setShowFolderDialog(true)}
-            >
-              <HugeiconsIcon icon={Folder01Icon} className="h-3.5 w-3.5" />
-              从文件夹继续添加
-            </button>
-          </div>}
-        </div>
-      )}
+          ) : (
+            <p className="rounded-lg border border-dashed px-4 py-5 text-center text-sm text-muted-foreground">
+              成功提交链接后会显示在这里。
+            </p>
+          )}
+        </section>
+      </div>
     </div>
   )
 }

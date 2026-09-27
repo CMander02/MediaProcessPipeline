@@ -4,9 +4,11 @@ import { HugeiconsIcon } from "@hugeicons/react"
 
 import { MobileFilterSheet } from "@/components/app-shell/mobile-filter-sheet"
 import { PlatformIcon } from "@/components/platform-icon"
+import { StatusChips } from "@/components/status-chips"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger } from "@/components/ui/select"
+import { useLibraryFacets } from "@/lib/library-facets"
 import {
   MEDIA_FILTER_OPTIONS,
   SOURCE_FILTER_OPTIONS,
@@ -14,6 +16,7 @@ import {
   type MediaFilter,
   type SourceFilter,
   type SourceFilterOption,
+  type StatusFilter,
 } from "@/lib/archive-filters"
 
 const SOURCE_ICON_PLATFORMS = new Set([
@@ -38,10 +41,12 @@ interface PageToolbarProps {
   mediaFilter: MediaFilter
   sourceFilter: SourceFilter
   sort: ArchiveSort
+  status?: StatusFilter
   onSearchChange: (value: string) => void
   onMediaFilterChange: (value: MediaFilter) => void
   onSourceFilterChange: (value: SourceFilter) => void
   onSortChange: (value: ArchiveSort) => void
+  onStatusChange?: (value: StatusFilter) => void
 }
 
 function SourceFilterIcon({ option, className }: { option: SourceFilterOption; className?: string }) {
@@ -56,12 +61,20 @@ export function PageToolbar({
   mediaFilter,
   sourceFilter,
   sort,
+  status = "all",
   onSearchChange,
   onMediaFilterChange,
   onSourceFilterChange,
   onSortChange,
+  onStatusChange,
 }: PageToolbarProps) {
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
+  const facets = useLibraryFacets()
+  const sourceCount = (value: SourceFilter) => {
+    if (!facets) return null
+    if (value === "all") return Object.values(facets.source).reduce<number>((sum, count) => sum + (count ?? 0), 0)
+    return facets.source[value] ?? 0
+  }
   const selectedMediaFilter = MEDIA_FILTER_OPTIONS.find((option) => option.value === mediaFilter) ?? MEDIA_FILTER_OPTIONS[0]
   const selectedSourceFilter = SOURCE_FILTER_OPTIONS.find((option) => option.value === sourceFilter) ?? SOURCE_FILTER_OPTIONS[0]
   const activeFilterCount = Number(mediaFilter !== "all") + Number(sourceFilter !== "all") + Number(sort !== "created_desc")
@@ -115,6 +128,10 @@ export function PageToolbar({
         />
       </div>
 
+      {onStatusChange ? (
+        <StatusChips status={status} onChange={onStatusChange} counts={facets?.status} className="flex-1 px-1" />
+      ) : <div className="flex-1" />}
+
       <div className="flex min-w-0 shrink-0 gap-2">
         <Select value={mediaFilter} onValueChange={(value) => onMediaFilterChange(value as MediaFilter)}>
           <SelectTrigger size="sm" className="min-w-0 w-full data-[size=sm]:h-11 md:w-24 md:data-[size=sm]:h-9">
@@ -124,7 +141,10 @@ export function PageToolbar({
             <SelectGroup>
               {MEDIA_FILTER_OPTIONS.map((option) => (
                 <SelectItem key={option.value} value={option.value}>
-                  {option.label}
+                  <span className="flex w-full items-center justify-between gap-4">
+                    <span>{option.label}</span>
+                    {facets && <span className="text-xs tabular-nums text-muted-foreground">{facets.media[option.value] ?? 0}</span>}
+                  </span>
                 </SelectItem>
               ))}
             </SelectGroup>
@@ -142,9 +162,10 @@ export function PageToolbar({
             <SelectGroup>
               {SOURCE_FILTER_OPTIONS.map((option) => (
                 <SelectItem key={option.value} value={option.value}>
-                  <span className="flex items-center gap-2">
+                  <span className="flex w-full items-center gap-2">
                     <SourceFilterIcon option={option} />
-                    <span>{option.label}</span>
+                    <span className="flex-1">{option.label}</span>
+                    {facets && <span className="pl-3 text-xs tabular-nums text-muted-foreground">{sourceCount(option.value)}</span>}
                   </span>
                 </SelectItem>
               ))}

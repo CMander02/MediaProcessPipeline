@@ -243,3 +243,8 @@ html[data-platform="android"] [data-mobile-bottom-nav] {
 .dark .prose { color: var(--foreground); }
 .dark .prose h1, .dark .prose h2, .dark .prose h3 { color: var(--foreground); }
 .dark .prose a { color: var(--primary); }
+
+/* Mindmap: chapter labels jump to their time; the chapter being played is highlighted. */
+g.mpp-chapter-node > .markmap-foreign { cursor: pointer; }
+g.mpp-chapter-node > .markmap-foreign:hover div { text-decoration: underline; text-underline-offset: 2px; }
+g.mpp-current-chapter > .markmap-foreign div { color: var(--primary); font-weight: 600; }

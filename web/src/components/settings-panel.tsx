@@ -413,6 +413,28 @@ export function SettingsPanel() {
                 </CardContent>
               </Card>
 
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">新建处理</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <Label htmlFor="clipboard-detect">识别剪贴板里的链接</Label>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        切回 MPP 时，如果剪贴板里有还没处理过的链接，提示一键新建。浏览器会先询问一次剪贴板权限。
+                        在文件库里直接 Ctrl+V 粘贴链接、把音视频拖进窗口也能新建；桌面版还可以按 Ctrl+N。
+                      </p>
+                    </div>
+                    <Switch
+                      id="clipboard-detect"
+                      checked={prefs.clipboardDetect !== false}
+                      onCheckedChange={(v) => updatePrefs({ clipboardDetect: v })}
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+
               <div className={platform.isNative ? "hidden" : "hidden space-y-4 md:block"}>
               {/* Data Paths */}
               <Card>

@@ -1,7 +1,8 @@
 import { Fragment, useMemo, useState, useRef, type KeyboardEvent } from "react"
 import type { Subtitle } from "@/lib/srt"
-import { getSpeakerColor, extractSpeakers, formatSpeakerLabel } from "@/lib/srt"
+import { getSpeakerColor, extractSpeakers, findSubtitleAtTime, formatSpeakerLabel } from "@/lib/srt"
 import { formatDuration } from "@/lib/format"
+import { cn } from "@/lib/utils"
 
 interface SpeakerPanelProps {
   subtitles: Subtitle[]
@@ -11,6 +12,8 @@ interface SpeakerPanelProps {
   onRenameSpeaker?: (oldName: string, newName: string) => void
   renaming?: boolean
   editingDisabled?: boolean
+  /** Phones: one row of speaker chips; the full timeline opens on demand. */
+  compact?: boolean
 }
 
 interface SpeakerInfo {
@@ -23,8 +26,9 @@ interface SpeakerInfo {
 
 export function SpeakerPanel({
   subtitles, duration, currentTime, onSeek, onRenameSpeaker,
-  renaming = false, editingDisabled = false,
+  renaming = false, editingDisabled = false, compact = false,
 }: SpeakerPanelProps) {
+  const [expanded, setExpanded] = useState(false)
   const durationMs = duration * 1000 || subtitles.at(-1)?.endTime || 0
   const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null)
   const [editValue, setEditValue] = useState("")
@@ -88,9 +92,49 @@ export function SpeakerPanel({
 
   const playheadPct = durationMs > 0 ? ((currentTime * 1000) / durationMs) * 100 : 0
 
+  if (compact && !expanded) {
+    const nowMs = currentTime * 1000
+    const speaking = findSubtitleAtTime(subtitles, nowMs)?.speaker
+    // Tapping a chip jumps to that person's next turn, so a conversation can be skimmed by speaker.
+    const nextTurn = (speaker: SpeakerInfo) =>
+      (speaker.segments.find((segment) => segment.startTime > nowMs + 500) ?? speaker.segments[0]).startTime
+    return (
+      <div className="flex min-w-0 items-center gap-1.5">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto" role="group" aria-label="说话人">
+          {speakers.map((speaker) => (
+            <button
+              key={speaker.name}
+              type="button"
+              onClick={() => onSeek(nextTurn(speaker))}
+              title={`跳到 ${formatSpeakerLabel(speaker.name)} 的下一次发言`}
+              className={cn(
+                "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-colors",
+                speaking === speaker.name ? "border-foreground/40 bg-muted" : "hover:bg-muted/60",
+              )}
+            >
+              <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: speaker.color }} />
+              <span className="max-w-24 truncate">{formatSpeakerLabel(speaker.name)}</span>
+              <span className="tabular-nums text-muted-foreground">{speaker.percentage.toFixed(0)}%</span>
+            </button>
+          ))}
+        </div>
+        <button type="button" onClick={() => setExpanded(true)} className="h-7 shrink-0 px-1.5 text-xs text-primary">
+          时间轴
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-2">
-      <h3 className="text-base font-semibold text-foreground">说话人</h3>
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-base font-semibold text-foreground">说话人</h3>
+        {compact && (
+          <button type="button" onClick={() => setExpanded(false)} className="h-7 px-1.5 text-xs text-primary">
+            收起
+          </button>
+        )}
+      </div>
       <div
         className="grid gap-y-3 gap-x-2.5 items-center"
         style={{ gridTemplateColumns: "auto 1fr auto" }}

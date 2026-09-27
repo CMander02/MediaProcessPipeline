@@ -37,8 +37,10 @@ export interface ArchiveItem {
   offline?: boolean
   offlineFiles?: OfflineFileDescriptor[]
   thumbnail_url?: string
+  /** Number of runs of the same source collapsed into this card (2+ only). */
+  attempts?: number
 }
-import type { ArchiveSort, MediaFilter, SourceFilter } from "@/lib/archive-filters"
+import type { ArchiveSort, MediaFilter, SourceFilter, StatusFilter } from "@/lib/archive-filters"
 
 export interface ArchiveQuery {
   page: number
@@ -47,6 +49,7 @@ export interface ArchiveQuery {
   media: MediaFilter
   source: SourceFilter
   sort: ArchiveSort
+  status?: StatusFilter
 }
 
 export interface ArchiveIndexStatus {
@@ -56,9 +59,19 @@ export interface ArchiveIndexStatus {
   last_reconciled_at: string | null
 }
 
+export interface ArchiveFacets {
+  status: Record<StatusFilter, number>
+  source: Partial<Record<string, number>>
+  media: Record<MediaFilter, number>
+  /** Every card in the library, ignoring all filters */
+  total?: number
+}
+
 export interface ArchivePage extends ArchiveIndexStatus {
   archives: ArchiveItem[]
   total: number
   page: number
   page_size: number
+  /** Counts for status chips and filter menus (server index only). */
+  facets?: ArchiveFacets
 }

@@ -10,6 +10,13 @@ describe("taskDisplayTitle", () => {
     })).toBe("《江泽民》 第11集 《人民情怀》")
   })
 
+  it("does not show the UUID folder of a run that failed before its title was known", () => {
+    expect(taskDisplayTitle({
+      source: "https://www.youtube.com/watch?v=lXUZvyajciY&list=PLd7",
+      result: { output_dir: "D:\\Video\\MediaProcessPipeline\\21d51bb5-2484-471b-b343-ca8c228877ca" },
+    })).toBe("YouTube lXUZvyajciY")
+  })
+
   it("falls back to a recognizable source label instead of the URL tail", () => {
     expect(taskDisplayTitle({
       source: "https://www.bilibili.com/video/BV1Y5bX6yEuH/?spm_id_from=333.1387.upload.video_card.click",

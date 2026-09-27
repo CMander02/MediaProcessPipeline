@@ -195,15 +195,61 @@ class ArchiveSyncService:
                 "indexing": self._indexing}
 
     @uses_workspace
-    def list_page(self, *, page=1, page_size=28, search="", media="all", source="all", sort="created_desc") -> dict:
-        from app.core.archive_index import query_page
+    def list_page(self, *, page=1, page_size=28, search="", media="all", source="all",
+                  sort="created_desc", status="all") -> dict:
+        from app.core.archive_index import query_library
 
         self.flush_changes()
-        rows, total, page = query_page(_get_conn(), page=page, page_size=page_size,
-                                      search=search, media=media, source=source, sort=sort)
+        result = query_library(_get_conn(), page=page, page_size=page_size, search=search,
+                               media=media, source=source, sort=sort, status=status)
         root = Path(get_runtime_settings().data_root).resolve()
-        return {"archives": [self.decode_snapshot(json.loads(row["snapshot"]), root) for row in rows],
-                "total": total, "page": page, "page_size": page_size, **self.index_status()}
+        archives = []
+        for row in result["rows"]:
+            item = self.decode_snapshot(json.loads(row["snapshot"]), root)
+            attempts = result["attempts"].get(row["archive_id"])
+            if attempts and status != "duplicates":
+                item["attempts"] = attempts
+            archives.append(item)
+        return {"archives": archives, "total": result["total"], "page": result["page"],
+                "page_size": page_size, "facets": result["facets"], **self.index_status()}
+
+    def _snapshots(self, archive_ids) -> list[dict]:
+        rows = _get_conn().execute(
+            "SELECT snapshot FROM archive_sync_index WHERE deleted=0 "
+            "AND archive_id IN (SELECT value FROM json_each(?))",
+            (json.dumps(sorted(archive_ids)),),
+        ).fetchall()
+        root = Path(get_runtime_settings().data_root).resolve()
+        return [self.decode_snapshot(json.loads(row["snapshot"]), root) for row in rows]
+
+    @uses_workspace
+    def duplicate_cleanup_candidates(self) -> list[dict]:
+        """Failed copies of sources that also have a finished archive."""
+        from app.core.archive_index import duplicate_cleanup_ids
+
+        self.flush_changes()
+        return [{"path": item["path"], "title": item["title"]}
+                for item in self._snapshots(duplicate_cleanup_ids(_get_conn()))]
+
+    @uses_workspace
+    def lookup_sources(self, sources: list[str]) -> dict[str, list[dict]]:
+        """Archives already made from each link, for duplicate warnings before queueing."""
+        from app.core.archive_index import archives_for_sources
+
+        self.flush_changes()
+        matches = archives_for_sources(_get_conn(), sources)
+        items = {item.get("archive_id"): item for item in self._snapshots(
+            {archive_id for ids in matches.values() for archive_id in ids})}
+        return {
+            source: [
+                {"path": item["path"], "title": item["title"], "task_id": item.get("task_id"),
+                 "created_at": item.get("created_at"),
+                 "status": (item.get("metadata") or {}).get("status"),
+                 "processing": bool(item.get("processing"))}
+                for item in (items.get(archive_id) for archive_id in ids) if item
+            ]
+            for source, ids in matches.items()
+        }
 
     @uses_workspace
     def list_all(self) -> list[dict]:

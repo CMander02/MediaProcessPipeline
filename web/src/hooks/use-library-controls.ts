@@ -6,6 +6,8 @@ import {
   type ArchiveSort,
   type MediaFilter,
   type SourceFilter,
+  type StatusFilter,
+  STATUS_FILTER_OPTIONS,
 } from "@/lib/archive-filters"
 import { buildHash, navigate, useRoute } from "@/lib/router"
 
@@ -16,6 +18,7 @@ interface LibraryState {
   mediaFilter: MediaFilter
   sourceFilter: SourceFilter
   sort: ArchiveSort
+  status: StatusFilter
   page: number
 }
 
@@ -27,12 +30,16 @@ export function libraryStateFromParams(params: Record<string, string>): LibraryS
     ? params.src as SourceFilter
     : "all"
   const sort = SORTS.includes(params.sort as ArchiveSort) ? params.sort as ArchiveSort : "created_desc"
+  const status = STATUS_FILTER_OPTIONS.some((option) => option.value === params.status) || params.status === "completed"
+    ? params.status as StatusFilter
+    : "all"
   const page = Number.parseInt(params.page ?? "", 10)
   return {
     search: params.q ?? "",
     mediaFilter: media,
     sourceFilter: source,
     sort,
+    status,
     page: Number.isFinite(page) && page > 1 ? page : 1,
   }
 }
@@ -43,6 +50,7 @@ export function libraryHashFromState(state: LibraryState): string {
     media: state.mediaFilter === "all" ? null : state.mediaFilter,
     src: state.sourceFilter === "all" ? null : state.sourceFilter,
     sort: state.sort === "created_desc" ? null : state.sort,
+    status: state.status === "all" ? null : state.status,
     page: state.page > 1 ? state.page : null,
   })
 }
@@ -70,6 +78,7 @@ export function useLibraryControls() {
     setMediaFilter: useCallback((mediaFilter: MediaFilter) => update({ mediaFilter }), [update]),
     setSourceFilter: useCallback((sourceFilter: SourceFilter) => update({ sourceFilter }), [update]),
     setSort: useCallback((sort: ArchiveSort) => update({ sort }), [update]),
+    setStatus: useCallback((status: StatusFilter) => update({ status }), [update]),
     setPage: useCallback((page: number) => update({ page }), [update]),
   }
 }

@@ -56,6 +56,11 @@ vi.mock("@/platform/use-platform", () => ({
 
 vi.mock("@/lib/router", () => ({ navigate: mocks.navigate }))
 
+vi.mock("@/hooks/use-active-tasks", () => ({
+  useActiveTasks: () => ({ tasks: [], loaded: true }),
+  refreshActiveTasks: vi.fn(),
+}))
+
 vi.mock("@/lib/api", () => ({
   api: {
     tasks: {

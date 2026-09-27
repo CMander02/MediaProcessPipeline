@@ -6,7 +6,9 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Gps01Icon, Maximize01Icon, HierarchyIcon, File02Icon } from "@hugeicons/core-free-icons"
 import { mindmapMarkdownForReading, sanitizeMindmapMarkdown } from "@/lib/mindmap"
+import { formatDuration } from "@/lib/format"
 import { MarkdownRenderer } from "./markdown-renderer"
+import type { TranscriptTocNode } from "./transcript-tab"
 
 interface MindmapViewerProps {
   markdown: string
@@ -17,6 +19,36 @@ interface MindmapViewerProps {
   title?: string
   /** Called with a fit() function once the markmap is ready (fillContainer mode). */
   onFitReady?: (fit: () => void) => void
+  /** Chapters with start times (seconds); matching nodes jump there when their label is clicked. */
+  chapters?: TranscriptTocNode[] | null
+  /** Playback position in seconds, to highlight the chapter being played. */
+  currentTime?: number
+  onSeek?: (timeMs: number) => void
+}
+
+function plainText(html: string): string {
+  const element = document.createElement("div")
+  element.innerHTML = html
+  return element.textContent ?? ""
+}
+
+/** Compare labels loosely: no markup, spaces, punctuation or case. */
+function labelKey(value: string): string {
+  return plainText(value).toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "")
+}
+
+/** Start time (seconds) of the chapter a node stands for, if any. */
+function chapterStartFor(node: MindmapNode, chapters: TranscriptTocNode[]): number | null {
+  const key = labelKey(node.content)
+  if (key.length < 2) return null
+  for (const chapter of chapters) {
+    if (typeof chapter.start !== "number") continue
+    const chapterKey = labelKey(chapter.title)
+    if (!chapterKey) continue
+    if (chapterKey === key) return chapter.start
+    if (Math.min(chapterKey.length, key.length) >= 4 && (chapterKey.includes(key) || key.includes(chapterKey))) return chapter.start
+  }
+  return null
 }
 
 interface NodeRect {
@@ -177,7 +209,7 @@ async function focusBranch(mm: MarkmapInstance, target: MindmapNode) {
   await Promise.resolve(svgSelection.call(zoomBehavior.transform, translated))
 }
 
-export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: MindmapViewerProps) {
+export function MindmapViewer({ markdown, fillContainer, title, onFitReady, chapters, currentTime, onSeek }: MindmapViewerProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const dialogSvgRef = useRef<SVGSVGElement>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -190,6 +222,20 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
   const readingMarkdown = useMemo(() => mindmapMarkdownForReading(markdown), [markdown])
   const onFitReadyRef = useRef(onFitReady)
   onFitReadyRef.current = onFitReady
+  const chaptersRef = useRef<TranscriptTocNode[]>([])
+  chaptersRef.current = (chapters ?? []).filter((chapter) => typeof chapter.start === "number")
+  const onSeekRef = useRef(onSeek)
+  onSeekRef.current = onSeek
+  const currentChapter = useMemo(() => {
+    if (!chapters?.length || currentTime === undefined) return null
+    let current: TranscriptTocNode | null = null
+    for (const chapter of chapters) {
+      if (typeof chapter.start === "number" && chapter.start <= currentTime + 0.25) current = chapter
+    }
+    return current
+  }, [chapters, currentTime])
+  const currentChapterRef = useRef<TranscriptTocNode | null>(null)
+  currentChapterRef.current = currentChapter
 
   useEffect(() => {
     let cancelled = false
@@ -247,6 +293,8 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
             duration: reducedMotion ? 0 : 300,
             initialExpandLevel: 2,
             maxWidth: 300,
+            // Leave a margin so the outermost labels are not cut at the edges.
+            fitRatio: 0.88,
           },
           cloneMindmapNode(data),
         ) as unknown as MarkmapInstance
@@ -286,6 +334,14 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
           event.preventDefault()
           event.stopPropagation()
 
+          // A chapter's label jumps to that point in the media; its circle still folds the branch.
+          const start = onSeekRef.current ? chapterStartFor(node, chaptersRef.current) : null
+          if (start !== null) {
+            // Seeking keeps the current view; the label is highlighted once playback reaches it.
+            onSeekRef.current?.(Math.max(0, Math.round(start * 1000)))
+            return
+          }
+
           const recursive = navigator.platform.includes("Mac")
             ? event.metaKey
             : event.ctrlKey
@@ -299,12 +355,43 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
 
         svgEl.addEventListener("click", handleLabelClick)
 
+        const markChapters = () => {
+          const chaptersNow = chaptersRef.current
+          const current = currentChapterRef.current
+          svgEl.querySelectorAll<SVGGElement & { __data__?: MindmapNode }>("g.markmap-node").forEach((group) => {
+            const node = group.__data__
+            const start = node && chaptersNow.length ? chapterStartFor(node, chaptersNow) : null
+            group.classList.toggle("mpp-chapter-node", start !== null)
+            group.classList.toggle("mpp-current-chapter", start !== null && current?.start === start)
+            let tip = group.querySelector(":scope > title")
+            if (start !== null && onSeekRef.current) {
+              if (!tip) {
+                tip = document.createElementNS("http://www.w3.org/2000/svg", "title")
+                group.prepend(tip)
+              }
+              tip.textContent = `跳到 ${formatDuration(start)}`
+            } else {
+              tip?.remove()
+            }
+          })
+        }
+        let frame = 0
+        const observer = new MutationObserver(() => {
+          cancelAnimationFrame(frame)
+          frame = requestAnimationFrame(markChapters)
+        })
+        observer.observe(svgEl, { childList: true, subtree: true })
+        markChapters()
+        ;(svgEl as SVGSVGElement & { __mppMarkChapters?: () => void }).__mppMarkChapters = markChapters
+
         const destroy = ref.current.destroy?.bind(ref.current)
         const selection = ref.current.svg as {
           interrupt: () => unknown
           selectAll: (selector: string) => { interrupt: () => unknown }
         }
         ref.current.destroy = () => {
+          observer.disconnect()
+          cancelAnimationFrame(frame)
           svgEl.removeEventListener("click", handleLabelClick)
           selection.interrupt()
           selection.selectAll("*").interrupt()
@@ -362,6 +449,13 @@ export function MindmapViewer({ markdown, fillContainer, title, onFitReady }: Mi
     mmRef.current?.destroy?.()
     dialogMMRef.current?.destroy?.()
   }, [])
+
+  // Highlight the chapter being played.
+  useEffect(() => {
+    for (const svg of [svgRef.current, dialogSvgRef.current]) {
+      (svg as (SVGSVGElement & { __mppMarkChapters?: () => void }) | null)?.__mppMarkChapters?.()
+    }
+  }, [currentChapter, chapters])
 
   if (!markdown) return null
 

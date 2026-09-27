@@ -10,6 +10,8 @@ interface Preferences {
   lastArchivePath: string | null
   /** Loop video/audio playback in the result detail page */
   videoLoop: boolean
+  /** Offer to process links found on the clipboard when returning to MPP */
+  clipboardDetect: boolean
 }
 
 const STORAGE_KEY = "mpp-preferences"
@@ -25,7 +27,7 @@ function load(): Preferences {
 }
 
 function defaults(): Preferences {
-  return { startupPage: "files", lastArchivePath: null, videoLoop: false }
+  return { startupPage: "files", lastArchivePath: null, videoLoop: false, clipboardDetect: true }
 }
 
 let current = load()

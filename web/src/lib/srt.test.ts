@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest"
-import { getSpeakerColor, parseSRT, srtToVTT, subtitlesToMarkdown, type Subtitle } from "./srt"
+import { getSpeakerColor, parseSRT, srtToVTT, subtitlesToMarkdown, subtitlesToPlainText, type Subtitle } from "./srt"
+
+describe("subtitlesToPlainText", () => {
+  it("joins consecutive lines of one speaker into a paragraph", () => {
+    const subtitles: Subtitle[] = [
+      { index: 1, startTime: 0, endTime: 1000, text: "你好", speaker: "Dario" },
+      { index: 2, startTime: 1000, endTime: 2000, text: "今天聊\n模型", speaker: "Dario" },
+      { index: 3, startTime: 2000, endTime: 3000, text: "好的", speaker: "SPEAKER_01" },
+    ]
+    expect(subtitlesToPlainText(subtitles)).toBe("Dario：你好 今天聊 模型\n\nS1：好的\n")
+  })
+
+  it("keeps unlabelled lines as plain paragraphs", () => {
+    expect(subtitlesToPlainText([{ index: 1, startTime: 0, endTime: 1, text: "only text" }])).toBe("only text\n")
+    expect(subtitlesToPlainText([])).toBe("")
+  })
+})
 
 describe("SRT parsing", () => {
   const windowsSrt = [
