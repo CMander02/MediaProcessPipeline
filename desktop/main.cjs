@@ -110,6 +110,9 @@ function connect() {
     if (quitting) return;
     const result = await backend.connect(project);
     if (!result || quitting) return;
+    // The page always comes from the daemon; a service worker cache could only hold an old build.
+    await session.defaultSession.clearStorageData({ origin: SERVER_URL, storages: ['serviceworkers', 'cachestorage'] })
+      .catch((error) => log(`${new Date().toISOString()} Clearing the page cache failed: ${error}\n`));
     await window.loadURL(SERVER_URL);
     updateState({ phase: 'ready', title: 'MPP 已就绪', message: result.owned ? '关闭窗口将退出应用并停止后端。' : '已连接独立运行的后端。', details: '' });
   })().catch((error) => { if (!quitting) return report(error); }).finally(() => {

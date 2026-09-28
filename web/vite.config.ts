@@ -20,7 +20,7 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
-      registerType: "prompt",
+      registerType: "autoUpdate",
       injectRegister: false,
       manifest: {
         id: "/",
@@ -44,6 +44,9 @@ export default defineConfig({
         navigateFallbackDenylist: [/^\/api\//, /^\/health$/],
         runtimeCaching: [],
         cleanupOutdatedCaches: true,
+        // A new build takes over by itself; the page reloads into it at a quiet moment.
+        skipWaiting: true,
+        clientsClaim: true,
       },
       devOptions: { enabled: false },
     }),
