@@ -1,11 +1,15 @@
 import { useState } from "react"
-import { Cancel01Icon, FilterHorizontalIcon, FolderOpenIcon, Search01Icon, SortingDownIcon } from "@hugeicons/core-free-icons"
+import {
+  Cancel01Icon, FilterHorizontalIcon, FolderOpenIcon, Link01Icon, PlaySquareIcon, Progress03Icon, Search01Icon, SortingDownIcon,
+} from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 
 import { MobileFilterSheet } from "@/components/app-shell/mobile-filter-sheet"
+import { titleBarButtonClass } from "@/components/app-shell/navigation"
 import { FacetFilter, type FacetOption } from "@/components/library/facet-filter"
 import { PlatformIcon } from "@/components/platform-icon"
 import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -100,47 +104,54 @@ export function PageToolbar({ library }: PageToolbarProps) {
         </Button>
       </div>
 
+      {/* Filters sit next to the page links and look like them; search follows. */}
       <div className="hidden min-w-0 items-center gap-1.5 overflow-x-auto md:flex">
-        {search("relative w-44 shrink-0 lg:w-64", "h-8 pl-8 text-[13px]")}
-        <FacetFilter
-          title="状态"
-          options={STATUS_OPTIONS}
-          selected={library.statuses}
-          onChange={library.setStatuses}
-          counts={facets?.status}
-          extraLabel={library.duplicates ? "重复" : null}
-          extra={(
-            <DropdownMenuCheckboxItem
-              checked={library.duplicates}
-              onCheckedChange={(checked) => library.setDuplicates(checked === true)}
-              onSelect={(event) => event.preventDefault()}
-              title="同一个来源处理过多次时，把每一次都列出来，方便比较和清理"
-            >
-              <span className="flex-1">只看处理过多次的来源</span>
-              {facets && <span className="pl-4 text-xs tabular-nums text-muted-foreground">{facets.status.duplicates ?? 0}</span>}
-            </DropdownMenuCheckboxItem>
-          )}
-        />
-        <FacetFilter
-          title="类型"
-          options={MEDIA_TYPE_OPTIONS}
-          selected={library.media}
-          onChange={library.setMedia}
-          counts={facets?.media}
-        />
-        <FacetFilter
-          title="来源"
-          options={SOURCE_FACETS}
-          selected={library.sources}
-          onChange={library.setSources}
-          counts={facets?.source}
-        />
+        <div className="flex shrink-0 items-center gap-0.5">
+          <FacetFilter
+            title="状态"
+            icon={Progress03Icon}
+            options={STATUS_OPTIONS}
+            selected={library.statuses}
+            onChange={library.setStatuses}
+            counts={facets?.status}
+            extraLabel={library.duplicates ? "重复" : null}
+            extra={(
+              <DropdownMenuCheckboxItem
+                checked={library.duplicates}
+                onCheckedChange={(checked) => library.setDuplicates(checked === true)}
+                onSelect={(event) => event.preventDefault()}
+                title="同一个来源处理过多次时，把每一次都列出来，方便比较和清理"
+              >
+                <span className="flex-1">只看处理过多次的来源</span>
+                {facets && <span className="pl-4 text-xs tabular-nums text-muted-foreground">{facets.status.duplicates ?? 0}</span>}
+              </DropdownMenuCheckboxItem>
+            )}
+          />
+          <FacetFilter
+            title="类型"
+            icon={PlaySquareIcon}
+            options={MEDIA_TYPE_OPTIONS}
+            selected={library.media}
+            onChange={library.setMedia}
+            counts={facets?.media}
+          />
+          <FacetFilter
+            title="来源"
+            icon={Link01Icon}
+            options={SOURCE_FACETS}
+            selected={library.sources}
+            onChange={library.setSources}
+            counts={facets?.source}
+          />
+        </div>
+        {/* The search box gives way first when the title bar gets tight. */}
+        {search("relative w-44 min-w-32 lg:w-64", "h-8 pl-8 text-[13px]")}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button type="button" variant="ghost" size="sm" className="h-8 shrink-0 gap-1.5 px-2 text-[13px] font-normal text-muted-foreground">
-              <HugeiconsIcon icon={SortingDownIcon} className="size-3.5" />
+            <button type="button" className={cn(titleBarButtonClass(false), "data-[state=open]:bg-muted data-[state=open]:text-foreground")}>
+              <HugeiconsIcon icon={SortingDownIcon} className="size-4" />
               {sortLabel}
-            </Button>
+            </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">
             <DropdownMenuRadioGroup value={library.sort} onValueChange={(value) => library.setSort(value as ArchiveSort)}>
@@ -151,10 +162,10 @@ export function PageToolbar({ library }: PageToolbarProps) {
           </DropdownMenuContent>
         </DropdownMenu>
         {active && (
-          <Button type="button" variant="ghost" size="sm" className="h-8 shrink-0 gap-1 px-2 text-[13px] font-normal" onClick={library.resetFilters}>
+          <button type="button" className={titleBarButtonClass(false)} onClick={library.resetFilters}>
+            <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
             重置
-            <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
-          </Button>
+          </button>
         )}
       </div>
 

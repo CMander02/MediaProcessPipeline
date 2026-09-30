@@ -1,9 +1,8 @@
 import type { ReactNode } from "react"
-import { HugeiconsIcon } from "@hugeicons/react"
-import { PlusSignCircleIcon } from "@hugeicons/core-free-icons"
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react"
 
 import { cn } from "@/lib/utils"
-import { Button } from "@/components/ui/button"
+import { titleBarButtonClass } from "@/components/app-shell/navigation"
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -23,6 +22,7 @@ export interface FacetOption<T extends string> {
 
 interface FacetFilterProps<T extends string> {
   title: string
+  icon: IconSvgElement
   options: ReadonlyArray<FacetOption<T>>
   selected: T[]
   onChange: (next: T[]) => void
@@ -36,11 +36,11 @@ interface FacetFilterProps<T extends string> {
 }
 
 /**
- * shadcn-style faceted filter: a dashed button that lists what is picked, opening a checklist
- * with counts. Values within one facet are OR-ed; facets combine with AND.
+ * Faceted filter: a title-bar button like the page links that says what is picked, opening a
+ * checklist with counts. Values within one facet are OR-ed; facets combine with AND.
  */
 export function FacetFilter<T extends string>({
-  title, options, selected, onChange, counts, extra, extraLabel, className,
+  title, icon, options, selected, onChange, counts, extra, extraLabel, className,
 }: FacetFilterProps<T>) {
   const picked = options.filter((option) => selected.includes(option.value))
   const labels = [...picked.map((option) => option.label), ...(extraLabel ? [extraLabel] : [])]
@@ -55,25 +55,20 @@ export function FacetFilter<T extends string>({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button
+        <button
           type="button"
-          variant="outline"
-          size="sm"
-          className={cn("h-8 shrink-0 gap-1.5 px-2.5 text-[13px] font-normal", !active && "border-dashed", className)}
-        >
-          <HugeiconsIcon icon={PlusSignCircleIcon} className="size-3.5" />
-          {title}
-          {active && (
-            <>
-              <span className="mx-0.5 h-4 w-px bg-border" aria-hidden="true" />
-              {labels.length > 2 ? (
-                <span className="rounded bg-secondary px-1.5 py-px text-xs">{labels.length} 项</span>
-              ) : labels.map((label) => (
-                <span key={label} className="rounded bg-secondary px-1.5 py-px text-xs">{label}</span>
-              ))}
-            </>
+          className={cn(
+            titleBarButtonClass(active),
+            !active && "data-[state=open]:bg-muted data-[state=open]:text-foreground",
+            className,
           )}
-        </Button>
+        >
+          <HugeiconsIcon icon={icon} className="size-4" />
+          <span>{title}</span>
+          {active && (
+            <span className="font-normal">· {labels.length > 2 ? `${labels.length} 项` : labels.join("、")}</span>
+          )}
+        </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-52">
         <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">{title}（可多选）</DropdownMenuLabel>

@@ -1,9 +1,8 @@
 import { HugeiconsIcon } from "@hugeicons/react"
 
 import { libraryHash, navigate, type Route } from "@/lib/router"
-import { cn } from "@/lib/utils"
 import { AppMenu } from "@/components/app-shell/app-menu"
-import { PRIMARY_NAV_ITEMS } from "@/components/app-shell/navigation"
+import { PRIMARY_NAV_ITEMS, titleBarButtonClass } from "@/components/app-shell/navigation"
 
 interface DesktopHeaderProps {
   activePage: Route["page"]
@@ -24,12 +23,7 @@ export function DesktopHeader({ activePage }: DesktopHeaderProps) {
               key={item.page}
               onClick={() => navigate(item.page === "files" ? libraryHash() : `#/${item.page}`)}
               aria-current={active ? "page" : undefined}
-              className={cn(
-                "flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium transition-colors",
-                active
-                  ? "bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
-              )}
+              className={titleBarButtonClass(active)}
             >
               <HugeiconsIcon icon={item.icon} className="size-4" />
               <span>{item.label}</span>
