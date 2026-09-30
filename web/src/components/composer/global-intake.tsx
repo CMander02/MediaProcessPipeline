@@ -12,6 +12,8 @@ import { getPreferences } from "@/hooks/use-preferences"
 import { libraryStateOf } from "@/components/composer/source-meta"
 
 const SEEN_KEY = "mpp-clipboard-seen"
+/** How many offered links are remembered; older ones may be offered again. */
+const SEEN_LIMIT = 200
 
 function isEditable(target: EventTarget | null): boolean {
   const element = target as HTMLElement | null
@@ -23,19 +25,21 @@ function otherDialogOpen(): boolean {
   return Boolean(document.querySelector("[role='dialog'], [role='alertdialog']")) && !isComposerShowing()
 }
 
-function readSeen(): string | null {
+/** Links the clipboard prompt already offered, kept across restarts and shared by open windows. */
+function readSeen(): string[] {
   try {
-    return sessionStorage.getItem(SEEN_KEY)
+    const value: unknown = JSON.parse(localStorage.getItem(SEEN_KEY) ?? "[]")
+    return Array.isArray(value) ? value.filter((key): key is string => typeof key === "string") : []
   } catch {
-    return null
+    return []
   }
 }
 
-function writeSeen(value: string) {
+function writeSeen(keys: string[]) {
   try {
-    sessionStorage.setItem(SEEN_KEY, value)
+    localStorage.setItem(SEEN_KEY, JSON.stringify(keys.slice(-SEEN_LIMIT)))
   } catch {
-    // Without session storage the same clipboard may be offered again after a reload.
+    // Without storage the same links may be offered again after a restart.
   }
 }
 
@@ -151,15 +155,18 @@ export function GlobalIntake() {
       busy = true
       try {
         const text = (await navigator.clipboard.readText()).trim()
-        if (!text || text.length > 20000 || text === readSeen()) return
-        writeSeen(text)
-        const { entries } = parseSources(text)
-        if (entries.length === 0) return
+        if (!text || text.length > 20000) return
+        // Each link is offered once. The same link copied again, or still on the clipboard
+        // after a restart or in another window, stays quiet.
+        const seen = readSeen()
+        const unseen = parseSources(text).entries.filter((entry) => !seen.includes(entry.key))
+        if (unseen.length === 0) return
+        writeSeen([...seen, ...unseen.map((entry) => entry.key)])
         // Links that are already processed need no prompt.
-        let fresh = entries
+        let fresh = unseen
         try {
-          const { matches } = await api.archives.lookup(entries.map((entry) => entry.source))
-          fresh = entries.filter((entry) => {
+          const { matches } = await api.archives.lookup(unseen.map((entry) => entry.source))
+          fresh = unseen.filter((entry) => {
             const state = libraryStateOf(matches[entry.source])
             return !state || state.kind === "failed"
           })
@@ -168,7 +175,14 @@ export function GlobalIntake() {
         }
         if (fresh.length === 0) return
         toast(fresh.length === 1 ? "剪贴板里有一个链接" : `剪贴板里有 ${fresh.length} 个链接`, {
-          description: fresh.slice(0, 2).map((entry) => sourceLabel(entry.source)).join("、"),
+          // One line per link: a long id ends in … instead of wrapping over several lines.
+          description: (
+            <span className="flex flex-col">
+              {fresh.slice(0, 2).map((entry) => (
+                <span key={entry.key} className="truncate" title={entry.source}>{sourceLabel(entry.source)}</span>
+              ))}
+            </span>
+          ),
           duration: 10000,
           action: { label: "新建处理", onClick: () => openComposer({ text: fresh.map((entry) => entry.source).join("\n") }) },
         })

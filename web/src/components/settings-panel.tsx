@@ -426,7 +426,7 @@ export function SettingsPanel() {
                     <div>
                       <Label htmlFor="clipboard-detect">识别剪贴板里的链接</Label>
                       <p className="mt-0.5 text-xs text-muted-foreground">
-                        切回 MPP 时，如果剪贴板里有还没处理过的链接，提示一键新建。浏览器会先询问一次剪贴板权限。
+                        切回 MPP 时，如果剪贴板里有还没处理过的新链接，提示一键新建，同一个链接只提示一次。浏览器会先询问一次剪贴板权限。
                         在文件库里直接 Ctrl+V 粘贴链接、把音视频拖进窗口也能新建；桌面版还可以按 Ctrl+N。
                       </p>
                     </div>

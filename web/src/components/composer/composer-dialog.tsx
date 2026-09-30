@@ -23,7 +23,8 @@ export function ComposerDialog() {
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next) closeComposer() }}>
       <DialogContent
-        className="max-h-[92dvh] gap-3 overflow-y-auto sm:max-w-2xl"
+        // grid-cols-1 caps the column at the dialog width, so long titles truncate instead of widening it.
+        className="max-h-[92dvh] grid-cols-1 gap-3 overflow-y-auto sm:max-w-2xl"
         // Keep a half-written list when clicking outside by accident; Esc and 取消 still close it.
         onInteractOutside={(event) => event.preventDefault()}
       >
