@@ -11,9 +11,14 @@ export function SummaryTab({ content }: SummaryTabProps) {
   const parsed = useMemo(() => parseSummaryMarkdown(content), [content])
   const displayContent = useMemo(() => {
     const keyFacts = parsed.keyFacts.map((fact) => `- ${fact}`).join("\n")
+    // Opening paragraph, then the key points, then the sections (内容脉络 and the like).
+    const firstHeading = parsed.displayBody.search(/^#{2,6}\s/m)
+    const lead = firstHeading < 0 ? parsed.displayBody : parsed.displayBody.slice(0, firstHeading)
+    const sections = firstHeading < 0 ? "" : parsed.displayBody.slice(firstHeading)
     return [
-      parsed.displayBody,
-      keyFacts ? `### 核心要点\n\n${keyFacts}` : "",
+      lead.trim(),
+      keyFacts ? `## 核心要点\n\n${keyFacts}` : "",
+      sections.trim(),
     ].filter(Boolean).join("\n\n")
   }, [parsed])
 

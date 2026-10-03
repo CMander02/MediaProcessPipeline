@@ -17,6 +17,11 @@ function isTimelineTitle(title: string): boolean {
   return normalized === "timeline" || normalized === "时间轴" || normalized === "章节时间轴"
 }
 
+/** The heading the summary template puts over its opening paragraph; the tab is already 摘要. */
+function isSummaryTitle(title: string): boolean {
+  return /^(summary|摘要|总结|概要)$/i.test(title.trim())
+}
+
 function isKeyFactsTitle(title: string): boolean {
   const normalized = title.trim().toLowerCase()
   return (
@@ -78,6 +83,9 @@ export function parseSummaryMarkdown(content: string): ParsedSummary {
     displayBody = `${displayBody.slice(0, section.start).trimEnd()}\n\n${displayBody.slice(section.end).trimStart()}`
   }
   displayBody = displayBody
+    // The page shows the title already; the template repeats it as the first heading.
+    .replace(/^\s*#\s+.+$/m, "")
+    .replace(/^#{2,6}\s+(.+)$/gm, (line, title: string) => (isSummaryTitle(title) ? "" : line))
     .replace(/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/gm, "")
     .replace(/\n{3,}/g, "\n\n")
 

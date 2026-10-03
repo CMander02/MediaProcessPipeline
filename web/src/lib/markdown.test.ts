@@ -35,9 +35,9 @@ title: "示例"
     expect(parsed.sections.map((section) => section.title)).toEqual(["Summary", "主要观点"])
   })
 
-  it("removes standalone separators from the displayed summary", () => {
-    const parsed = parseSummaryMarkdown(`## Summary\n摘要\n\n---\n\n### Key Facts\n- 事实一`)
+  it("removes standalone separators, the repeated title and the Summary heading from the displayed summary", () => {
+    const parsed = parseSummaryMarkdown(`# 标题\n\n## Summary\n摘要\n\n---\n\n### Key Facts\n- 事实一\n\n## 内容脉络\n\n### 第一章`)
 
-    expect(parsed.displayBody).toBe("## Summary\n摘要")
+    expect(parsed.displayBody).toBe("摘要\n\n## 内容脉络\n\n### 第一章")
   })
 })
