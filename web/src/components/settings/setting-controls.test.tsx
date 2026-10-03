@@ -11,6 +11,13 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+// Radix selects open from the keyboard in jsdom and render their options only while open.
+function choose(trigger: HTMLElement, option: string) {
+  Element.prototype.scrollIntoView ??= () => {}
+  fireEvent.keyDown(trigger, { key: "ArrowDown" })
+  fireEvent.click(screen.getByRole("option", { name: option }))
+}
+
 describe("PathPickerRow", () => {
   it("saves a manually entered server directory", async () => {
     const onSave = vi.fn().mockResolvedValue(undefined)
@@ -52,9 +59,9 @@ describe("ProxySetting", () => {
     )
 
     const mode = screen.getByRole("combobox", { name: "代理模式" })
-    expect(mode).toHaveValue("system")
+    expect(mode).toHaveTextContent("系统代理")
 
-    fireEvent.change(mode, { target: { value: "none" } })
+    choose(mode, "无代理")
     await waitFor(() => expect(onSave).toHaveBeenLastCalledWith("network_proxy", "direct"))
 
     rerender(
@@ -67,7 +74,7 @@ describe("ProxySetting", () => {
         saved={{}}
       />,
     )
-    fireEvent.change(screen.getByRole("combobox", { name: "代理模式" }), { target: { value: "custom" } })
+    choose(screen.getByRole("combobox", { name: "代理模式" }), "自定义")
     fireEvent.change(screen.getByRole("textbox", { name: "代理地址" }), {
       target: { value: "http://localhost:7897" },
     })

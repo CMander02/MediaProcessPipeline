@@ -4,7 +4,7 @@ import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Delete01Icon, PlusSignIcon } from "@hugeicons/core-free-icons"
-import { SettingRow } from "../setting-controls"
+import { OptionSelect, SettingRow } from "../setting-controls"
 import { type UpdateSettings, type CustomProfile } from "./types"
 import { getCustomProfiles } from "./registry-utils"
 
@@ -62,15 +62,11 @@ export function CustomProfilesEditor({
     <div className="space-y-3">
       <div className="flex items-center gap-3">
         <Label className="w-24 shrink-0 text-sm text-muted-foreground">配置</Label>
-        <select
-          value={activeProfile.id}
-          onChange={(event) => void saveProfiles(profiles, event.target.value)}
-          className="h-8 min-w-52 rounded-md border border-input bg-background px-3 text-sm"
-        >
+        <OptionSelect aria-label="配置" value={activeProfile.id} onValueChange={(value) => void saveProfiles(profiles, value)}>
           {profiles.map((profile) => (
             <option key={profile.id} value={profile.id}>{profile.name || profile.id}</option>
           ))}
-        </select>
+        </OptionSelect>
         <Button size="sm" variant="ghost" onClick={addProfile} className="h-8 gap-1.5 px-2">
           <HugeiconsIcon icon={PlusSignIcon} className="h-3.5 w-3.5" />
           新增

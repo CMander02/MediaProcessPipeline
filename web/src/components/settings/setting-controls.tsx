@@ -1,12 +1,64 @@
-import { useState, type ReactNode } from "react"
+import { Children, isValidElement, useState, type ReactNode } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { FloppyDiskIcon, FolderOpenIcon, Tick02Icon } from "@hugeicons/core-free-icons"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { cn } from "@/lib/utils"
 
 export type DeviceValue = "auto" | "cuda" | "cpu"
+
+// Radix selects reserve the empty string; options that mean "none" use it all the same.
+const EMPTY_OPTION = "__empty__"
+
+function optionItems(children: ReactNode): Array<{ value: string; label: ReactNode }> {
+  return Children.toArray(children).flatMap((child) => {
+    if (!isValidElement<{ value?: string | number; children?: ReactNode }>(child) || child.type !== "option") return []
+    return [{ value: String(child.props.value ?? ""), label: child.props.children }]
+  })
+}
+
+/**
+ * The shadcn select, written like a native one with <option> children, and as wide as its
+ * choices rather than the whole row.
+ */
+export function OptionSelect({
+  value,
+  onValueChange,
+  children,
+  id,
+  disabled,
+  className,
+  "aria-label": ariaLabel,
+}: {
+  value: string | number
+  onValueChange: (value: string) => void
+  children: ReactNode
+  id?: string
+  disabled?: boolean
+  className?: string
+  "aria-label"?: string
+}) {
+  const encode = (raw: string) => (raw === "" ? EMPTY_OPTION : raw)
+  return (
+    <Select
+      value={encode(String(value))}
+      onValueChange={(next) => onValueChange(next === EMPTY_OPTION ? "" : next)}
+      disabled={disabled}
+    >
+      <SelectTrigger id={id} aria-label={ariaLabel} className={cn("min-w-28 max-w-full", className)}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {optionItems(children).map((item) => (
+          <SelectItem key={item.value} value={encode(item.value)}>{item.label}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
 
 export interface SettingsSectionProps {
   title: ReactNode
@@ -37,6 +89,10 @@ export interface SettingRowProps {
   saved: Record<string, boolean>
   masked?: boolean
   placeholder?: string
+  /** Shown after a short field, e.g. 秒 */
+  unit?: string
+  /** A short value (a number): the field is as wide as it needs, not the whole row */
+  short?: boolean
 }
 
 type ProxyMode = "system" | "none" | "custom"
@@ -84,16 +140,11 @@ function ProxySettingEditor({
     <div className="space-y-2">
       <div className="flex items-center gap-3">
         <Label className="w-24 shrink-0 text-sm text-muted-foreground">{label}</Label>
-        <select
-          aria-label={`${String(label)}模式`}
-          value={mode}
-          onChange={(event) => saveMode(event.target.value as ProxyMode)}
-          className="h-8 rounded-md border border-input bg-background px-2 text-sm"
-        >
+        <OptionSelect aria-label={`${String(label)}模式`} value={mode} onValueChange={(next) => saveMode(next as ProxyMode)}>
           <option value="system">系统代理</option>
           <option value="none">无代理</option>
           <option value="custom">自定义</option>
-        </select>
+        </OptionSelect>
         {saving[settingKey] && <span className="text-xs text-muted-foreground">保存中</span>}
         {!saving[settingKey] && saved[settingKey] && (
           <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
@@ -251,6 +302,8 @@ function SettingRowEditor({
   saved,
   masked,
   placeholder,
+  unit,
+  short,
 }: SettingRowProps) {
   const [editValue, setEditValue] = useState(value)
 
@@ -271,10 +324,11 @@ function SettingRowEditor({
         value={editValue}
         onChange={(event) => setEditValue(event.target.value)}
         onKeyDown={(event) => event.key === "Enter" && handleSave()}
-        className="flex-1 h-8 text-sm"
+        className={cn("h-8 text-sm", short || unit ? "w-28 flex-none" : "flex-1")}
         autoComplete="off"
         placeholder={placeholder}
       />
+      {unit && <span className="text-sm text-muted-foreground">{unit}</span>}
       {isDirty && (
         <Button
           size="sm"

@@ -1,6 +1,8 @@
 import type { ProviderConfig, ProviderModelRecord, ServiceModelType } from "@/lib/settings-schema"
 import { SERVICE_MODEL_TYPES, getEndpointPathForModelType } from "@/lib/settings-model-registry"
 import { Button } from "@/components/ui/button"
+import { Switch } from "@/components/ui/switch"
+import { OptionSelect } from "../setting-controls"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Delete01Icon } from "@hugeicons/core-free-icons"
 import { type ProviderModelCatalogResult } from "@/lib/api"
@@ -30,11 +32,11 @@ export function ProviderModelItem({
   return (
     <div className="rounded-md border border-border/80 bg-card/30 p-3">
       <div className="flex items-start gap-3">
-        <input
-          type="checkbox"
+        <Switch
+          size="sm"
           checked={model.enabled ?? true}
-          onChange={(event) => onUpdateModel(provider.id, model.model_id, { enabled: event.target.checked })}
-          className="mt-2 h-4 w-4 shrink-0 accent-primary"
+          onCheckedChange={(checked) => onUpdateModel(provider.id, model.model_id, { enabled: checked })}
+          className="mt-1.5 shrink-0"
           aria-label={`${model.model_id} 启用`}
         />
         <div className="min-w-0 flex-1 space-y-3">
@@ -67,10 +69,10 @@ export function ProviderModelItem({
               />
             </ProviderFormRow>
             <ProviderFormRow label="类型">
-              <select
+              <OptionSelect
                 value={modelType}
-                onChange={(event) => {
-                  const nextType = event.target.value as ServiceModelType
+                onValueChange={(value) => {
+                  const nextType = value as ServiceModelType
                   onUpdateModel(provider.id, model.model_id, {
                     model_type: nextType,
                     capabilities: getProviderCapabilitiesForModelType(nextType),
@@ -78,13 +80,12 @@ export function ProviderModelItem({
                     default_params: getProviderDefaultParams(provider.id, nextType),
                   })
                 }}
-                className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm"
                 aria-label={`${model.model_id} 模型类型`}
               >
                 {SERVICE_MODEL_TYPES.map((type) => (
                   <option key={type.value} value={type.value}>{type.label}</option>
                 ))}
-              </select>
+              </OptionSelect>
             </ProviderFormRow>
             <ProviderFormRow label="Endpoint">
               <ProviderTextInput
@@ -143,16 +144,15 @@ export function ProviderAddModelPanel({
         placeholder="模型 ID，例如 Qwen/Qwen3.5-8B"
         className="h-8 rounded-md border border-input bg-background px-2 text-sm"
       />
-      <select
+      <OptionSelect
         value={newModelType}
-        onChange={(event) => onNewModelTypeChange(event.target.value as ServiceModelType)}
-        className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+        onValueChange={(value) => onNewModelTypeChange(value as ServiceModelType)}
         aria-label="模型类型"
       >
         {SERVICE_MODEL_TYPES.map((type) => (
           <option key={type.value} value={type.value}>{type.label}</option>
         ))}
-      </select>
+      </OptionSelect>
       <Button type="button" size="sm" onClick={onAddModel} className="h-8">保存模型</Button>
     </div>
   )

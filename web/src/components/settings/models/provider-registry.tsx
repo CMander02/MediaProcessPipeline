@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { PlusSignIcon } from "@hugeicons/core-free-icons"
 import { Switch } from "@/components/ui/switch"
+import { OptionSelect } from "../setting-controls"
 import DeepSeekColor from "@lobehub/icons/es/DeepSeek/components/Color"
 import SiliconCloudColor from "@lobehub/icons/es/SiliconCloud/components/Color"
 import OpenAIMono from "@lobehub/icons/es/OpenAI/components/Mono"
@@ -334,11 +335,10 @@ function ProviderDetailPanel({
           />
         </ProviderFormRow>
         <ProviderFormRow label="类型">
-          <select
+          <OptionSelect
             aria-label="Provider 类型"
             value={provider.provider_type || "openai_compatible"}
-            onChange={(event) => onUpdateProvider(provider.id, { provider_type: event.target.value })}
-            className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm"
+            onValueChange={(value) => onUpdateProvider(provider.id, { provider_type: value })}
           >
             <option value="deepseek">DeepSeek</option>
             <option value="siliconflow">SiliconFlow</option>
@@ -348,7 +348,7 @@ function ProviderDetailPanel({
             <option value="agy_oauth">Antigravity OAuth</option>
             <option value="kimi_oauth">Kimi Code OAuth</option>
             <option value="qoder_oauth">QoderCN OAuth</option>
-          </select>
+          </OptionSelect>
         </ProviderFormRow>
         <ProviderFormRow label="名称">
           <ProviderTextInput

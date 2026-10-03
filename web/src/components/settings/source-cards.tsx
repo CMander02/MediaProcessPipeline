@@ -10,7 +10,7 @@ import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { api, type Settings } from "@/lib/api"
 import { BilibiliLogin } from "./bilibili-login"
-import { ProxySetting, SettingRow } from "./setting-controls"
+import { OptionSelect, ProxySetting, SettingRow } from "./setting-controls"
 
 function ComingSoonBadge() {
   return (
@@ -73,14 +73,10 @@ export function ZhihuCard({ settings, updateSetting, saving, saved }: ZhihuCardP
 
         <div className="flex items-center gap-3">
           <Label className="w-24 shrink-0 text-sm text-muted-foreground">浏览器兜底</Label>
-          <select
-            value={mode}
-            onChange={(event) => updateSetting("zhihu_browser_mode", event.target.value)}
-            className="h-8 rounded-md border border-input bg-background px-2 text-sm"
-          >
+          <OptionSelect aria-label="浏览器兜底" value={mode} onValueChange={(value) => updateSetting("zhihu_browser_mode", value)}>
             <option value="background">后台最小化</option>
             <option value="foreground">前台可见</option>
-          </select>
+          </OptionSelect>
           {saving.zhihu_browser_mode && <span className="text-xs text-muted-foreground">保存中</span>}
           {saved.zhihu_browser_mode && (
             <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-green-600" />
@@ -145,15 +141,11 @@ export function YoutubeCard({ settings, updateSetting, saving, saved }: YoutubeC
 
         <div className="flex items-center gap-3">
           <Label className="w-24 shrink-0 text-sm text-muted-foreground">浏览器</Label>
-          <select
-            value={browser}
-            onChange={(event) => updateSetting("youtube_cookies_browser", event.target.value)}
-            className="flex-1 h-8 text-sm rounded-md border border-input bg-background px-2"
-          >
+          <OptionSelect aria-label="读取 cookies 的浏览器" value={browser} onValueChange={(value) => updateSetting("youtube_cookies_browser", value)}>
             {YOUTUBE_COOKIE_BROWSERS.map((item) => (
               <option key={item} value={item}>{item === "" ? "（不使用）" : item}</option>
             ))}
-          </select>
+          </OptionSelect>
         </div>
       </CardContent>
     </Card>
@@ -706,16 +698,16 @@ export function BilibiliCard({ settings, updateSetting, saving, saved, onAuthCha
 
               <div className="flex items-center gap-3">
                 <Label className="w-24 shrink-0 text-sm text-muted-foreground">首选清晰度</Label>
-                <select
-                  value={loggedIn ? platformConfig.preferred_quality : 16}
+                <OptionSelect
+                  aria-label="首选清晰度"
+                  value={String(loggedIn ? platformConfig.preferred_quality : 16)}
                   disabled={!loggedIn}
-                  onChange={(event) => handleQualityChange(Number(event.target.value))}
-                  className="flex-1 h-8 rounded-md border border-input bg-background px-2 text-sm disabled:opacity-50"
+                  onValueChange={(value) => handleQualityChange(Number(value))}
                 >
                   {BILIBILI_QUALITY_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
-                </select>
+                </OptionSelect>
                 {savedQuality && (
                   <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
                 )}
@@ -742,13 +734,13 @@ export function BilibiliCard({ settings, updateSetting, saving, saved, onAuthCha
 
               <div className="flex items-center gap-3">
                 <Label className="w-24 shrink-0 text-sm text-muted-foreground">字幕引擎</Label>
-                <select
+                <OptionSelect
+                  aria-label="字幕引擎"
                   value={platformConfig.subtitle_engine}
-                  onChange={(event) => updatePlatformSetting("subtitle_engine", event.target.value)}
-                  className="flex-1 h-8 rounded-md border border-input bg-background px-2 text-sm"
+                  onValueChange={(value) => updatePlatformSetting("subtitle_engine", value)}
                 >
                   <option value="native_wbi">原生 WBI API（非 yt-dlp）</option>
-                </select>
+                </OptionSelect>
                 {savedPlatform.subtitle_engine && (
                   <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
                 )}
@@ -785,17 +777,16 @@ export function BilibiliCard({ settings, updateSetting, saving, saved, onAuthCha
 
               <div className="flex items-center gap-3">
                 <Label className="w-24 shrink-0 text-sm text-muted-foreground">最低覆盖率</Label>
-                <select
+                <OptionSelect
+                  aria-label="最低覆盖率"
                   value={String(platformConfig.subtitle_min_coverage)}
-                  onChange={(event) =>
-                    updatePlatformSetting("subtitle_min_coverage", Number(event.target.value))}
-                  className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+                  onValueChange={(value) => updatePlatformSetting("subtitle_min_coverage", Number(value))}
                 >
                   <option value="0.5">50%</option>
                   <option value="0.6">60%（推荐）</option>
                   <option value="0.7">70%</option>
                   <option value="0.8">80%</option>
-                </select>
+                </OptionSelect>
                 {savedPlatform.subtitle_min_coverage && (
                   <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
                 )}

@@ -1,7 +1,7 @@
 import { type ReactNode } from "react"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { SettingRow } from "../setting-controls"
+import { OptionSelect, SettingRow } from "../setting-controls"
 import { type LocalSettingsId, LOCAL_SETTINGS_ENTRIES } from "./local-model-options"
 import { type ModelListItem, type SharedSettingsProps } from "./types"
 
@@ -237,14 +237,9 @@ export function SelectSettingRow({
   return (
     <div className="flex items-center gap-3">
       <Label className="w-24 shrink-0 text-sm text-muted-foreground" htmlFor={`select-${label}`}>{label}</Label>
-      <select
-        id={`select-${label}`}
-        value={value}
-        onChange={(event) => void onChange(event.target.value)}
-        className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm sm:max-w-md"
-      >
+      <OptionSelect id={`select-${label}`} value={value} onValueChange={(next) => void onChange(next)}>
         {children}
-      </select>
+      </OptionSelect>
     </div>
   )
 }
@@ -292,6 +287,7 @@ export function NumberSettingRow({
       onSave={(key, value) => updateSetting(key, Number(value))}
       saving={saving}
       saved={saved}
+      short
     />
   )
 }

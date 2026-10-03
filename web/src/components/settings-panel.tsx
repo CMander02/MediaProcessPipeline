@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { api, type Settings, type YtdlpStatus } from "@/lib/api"
 import { usePreferences } from "@/hooks/use-preferences"
 import { systemNotificationsAvailable } from "@/hooks/use-task-notifications"
-import { ProxySetting, SettingRow } from "@/components/settings/setting-controls"
+import { OptionSelect, ProxySetting, SettingRow } from "@/components/settings/setting-controls"
 import { LocalModelSettings, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
 import { BilibiliCard, PlaceholderSection, TwitterCard, XiaohongshuCard, YoutubeCard, ZhihuCard } from "@/components/settings/source-cards"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -475,15 +475,17 @@ export function SettingsPanel() {
                     saved={saved}
                     placeholder="绝对路径，如 C:\data\mpp"
                   />
-                  <label className="block space-y-2 text-sm">
-                    <span>默认媒体保留策略</span>
-                    <select aria-label="默认媒体保留策略" value={String(settings.media_retention_policy ?? "all")}
+                  <div className="flex items-center gap-3">
+                    <Label htmlFor="media-retention-policy" className="w-24 shrink-0 text-sm text-muted-foreground">媒体保留</Label>
+                    <OptionSelect
+                      id="media-retention-policy"
+                      value={String(settings.media_retention_policy ?? "all")}
                       disabled={saving.media_retention_policy}
-                      className="h-10 w-full rounded-md border bg-background px-3"
-                      onChange={event => void updateSetting("media_retention_policy", event.target.value)}>
+                      onValueChange={(value) => void updateSetting("media_retention_policy", value)}
+                    >
                       {Object.entries(mediaPolicies).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                    </select>
-                  </label>
+                    </OptionSelect>
+                  </div>
                   <p className="text-xs text-muted-foreground">用于下次媒体清理预览。文件页右键归档可预览并执行。</p>
                 </CardContent>
               </Card>
@@ -543,30 +545,30 @@ export function SettingsPanel() {
                 <CardContent className="space-y-3">
                   <div className="flex items-center gap-3">
                     <Label className="w-24 shrink-0 text-sm text-muted-foreground">并行下载数</Label>
-                    <select
+                    <OptionSelect
+                      aria-label="并行下载数"
                       value={String(settings.max_download_concurrency ?? 2)}
-                      onChange={(e) => updateSetting("max_download_concurrency", Number(e.target.value))}
-                      className="h-8 rounded-md border border-input bg-background px-3 text-sm"
+                      onValueChange={(value) => updateSetting("max_download_concurrency", Number(value))}
                     >
                       {[1, 2, 3, 4].map((n) => (
                         <option key={n} value={n}>{n}</option>
                       ))}
-                    </select>
+                    </OptionSelect>
                     {saved.max_download_concurrency && (
                       <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
                     )}
                   </div>
                   <div className="flex items-center gap-3">
                     <Label className="w-24 shrink-0 text-sm text-muted-foreground">VLM 并发</Label>
-                    <select
+                    <OptionSelect
+                      aria-label="VLM 并发"
                       value={String(settings.vlm_concurrency ?? 1)}
-                      onChange={(e) => updateSetting("vlm_concurrency", Number(e.target.value))}
-                      className="h-8 rounded-md border border-input bg-background px-3 text-sm"
+                      onValueChange={(value) => updateSetting("vlm_concurrency", Number(value))}
                     >
                       {[1, 2, 3, 4].map((n) => (
                         <option key={n} value={n}>{n}</option>
                       ))}
-                    </select>
+                    </OptionSelect>
                     {saved.vlm_concurrency && (
                       <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
                     )}
@@ -579,6 +581,7 @@ export function SettingsPanel() {
                     saving={saving}
                     saved={saved}
                     placeholder="180"
+                    unit="秒"
                   />
                 </CardContent>
               </Card>
@@ -747,6 +750,7 @@ export function SettingsPanel() {
                     saving={saving}
                     saved={saved}
                     placeholder="30"
+                    unit="秒"
                   />
                   <div className="flex items-center justify-between">
                     <div>
@@ -773,13 +777,12 @@ export function SettingsPanel() {
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <p className="text-xs text-muted-foreground">OpenAI-Compatible 嵌入 API，用于任务完成后自动索引字幕+摘要。</p>
-                  <div className="flex items-center gap-3">
-                    <Label className="text-sm min-w-max">自动索引</Label>
-                    <input
-                      type="checkbox"
+                  <div className="flex items-center justify-between gap-4">
+                    <Label htmlFor="kb-enabled">自动索引</Label>
+                    <Switch
+                      id="kb-enabled"
                       checked={Boolean(settings.kb_enabled ?? true)}
-                      onChange={(e) => updateSetting("kb_enabled", e.target.checked)}
-                      className="h-4 w-4 accent-primary cursor-pointer"
+                      onCheckedChange={(value) => updateSetting("kb_enabled", value)}
                     />
                   </div>
                   <SettingRow
@@ -815,6 +818,7 @@ export function SettingsPanel() {
                     onSave={updateSetting}
                     saving={saving}
                     saved={saved}
+                    short
                   />
                 </CardContent>
               </Card>
