@@ -443,6 +443,23 @@ describe("SettingsPanel", () => {
     }
   })
 
+  it("finds settings across groups and opens the one picked", async () => {
+    render(<SettingsPanel />)
+
+    const search = (await screen.findAllByRole("searchbox", { name: "搜索设置" }))[0]
+    fireEvent.change(search, { target: { value: "代理" } })
+
+    const results = screen.getAllByRole("listitem").map((item) => item.textContent)
+    expect(results).toEqual(expect.arrayContaining(["网络存储与网络", "YouTube来源与账号"]))
+    expect(screen.queryByRole("region", { name: "外观" })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: /^网络/ }))
+
+    expect(await screen.findByRole("heading", { name: "存储与网络" })).toBeInTheDocument()
+    expect(screen.getByRole("region", { name: "网络" })).toBeInTheDocument()
+    expect(search).toHaveValue("")
+  })
+
   it("keeps library location, network and queue under 存储与网络", async () => {
     render(<SettingsPanel />)
 

@@ -14,7 +14,7 @@ import { OptionSelect, ProxySetting, SettingRow } from "@/components/settings/se
 import { LocalModelSection, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
 import { BilibiliCard, PlaceholderSection, TwitterCard, XiaohongshuCard, YoutubeCard, ZhihuCard } from "@/components/settings/source-cards"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { Loading03Icon, Tick02Icon, Moon02Icon, Sun01Icon } from "@hugeicons/core-free-icons"
+import { Loading03Icon, Moon02Icon, Search01Icon, Sun01Icon, Tick02Icon } from "@hugeicons/core-free-icons"
 import { NativeConnectionSettings } from "@/components/native-connection"
 import { OfflineSyncStatus } from "@/components/offline-sync-status"
 import { usePlatform } from "@/platform/use-platform"
@@ -30,6 +30,8 @@ type GroupId = "general" | "pipeline" | "providers" | "sources" | "storage" | "a
 interface SectionDef {
   id: string
   title: string
+  /** What is inside, for the settings search */
+  keywords?: string
   /** Also shown on phones and in the Android app (the rest is changed from a computer) */
   mobile?: boolean
 }
@@ -48,10 +50,10 @@ const GROUPS: GroupDef[] = [
     label: "常规",
     description: "外观、启动页和日常使用的习惯。",
     sections: [
-      { id: "appearance", title: "外观", mobile: true },
-      { id: "startup", title: "启动页面", mobile: true },
-      { id: "playback", title: "播放", mobile: true },
-      { id: "intake", title: "新建处理", mobile: true },
+      { id: "appearance", title: "外观", mobile: true, keywords: "主题 深色 浅色 跟随系统 暗色 外观" },
+      { id: "startup", title: "启动页面", mobile: true, keywords: "启动页面 文件列表 上次打开的归档" },
+      { id: "playback", title: "播放", mobile: true, keywords: "循环播放 视频 音频" },
+      { id: "intake", title: "新建处理", mobile: true, keywords: "剪贴板 链接 粘贴 拖入 Ctrl+N 完成或失败时通知 系统通知 提醒" },
     ],
   },
   {
@@ -59,32 +61,32 @@ const GROUPS: GroupDef[] = [
     label: "处理流程",
     description: "新任务按这个顺序处理：处理方式、人声分离、语音识别，再交给模型润色、分析和总结。每一步用哪个模型，在这里决定。",
     sections: [
-      { id: "audio-flow", title: "音频流程" },
-      { id: "uvr", title: "人声分离" },
-      { id: "asr", title: "语音识别" },
-      { id: "models", title: "各步骤的模型" },
-      { id: "local-llm", title: "本地大模型" },
-      { id: "inference", title: "推理模式" },
-      { id: "knowledge", title: "知识库索引", mobile: true },
+      { id: "audio-flow", title: "音频流程", keywords: "默认处理方式 标准语音识别 MOSS 一体化识别 说话人分离 SPEAKER" },
+      { id: "uvr", title: "人声分离", keywords: "人声分离 UVR 背景音乐 默认模型 模型目录 运行设备 分段 检查本机 UVR" },
+      { id: "asr", title: "语音识别", keywords: "语音识别 ASR 服务 llama.cpp Qwen3-ASR sherpa-onnx SiliconFlow 时间戳 VAD 强制对齐 ForcedAligner pyannote 说话人模型 分段并发 GGUF mmproj" },
+      { id: "models", title: "各步骤的模型", keywords: "模型用途 字幕简单润色 字幕二次润色 字幕分析 全文总结 思维导图 图文理解 知识库向量 润色并发数 绑定" },
+      { id: "local-llm", title: "本地大模型", keywords: "本地大模型 LLM 推理引擎 GGUF Transformers Hugging Face 运行设备 上下文 数据类型 显存" },
+      { id: "inference", title: "推理模式", keywords: "推理模式 半重叠推理 显存 detail.md 视频详情" },
+      { id: "knowledge", title: "知识库索引", mobile: true, keywords: "知识库 Embedding 向量 自动索引 API Base API Key 模型 向量维度" },
     ],
   },
   {
     id: "providers",
     label: "模型服务商",
     description: "API 和 OAuth 服务商，以及它们提供的模型。",
-    sections: [{ id: "providers", title: "模型服务商" }],
+    sections: [{ id: "providers", title: "模型服务商", keywords: "模型服务商 Provider API Key API Base DeepSeek SiliconFlow OpenAI Anthropic OAuth Codex Kimi Qoder 获取模型 同步模型 添加模型" }],
   },
   {
     id: "sources",
     label: "来源与账号",
     description: "各平台的登录状态、下载和字幕设置。",
     sections: [
-      { id: "bilibili", title: "哔哩哔哩" },
-      { id: "youtube", title: "YouTube" },
-      { id: "twitter", title: "X" },
-      { id: "xiaoyuzhou", title: "小宇宙" },
-      { id: "xiaohongshu", title: "小红书" },
-      { id: "zhihu", title: "知乎" },
+      { id: "bilibili", title: "哔哩哔哩", keywords: "哔哩哔哩 B站 扫码登录 Cookie 首选清晰度 平台字幕 字幕引擎 WBI 语言优先级 防串字幕 覆盖率 旧接口" },
+      { id: "youtube", title: "YouTube", keywords: "YouTube cookies.txt 浏览器 cookies 代理" },
+      { id: "twitter", title: "X", keywords: "X Twitter 推特 登录 长文" },
+      { id: "xiaoyuzhou", title: "小宇宙", keywords: "小宇宙 播客 单集 m4a" },
+      { id: "xiaohongshu", title: "小红书", keywords: "小红书 图文笔记 图片获取顺序 登录 浏览器采集" },
+      { id: "zhihu", title: "知乎", keywords: "知乎 想法 回答 浏览器兜底 后台最小化" },
     ],
   },
   {
@@ -92,9 +94,9 @@ const GROUPS: GroupDef[] = [
     label: "存储与网络",
     description: "资料库放在哪里、媒体保留多少、走什么网络，以及同时下载几个。",
     sections: [
-      { id: "library", title: "资料库位置" },
-      { id: "network", title: "网络" },
-      { id: "queue", title: "队列" },
+      { id: "library", title: "资料库位置", keywords: "资料库位置 数据根目录 路径 媒体保留 清理" },
+      { id: "network", title: "网络", keywords: "网络 代理 proxy 系统代理 无代理 自定义 SOCKS" },
+      { id: "queue", title: "队列", keywords: "队列 并行下载数 VLM 并发 VLM 超时" },
     ],
   },
   {
@@ -102,10 +104,10 @@ const GROUPS: GroupDef[] = [
     label: "高级",
     description: "yt-dlp、网页抓取、远程访问和日志。",
     sections: [
-      { id: "ytdlp", title: "yt-dlp" },
-      { id: "scraping", title: "网页抓取" },
-      { id: "access", title: "访问控制" },
-      { id: "logs", title: "日志" },
+      { id: "ytdlp", title: "yt-dlp", keywords: "yt-dlp 自动更新 重启后端 版本" },
+      { id: "scraping", title: "网页抓取", keywords: "网页抓取 Defuddle Playwright Jina Reader 超时 绕过缓存 API Key" },
+      { id: "access", title: "访问控制", keywords: "访问控制 API Token 令牌 远程文件系统" },
+      { id: "logs", title: "日志", keywords: "日志 错误 后端" },
     ],
   },
 ]
@@ -134,6 +136,9 @@ export function SettingsPanel() {
   // The group lives in the link, so it can be opened directly and survives a reload.
   const activeGroupId: GroupId = isGroupId(route.params.group) ? route.params.group : "general"
   const [activeSection, setActiveSection] = useState<string | null>(null)
+  const [query, setQuery] = useState("")
+  const [pendingJump, setPendingJump] = useState<string | null>(null)
+  const [flashSection, setFlashSection] = useState<string | null>(null)
   const [narrow, setNarrow] = useState(() => (
     typeof window.matchMedia === "function" && window.matchMedia("(max-width: 767px)").matches
   ))
@@ -239,6 +244,41 @@ export function SettingsPanel() {
     window.addEventListener("mpp:theme-change", handleThemeChange)
     return () => window.removeEventListener("mpp:theme-change", handleThemeChange)
   }, [])
+
+  // Scroll so the section starts right under the sticky group header.
+  const jumpTo = useCallback((id: string, behavior: ScrollBehavior = "smooth") => {
+    const container = scrollRef.current
+    const element = document.getElementById(`settings-${id}`)
+    if (!container || !element) return
+    setActiveSection(id)
+    const offset = element.getBoundingClientRect().top - container.getBoundingClientRect().top
+    const top = container.scrollTop + offset - (stickyRef.current?.offsetHeight ?? 0) - 8
+    if (typeof container.scrollTo === "function") container.scrollTo({ top, behavior })
+    else container.scrollTop = top
+  }, [])
+
+  // A search result opens its group; scroll once the group's sections are on the page.
+  useEffect(() => {
+    if (!pendingJump) return
+    const target = pendingJump
+    const frame = requestAnimationFrame(() => {
+      jumpTo(target, "auto")
+      setFlashSection(target)
+      setPendingJump(null)
+    })
+    return () => cancelAnimationFrame(frame)
+  })
+
+  useEffect(() => {
+    if (!flashSection) return
+    // Sections above it may still be loading (account status, platform options) and grow.
+    const settle = window.setTimeout(() => jumpTo(flashSection, "auto"), 800)
+    const timer = window.setTimeout(() => setFlashSection(null), 1600)
+    return () => {
+      window.clearTimeout(settle)
+      window.clearTimeout(timer)
+    }
+  }, [flashSection, jumpTo])
 
   const updateTheme = (value: string) => {
     setThemePreference(value as ThemePreference)
@@ -888,16 +928,18 @@ export function SettingsPanel() {
     navigate(buildHash("settings", { group: id === "general" ? null : id }), { replace: true })
   }
 
-  // Scroll so the section starts right under the sticky group header.
-  const jumpTo = (id: string) => {
-    const container = scrollRef.current
-    const element = document.getElementById(`settings-${id}`)
-    if (!container || !element) return
-    setActiveSection(id)
-    const offset = element.getBoundingClientRect().top - container.getBoundingClientRect().top
-    const top = container.scrollTop + offset - (stickyRef.current?.offsetHeight ?? 0) - 8
-    if (typeof container.scrollTo === "function") container.scrollTo({ top, behavior: "smooth" })
-    else container.scrollTop = top
+  const needle = query.trim().toLowerCase()
+  const results = needle
+    ? groups.flatMap((group) => group.sections
+      .filter((section) => !onlyMobile || section.mobile)
+      .filter((section) => `${group.label} ${section.title} ${section.keywords ?? ""}`.toLowerCase().includes(needle))
+      .map((section) => ({ group, section })))
+    : []
+
+  const openResult = (groupId: GroupId, sectionId: string) => {
+    setQuery("")
+    if (groupId !== activeGroup.id) selectGroup(groupId)
+    setPendingJump(sectionId)
   }
 
   // The section at the top of the view is the one marked in the section links.
@@ -913,6 +955,25 @@ export function SettingsPanel() {
     setActiveSection(passed.at(-1)?.id ?? sections[0]?.id ?? null)
   }
 
+  const searchBox = (id: string) => (
+    <div className="relative">
+      <HugeiconsIcon icon={Search01Icon} className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        id={id}
+        type="search"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") setQuery("")
+          if (event.key === "Enter" && results[0]) openResult(results[0].group.id, results[0].section.id)
+        }}
+        placeholder="搜索设置"
+        aria-label="搜索设置"
+        className="h-8 pl-8 text-sm"
+      />
+    </div>
+  )
+
   return (
     <div className="h-full min-h-0 w-full">
       {saveError && (
@@ -922,7 +983,8 @@ export function SettingsPanel() {
       )}
       <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row lg:gap-5">
         <div className="shrink-0 lg:hidden">
-          <Label htmlFor="settings-category" className="mb-1.5 block text-xs text-muted-foreground">
+          {searchBox("settings-search-mobile")}
+          <Label htmlFor="settings-category" className="mb-1.5 mt-3 block text-xs text-muted-foreground">
             设置分组
           </Label>
           <Select value={activeGroup.id} onValueChange={(value) => selectGroup(value as GroupId)}>
@@ -943,6 +1005,7 @@ export function SettingsPanel() {
           aria-label="设置分组"
           className="hidden w-full shrink-0 rounded-lg border bg-card p-1 lg:sticky lg:top-5 lg:block lg:h-fit lg:w-[220px] lg:space-y-1 lg:p-2"
         >
+          <div className="pb-1">{searchBox("settings-search")}</div>
           {groups.map((group) => {
             const isActive = activeGroup.id === group.id
             return (
@@ -974,7 +1037,28 @@ export function SettingsPanel() {
         </nav>
 
         <div className="min-h-0 min-w-0 flex-1 overflow-hidden [&_[data-slot=card]]:rounded-none [&_[data-slot=card]]:bg-transparent [&_[data-slot=card]]:py-0 [&_[data-slot=card]]:ring-0 [&_[data-slot=card]]:border-b [&_[data-slot=card]]:border-border/70 [&_[data-slot=card]]:pb-4 [&_[data-slot=card-header]]:px-0 [&_[data-slot=card-header]]:pb-1.5 [&_[data-slot=card-content]]:px-0">
-          {activeGroup.id === "providers" ? (
+          {needle ? (
+            <div className="h-full min-h-0 max-w-[800px] overflow-y-auto pr-1">
+              <h2 className="text-lg font-semibold">搜索设置</h2>
+              <p className="mt-0.5 text-sm text-muted-foreground">
+                {results.length ? `「${query.trim()}」出现在 ${results.length} 处` : `没有和「${query.trim()}」有关的设置`}
+              </p>
+              <ul className="mt-3 divide-y rounded-lg border">
+                {results.map(({ group, section }) => (
+                  <li key={`${group.id}-${section.id}`}>
+                    <button
+                      type="button"
+                      onClick={() => openResult(group.id, section.id)}
+                      className="flex w-full items-baseline gap-3 px-3 py-2.5 text-left hover:bg-muted"
+                    >
+                      <span className="text-sm font-medium">{section.title}</span>
+                      <span className="text-xs text-muted-foreground">{group.label}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : activeGroup.id === "providers" ? (
             <RegistrySettings
               settings={settings}
               visibleLlmProvider={visibleLlmProvider}
@@ -1021,7 +1105,12 @@ export function SettingsPanel() {
                   </>
                 )}
                 {sections.map((section) => (
-                  <section key={section.id} id={`settings-${section.id}`} aria-label={section.title}>
+                  <section
+                    key={section.id}
+                    id={`settings-${section.id}`}
+                    aria-label={section.title}
+                    className={flashSection === section.id ? "rounded-md ring-2 ring-primary/40 ring-offset-4 ring-offset-background transition-shadow" : undefined}
+                  >
                     {sectionContent(section.id)}
                   </section>
                 ))}
