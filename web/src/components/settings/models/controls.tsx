@@ -2,7 +2,6 @@ import { type ReactNode } from "react"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { OptionSelect, SettingRow } from "../setting-controls"
-import { type LocalSettingsId, LOCAL_SETTINGS_ENTRIES } from "./local-model-options"
 import { type ModelListItem, type SharedSettingsProps } from "./types"
 
 export function CardLikeSection({ title, children }: { title: string; children: ReactNode }) {
@@ -70,47 +69,6 @@ export function ProviderEmptyState({ hasProviders }: { hasProviders: boolean }) 
   return (
     <div className="flex h-full min-h-64 items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground">
       {hasProviders ? "当前筛选条件下没有 Provider。" : "还没有 Provider。"}
-    </div>
-  )
-}
-
-export function LocalSettingsLayout({
-  selectedId,
-  onSelect,
-  children,
-}: {
-  selectedId: LocalSettingsId
-  onSelect: (id: LocalSettingsId) => void
-  children: ReactNode
-}) {
-  return (
-    <div className="grid h-full min-h-0 grid-cols-1 gap-4 overflow-y-auto xl:grid-cols-[190px_minmax(0,1fr)] xl:overflow-hidden">
-      <aside className="rounded-lg border bg-card/30 p-2 xl:min-h-0">
-        <nav aria-label="本地模型设置" className="flex gap-1 overflow-x-auto xl:block xl:space-y-1">
-          {LOCAL_SETTINGS_ENTRIES.map((entry) => {
-            const active = entry.id === selectedId
-            return (
-              <button
-                key={entry.id}
-                type="button"
-                onClick={() => onSelect(entry.id)}
-                className={[
-                  "shrink-0 rounded-md px-3 py-2 text-left text-sm transition-colors xl:w-full",
-                  active
-                    ? "bg-primary/10 font-medium text-primary"
-                    : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
-                ].join(" ")}
-              >
-                {entry.title}
-              </button>
-            )
-          })}
-        </nav>
-      </aside>
-
-      <section className="min-h-[360px] min-w-0 overflow-hidden rounded-lg border bg-background xl:min-h-0">
-        <div className="h-full space-y-1 overflow-y-auto p-5 pr-4">{children}</div>
-      </section>
     </div>
   )
 }

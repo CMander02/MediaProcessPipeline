@@ -402,56 +402,74 @@ describe("SettingsPanel", () => {
     expect(visionOptions.some((option) => option.label === "K3 · Kimi Code OAuth")).toBe(true)
   })
 
-  it("renders six hierarchical tabs", async () => {
+  it("groups settings by the decision being made", async () => {
     render(<SettingsPanel />)
 
-    await screen.findByRole("button", { name: "通用设置" })
-    const nav = screen.getByRole("navigation")
+    const nav = await screen.findByRole("navigation", { name: "设置分组" })
     const labels = within(nav).getAllByRole("button").map((button) => button.textContent?.trim())
 
-    expect(labels).toEqual([
-      "通用设置",
-      "知识库",
-      "模型提供商",
-      "服务配置",
-      "本地模型",
-      "处理管线与来源",
-    ])
+    expect(labels).toEqual(["常规", "处理流程", "模型服务商", "来源与账号", "存储与网络", "高级"])
+    expect(screen.getByRole("heading", { name: "常规" })).toBeInTheDocument()
+    expect(screen.getByText("循环播放")).toBeInTheDocument()
   })
 
-  it("places Jina Reader settings under Services", async () => {
+  it("keeps yt-dlp, web scraping and access control under 高级", async () => {
     render(<SettingsPanel />)
 
-    fireEvent.click(await screen.findByRole("button", { name: "服务配置" }))
+    fireEvent.click(await screen.findByRole("button", { name: "高级" }))
 
-    expect(await screen.findByText("yt-dlp")).toBeInTheDocument()
+    expect(await screen.findByRole("region", { name: "yt-dlp" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "更新到最新并重启后端" })).toBeInTheDocument()
-    expect(await screen.findByText("网页抓取")).toBeInTheDocument()
+    expect(screen.getByRole("region", { name: "网页抓取" })).toBeInTheDocument()
     expect(screen.getByText("启用 Defuddle")).toBeInTheDocument()
     expect(screen.getByText("启用 Playwright")).toBeInTheDocument()
     expect(screen.getByText("启用 Jina Reader")).toBeInTheDocument()
     expect(screen.getByDisplayValue("https://r.jina.ai")).toBeInTheDocument()
     expect(screen.getByDisplayValue("30")).toBeInTheDocument()
+    expect(screen.getByRole("region", { name: "访问控制" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "打开日志" })).toBeInTheDocument()
   })
 
-  it("places platform source settings under Pipelines/Sources", async () => {
+  it("puts every platform under 来源与账号", async () => {
     render(<SettingsPanel />)
 
-    fireEvent.click(await screen.findByRole("button", { name: "处理管线与来源" }))
+    fireEvent.click(await screen.findByRole("button", { name: /来源与账号/ }))
 
-    expect(await screen.findByText("哔哩哔哩")).toBeInTheDocument()
+    expect(await screen.findByRole("region", { name: "哔哩哔哩" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "扫码登录" })).toBeInTheDocument()
     expect(screen.getByText(/扫码后自动保存登录凭据/)).toBeInTheDocument()
-    expect(screen.getByText("YouTube")).toBeInTheDocument()
-    expect(screen.getByText("小宇宙")).toBeInTheDocument()
-    expect(screen.getByText("小红书")).toBeInTheDocument()
-    expect(screen.getByText("知乎")).toBeInTheDocument()
+    for (const source of ["YouTube", "X", "小宇宙", "小红书", "知乎"]) {
+      expect(screen.getByRole("region", { name: source })).toBeInTheDocument()
+    }
   })
 
-  it("shows model purposes in Overall and server details in list-detail panels", async () => {
+  it("keeps library location, network and queue under 存储与网络", async () => {
     render(<SettingsPanel />)
 
-    expect(await screen.findByText("模型用途")).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole("button", { name: "存储与网络" }))
+
+    expect(await screen.findByRole("region", { name: "资料库位置" })).toBeInTheDocument()
+    expect(screen.getByDisplayValue("D:/Video/MediaProcessPipeline")).toBeInTheDocument()
+    expect(screen.getByRole("combobox", { name: "代理模式" })).toBeInTheDocument()
+    expect(screen.getByRole("combobox", { name: "并行下载数" })).toHaveTextContent("2")
+  })
+
+  it("shows the pipeline in order with each step's model, and providers as list and detail", async () => {
+    render(<SettingsPanel />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "处理流程" }))
+
+    const sectionLinks = await screen.findByRole("navigation", { name: "处理流程的分区" })
+    expect(within(sectionLinks).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "音频流程",
+      "人声分离",
+      "语音识别",
+      "各步骤的模型",
+      "本地大模型",
+      "推理模式",
+      "知识库索引",
+    ])
+    expect(screen.getByText("模型用途")).toBeInTheDocument()
     expect(screen.getByText("字幕简单润色")).toBeInTheDocument()
     expect(screen.getByText("ASR")).toBeInTheDocument()
     expect(screen.getAllByRole("combobox").length).toBeGreaterThanOrEqual(8)
@@ -459,7 +477,31 @@ describe("SettingsPanel", () => {
     expect(screen.getByRole("combobox", { name: "知识库向量" }))
       .toHaveTextContent("已选模型不可用，请重新选择")
 
-    fireEvent.click(await screen.findByRole("button", { name: "模型提供商" }))
+    expect(screen.getByRole("heading", { name: "音频流程" })).toBeInTheDocument()
+    const processing = screen.getByLabelText("默认处理方式")
+    expect(processing).toHaveTextContent("标准语音识别")
+    Element.prototype.scrollIntoView ??= () => {}
+    fireEvent.keyDown(processing, { key: "ArrowDown" })
+    expect(screen.getByRole("option", { name: "标准语音识别" })).toBeInTheDocument()
+    expect(screen.getByRole("option", { name: "MOSS 一体化识别" })).toBeInTheDocument()
+    fireEvent.keyDown(screen.getByRole("option", { name: "标准语音识别" }), { key: "Escape" })
+    expect(screen.getByRole("switch", { name: "启用说话人分离" })).toBeChecked()
+    expect(screen.queryByText("Local LLM Server")).not.toBeInTheDocument()
+
+    expect(screen.getByRole("heading", { name: "人声分离" })).toBeInTheDocument()
+    expect(screen.getByLabelText("默认模型")).toHaveTextContent("UVR-MDX-NET-Inst_HQ_3")
+    expect(screen.getByRole("button", { name: "检查本机 UVR" })).toBeInTheDocument()
+
+    expect(screen.getByRole("heading", { name: "语音识别" })).toBeInTheDocument()
+    expect(screen.getByLabelText("ASR 服务")).toHaveTextContent("Sherpa ONNX（本地）")
+    expect(await screen.findByText("本地模型 5/5 可用")).toBeInTheDocument()
+    expect(screen.getByLabelText("时间戳模式")).toHaveTextContent("自动")
+
+    expect(screen.getByRole("heading", { name: "本地大模型" })).toBeInTheDocument()
+    expect(screen.getByLabelText("推理引擎")).toHaveTextContent("Transformers · Hugging Face")
+    expect(screen.getByRole("region", { name: "知识库索引" })).toBeInTheDocument()
+
+    fireEvent.click(await screen.findByRole("button", { name: "模型服务商" }))
 
     const providerSearch = await screen.findByPlaceholderText("搜索 Providers...")
     const providerList = providerSearch.closest("aside")
@@ -524,48 +566,5 @@ describe("SettingsPanel", () => {
     fireEvent.click(qoderOAuthButton)
     expect(screen.getByRole("heading", { name: "QoderCN OAuth" })).toBeInTheDocument()
     expect(screen.getByText(/支持字幕分块并发/)).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole("button", { name: "本地模型" }))
-
-    expect(await screen.findByRole("heading", { name: "音频流程" })).toBeInTheDocument()
-    const localModelNav = screen.getByRole("navigation", { name: "本地模型设置" })
-    expect(within(localModelNav).getAllByRole("button").map((button) => button.textContent)).toEqual([
-      "音频流程",
-      "人声分离",
-      "ASR",
-      "LLM",
-    ])
-    expect(screen.queryByPlaceholderText("搜索本地模型...")).not.toBeInTheDocument()
-    const processing = screen.getByLabelText("默认处理方式")
-    expect(processing).toHaveTextContent("标准语音识别")
-    Element.prototype.scrollIntoView ??= () => {}
-    fireEvent.keyDown(processing, { key: "ArrowDown" })
-    expect(screen.getByRole("option", { name: "标准语音识别" })).toBeInTheDocument()
-    expect(screen.getByRole("option", { name: "MOSS 一体化识别" })).toBeInTheDocument()
-    fireEvent.keyDown(screen.getByRole("option", { name: "标准语音识别" }), { key: "Escape" })
-    expect(screen.getByRole("switch", { name: "启用说话人分离" })).toBeChecked()
-    expect(screen.queryByText("Local LLM Server")).not.toBeInTheDocument()
-    expect(screen.queryByText("Voiceprint Purpose")).not.toBeInTheDocument()
-    expect(screen.queryByText("ASR + pyannote")).not.toBeInTheDocument()
-    expect(screen.queryByText("MOSS 一步转录")).not.toBeInTheDocument()
-
-
-    fireEvent.click(within(localModelNav).getByRole("button", { name: "人声分离" }))
-    expect(screen.getByRole("heading", { name: "人声分离" })).toBeInTheDocument()
-    expect(screen.getByLabelText("默认模型")).toHaveTextContent("UVR-MDX-NET-Inst_HQ_3")
-    expect(screen.getByRole("button", { name: "检查本机 UVR" })).toBeInTheDocument()
-    expect(screen.getAllByRole("button", { name: "选择文件夹" }).length).toBeGreaterThan(0)
-
-    fireEvent.click(within(localModelNav).getByRole("button", { name: "ASR" }))
-    expect(screen.getByRole("heading", { name: "ASR" })).toBeInTheDocument()
-    expect(screen.getByLabelText("ASR 服务")).toHaveTextContent("Sherpa ONNX（本地）")
-    expect(await screen.findByText("本地模型 5/5 可用")).toBeInTheDocument()
-    expect(screen.getByLabelText("时间戳模式")).toHaveTextContent("自动")
-    expect(screen.getByPlaceholderText("Qwen3-ForcedAligner-0.6B 本地目录")).toBeInTheDocument()
-
-    fireEvent.click(within(localModelNav).getByRole("button", { name: "LLM" }))
-    expect(screen.getByRole("heading", { name: "LLM" })).toBeInTheDocument()
-    expect(screen.getByLabelText("推理引擎")).toHaveTextContent("Transformers · Hugging Face")
-    expect(screen.getByPlaceholderText("Hugging Face 模型目录")).toBeInTheDocument()
   })
 })

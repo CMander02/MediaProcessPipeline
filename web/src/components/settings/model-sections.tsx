@@ -1,5 +1,5 @@
 export { PurposeModelBindings } from "./models/purpose-bindings"
 export { RegistrySettings } from "./models/provider-registry"
-export { LocalModelSettings } from "./models/local-models"
+export { LocalModelSection } from "./models/local-models"
 export { CustomProfilesEditor } from "./models/custom-profiles"
 export { DeepSeekConfig } from "./models/deepseek"

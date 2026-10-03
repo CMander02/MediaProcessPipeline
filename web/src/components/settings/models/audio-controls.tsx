@@ -33,7 +33,7 @@ export function AudioFlowControls({
       {flow === "asr" ? (
         <SettingsSection
           title="说话人分离"
-          description="为字幕片段添加 SPEAKER_XX 标签。模型路径统一在 ASR 页面配置。"
+          description="为字幕片段添加 SPEAKER_XX 标签。模型路径在下面的「语音识别」里配置。"
         >
           <SwitchSettingRow
             label="启用说话人分离"
@@ -185,7 +185,7 @@ export function AsrSettingsControls({
 
   return (
     <div>
-      <SettingsSection title="语音识别" description="配置默认 ASR 服务及模型。">
+      <SettingsSection title="识别引擎" description="默认的识别服务和模型。">
         <SelectSettingRow
           label="ASR 服务"
           value={provider}
@@ -332,7 +332,7 @@ export function AsrSettingsControls({
             </AdvancedSettings>
           </SettingsSection>
 
-          <SettingsSection title="说话人模型" description="配置 pyannote 本地模型。开关位于音频流程页面。">
+          <SettingsSection title="说话人模型" description="配置 pyannote 本地模型。开关在上面的「音频流程」里。">
             <PathPickerRow
               label="Diarization"
               settingKey="pyannote_model_path"

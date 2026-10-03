@@ -1,5 +1,4 @@
-import { useEffect, useState, useCallback } from "react"
-import React from "react"
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -12,7 +11,7 @@ import { api, type Settings, type YtdlpStatus } from "@/lib/api"
 import { usePreferences } from "@/hooks/use-preferences"
 import { systemNotificationsAvailable } from "@/hooks/use-task-notifications"
 import { OptionSelect, ProxySetting, SettingRow } from "@/components/settings/setting-controls"
-import { LocalModelSettings, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
+import { LocalModelSection, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
 import { BilibiliCard, PlaceholderSection, TwitterCard, XiaohongshuCard, YoutubeCard, ZhihuCard } from "@/components/settings/source-cards"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Loading03Icon, Tick02Icon, Moon02Icon, Sun01Icon } from "@hugeicons/core-free-icons"
@@ -22,25 +21,98 @@ import { usePlatform } from "@/platform/use-platform"
 import { getThemePreference, setThemePreference, type ThemePreference } from "@/lib/theme"
 import { useAppAccess } from "@/hooks/use-app-access-context"
 import { mediaPolicies } from "@/lib/media-retention"
+import { buildHash, navigate, useRoute } from "@/lib/router"
 
-// --- Tab definitions ---
+// --- Groups ---
 
-type TabId = "overall" | "knowledge" | "registry" | "services" | "local" | "pipelines"
+type GroupId = "general" | "pipeline" | "providers" | "sources" | "storage" | "advanced"
 
-interface TabDef {
-  id: TabId
-  label: string
+interface SectionDef {
+  id: string
+  title: string
+  /** Also shown on phones and in the Android app (the rest is changed from a computer) */
   mobile?: boolean
 }
 
-const TABS: TabDef[] = [
-  { id: "overall", label: "通用设置", mobile: true },
-  { id: "knowledge", label: "知识库", mobile: true },
-  { id: "registry", label: "模型提供商" },
-  { id: "services", label: "服务配置" },
-  { id: "local", label: "本地模型" },
-  { id: "pipelines", label: "处理管线与来源" },
+interface GroupDef {
+  id: GroupId
+  label: string
+  description: string
+  sections: SectionDef[]
+}
+
+// Grouped by the decision being made; 处理流程 follows the order a task goes through.
+const GROUPS: GroupDef[] = [
+  {
+    id: "general",
+    label: "常规",
+    description: "外观、启动页和日常使用的习惯。",
+    sections: [
+      { id: "appearance", title: "外观", mobile: true },
+      { id: "startup", title: "启动页面", mobile: true },
+      { id: "playback", title: "播放", mobile: true },
+      { id: "intake", title: "新建处理", mobile: true },
+    ],
+  },
+  {
+    id: "pipeline",
+    label: "处理流程",
+    description: "新任务按这个顺序处理：处理方式、人声分离、语音识别，再交给模型润色、分析和总结。每一步用哪个模型，在这里决定。",
+    sections: [
+      { id: "audio-flow", title: "音频流程" },
+      { id: "uvr", title: "人声分离" },
+      { id: "asr", title: "语音识别" },
+      { id: "models", title: "各步骤的模型" },
+      { id: "local-llm", title: "本地大模型" },
+      { id: "inference", title: "推理模式" },
+      { id: "knowledge", title: "知识库索引", mobile: true },
+    ],
+  },
+  {
+    id: "providers",
+    label: "模型服务商",
+    description: "API 和 OAuth 服务商，以及它们提供的模型。",
+    sections: [{ id: "providers", title: "模型服务商" }],
+  },
+  {
+    id: "sources",
+    label: "来源与账号",
+    description: "各平台的登录状态、下载和字幕设置。",
+    sections: [
+      { id: "bilibili", title: "哔哩哔哩" },
+      { id: "youtube", title: "YouTube" },
+      { id: "twitter", title: "X" },
+      { id: "xiaoyuzhou", title: "小宇宙" },
+      { id: "xiaohongshu", title: "小红书" },
+      { id: "zhihu", title: "知乎" },
+    ],
+  },
+  {
+    id: "storage",
+    label: "存储与网络",
+    description: "资料库放在哪里、媒体保留多少、走什么网络，以及同时下载几个。",
+    sections: [
+      { id: "library", title: "资料库位置" },
+      { id: "network", title: "网络" },
+      { id: "queue", title: "队列" },
+    ],
+  },
+  {
+    id: "advanced",
+    label: "高级",
+    description: "yt-dlp、网页抓取、远程访问和日志。",
+    sections: [
+      { id: "ytdlp", title: "yt-dlp" },
+      { id: "scraping", title: "网页抓取" },
+      { id: "access", title: "访问控制" },
+      { id: "logs", title: "日志" },
+    ],
+  },
 ]
+
+function isGroupId(value: string | undefined): value is GroupId {
+  return GROUPS.some((group) => group.id === value)
+}
 
 export function SettingsPanel() {
   const platform = usePlatform()
@@ -58,7 +130,15 @@ export function SettingsPanel() {
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
     () => (systemNotificationsAvailable() ? Notification.permission : "unsupported"),
   )
-  const [activeTab, setActiveTab] = useState<TabId>("overall")
+  const route = useRoute()
+  // The group lives in the link, so it can be opened directly and survives a reload.
+  const activeGroupId: GroupId = isGroupId(route.params.group) ? route.params.group : "general"
+  const [activeSection, setActiveSection] = useState<string | null>(null)
+  const [narrow, setNarrow] = useState(() => (
+    typeof window.matchMedia === "function" && window.matchMedia("(max-width: 767px)").matches
+  ))
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const stickyRef = useRef<HTMLDivElement>(null)
   const [uvrDetecting, setUvrDetecting] = useState(false)
   const [uvrDetection, setUvrDetection] = useState<string | null>(null)
   const [ytdlpStatus, setYtdlpStatus] = useState<YtdlpStatus | null>(null)
@@ -71,14 +151,9 @@ export function SettingsPanel() {
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return
     const query = window.matchMedia("(max-width: 767px)")
-    const keepMobileTabValid = () => {
-      if (query.matches) {
-        setActiveTab((current) => TABS.find((tab) => tab.id === current)?.mobile ? current : "overall")
-      }
-    }
-    keepMobileTabValid()
-    query.addEventListener("change", keepMobileTabValid)
-    return () => query.removeEventListener("change", keepMobileTabValid)
+    const update = () => setNarrow(query.matches)
+    query.addEventListener("change", update)
+    return () => query.removeEventListener("change", update)
   }, [])
 
   const loadSettings = useCallback(async () => {
@@ -285,6 +360,559 @@ export function SettingsPanel() {
     ? settings.llm_provider
     : "deepseek"
 
+  const localModelProps = {
+    settings,
+    updateSetting,
+    saving,
+    saved,
+    detectLocalUvr,
+    uvrDetecting,
+    uvrDetection,
+  }
+  const sourceProps = { settings, updateSetting, saving, saved }
+
+  const sectionContent = (id: string): ReactNode => {
+    switch (id) {
+      case "appearance":
+        return (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">外观</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {darkMode
+                    ? <HugeiconsIcon icon={Moon02Icon} className="h-4 w-4" />
+                    : <HugeiconsIcon icon={Sun01Icon} className="h-4 w-4" />}
+                  <Label htmlFor="theme-preference">主题</Label>
+                </div>
+                <Select value={themePreference} onValueChange={updateTheme}>
+                  <SelectTrigger id="theme-preference" className="h-11 w-32 md:h-9">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="system">跟随系统</SelectItem>
+                    <SelectItem value="light">浅色</SelectItem>
+                    <SelectItem value="dark">深色</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </CardContent>
+          </Card>
+        )
+      case "startup":
+        return (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">启动页面</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <RadioGroup
+                value={prefs.startupPage}
+                onValueChange={(v) => updatePrefs({ startupPage: v as "files" | "last" })}
+                className="flex gap-4"
+              >
+                <div className="flex items-center gap-2">
+                  <RadioGroupItem value="files" id="startup-files" />
+                  <Label htmlFor="startup-files">文件列表</Label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <RadioGroupItem value="last" id="startup-last" />
+                  <Label htmlFor="startup-last">上次打开的归档</Label>
+                </div>
+              </RadioGroup>
+            </CardContent>
+          </Card>
+        )
+      case "playback":
+        return (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">播放</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>循环播放</Label>
+                  <p className="mt-0.5 text-xs text-muted-foreground">详情页视频和音频播放器默认循环。</p>
+                </div>
+                <Switch
+                  checked={Boolean(prefs.videoLoop)}
+                  onCheckedChange={(v) => updatePrefs({ videoLoop: v })}
+                />
+              </div>
+            </CardContent>
+          </Card>
+        )
+      case "intake":
+        return (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">新建处理</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <Label htmlFor="clipboard-detect">识别剪贴板里的链接</Label>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    切回 MPP 时，如果剪贴板里有还没处理过的新链接，提示一键新建，同一个链接只提示一次。浏览器会先询问一次剪贴板权限。
+                    在文件库里直接 Ctrl+V 粘贴链接、把音视频拖进窗口也能新建；桌面版还可以按 Ctrl+N。
+                  </p>
+                </div>
+                <Switch
+                  id="clipboard-detect"
+                  checked={prefs.clipboardDetect !== false}
+                  onCheckedChange={(v) => updatePrefs({ clipboardDetect: v })}
+                />
+              </div>
+              <div className="mt-4 flex items-center justify-between gap-4 border-t pt-4">
+                <div>
+                  <Label htmlFor="task-notifications">完成或失败时通知</Label>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    在 MPP 里弹出提示，点「打开」看结果；MPP 不在前台时发系统通知。
+                    {notificationPermission === "denied" && " 系统通知已被浏览器禁止，需要在浏览器的网站设置里允许。"}
+                  </p>
+                </div>
+                <Switch
+                  id="task-notifications"
+                  checked={prefs.taskNotifications !== false}
+                  onCheckedChange={(v) => {
+                    updatePrefs({ taskNotifications: v })
+                    // Browsers ask once, and only in response to a click.
+                    if (v && notificationPermission === "default") {
+                      void Notification.requestPermission().then(setNotificationPermission)
+                    }
+                  }}
+                />
+              </div>
+            </CardContent>
+          </Card>
+        )
+      case "audio-flow":
+        return <LocalModelSection id="audio-flow" {...localModelProps} />
+      case "uvr":
+        return <LocalModelSection id="uvr" {...localModelProps} />
+      case "asr":
+        return <LocalModelSection id="sherpa-asr" {...localModelProps} />
+      case "models":
+        return <PurposeModelBindings settings={settings} updateSetting={updateSetting} />
+      case "local-llm":
+        return <LocalModelSection id="local-llm" {...localModelProps} />
+      case "inference":
+        return (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">推理模式</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>半重叠推理</Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    开启：下载与 GPU 步骤并行（更快）。关闭：串行执行（显存更省）。
+                    建议 32 GB+ 显存开启，16 GB 及以下关闭。
+                  </p>
+                </div>
+                <Switch
+                  checked={Boolean(settings.pipeline_overlap ?? true)}
+                  onCheckedChange={(v) => updateSetting("pipeline_overlap", v)}
+                />
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>生成视频详情 detail.md</Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    开启后额外生成旧版深层树状 Markdown，作为“视频详情”展示和导出；默认导图保持浅层展示型结构。
+                  </p>
+                </div>
+                <Switch
+                  checked={Boolean(settings.generate_video_detail ?? true)}
+                  onCheckedChange={(v) => updateSetting("generate_video_detail", v)}
+                />
+              </div>
+            </CardContent>
+          </Card>
+        )
+      case "knowledge":
+        return (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">知识库索引</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs text-muted-foreground">OpenAI-Compatible 嵌入 API，用于任务完成后自动索引字幕+摘要。</p>
+              <div className="flex items-center justify-between gap-4">
+                <Label htmlFor="kb-enabled">自动索引</Label>
+                <Switch
+                  id="kb-enabled"
+                  checked={Boolean(settings.kb_enabled ?? true)}
+                  onCheckedChange={(value) => updateSetting("kb_enabled", value)}
+                />
+              </div>
+              <SettingRow
+                label="API Base"
+                settingKey="kb_embedding_api_base"
+                value={String(settings.kb_embedding_api_base ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+                placeholder="http://localhost:8080/v1"
+              />
+              <SettingRow
+                label="API Key"
+                settingKey="kb_embedding_api_key"
+                value={String(settings.kb_embedding_api_key ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+                masked
+              />
+              <SettingRow
+                label="模型"
+                settingKey="kb_embedding_model"
+                value={String(settings.kb_embedding_model ?? "qwen3-embedding-0.6b")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+              />
+              <SettingRow
+                label="向量维度"
+                settingKey="kb_embedding_dim"
+                value={String(settings.kb_embedding_dim ?? 1024)}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+                short
+              />
+            </CardContent>
+          </Card>
+        )
+      case "bilibili":
+        return <BilibiliCard {...sourceProps} onAuthChange={setBiliLoggedIn} />
+      case "youtube":
+        return <YoutubeCard {...sourceProps} />
+      case "twitter":
+        return <TwitterCard {...sourceProps} />
+      case "xiaoyuzhou":
+        return (
+          <PlaceholderSection
+            title="小宇宙"
+            description="已支持公开单集页面：提取页面元数据、下载 m4a，并转为本地 ASR 使用的 wav。"
+            comingSoon={false}
+          />
+        )
+      case "xiaohongshu":
+        return <XiaohongshuCard {...sourceProps} />
+      case "zhihu":
+        return <ZhihuCard {...sourceProps} />
+      case "library":
+        return (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">资料库位置</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <SettingRow
+                label="数据根目录"
+                settingKey="data_root"
+                value={String(settings.data_root ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+                placeholder="绝对路径，如 C:\data\mpp"
+              />
+              <div className="flex items-center gap-3">
+                <Label htmlFor="media-retention-policy" className="w-24 shrink-0 text-sm text-muted-foreground">媒体保留</Label>
+                <OptionSelect
+                  id="media-retention-policy"
+                  value={String(settings.media_retention_policy ?? "all")}
+                  disabled={saving.media_retention_policy}
+                  onValueChange={(value) => void updateSetting("media_retention_policy", value)}
+                >
+                  {Object.entries(mediaPolicies).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </OptionSelect>
+              </div>
+              <p className="text-xs text-muted-foreground">用于下次媒体清理预览。文件页右键归档可预览并执行。</p>
+            </CardContent>
+          </Card>
+        )
+      case "network":
+        return (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">网络</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <ProxySetting
+                label="代理"
+                settingKey="network_proxy"
+                value={String(settings.network_proxy ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+              />
+            </CardContent>
+          </Card>
+        )
+      case "queue":
+        return (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">队列</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-center gap-3">
+                <Label className="w-24 shrink-0 text-sm text-muted-foreground">并行下载数</Label>
+                <OptionSelect
+                  aria-label="并行下载数"
+                  value={String(settings.max_download_concurrency ?? 2)}
+                  onValueChange={(value) => updateSetting("max_download_concurrency", Number(value))}
+                >
+                  {[1, 2, 3, 4].map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </OptionSelect>
+                {saved.max_download_concurrency && (
+                  <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
+                )}
+              </div>
+              <div className="flex items-center gap-3">
+                <Label className="w-24 shrink-0 text-sm text-muted-foreground">VLM 并发</Label>
+                <OptionSelect
+                  aria-label="VLM 并发"
+                  value={String(settings.vlm_concurrency ?? 1)}
+                  onValueChange={(value) => updateSetting("vlm_concurrency", Number(value))}
+                >
+                  {[1, 2, 3, 4].map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </OptionSelect>
+                {saved.vlm_concurrency && (
+                  <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
+                )}
+              </div>
+              <SettingRow
+                label="VLM 超时"
+                settingKey="vlm_timeout_sec"
+                value={String(settings.vlm_timeout_sec ?? 180)}
+                onSave={(key, value) => updateSetting(key, Math.max(30, Number(value) || 180))}
+                saving={saving}
+                saved={saved}
+                placeholder="180"
+                unit="秒"
+              />
+            </CardContent>
+          </Card>
+        )
+      case "ytdlp":
+        return (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">yt-dlp</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>启动时自动更新</Label>
+                  <p className="mt-0.5 text-xs text-muted-foreground">每次启动按清华源 → 中科大源 → 系统默认源检查，有新稳定版本时更新。</p>
+                </div>
+                <Switch
+                  checked={Boolean(settings.ytdlp_auto_update ?? true)}
+                  onCheckedChange={(v) => updateSetting("ytdlp_auto_update", v)}
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                <span>当前 {ytdlpStatus?.installed ?? "unknown"}</span>
+                <span>最新 {ytdlpStatus?.latest ?? "unknown"}</span>
+                {ytdlpStatus?.is_stale && <span className="text-amber-600">可更新</span>}
+                {saved.ytdlp_auto_update && (
+                  <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
+                )}
+              </div>
+              <Button type="button" variant="outline" onClick={upgradeYtdlp} disabled={ytdlpUpdating}>
+                {ytdlpUpdating && <HugeiconsIcon icon={Loading03Icon} className="mr-2 h-4 w-4 animate-spin" />}
+                更新到最新并重启后端
+              </Button>
+              {ytdlpStatus?.source && <p className="text-xs text-muted-foreground">检查来源：{ytdlpStatus.source}</p>}
+              {ytdlpStatus?.check_error && <p className="text-xs text-muted-foreground">{ytdlpStatus.check_error}</p>}
+              {ytdlpMessage && <p className="text-xs text-muted-foreground">{ytdlpMessage}</p>}
+            </CardContent>
+          </Card>
+        )
+      case "scraping":
+        return (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">网页抓取</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs leading-5 text-muted-foreground">
+                网页 Scrape fallback 服务。通用网页先使用本地 Defuddle，失败后调用 Jina Reader 返回 Markdown。
+              </p>
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>启用 Defuddle</Label>
+                  <p className="mt-0.5 text-xs text-muted-foreground">本地抽取通用网页正文与元数据。</p>
+                </div>
+                <Switch
+                  checked={Boolean(settings.defuddle_enabled ?? true)}
+                  onCheckedChange={(v) => updateSetting("defuddle_enabled", v)}
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>启用 Playwright</Label>
+                  <p className="mt-0.5 text-xs text-muted-foreground">处理需要浏览器渲染的 X 等动态页面。</p>
+                </div>
+                <Switch
+                  checked={Boolean(settings.playwright_enabled ?? true)}
+                  onCheckedChange={(v) => updateSetting("playwright_enabled", v)}
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>启用 Jina Reader</Label>
+                  <p className="mt-0.5 text-xs text-muted-foreground">用于 Defuddle 抽取失败后的网页正文解析。</p>
+                </div>
+                <Switch
+                  checked={Boolean(settings.jina_reader_enabled ?? true)}
+                  onCheckedChange={(v) => updateSetting("jina_reader_enabled", v)}
+                />
+              </div>
+              <SettingRow
+                label="API Base"
+                settingKey="jina_reader_api_base"
+                value={String(settings.jina_reader_api_base ?? "https://r.jina.ai")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+                placeholder="https://r.jina.ai"
+              />
+              <SettingRow
+                label="API Key"
+                settingKey="jina_reader_api_key"
+                value={String(settings.jina_reader_api_key ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+                masked
+                placeholder="可选 Bearer Token"
+              />
+              <SettingRow
+                label="超时秒数"
+                settingKey="web_scrape_timeout_sec"
+                value={String(settings.web_scrape_timeout_sec ?? 30)}
+                onSave={(key, value) => updateSetting(key, Number(value) || 30)}
+                saving={saving}
+                saved={saved}
+                placeholder="30"
+                unit="秒"
+              />
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>绕过缓存</Label>
+                  <p className="mt-0.5 text-xs text-muted-foreground">需要实时刷新网页时打开。</p>
+                </div>
+                <Switch
+                  checked={Boolean(settings.jina_reader_bypass_cache ?? false)}
+                  onCheckedChange={(v) => updateSetting("jina_reader_bypass_cache", v)}
+                />
+              </div>
+            </CardContent>
+          </Card>
+        )
+      case "access":
+        return (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">访问控制</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <SettingRow
+                label="API Token"
+                settingKey="api_token"
+                value={String(settings.api_token ?? "")}
+                onSave={updateSetting}
+                saving={saving}
+                saved={saved}
+                masked
+                placeholder="留空则不启用"
+              />
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <Label>远程文件系统</Label>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    允许远程浏览服务器目录、提交本地路径并打开系统文件夹。
+                  </p>
+                </div>
+                <Switch
+                  checked={Boolean(settings.allow_remote_filesystem)}
+                  onCheckedChange={(value) => updateSetting("allow_remote_filesystem", value)}
+                />
+              </div>
+            </CardContent>
+          </Card>
+        )
+      case "logs":
+        return (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">日志</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between gap-4">
+                <p className="text-sm text-muted-foreground">后端的完整日志和最近的错误在「后端」页查看。</p>
+                <Button type="button" variant="outline" size="sm" onClick={() => navigate("#/backend?tab=logs")}>
+                  打开日志
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )
+      default:
+        return null
+    }
+  }
+
+  // Phones and the Android app keep to what is sensible to change there.
+  const onlyMobile = platform.isNative || narrow
+  const groups = GROUPS.filter((group) => !onlyMobile || group.sections.some((section) => section.mobile))
+  const activeGroup = groups.find((group) => group.id === activeGroupId) ?? groups[0]
+  const sections = activeGroup.sections.filter((section) => !onlyMobile || section.mobile)
+
+  const selectGroup = (id: GroupId) => {
+    setActiveSection(null)
+    if (scrollRef.current) scrollRef.current.scrollTop = 0
+    navigate(buildHash("settings", { group: id === "general" ? null : id }), { replace: true })
+  }
+
+  // Scroll so the section starts right under the sticky group header.
+  const jumpTo = (id: string) => {
+    const container = scrollRef.current
+    const element = document.getElementById(`settings-${id}`)
+    if (!container || !element) return
+    setActiveSection(id)
+    const offset = element.getBoundingClientRect().top - container.getBoundingClientRect().top
+    const top = container.scrollTop + offset - (stickyRef.current?.offsetHeight ?? 0) - 8
+    if (typeof container.scrollTo === "function") container.scrollTo({ top, behavior: "smooth" })
+    else container.scrollTop = top
+  }
+
+  // The section at the top of the view is the one marked in the section links.
+  const followScroll = () => {
+    const container = scrollRef.current
+    if (!container) return
+    // A section counts once its top has reached the bottom of the sticky group header.
+    const reached = container.getBoundingClientRect().top + (stickyRef.current?.offsetHeight ?? 0) + 24
+    const passed = sections.filter((section) => {
+      const element = document.getElementById(`settings-${section.id}`)
+      return element && element.getBoundingClientRect().top <= reached
+    })
+    setActiveSection(passed.at(-1)?.id ?? sections[0]?.id ?? null)
+  }
+
   return (
     <div className="h-full min-h-0 w-full">
       {saveError && (
@@ -295,339 +923,58 @@ export function SettingsPanel() {
       <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row lg:gap-5">
         <div className="shrink-0 lg:hidden">
           <Label htmlFor="settings-category" className="mb-1.5 block text-xs text-muted-foreground">
-            设置分类
+            设置分组
           </Label>
-          <Select value={activeTab} onValueChange={(value) => setActiveTab(value as TabId)}>
+          <Select value={activeGroup.id} onValueChange={(value) => selectGroup(value as GroupId)}>
             <SelectTrigger id="settings-category" className="h-11! w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {TABS.filter((tab) => tab.mobile).map((tab) => (
-                <SelectItem key={tab.id} value={tab.id} className="min-h-11">
-                  {tab.label}
+              {groups.map((group) => (
+                <SelectItem key={group.id} value={group.id} className="min-h-11">
+                  {group.label}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </div>
 
-        {/* Left sidebar */}
-        <nav className="hidden w-full shrink-0 rounded-lg border bg-card p-1 lg:sticky lg:top-5 lg:block lg:h-fit lg:w-[220px] lg:space-y-1 lg:p-2">
-          {TABS.filter((tab) => !platform.isNative || tab.mobile).map((tab) => {
-            const isActive = activeTab === tab.id
-
+        <nav
+          aria-label="设置分组"
+          className="hidden w-full shrink-0 rounded-lg border bg-card p-1 lg:sticky lg:top-5 lg:block lg:h-fit lg:w-[220px] lg:space-y-1 lg:p-2"
+        >
+          {groups.map((group) => {
+            const isActive = activeGroup.id === group.id
             return (
-              <React.Fragment key={tab.id}>
-                <button
-                  onClick={() => setActiveTab(tab.id)}
-                  className={[
-                    "inline-flex min-w-max items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors lg:flex lg:w-full",
-                    isActive
-                      ? "bg-primary/10 text-primary font-medium"
-                      : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
-                  ].join(" ")}
-                >
-                  <span className="truncate flex-1">{tab.label}</span>
-                  {tab.id === "pipelines" && biliLoggedIn !== null && (
-                    <span
-                      className={[
-                        "h-1.5 w-1.5 rounded-full shrink-0",
-                        biliLoggedIn ? "bg-emerald-500" : "bg-red-500",
-                      ].join(" ")}
-                    />
-                  )}
-                </button>
-              </React.Fragment>
+              <button
+                key={group.id}
+                type="button"
+                onClick={() => selectGroup(group.id)}
+                aria-current={isActive ? "page" : undefined}
+                className={[
+                  "inline-flex min-w-max items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors lg:flex lg:w-full",
+                  isActive
+                    ? "bg-primary/10 text-primary font-medium"
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
+                ].join(" ")}
+              >
+                <span className="truncate flex-1">{group.label}</span>
+                {group.id === "sources" && biliLoggedIn !== null && (
+                  <span
+                    className={[
+                      "h-1.5 w-1.5 rounded-full shrink-0",
+                      biliLoggedIn ? "bg-emerald-500" : "bg-red-500",
+                    ].join(" ")}
+                    aria-label={biliLoggedIn ? "哔哩哔哩已登录" : "哔哩哔哩未登录"}
+                  />
+                )}
+              </button>
             )
           })}
         </nav>
 
-        {/* Right content */}
         <div className="min-h-0 min-w-0 flex-1 overflow-hidden [&_[data-slot=card]]:rounded-none [&_[data-slot=card]]:bg-transparent [&_[data-slot=card]]:py-0 [&_[data-slot=card]]:ring-0 [&_[data-slot=card]]:border-b [&_[data-slot=card]]:border-border/70 [&_[data-slot=card]]:pb-4 [&_[data-slot=card-header]]:px-0 [&_[data-slot=card-header]]:pb-1.5 [&_[data-slot=card-content]]:px-0">
-          {/* ── Overall ── */}
-          {activeTab === "overall" && (
-            <div className="h-full min-h-0 max-w-[800px] space-y-4 overflow-y-auto pr-1">
-              <NativeConnectionSettings />
-              <OfflineSyncStatus />
-              {/* Appearance */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">外观</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      {darkMode
-                        ? <HugeiconsIcon icon={Moon02Icon} className="h-4 w-4" />
-                        : <HugeiconsIcon icon={Sun01Icon} className="h-4 w-4" />}
-                      <Label htmlFor="theme-preference">主题</Label>
-                    </div>
-                    <Select value={themePreference} onValueChange={updateTheme}>
-                      <SelectTrigger id="theme-preference" className="h-11 w-32 md:h-9">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="system">跟随系统</SelectItem>
-                        <SelectItem value="light">浅色</SelectItem>
-                        <SelectItem value="dark">深色</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Startup page */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">启动页面</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <RadioGroup
-                    value={prefs.startupPage}
-                    onValueChange={(v) => updatePrefs({ startupPage: v as "files" | "last" })}
-                    className="flex gap-4"
-                  >
-                    <div className="flex items-center gap-2">
-                      <RadioGroupItem value="files" id="startup-files" />
-                      <Label htmlFor="startup-files">文件列表</Label>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <RadioGroupItem value="last" id="startup-last" />
-                      <Label htmlFor="startup-last">上次打开的归档</Label>
-                    </div>
-                  </RadioGroup>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">播放</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <Label>循环播放</Label>
-                      <p className="mt-0.5 text-xs text-muted-foreground">详情页视频和音频播放器默认循环。</p>
-                    </div>
-                    <Switch
-                      checked={Boolean(prefs.videoLoop)}
-                      onCheckedChange={(v) => updatePrefs({ videoLoop: v })}
-                    />
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">新建处理</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <Label htmlFor="clipboard-detect">识别剪贴板里的链接</Label>
-                      <p className="mt-0.5 text-xs text-muted-foreground">
-                        切回 MPP 时，如果剪贴板里有还没处理过的新链接，提示一键新建，同一个链接只提示一次。浏览器会先询问一次剪贴板权限。
-                        在文件库里直接 Ctrl+V 粘贴链接、把音视频拖进窗口也能新建；桌面版还可以按 Ctrl+N。
-                      </p>
-                    </div>
-                    <Switch
-                      id="clipboard-detect"
-                      checked={prefs.clipboardDetect !== false}
-                      onCheckedChange={(v) => updatePrefs({ clipboardDetect: v })}
-                    />
-                  </div>
-                  <div className="mt-4 flex items-center justify-between gap-4 border-t pt-4">
-                    <div>
-                      <Label htmlFor="task-notifications">完成或失败时通知</Label>
-                      <p className="mt-0.5 text-xs text-muted-foreground">
-                        在 MPP 里弹出提示，点「打开」看结果；MPP 不在前台时发系统通知。
-                        {notificationPermission === "denied" && " 系统通知已被浏览器禁止，需要在浏览器的网站设置里允许。"}
-                      </p>
-                    </div>
-                    <Switch
-                      id="task-notifications"
-                      checked={prefs.taskNotifications !== false}
-                      onCheckedChange={(v) => {
-                        updatePrefs({ taskNotifications: v })
-                        // Browsers ask once, and only in response to a click.
-                        if (v && notificationPermission === "default") {
-                          void Notification.requestPermission().then(setNotificationPermission)
-                        }
-                      }}
-                    />
-                  </div>
-                </CardContent>
-              </Card>
-
-              <div className={platform.isNative ? "hidden" : "hidden space-y-4 md:block"}>
-              {/* Data Paths */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">数据路径</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <SettingRow
-                    label="数据根目录"
-                    settingKey="data_root"
-                    value={String(settings.data_root ?? "")}
-                    onSave={updateSetting}
-                    saving={saving}
-                    saved={saved}
-                    placeholder="绝对路径，如 C:\data\mpp"
-                  />
-                  <div className="flex items-center gap-3">
-                    <Label htmlFor="media-retention-policy" className="w-24 shrink-0 text-sm text-muted-foreground">媒体保留</Label>
-                    <OptionSelect
-                      id="media-retention-policy"
-                      value={String(settings.media_retention_policy ?? "all")}
-                      disabled={saving.media_retention_policy}
-                      onValueChange={(value) => void updateSetting("media_retention_policy", value)}
-                    >
-                      {Object.entries(mediaPolicies).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                    </OptionSelect>
-                  </div>
-                  <p className="text-xs text-muted-foreground">用于下次媒体清理预览。文件页右键归档可预览并执行。</p>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">网络</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <ProxySetting
-                    label="代理"
-                    settingKey="network_proxy"
-                    value={String(settings.network_proxy ?? "")}
-                    onSave={updateSetting}
-                    saving={saving}
-                    saved={saved}
-                  />
-                </CardContent>
-              </Card>
-
-              {/* Security */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">访问控制</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <SettingRow
-                    label="API Token"
-                    settingKey="api_token"
-                    value={String(settings.api_token ?? "")}
-                    onSave={updateSetting}
-                    saving={saving}
-                    saved={saved}
-                    masked
-                    placeholder="留空则不启用"
-                  />
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <Label>远程文件系统</Label>
-                      <p className="mt-0.5 text-xs text-muted-foreground">
-                        允许远程浏览服务器目录、提交本地路径并打开系统文件夹。
-                      </p>
-                    </div>
-                    <Switch
-                      checked={Boolean(settings.allow_remote_filesystem)}
-                      onCheckedChange={(value) => updateSetting("allow_remote_filesystem", value)}
-                    />
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Queue */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">队列</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="flex items-center gap-3">
-                    <Label className="w-24 shrink-0 text-sm text-muted-foreground">并行下载数</Label>
-                    <OptionSelect
-                      aria-label="并行下载数"
-                      value={String(settings.max_download_concurrency ?? 2)}
-                      onValueChange={(value) => updateSetting("max_download_concurrency", Number(value))}
-                    >
-                      {[1, 2, 3, 4].map((n) => (
-                        <option key={n} value={n}>{n}</option>
-                      ))}
-                    </OptionSelect>
-                    {saved.max_download_concurrency && (
-                      <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
-                    )}
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <Label className="w-24 shrink-0 text-sm text-muted-foreground">VLM 并发</Label>
-                    <OptionSelect
-                      aria-label="VLM 并发"
-                      value={String(settings.vlm_concurrency ?? 1)}
-                      onValueChange={(value) => updateSetting("vlm_concurrency", Number(value))}
-                    >
-                      {[1, 2, 3, 4].map((n) => (
-                        <option key={n} value={n}>{n}</option>
-                      ))}
-                    </OptionSelect>
-                    {saved.vlm_concurrency && (
-                      <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
-                    )}
-                  </div>
-                  <SettingRow
-                    label="VLM 超时"
-                    settingKey="vlm_timeout_sec"
-                    value={String(settings.vlm_timeout_sec ?? 180)}
-                    onSave={(key, value) => updateSetting(key, Math.max(30, Number(value) || 180))}
-                    saving={saving}
-                    saved={saved}
-                    placeholder="180"
-                    unit="秒"
-                  />
-                </CardContent>
-              </Card>
-
-              <PurposeModelBindings settings={settings} updateSetting={updateSetting} />
-
-              {/* Pipeline mode */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">推理模式</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <Label>半重叠推理</Label>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        开启：下载与 GPU 步骤并行（更快）。关闭：串行执行（显存更省）。
-                        建议 32 GB+ 显存开启，16 GB 及以下关闭。
-                      </p>
-                    </div>
-                    <Switch
-                      checked={Boolean(settings.pipeline_overlap ?? true)}
-                      onCheckedChange={(v) => updateSetting("pipeline_overlap", v)}
-                    />
-                  </div>
-                  <Separator />
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <Label>生成视频详情 detail.md</Label>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        开启后额外生成旧版深层树状 Markdown，作为“视频详情”展示和导出；默认导图保持浅层展示型结构。
-                      </p>
-                    </div>
-                    <Switch
-                      checked={Boolean(settings.generate_video_detail ?? true)}
-                      onCheckedChange={(v) => updateSetting("generate_video_detail", v)}
-                    />
-                  </div>
-                </CardContent>
-              </Card>
-              </div>
-            </div>
-          )}
-
-          {/* ── LLM/API Registry ── */}
-          {activeTab === "registry" && (
+          {activeGroup.id === "providers" ? (
             <RegistrySettings
               settings={settings}
               visibleLlmProvider={visibleLlmProvider}
@@ -636,214 +983,49 @@ export function SettingsPanel() {
               saving={saving}
               saved={saved}
             />
-          )}
-
-          {activeTab === "local" && (
-            <LocalModelSettings
-              settings={settings}
-              updateSetting={updateSetting}
-              saving={saving}
-              saved={saved}
-              detectLocalUvr={detectLocalUvr}
-              uvrDetecting={uvrDetecting}
-              uvrDetection={uvrDetection}
-            />
-          )}
-
-          {/* ── Services ── */}
-          {activeTab === "services" && (
-            <div className="h-full min-h-0 max-w-[800px] space-y-4 overflow-y-auto pr-1">
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">yt-dlp</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <Label>启动时自动更新</Label>
-                      <p className="mt-0.5 text-xs text-muted-foreground">每次启动按清华源 → 中科大源 → 系统默认源检查，有新稳定版本时更新。</p>
-                    </div>
-                    <Switch
-                      checked={Boolean(settings.ytdlp_auto_update ?? true)}
-                      onCheckedChange={(v) => updateSetting("ytdlp_auto_update", v)}
-                    />
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                    <span>当前 {ytdlpStatus?.installed ?? "unknown"}</span>
-                    <span>最新 {ytdlpStatus?.latest ?? "unknown"}</span>
-                    {ytdlpStatus?.is_stale && <span className="text-amber-600">可更新</span>}
-                    {saved.ytdlp_auto_update && (
-                      <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
-                    )}
-                  </div>
-                  <Button type="button" variant="outline" onClick={upgradeYtdlp} disabled={ytdlpUpdating}>
-                    {ytdlpUpdating && <HugeiconsIcon icon={Loading03Icon} className="mr-2 h-4 w-4 animate-spin" />}
-                    更新到最新并重启后端
-                  </Button>
-                  {ytdlpStatus?.source && <p className="text-xs text-muted-foreground">检查来源：{ytdlpStatus.source}</p>}
-                  {ytdlpStatus?.check_error && <p className="text-xs text-muted-foreground">{ytdlpStatus.check_error}</p>}
-                  {ytdlpMessage && <p className="text-xs text-muted-foreground">{ytdlpMessage}</p>}
-                </CardContent>
-              </Card>
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">网页抓取</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <p className="text-xs leading-5 text-muted-foreground">
-                    网页 Scrape fallback 服务。通用网页先使用本地 Defuddle，失败后调用 Jina Reader 返回 Markdown。
-                  </p>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <Label>启用 Defuddle</Label>
-                      <p className="mt-0.5 text-xs text-muted-foreground">本地抽取通用网页正文与元数据。</p>
-                    </div>
-                    <Switch
-                      checked={Boolean(settings.defuddle_enabled ?? true)}
-                      onCheckedChange={(v) => updateSetting("defuddle_enabled", v)}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <Label>启用 Playwright</Label>
-                      <p className="mt-0.5 text-xs text-muted-foreground">处理需要浏览器渲染的 X 等动态页面。</p>
-                    </div>
-                    <Switch
-                      checked={Boolean(settings.playwright_enabled ?? true)}
-                      onCheckedChange={(v) => updateSetting("playwright_enabled", v)}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <Label>启用 Jina Reader</Label>
-                      <p className="mt-0.5 text-xs text-muted-foreground">用于 Defuddle 抽取失败后的网页正文解析。</p>
-                    </div>
-                    <Switch
-                      checked={Boolean(settings.jina_reader_enabled ?? true)}
-                      onCheckedChange={(v) => updateSetting("jina_reader_enabled", v)}
-                    />
-                  </div>
-                  <SettingRow
-                    label="API Base"
-                    settingKey="jina_reader_api_base"
-                    value={String(settings.jina_reader_api_base ?? "https://r.jina.ai")}
-                    onSave={updateSetting}
-                    saving={saving}
-                    saved={saved}
-                    placeholder="https://r.jina.ai"
-                  />
-                  <SettingRow
-                    label="API Key"
-                    settingKey="jina_reader_api_key"
-                    value={String(settings.jina_reader_api_key ?? "")}
-                    onSave={updateSetting}
-                    saving={saving}
-                    saved={saved}
-                    masked
-                    placeholder="可选 Bearer Token"
-                  />
-                  <SettingRow
-                    label="超时秒数"
-                    settingKey="web_scrape_timeout_sec"
-                    value={String(settings.web_scrape_timeout_sec ?? 30)}
-                    onSave={(key, value) => updateSetting(key, Number(value) || 30)}
-                    saving={saving}
-                    saved={saved}
-                    placeholder="30"
-                    unit="秒"
-                  />
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <Label>绕过缓存</Label>
-                      <p className="mt-0.5 text-xs text-muted-foreground">需要实时刷新网页时打开。</p>
-                    </div>
-                    <Switch
-                      checked={Boolean(settings.jina_reader_bypass_cache ?? false)}
-                      onCheckedChange={(v) => updateSetting("jina_reader_bypass_cache", v)}
-                    />
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          )}
-
-          {/* ── Knowledge Base ── */}
-          {activeTab === "knowledge" && (
-            <div className="h-full min-h-0 max-w-[800px] space-y-4 overflow-y-auto pr-1">
-              {/* Knowledge base */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">知识库 Embedding</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <p className="text-xs text-muted-foreground">OpenAI-Compatible 嵌入 API，用于任务完成后自动索引字幕+摘要。</p>
-                  <div className="flex items-center justify-between gap-4">
-                    <Label htmlFor="kb-enabled">自动索引</Label>
-                    <Switch
-                      id="kb-enabled"
-                      checked={Boolean(settings.kb_enabled ?? true)}
-                      onCheckedChange={(value) => updateSetting("kb_enabled", value)}
-                    />
-                  </div>
-                  <SettingRow
-                    label="API Base"
-                    settingKey="kb_embedding_api_base"
-                    value={String(settings.kb_embedding_api_base ?? "")}
-                    onSave={updateSetting}
-                    saving={saving}
-                    saved={saved}
-                    placeholder="http://localhost:8080/v1"
-                  />
-                  <SettingRow
-                    label="API Key"
-                    settingKey="kb_embedding_api_key"
-                    value={String(settings.kb_embedding_api_key ?? "")}
-                    onSave={updateSetting}
-                    saving={saving}
-                    saved={saved}
-                    masked
-                  />
-                  <SettingRow
-                    label="模型"
-                    settingKey="kb_embedding_model"
-                    value={String(settings.kb_embedding_model ?? "qwen3-embedding-0.6b")}
-                    onSave={updateSetting}
-                    saving={saving}
-                    saved={saved}
-                  />
-                  <SettingRow
-                    label="向量维度"
-                    settingKey="kb_embedding_dim"
-                    value={String(settings.kb_embedding_dim ?? 1024)}
-                    onSave={updateSetting}
-                    saving={saving}
-                    saved={saved}
-                    short
-                  />
-                </CardContent>
-              </Card>
-            </div>
-          )}
-
-          {/* ── Pipelines/Sources ── */}
-          {activeTab === "pipelines" && (
-            <div className="h-full min-h-0 max-w-[800px] space-y-4 overflow-y-auto pr-1">
-              <BilibiliCard
-                settings={settings}
-                updateSetting={updateSetting}
-                saving={saving}
-                saved={saved}
-                onAuthChange={setBiliLoggedIn}
-              />
-              <YoutubeCard settings={settings} updateSetting={updateSetting} saving={saving} saved={saved} />
-              <TwitterCard settings={settings} updateSetting={updateSetting} saving={saving} saved={saved} />
-              <PlaceholderSection
-                title="小宇宙"
-                description="已支持公开单集页面：提取页面元数据、下载 m4a，并转为本地 ASR 使用的 wav。"
-                comingSoon={false}
-              />
-              <XiaohongshuCard settings={settings} updateSetting={updateSetting} saving={saving} saved={saved} />
-              <ZhihuCard settings={settings} updateSetting={updateSetting} saving={saving} saved={saved} />
+          ) : (
+            <div
+              ref={scrollRef}
+              onScroll={followScroll}
+              className="h-full min-h-0 max-w-[800px] overflow-y-auto pr-1"
+            >
+              <div ref={stickyRef} className="sticky top-0 z-10 bg-background pb-3">
+                <h2 className="text-lg font-semibold">{activeGroup.label}</h2>
+                <p className="mt-0.5 text-sm text-muted-foreground">{activeGroup.description}</p>
+                {sections.length > 1 && (
+                  <nav aria-label={`${activeGroup.label}的分区`} className="mt-3 flex flex-wrap gap-1">
+                    {sections.map((section) => (
+                      <button
+                        key={section.id}
+                        type="button"
+                        onClick={() => jumpTo(section.id)}
+                        aria-current={(activeSection ?? sections[0].id) === section.id ? "location" : undefined}
+                        className={[
+                          "rounded-md px-2.5 py-1 text-xs transition-colors",
+                          (activeSection ?? sections[0].id) === section.id
+                            ? "bg-primary/10 font-medium text-primary"
+                            : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                        ].join(" ")}
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </nav>
+                )}
+              </div>
+              <div className="space-y-4 pb-8">
+                {activeGroup.id === "general" && (
+                  <>
+                    <NativeConnectionSettings />
+                    <OfflineSyncStatus />
+                  </>
+                )}
+                {sections.map((section) => (
+                  <section key={section.id} id={`settings-${section.id}`} aria-label={section.title}>
+                    {sectionContent(section.id)}
+                  </section>
+                ))}
+              </div>
             </div>
           )}
         </div>
