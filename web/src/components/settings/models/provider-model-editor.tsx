@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { OptionSelect } from "../setting-controls"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { Delete01Icon } from "@hugeicons/core-free-icons"
+import { Delete01Icon, PencilEdit01Icon } from "@hugeicons/core-free-icons"
 import { type ProviderModelCatalogResult } from "@/lib/api"
 import { type ReactNode } from "react"
 import {
@@ -20,36 +20,59 @@ import { ProviderFormRow, ProviderTextInput } from "./controls"
 export function ProviderModelItem({
   provider,
   model,
+  editing,
+  onToggleEdit,
   onUpdateModel,
   onRemoveModel,
 }: {
   provider: ProviderConfig
   model: ProviderModelRecord
+  editing: boolean
+  onToggleEdit: () => void
   onUpdateModel: (providerId: string, modelId: string, patch: Partial<ProviderModelRecord>) => void
   onRemoveModel: (providerId: string, modelId: string) => void
 }) {
   const modelType = normalizeProviderModelType(model.model_type)
+  const name = model.display_name || model.model_id
+  // The type tag already says "llm", "vlm"…, so only the extra capabilities get their own tags.
+  const tags = getModelCapabilities(model).filter((capability) => capability !== modelType)
   return (
-    <div className="rounded-md border border-border/80 bg-card/30 p-3">
-      <div className="flex items-start gap-3">
+    <li className={editing ? "bg-muted/30" : undefined}>
+      <div className="flex min-h-11 items-center gap-3 px-3 py-1.5">
         <Switch
           size="sm"
           checked={model.enabled ?? true}
           onCheckedChange={(checked) => onUpdateModel(provider.id, model.model_id, { enabled: checked })}
-          className="mt-1.5 shrink-0"
-          aria-label={`${model.model_id} 启用`}
+          className="shrink-0"
+          aria-label={`启用 ${name}`}
         />
-        <div className="min-w-0 flex-1 space-y-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium text-foreground">{model.display_name || model.model_id}</p>
-              <p className="truncate text-xs text-muted-foreground">{model.model_id}</p>
-            </div>
-            <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-              {SERVICE_MODEL_TYPES.find((type) => type.value === modelType)?.label ?? modelType}
-            </span>
-          </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-foreground">{name}</p>
+          {name !== model.model_id && <p className="truncate font-mono text-xs text-muted-foreground">{model.model_id}</p>}
+        </div>
+        <div className="flex shrink-0 flex-wrap justify-end gap-1">
+          <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+            {SERVICE_MODEL_TYPES.find((type) => type.value === modelType)?.label ?? modelType}
+          </span>
+          {tags.map((tag) => (
+            <span key={tag} className="rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground">{tag}</span>
+          ))}
+        </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          onClick={onToggleEdit}
+          aria-expanded={editing}
+          aria-label={`编辑 ${name}`}
+          className={editing ? "bg-muted" : undefined}
+        >
+          <HugeiconsIcon icon={PencilEdit01Icon} className="size-3.5" />
+        </Button>
+      </div>
 
+      {editing && (
+        <div className="space-y-3 border-t border-border/70 px-3 pb-3 pt-3 sm:pl-14">
           <div className="grid gap-3 xl:grid-cols-2">
             <ProviderFormRow label="模型 ID">
               <ProviderTextInput
@@ -114,12 +137,21 @@ export function ProviderModelItem({
               />
             </ProviderFormRow>
           </div>
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => onRemoveModel(provider.id, model.model_id)}
+              className="h-8 gap-1.5 text-destructive hover:text-destructive"
+            >
+              <HugeiconsIcon icon={Delete01Icon} className="size-3.5" />
+              删除这个模型
+            </Button>
+          </div>
         </div>
-        <Button type="button" variant="ghost" size="icon-sm" onClick={() => onRemoveModel(provider.id, model.model_id)} aria-label={`删除 ${model.model_id}`}>
-          <HugeiconsIcon icon={Delete01Icon} className="h-3.5 w-3.5" />
-        </Button>
-      </div>
-    </div>
+      )}
+    </li>
   )
 }
 

@@ -153,12 +153,15 @@ export function DetailHeader({
   active,
   activeLabel = "默认 LLM",
   onActivate,
+  actions,
 }: {
   title: string
   description: string
   active?: boolean
   activeLabel?: string
   onActivate?: () => void | Promise<void>
+  /** Shown at the right end of the header, e.g. a ⋯ menu */
+  actions?: ReactNode
 }) {
   return (
     <div className="flex items-start justify-between gap-4 border-b border-border pb-4">
@@ -166,6 +169,7 @@ export function DetailHeader({
         <h3 className="text-lg font-semibold text-foreground">{title}</h3>
         <p className="text-sm text-muted-foreground">{description}</p>
       </div>
+      {actions}
       {typeof active === "boolean" && (
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground">{activeLabel}</span>

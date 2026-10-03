@@ -3,7 +3,24 @@ import type { ProviderConfig, ProviderModelRecord, ServiceModelType } from "@/li
 import { api, type ProviderModelCatalogResult, type ProviderOAuthStatus } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { PlusSignIcon } from "@hugeicons/core-free-icons"
+import { MoreHorizontalIcon, PlusSignIcon } from "@hugeicons/core-free-icons"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Switch } from "@/components/ui/switch"
 import { OptionSelect } from "../setting-controls"
 import DeepSeekColor from "@lobehub/icons/es/DeepSeek/components/Color"
@@ -238,6 +255,7 @@ export function RegistrySettings({
     >
       {activeProvider ? (
         <ProviderDetailPanel
+          key={activeProvider.id}
           provider={activeProvider}
           isAddingModel={isAddingModelFor === activeProvider.id}
           newModelId={newModelId}
@@ -317,12 +335,57 @@ function ProviderDetailPanel({
 }) {
   const models = getProviderModels(provider)
   const oauthProvider = isOAuthProvider(provider)
+  const providerName = provider.name || provider.id
+  const [editingModel, setEditingModel] = useState<string | null>(null)
+  const [confirmingRemove, setConfirmingRemove] = useState(false)
+
+  const updateModel = (providerId: string, modelId: string, patch: Partial<ProviderModelRecord>) => {
+    // Keep the editor open on a model whose ID was just changed.
+    if (patch.model_id && editingModel === modelId) setEditingModel(patch.model_id)
+    onUpdateModel(providerId, modelId, patch)
+  }
+
   return (
     <div className="space-y-5">
       <DetailHeader
-        title={provider.name || provider.id}
-        description={`${provider.id} · ${providerTypeLabel(provider)} · ${models.length} models`}
+        title={providerName}
+        description={`${provider.id} · ${providerTypeLabel(provider)} · ${models.length} 个模型`}
+        actions={(
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button type="button" variant="ghost" size="icon-sm" aria-label={`「${providerName}」的更多操作`}>
+                <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {provider.balance?.enabled && (
+                <>
+                  <DropdownMenuItem onSelect={onQueryBalance}>查询余额</DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                </>
+              )}
+              <DropdownMenuItem variant="destructive" onSelect={() => setConfirmingRemove(true)}>
+                删除服务商…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       />
+
+      <AlertDialog open={confirmingRemove} onOpenChange={setConfirmingRemove}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除「{providerName}」？</AlertDialogTitle>
+            <AlertDialogDescription>
+              {oauthProvider ? "它的登录配置" : "它的地址和 API Key"}，以及 {models.length} 个模型，会从设置里移除。用到这些模型的步骤需要重新选择模型。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="border-t-0">
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={() => onRemoveProvider(provider.id)}>删除</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {message && <p role="status" aria-live="polite" className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">{message}</p>}
 
@@ -430,63 +493,63 @@ function ProviderDetailPanel({
         )}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" variant="outline" size="sm" onClick={onFetchModels} disabled={catalogLoading} className="h-8">
-          {catalogLoading ? "获取中..." : "获取模型"}
-        </Button>
-        <Button type="button" variant="outline" size="sm" onClick={onSyncModels} className="h-8">同步模型</Button>
-        {provider.balance?.enabled && (
-          <Button type="button" variant="outline" size="sm" onClick={onQueryBalance} className="h-8">查询余额</Button>
+      <section aria-label="模型" className="space-y-3 border-t border-border pt-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-baseline gap-2">
+            <h4 className="text-sm font-semibold text-foreground">模型</h4>
+            <span className="text-xs text-muted-foreground">
+              {models.filter((model) => model.enabled !== false).length} 个启用，共 {models.length} 个
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={onFetchModels} disabled={catalogLoading} className="h-8">
+              {catalogLoading ? "获取中..." : "获取模型"}
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={onSyncModels} className="h-8">同步模型</Button>
+            <Button type="button" variant="outline" size="sm" onClick={onToggleAddModel} className="h-8 gap-1.5">
+              <HugeiconsIcon icon={PlusSignIcon} className="h-3.5 w-3.5" />
+              添加模型
+            </Button>
+          </div>
+        </div>
+
+        {modelCatalog && (
+          <ProviderModelCatalogPanel
+            catalog={modelCatalog}
+            provider={provider}
+            onAddModel={onAddCatalogModel}
+          />
         )}
-        <Button type="button" variant="outline" size="sm" onClick={onToggleAddModel} className="h-8 gap-1.5">
-          <HugeiconsIcon icon={PlusSignIcon} className="h-3.5 w-3.5" />
-          添加模型
-        </Button>
-        <Button type="button" variant="ghost" size="sm" onClick={() => onRemoveProvider(provider.id)} className="h-8 text-destructive hover:text-destructive">
-          删除 Provider
-        </Button>
-      </div>
 
-      {modelCatalog && (
-        <ProviderModelCatalogPanel
-          catalog={modelCatalog}
-          provider={provider}
-          onAddModel={onAddCatalogModel}
-        />
-      )}
+        {isAddingModel && (
+          <ProviderAddModelPanel
+            newModelId={newModelId}
+            newModelType={newModelType}
+            onNewModelIdChange={onNewModelIdChange}
+            onNewModelTypeChange={onNewModelTypeChange}
+            onAddModel={onAddModel}
+          />
+        )}
 
-      {isAddingModel && (
-        <ProviderAddModelPanel
-          newModelId={newModelId}
-          newModelType={newModelType}
-          onNewModelIdChange={onNewModelIdChange}
-          onNewModelTypeChange={onNewModelTypeChange}
-          onAddModel={onAddModel}
-        />
-      )}
-
-      <section className="space-y-2">
-        <div className="flex items-center justify-between gap-3">
-          <h4 className="text-sm font-semibold text-foreground">Models</h4>
-          <span className="text-xs text-muted-foreground">
-            {models.filter((model) => model.enabled !== false).length} enabled / {models.length} total
-          </span>
-        </div>
-        <div className="space-y-2">
-          {models.length > 0 ? models.map((model) => (
-            <ProviderModelItem
-              key={model.id || `${provider.id}:${model.model_id}`}
-              provider={provider}
-              model={model}
-              onUpdateModel={onUpdateModel}
-              onRemoveModel={onRemoveModel}
-            />
-          )) : (
-            <div className="rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
-              当前 Provider 还没有模型。
-            </div>
-          )}
-        </div>
+        {models.length > 0 ? (
+          <ul className="divide-y divide-border/70 overflow-hidden rounded-md border border-border/80">
+            {models.map((model) => (
+              <ProviderModelItem
+                key={model.id || `${provider.id}:${model.model_id}`}
+                provider={provider}
+                model={model}
+                editing={editingModel === model.model_id}
+                onToggleEdit={() => setEditingModel((current) => current === model.model_id ? null : model.model_id)}
+                onUpdateModel={updateModel}
+                onRemoveModel={onRemoveModel}
+              />
+            ))}
+          </ul>
+        ) : (
+          <div className="rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
+            这个服务商还没有模型。
+          </div>
+        )}
       </section>
     </div>
   )

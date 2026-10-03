@@ -555,9 +555,20 @@ describe("SettingsPanel", () => {
     expect(screen.getByText("API Base")).toBeInTheDocument()
     expect(screen.getByText("API Key")).toBeInTheDocument()
     expect(screen.getByDisplayValue("https://api.siliconflow.cn/v1")).toBeInTheDocument()
-    expect(screen.getAllByDisplayValue("BAAI/bge-m3").length).toBeGreaterThan(0)
-    const modelTypes = screen.getAllByRole("combobox", { name: /模型类型/ }).map((select) => select.textContent)
-    expect(modelTypes).toEqual(expect.arrayContaining(["Embedding", "Rerank", "VLM"]))
+
+    // One line per model; the full form and the delete button open from ✎.
+    const modelList = screen.getByRole("region", { name: "模型" })
+    expect(within(modelList).getByText("BAAI/bge-m3")).toBeInTheDocument()
+    expect(within(modelList).getAllByText(/^(Embedding|Rerank|VLM)$/).map((tag) => tag.textContent))
+      .toEqual(expect.arrayContaining(["Embedding", "Rerank", "VLM"]))
+    expect(within(modelList).queryByRole("combobox")).not.toBeInTheDocument()
+    expect(within(modelList).queryByRole("button", { name: /删除/ })).not.toBeInTheDocument()
+    fireEvent.click(within(modelList).getByRole("button", { name: "编辑 BAAI/bge-m3" }))
+    expect(within(modelList).getByRole("button", { name: "编辑 BAAI/bge-m3" })).toHaveAttribute("aria-expanded", "true")
+    expect(within(modelList).getByRole("combobox", { name: /模型类型/ })).toHaveTextContent("Embedding")
+    expect(within(modelList).getAllByDisplayValue("BAAI/bge-m3").length).toBe(2)
+    expect(within(modelList).getByRole("button", { name: "删除这个模型" })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /删除 Provider/ })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "获取模型" }))
     await waitFor(() => expect(api.settings.fetchProviderModels).toHaveBeenCalledWith("siliconflow"))
@@ -591,5 +602,29 @@ describe("SettingsPanel", () => {
     fireEvent.click(qoderOAuthButton)
     expect(screen.getByRole("heading", { name: "QoderCN OAuth" })).toBeInTheDocument()
     expect(screen.getByText(/支持字幕分块并发/)).toBeInTheDocument()
+  })
+
+  it("asks before deleting a provider from its ⋯ menu", async () => {
+    render(<SettingsPanel />)
+    fireEvent.click(await screen.findByRole("button", { name: "模型服务商" }))
+    const providerList = (await screen.findByPlaceholderText("搜索 Providers...")).closest("aside") as HTMLElement
+    fireEvent.click(within(providerList).getByRole("button", { name: /SiliconFlow/ }))
+
+    const menu = screen.getByRole("button", { name: "「SiliconFlow」的更多操作" })
+    fireEvent.pointerDown(menu, { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByRole("menuitem", { name: "删除服务商…" }))
+
+    const confirm = await screen.findByRole("alertdialog")
+    expect(within(confirm).getByText("删除「SiliconFlow」？")).toBeInTheDocument()
+    fireEvent.click(within(confirm).getByRole("button", { name: "取消" }))
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument())
+    expect(api.settings.patch).not.toHaveBeenCalledWith(expect.objectContaining({ deleted_provider_ids: expect.anything() }))
+
+    fireEvent.pointerDown(menu, { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByRole("menuitem", { name: "删除服务商…" }))
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "删除" }))
+    await waitFor(() => expect(api.settings.patch).toHaveBeenCalledWith(expect.objectContaining({
+      deleted_provider_ids: expect.arrayContaining(["siliconflow"]),
+    })))
   })
 })
