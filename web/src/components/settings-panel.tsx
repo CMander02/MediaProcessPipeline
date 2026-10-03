@@ -171,7 +171,7 @@ export function SettingsPanel() {
 
   if (platform.isNative && !online) {
     return (
-      <div className="h-full min-h-0 space-y-4 overflow-y-auto pr-1">
+      <div className="h-full min-h-0 max-w-[800px] space-y-4 overflow-y-auto pr-1">
         <NativeConnectionSettings />
         <OfflineSyncStatus />
         <Card>
@@ -346,7 +346,7 @@ export function SettingsPanel() {
         <div className="min-h-0 min-w-0 flex-1 overflow-hidden [&_[data-slot=card]]:rounded-none [&_[data-slot=card]]:bg-transparent [&_[data-slot=card]]:py-0 [&_[data-slot=card]]:ring-0 [&_[data-slot=card]]:border-b [&_[data-slot=card]]:border-border/70 [&_[data-slot=card]]:pb-4 [&_[data-slot=card-header]]:px-0 [&_[data-slot=card-header]]:pb-1.5 [&_[data-slot=card-content]]:px-0">
           {/* ── Overall ── */}
           {activeTab === "overall" && (
-            <div className="h-full min-h-0 space-y-4 overflow-y-auto pr-1">
+            <div className="h-full min-h-0 max-w-[800px] space-y-4 overflow-y-auto pr-1">
               <NativeConnectionSettings />
               <OfflineSyncStatus />
               {/* Appearance */}
@@ -649,7 +649,7 @@ export function SettingsPanel() {
 
           {/* ── Services ── */}
           {activeTab === "services" && (
-            <div className="h-full min-h-0 space-y-4 overflow-y-auto pr-1">
+            <div className="h-full min-h-0 max-w-[800px] space-y-4 overflow-y-auto pr-1">
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base">yt-dlp</CardTitle>
@@ -765,7 +765,7 @@ export function SettingsPanel() {
 
           {/* ── Knowledge Base ── */}
           {activeTab === "knowledge" && (
-            <div className="h-full min-h-0 space-y-4 overflow-y-auto pr-1">
+            <div className="h-full min-h-0 max-w-[800px] space-y-4 overflow-y-auto pr-1">
               {/* Knowledge base */}
               <Card>
                 <CardHeader className="pb-3">
@@ -823,7 +823,7 @@ export function SettingsPanel() {
 
           {/* ── Pipelines/Sources ── */}
           {activeTab === "pipelines" && (
-            <div className="h-full min-h-0 space-y-4 overflow-y-auto pr-1">
+            <div className="h-full min-h-0 max-w-[800px] space-y-4 overflow-y-auto pr-1">
               <BilibiliCard
                 settings={settings}
                 updateSetting={updateSetting}
