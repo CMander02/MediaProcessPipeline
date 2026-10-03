@@ -7,6 +7,7 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuShortcut,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import {
@@ -176,6 +177,11 @@ export const TranscriptSegment = memo(function TranscriptSegment({
               : "hover:bg-muted/50 border-l-3 border-transparent"
           } ${isCurrentMatch ? "ring-2 ring-amber-400/70" : ""}`}
           onClick={onClick}
+          onDoubleClick={readOnly ? undefined : () => {
+            // A double click also selects a word; editing is what was meant.
+            window.getSelection()?.removeAllRanges()
+            beginEdit()
+          }}
         >
           {/* Timestamp + Speaker + Text — inline */}
           <div className="flex items-start gap-2">
@@ -260,6 +266,7 @@ export const TranscriptSegment = memo(function TranscriptSegment({
         <ContextMenuItem onClick={beginEdit}>
           <HugeiconsIcon icon={PencilEdit01Icon} className="h-4 w-4" />
           编辑
+          <ContextMenuShortcut>双击</ContextMenuShortcut>
         </ContextMenuItem>
         <ContextMenuItem onClick={handleCopy}>
           <HugeiconsIcon icon={Copy01Icon} className="h-4 w-4" />
