@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { checkpointAction, sourceLabel, taskDisplayTitle, taskTimeHint } from "./task-display"
+import { checkpointAction, sourceLabel, taskDisplayTitle } from "./task-display"
 
 describe("taskDisplayTitle", () => {
   it("uses the archive folder name and drops the duplicate suffix", () => {
@@ -37,14 +37,6 @@ describe("sourceLabel", () => {
 
   it("keeps host and last path segment for other links", () => {
     expect(sourceLabel("https://example.com/posts/hello-world")).toBe("example.com · hello-world")
-  })
-})
-
-describe("taskTimeHint", () => {
-  it("shows when a task was paused rather than hours since creation", () => {
-    expect(taskTimeHint({ status: "paused", updated_at: "2026-08-17T01:14:05" })).toBe("暂停于 08-17")
-    expect(taskTimeHint({ status: "queued", updated_at: "2026-08-17T01:14:05" })).toBe("排队中")
-    expect(taskTimeHint({ status: "processing", updated_at: "2026-08-17T01:14:05" })).toBeNull()
   })
 })
 

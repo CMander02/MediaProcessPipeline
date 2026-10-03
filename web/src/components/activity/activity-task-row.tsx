@@ -27,7 +27,8 @@ function taskDetail(task: Task): string {
     case "pending":
       return "排队中"
     case "paused":
-      return `暂停于 ${shortTime(task.updated_at)}${pct ? ` · ${pct}%` : ""}`
+      // The amber dot and bar already say it is paused: show where it stopped.
+      return `${step ?? "已暂停"} · ${pct}%`
     case "failed":
       return task.error || task.message || "处理失败"
     case "cancelled":
@@ -82,6 +83,7 @@ export function ActivityTaskRow({ task, busy = false, note, onOpen, onAction }: 
             className={cn("mt-0.5 block truncate text-xs tabular-nums", failed ? "text-destructive" : "text-muted-foreground")}
             title={failed ? (task.error ?? undefined) : undefined}
           >
+            {task.status === "paused" && <span className="sr-only">已暂停：</span>}
             {taskDetail(task)}
             {note && <span className="text-muted-foreground"> · {note}</span>}
           </span>

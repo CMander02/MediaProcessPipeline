@@ -39,23 +39,6 @@ export function archiveDisplayTitle(archive: { title: string; metadata?: Record<
   return { title: source ? sourceLabel(source) : "未命名条目", untitled: true }
 }
 
-function monthDay(value: string | null | undefined): string | null {
-  if (!value) return null
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return null
-  return `${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
-}
-
-/** Short time hint for queue rows: when a task was paused, instead of hours since creation. */
-export function taskTimeHint(task: Pick<Task, "status" | "updated_at">): string | null {
-  if (task.status === "paused") {
-    const day = monthDay(task.updated_at)
-    return day ? `暂停于 ${day}` : "已暂停"
-  }
-  if (task.status === "queued") return "排队中"
-  return null
-}
-
 export interface CheckpointAction {
   label: string
   hint: string
