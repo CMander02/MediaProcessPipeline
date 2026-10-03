@@ -11,6 +11,7 @@ import { api, type Settings, type YtdlpStatus } from "@/lib/api"
 import { usePreferences } from "@/hooks/use-preferences"
 import { systemNotificationsAvailable } from "@/hooks/use-task-notifications"
 import { OptionSelect, ProxySetting, SettingRow } from "@/components/settings/setting-controls"
+import { LibraryLocation } from "@/components/settings/library-location"
 import { LocalModelSection, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
 import { BilibiliCard, PlaceholderSection, TwitterCard, XiaohongshuCard, YoutubeCard, ZhihuCard } from "@/components/settings/source-cards"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -234,6 +235,11 @@ export function SettingsPanel() {
     (key: string, value: unknown) => updateSettings({ [key]: value }),
     [updateSettings],
   )
+
+  // The library dialog shows its own errors, so this one lets them through.
+  const switchLibrary = useCallback(async (path: string) => {
+    setSettings(await api.settings.patch({ data_root: path }))
+  }, [])
 
   useEffect(() => {
     const handleThemeChange = (event: Event) => {
@@ -654,15 +660,7 @@ export function SettingsPanel() {
               <CardTitle className="text-base">资料库位置</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <SettingRow
-                label="数据根目录"
-                settingKey="data_root"
-                value={String(settings.data_root ?? "")}
-                onSave={updateSetting}
-                saving={saving}
-                saved={saved}
-                placeholder="绝对路径，如 C:\data\mpp"
-              />
+              <LibraryLocation value={String(settings.data_root ?? "")} onSwitch={switchLibrary} />
               <div className="flex items-center gap-3">
                 <Label htmlFor="media-retention-policy" className="w-24 shrink-0 text-sm text-muted-foreground">媒体保留</Label>
                 <OptionSelect

@@ -278,6 +278,13 @@ vi.mock("@/lib/api", () => ({
     bilibili: {
       status: vi.fn().mockResolvedValue({ logged_in: false, message: "未登录" }),
     },
+    archives: {
+      page: vi.fn().mockResolvedValue({ archives: [], total: 652 }),
+    },
+    filesystem: {
+      drives: vi.fn().mockResolvedValue({ success: true, drives: [] }),
+      browse: vi.fn().mockResolvedValue({ success: true, path: "", items: [] }),
+    },
     xiaohongshu: {
       status: vi.fn().mockResolvedValue({
         configured_cookie: false,
@@ -466,7 +473,8 @@ describe("SettingsPanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "存储与网络" }))
 
     expect(await screen.findByRole("region", { name: "资料库位置" })).toBeInTheDocument()
-    expect(screen.getByDisplayValue("D:/Video/MediaProcessPipeline")).toBeInTheDocument()
+    expect(screen.getByText("D:/Video/MediaProcessPipeline")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "更改…" })).toBeInTheDocument()
     expect(screen.getByRole("combobox", { name: "代理模式" })).toBeInTheDocument()
     expect(screen.getByRole("combobox", { name: "并行下载数" })).toHaveTextContent("2")
   })
