@@ -448,6 +448,8 @@ describe("SettingsPanel", () => {
     for (const source of ["YouTube", "X", "小宇宙", "小红书", "知乎"]) {
       expect(screen.getByRole("region", { name: source })).toBeInTheDocument()
     }
+    expect(within(screen.getByRole("region", { name: "YouTube" })).getByRole("combobox", { name: "代理模式" }))
+      .toHaveTextContent("跟随全局（系统代理）")
   })
 
   it("finds settings across groups and opens the one picked", async () => {
@@ -475,7 +477,8 @@ describe("SettingsPanel", () => {
     expect(await screen.findByRole("region", { name: "资料库位置" })).toBeInTheDocument()
     expect(screen.getByText("D:/Video/MediaProcessPipeline")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "更改…" })).toBeInTheDocument()
-    expect(screen.getByRole("combobox", { name: "代理模式" })).toBeInTheDocument()
+    expect(screen.getByRole("combobox", { name: "代理模式" })).toHaveTextContent("系统代理")
+    expect(screen.getByText(/YouTube 默认也用这里的代理/)).toBeInTheDocument()
     expect(screen.getByRole("combobox", { name: "并行下载数" })).toHaveTextContent("2")
   })
 

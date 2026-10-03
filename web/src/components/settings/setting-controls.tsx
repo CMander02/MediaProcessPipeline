@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
+import { describeProxy, proxyMode, type ProxyMode } from "@/lib/proxy"
 
 export type DeviceValue = "auto" | "cuda" | "cpu"
 
@@ -95,20 +96,17 @@ export interface SettingRowProps {
   short?: boolean
 }
 
-type ProxyMode = "system" | "none" | "custom"
-
-const DISABLED_PROXY_VALUES = new Set(["direct", "none", "off", "false", "0"])
-
-function proxyMode(value: string): ProxyMode {
-  const normalized = value.trim().toLowerCase()
-  if (!normalized) return "system"
-  if (DISABLED_PROXY_VALUES.has(normalized)) return "none"
-  return "custom"
+interface ProxySettingProps extends SettingRowProps {
+  /**
+   * An empty value follows this other proxy setting instead of the system proxy.
+   * `where` names the place it is set, `value` is its current value.
+   */
+  inheritFrom?: { where: string; value: string }
 }
 
 export function ProxySetting({
   ...props
-}: SettingRowProps) {
+}: ProxySettingProps) {
   return <ProxySettingEditor key={`${props.settingKey}:${props.value}`} {...props} />
 }
 
@@ -119,7 +117,8 @@ function ProxySettingEditor({
   onSave,
   saving,
   saved,
-}: SettingRowProps) {
+  inheritFrom,
+}: ProxySettingProps) {
   const persistedMode = proxyMode(value)
   const [mode, setMode] = useState<ProxyMode>(persistedMode)
   const [customValue, setCustomValue] = useState(persistedMode === "custom" ? value : "")
@@ -141,7 +140,7 @@ function ProxySettingEditor({
       <div className="flex items-center gap-3">
         <Label className="w-24 shrink-0 text-sm text-muted-foreground">{label}</Label>
         <OptionSelect aria-label={`${String(label)}模式`} value={mode} onValueChange={(next) => saveMode(next as ProxyMode)}>
-          <option value="system">系统代理</option>
+          <option value="system">{inheritFrom ? `跟随全局（${describeProxy(inheritFrom.value)}）` : "系统代理"}</option>
           <option value="none">无代理</option>
           <option value="custom">自定义</option>
         </OptionSelect>
@@ -176,7 +175,9 @@ function ProxySettingEditor({
         </div>
       )}
       <p className="pl-[6.75rem] text-xs text-muted-foreground">
-        系统代理读取环境变量和操作系统设置；自定义地址支持 HTTP、HTTPS 和 SOCKS。
+        {inheritFrom
+          ? `全局代理在「${inheritFrom.where}」里设置；选「无代理」或「自定义」只改这里。`
+          : "系统代理读取环境变量和操作系统设置；自定义地址支持 HTTP、HTTPS 和 SOCKS。"}
       </p>
     </div>
   )

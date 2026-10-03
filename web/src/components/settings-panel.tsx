@@ -12,6 +12,7 @@ import { usePreferences } from "@/hooks/use-preferences"
 import { systemNotificationsAvailable } from "@/hooks/use-task-notifications"
 import { OptionSelect, ProxySetting, SettingRow } from "@/components/settings/setting-controls"
 import { LibraryLocation } from "@/components/settings/library-location"
+import { describeProxy } from "@/lib/proxy"
 import { LocalModelSection, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
 import { BilibiliCard, PlaceholderSection, TwitterCard, XiaohongshuCard, YoutubeCard, ZhihuCard } from "@/components/settings/source-cards"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -691,6 +692,11 @@ export function SettingsPanel() {
                 saving={saving}
                 saved={saved}
               />
+              <p className="pl-[6.75rem] text-xs text-muted-foreground">
+                {String(settings.youtube_proxy ?? "").trim()
+                  ? `YouTube 单独设置了代理（${describeProxy(String(settings.youtube_proxy))}），不跟随这里；可以在「来源与账号 › YouTube」里改回跟随全局。`
+                  : "YouTube 默认也用这里的代理，可以在「来源与账号 › YouTube」里单独设置。"}
+              </p>
             </CardContent>
           </Card>
         )

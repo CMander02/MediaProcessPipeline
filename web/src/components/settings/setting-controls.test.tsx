@@ -84,4 +84,41 @@ describe("ProxySetting", () => {
       expect(onSave).toHaveBeenLastCalledWith("network_proxy", "http://localhost:7897"),
     )
   })
+
+  it("says an empty value follows the global proxy, and what that is, when it inherits", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    const { rerender } = render(
+      <ProxySetting
+        label="代理"
+        settingKey="youtube_proxy"
+        value=""
+        inheritFrom={{ where: "存储与网络 › 网络", value: "http://user:secret@127.0.0.1:7897" }}
+        onSave={onSave}
+        saving={{}}
+        saved={{}}
+      />,
+    )
+
+    const mode = screen.getByRole("combobox", { name: "代理模式" })
+    expect(mode).toHaveTextContent("跟随全局（http://127.0.0.1:7897）")
+    expect(mode).not.toHaveTextContent("secret")
+    expect(screen.getByText(/全局代理在「存储与网络 › 网络」里设置/)).toBeInTheDocument()
+
+    choose(mode, "无代理")
+    await waitFor(() => expect(onSave).toHaveBeenLastCalledWith("youtube_proxy", "direct"))
+
+    rerender(
+      <ProxySetting
+        label="代理"
+        settingKey="youtube_proxy"
+        value="direct"
+        inheritFrom={{ where: "存储与网络 › 网络", value: "" }}
+        onSave={onSave}
+        saving={{}}
+        saved={{}}
+      />,
+    )
+    choose(screen.getByRole("combobox", { name: "代理模式" }), "跟随全局（系统代理）")
+    await waitFor(() => expect(onSave).toHaveBeenLastCalledWith("youtube_proxy", ""))
+  })
 })
