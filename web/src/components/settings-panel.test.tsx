@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { SettingsPanel } from "./settings-panel"
 import { buildProviderModelOptions } from "./settings/models/registry-utils"
 import { api, type Settings } from "@/lib/api"
+import { navigate } from "@/lib/router"
 
 vi.mock("@/hooks/use-app-access-context", () => ({
   useAppAccess: () => ({ online: true, authExpired: false }),
@@ -652,5 +653,65 @@ describe("SettingsPanel", () => {
     await waitFor(() => expect(api.settings.patch).toHaveBeenCalledWith(expect.objectContaining({
       deleted_provider_ids: expect.arrayContaining(["siliconflow"]),
     })))
+  })
+})
+
+describe("SettingsPanel on a phone", () => {
+  const onPhone = (hash: string) => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("max-width: 767px"),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }))
+    navigate(hash, { replace: true })
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    navigate("#/settings", { replace: true })
+  })
+
+  it("opens on the list of every group, and a group on its own page", async () => {
+    onPhone("#/settings")
+    render(<SettingsPanel />)
+
+    const list = await screen.findByRole("list", { name: "设置分组" })
+    const labels = within(list).getAllByRole("button").map((button) => button.textContent ?? "")
+    for (const label of ["常规", "处理流程", "模型服务商", "来源与账号", "存储与网络", "高级"]) {
+      expect(labels.some((text) => text.startsWith(label))).toBe(true)
+    }
+
+    fireEvent.click(within(list).getByRole("button", { name: /^来源与账号/ }))
+    expect(await screen.findByRole("button", { name: "全部设置" })).toBeInTheDocument()
+    expect(screen.getByRole("heading", { name: "来源与账号" })).toBeInTheDocument()
+    expect(screen.queryByRole("list", { name: "设置分组" })).not.toBeInTheDocument()
+    // Logging in to a platform happens on the computer; the phone shows the state.
+    expect(screen.getByText(/这一组在手机上只能查看/)).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "扫码登录" })).toBeDisabled()
+    expect(within(screen.getByRole("list", { name: "来源状态" })).getByRole("button", { name: /^知乎/ })).toBeEnabled()
+  })
+
+  it("keeps phone-friendly settings editable and the rest read-only", async () => {
+    onPhone("#/settings?group=pipeline")
+    render(<SettingsPanel />)
+
+    expect(await screen.findByText(/灰色的部分在手机上只能查看/)).toBeInTheDocument()
+    expect(within(screen.getByRole("region", { name: "音频流程" })).getByLabelText("默认处理方式")).toBeDisabled()
+    expect(screen.getByRole("region", { name: "知识库索引" }).querySelector("fieldset[disabled]")).toBeNull()
+  })
+
+  it("shows the providers as a summary without the editor", async () => {
+    onPhone("#/settings?group=providers")
+    render(<SettingsPanel />)
+
+    const summary = await screen.findByRole("list", { name: "模型服务商" })
+    expect(within(summary).getByText("SiliconFlow")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /添加服务商/ })).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText("搜索服务商…")).not.toBeInTheDocument()
   })
 })

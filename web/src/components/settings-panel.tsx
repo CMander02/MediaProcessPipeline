@@ -16,10 +16,10 @@ import { SourceOverview } from "@/components/settings/source-overview"
 import { SettingsSaveErrors } from "@/components/settings/save-errors"
 import { notifyError } from "@/lib/notify"
 import { describeProxy } from "@/lib/proxy"
-import { LocalModelSection, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
+import { LocalModelSection, ProviderSummary, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
 import { BilibiliCard, PlaceholderSection, TwitterCard, XiaohongshuCard, YoutubeCard, ZhihuCard } from "@/components/settings/source-cards"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { Loading03Icon, Moon02Icon, Search01Icon, Sun01Icon, Tick02Icon } from "@hugeicons/core-free-icons"
+import { ArrowLeft01Icon, ArrowRight01Icon, Loading03Icon, Moon02Icon, Search01Icon, Sun01Icon, Tick02Icon } from "@hugeicons/core-free-icons"
 import { NativeConnectionSettings } from "@/components/native-connection"
 import { OfflineSyncStatus } from "@/components/offline-sync-status"
 import { usePlatform } from "@/platform/use-platform"
@@ -37,7 +37,7 @@ interface SectionDef {
   title: string
   /** What is inside, for the settings search */
   keywords?: string
-  /** Also shown on phones and in the Android app (the rest is changed from a computer) */
+  /** Editable on phones and in the Android app; there the rest is shown read-only */
   mobile?: boolean
 }
 
@@ -112,7 +112,7 @@ const GROUPS: GroupDef[] = [
       { id: "ytdlp", title: "yt-dlp", keywords: "yt-dlp 自动更新 重启后端 版本" },
       { id: "scraping", title: "网页抓取", keywords: "网页抓取 Defuddle Playwright Jina Reader 超时 绕过缓存 API Key" },
       { id: "access", title: "访问控制", keywords: "访问控制 API Token 令牌 远程文件系统" },
-      { id: "logs", title: "日志", keywords: "日志 错误 后端" },
+      { id: "logs", title: "日志", mobile: true, keywords: "日志 错误 后端" },
     ],
   },
 ]
@@ -149,6 +149,7 @@ export function SettingsPanel() {
   ))
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickyRef = useRef<HTMLDivElement>(null)
+  const openedFromList = useRef(false)
   const [uvrDetecting, setUvrDetecting] = useState(false)
   const [uvrDetection, setUvrDetection] = useState<string | null>(null)
   const [ytdlpStatus, setYtdlpStatus] = useState<YtdlpStatus | null>(null)
@@ -943,22 +944,39 @@ export function SettingsPanel() {
     }
   }
 
-  // Phones and the Android app keep to what is sensible to change there.
+  // Phones and the Android app change only what makes sense there; the rest they can read.
   const onlyMobile = platform.isNative || narrow
-  const groups = GROUPS.filter((group) => !onlyMobile || group.sections.some((section) => section.mobile))
+  const readOnly = (section: SectionDef) => onlyMobile && !section.mobile
+  const groups = GROUPS
   const activeGroup = groups.find((group) => group.id === activeGroupId) ?? groups[0]
-  const sections = activeGroup.sections.filter((section) => !onlyMobile || section.mobile)
+  const sections = activeGroup.sections
+  const needle = query.trim().toLowerCase()
+  // A phone opens settings on the list of groups, and a group on a page of its own.
+  const phoneList = narrow && !isGroupId(route.params.group) && !needle
 
   const selectGroup = (id: GroupId) => {
     setActiveSection(null)
     if (scrollRef.current) scrollRef.current.scrollTop = 0
+    if (narrow) {
+      // A new history entry, so going back returns to the list.
+      openedFromList.current = !isGroupId(route.params.group)
+      navigate(buildHash("settings", { group: id }))
+      return
+    }
     navigate(buildHash("settings", { group: id === "general" ? null : id }), { replace: true })
   }
 
-  const needle = query.trim().toLowerCase()
+  const backToList = () => {
+    if (openedFromList.current) {
+      openedFromList.current = false
+      window.history.back()
+      return
+    }
+    navigate(buildHash("settings", {}), { replace: true })
+  }
+
   const results = needle
     ? groups.flatMap((group) => group.sections
-      .filter((section) => !onlyMobile || section.mobile)
       .filter((section) => `${group.label} ${section.title} ${section.keywords ?? ""}`.toLowerCase().includes(needle))
       .map((section) => ({ group, section })))
     : []
@@ -1005,24 +1023,62 @@ export function SettingsPanel() {
     <SettingsSaveErrors.Provider value={saveErrors}>
     <div className="h-full min-h-0 w-full">
       <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row lg:gap-5">
-        <div className="shrink-0 lg:hidden">
-          {searchBox("settings-search-mobile")}
-          <Label htmlFor="settings-category" className="mb-1.5 mt-3 block text-xs text-muted-foreground">
-            设置分组
-          </Label>
-          <Select value={activeGroup.id} onValueChange={(value) => selectGroup(value as GroupId)}>
-            <SelectTrigger id="settings-category" className="h-11! w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {groups.map((group) => (
-                <SelectItem key={group.id} value={group.id} className="min-h-11">
-                  {group.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        {narrow ? (
+          <div className="shrink-0">
+            {isGroupId(route.params.group) && !needle ? (
+              <Button type="button" variant="ghost" onClick={backToList} className="-ml-2 h-11 gap-1 px-2">
+                <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+                全部设置
+              </Button>
+            ) : (
+              searchBox("settings-search-mobile")
+            )}
+            {phoneList && (
+              <ul aria-label="设置分组" className="mt-3 divide-y rounded-lg border">
+                {groups.map((group) => (
+                  <li key={group.id}>
+                    <button
+                      type="button"
+                      onClick={() => selectGroup(group.id)}
+                      className="flex min-h-14 w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-muted"
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium">{group.label}</span>
+                        <span className="block truncate text-xs text-muted-foreground">{group.description}</span>
+                      </span>
+                      {group.id === "sources" && biliLoggedIn !== null && (
+                        <span
+                          className={["size-1.5 shrink-0 rounded-full", biliLoggedIn ? "bg-emerald-500" : "bg-red-500"].join(" ")}
+                          aria-label={biliLoggedIn ? "哔哩哔哩已登录" : "哔哩哔哩未登录"}
+                        />
+                      )}
+                      <HugeiconsIcon icon={ArrowRight01Icon} className="size-4 shrink-0 text-muted-foreground" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ) : (
+          <div className="shrink-0 lg:hidden">
+            {searchBox("settings-search-mobile")}
+            <Label htmlFor="settings-category" className="mb-1.5 mt-3 block text-xs text-muted-foreground">
+              设置分组
+            </Label>
+            <Select value={activeGroup.id} onValueChange={(value) => selectGroup(value as GroupId)}>
+              <SelectTrigger id="settings-category" className="h-11! w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {groups.map((group) => (
+                  <SelectItem key={group.id} value={group.id} className="min-h-11">
+                    {group.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
 
         <nav
           aria-label="设置分组"
@@ -1059,7 +1115,7 @@ export function SettingsPanel() {
           })}
         </nav>
 
-        <div className="min-h-0 min-w-0 flex-1 overflow-hidden [&_[data-slot=card]]:rounded-none [&_[data-slot=card]]:bg-transparent [&_[data-slot=card]]:py-0 [&_[data-slot=card]]:ring-0 [&_[data-slot=card]]:border-b [&_[data-slot=card]]:border-border/70 [&_[data-slot=card]]:pb-4 [&_[data-slot=card-header]]:px-0 [&_[data-slot=card-header]]:pb-1.5 [&_[data-slot=card-content]]:px-0">
+        <div hidden={phoneList} className="min-h-0 min-w-0 flex-1 overflow-hidden [&_[data-slot=card]]:rounded-none [&_[data-slot=card]]:bg-transparent [&_[data-slot=card]]:py-0 [&_[data-slot=card]]:ring-0 [&_[data-slot=card]]:border-b [&_[data-slot=card]]:border-border/70 [&_[data-slot=card]]:pb-4 [&_[data-slot=card-header]]:px-0 [&_[data-slot=card-header]]:pb-1.5 [&_[data-slot=card-content]]:px-0">
           {needle ? (
             <div className="h-full min-h-0 max-w-[800px] overflow-y-auto pr-1">
               <h2 className="text-lg font-semibold">搜索设置</h2>
@@ -1081,6 +1137,12 @@ export function SettingsPanel() {
                 ))}
               </ul>
             </div>
+          ) : activeGroup.id === "providers" && onlyMobile ? (
+            <div className="h-full min-h-0 overflow-y-auto">
+              <h2 className="text-lg font-semibold">{activeGroup.label}</h2>
+              <p className="mb-3 mt-0.5 text-sm text-muted-foreground">在手机上只能查看，添加和修改服务商请用电脑打开设置。</p>
+              <ProviderSummary settings={settings} />
+            </div>
           ) : activeGroup.id === "providers" ? (
             <RegistrySettings
               settings={settings}
@@ -1099,6 +1161,11 @@ export function SettingsPanel() {
               <div ref={stickyRef} className="sticky top-0 z-10 bg-background pb-3">
                 <h2 className="text-lg font-semibold">{activeGroup.label}</h2>
                 <p className="mt-0.5 text-sm text-muted-foreground">{activeGroup.description}</p>
+                {sections.some(readOnly) && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {sections.every(readOnly) ? "这一组" : "灰色的部分"}在手机上只能查看，修改请用电脑打开设置。
+                  </p>
+                )}
                 {sections.length > 1 && (
                   <nav aria-label={`${activeGroup.label}的分区`} className="mt-3 flex flex-wrap gap-1">
                     {sections.map((section) => (
@@ -1143,7 +1210,12 @@ export function SettingsPanel() {
                     aria-label={section.title}
                     className={flashSection === section.id ? "rounded-md ring-2 ring-primary/40 ring-offset-4 ring-offset-background transition-shadow" : undefined}
                   >
-                    {sectionContent(section.id)}
+                    {readOnly(section) ? (
+                      // fieldset disables every control inside; pointer-events keeps Radix triggers shut too
+                      <fieldset disabled className="m-0 min-w-0 border-0 p-0 [&_button]:pointer-events-none [&_input]:pointer-events-none">
+                        {sectionContent(section.id)}
+                      </fieldset>
+                    ) : sectionContent(section.id)}
                   </section>
                 ))}
               </div>

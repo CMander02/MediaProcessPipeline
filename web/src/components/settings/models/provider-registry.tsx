@@ -1,6 +1,6 @@
 import { useRef, useState, type ReactNode } from "react"
 import type { ProviderConfig, ProviderModelRecord, ServiceModelType } from "@/lib/settings-schema"
-import { api, type ProviderModelCatalogResult, type ProviderOAuthStatus } from "@/lib/api"
+import { api, type ProviderModelCatalogResult, type ProviderOAuthStatus, type Settings } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { MoreHorizontalIcon, PlusSignIcon } from "@hugeicons/core-free-icons"
@@ -552,6 +552,32 @@ function ProviderDetailPanel({
         )}
       </section>
     </div>
+  )
+}
+
+/** Phones see the providers and their models without editing them. */
+export function ProviderSummary({ settings }: { settings: Settings }) {
+  const providers = getProviders(settings)
+  if (providers.length === 0) return <ProviderEmptyState hasProviders={false} />
+  return (
+    <ul aria-label="模型服务商" className="divide-y rounded-lg border">
+      {providers.map((provider) => {
+        const models = getProviderModels(provider)
+        const enabled = models.filter((model) => model.enabled !== false).length
+        return (
+          <li key={provider.id} className="flex items-center gap-3 px-3 py-2.5">
+            <span className="flex size-8 shrink-0 items-center justify-center">{providerIcon(provider)}</span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium">{provider.name || provider.id}</span>
+              <span className="block truncate text-xs text-muted-foreground">
+                {providerTypeLabel(provider)} · {enabled} 个启用，共 {models.length} 个模型
+              </span>
+            </span>
+            {provider.enabled === false && <span className="shrink-0 text-xs text-muted-foreground">已停用</span>}
+          </li>
+        )
+      })}
+    </ul>
   )
 }
 
