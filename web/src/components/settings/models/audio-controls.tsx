@@ -334,7 +334,7 @@ export function AsrSettingsControls({
 
           <SettingsSection title="说话人模型" description="配置 pyannote 本地模型。开关在上面的「音频流程」里。">
             <PathPickerRow
-              label="Diarization"
+              label="说话人分离"
               settingKey="pyannote_model_path"
               value={String(settings.pyannote_model_path ?? "")}
               onSave={updateSetting}
@@ -345,7 +345,7 @@ export function AsrSettingsControls({
               pickerLabel="选择文件夹"
             />
             <PathPickerRow
-              label="Segmentation"
+              label="语音分段"
               settingKey="pyannote_segmentation_path"
               value={String(settings.pyannote_segmentation_path ?? "")}
               onSave={updateSetting}
@@ -415,7 +415,7 @@ export function LocalLlmSettingsControls({ settings, updateSetting, saving, save
         ) : null}
       </SettingsSection>
 
-      <SettingsSection title="模型文件" description="使用完整路径配置推理程序、模型和多模态 projector。">
+      <SettingsSection title="模型文件" description="用完整路径指定推理程序、模型和多模态投影文件（mmproj）。">
         {engine === "llama_cpp" ? (
           <PathPickerRow label="llama.cpp" settingKey="llama_cpp_binary_path" value={String(settings.llama_cpp_binary_path ?? "")} onSave={updateSetting} saving={saving} saved={saved} placeholder="llama-server.exe" title="选择 llama.cpp 可执行文件" pickerLabel="选择文件" />
         ) : null}
@@ -431,7 +431,7 @@ export function LocalLlmSettingsControls({ settings, updateSetting, saving, save
           pickerLabel={engine === "llama_cpp" ? "选择文件" : "选择文件夹"}
         />
         {engine === "llama_cpp" ? (
-          <PathPickerRow label="mmproj" settingKey="local_llm_mmproj_path" value={String(settings.local_llm_mmproj_path ?? "")} onSave={updateSetting} saving={saving} saved={saved} placeholder="多模态 projector GGUF" title="选择多模态 projector" pickerLabel="选择文件" />
+          <PathPickerRow label="mmproj" settingKey="local_llm_mmproj_path" value={String(settings.local_llm_mmproj_path ?? "")} onSave={updateSetting} saving={saving} saved={saved} placeholder="多模态投影 GGUF" title="选择多模态投影文件" pickerLabel="选择文件" />
         ) : (
           <SelectSettingRow label="数据类型" value={String(settings.local_llm_dtype ?? "bfloat16")} onChange={(value) => updateSetting("local_llm_dtype", value)}>
             <option value="auto">自动</option>
@@ -452,7 +452,7 @@ export function LocalLlmSettingsControls({ settings, updateSetting, saving, save
         ) : null}
         <NumberSettingRow label="每路上下文长度" settingKey="local_llm_n_ctx" fallback={16384} {...{ settings, updateSetting, saving, saved }} />
         {engine === "llama_cpp" ? <NumberSettingRow label="GPU 层" settingKey="local_llm_n_gpu_layers" fallback={-1} {...{ settings, updateSetting, saving, saved }} /> : null}
-        {engine === "llama_cpp" ? <NumberSettingRow label="Batch" settingKey="local_llm_n_batch" fallback={512} {...{ settings, updateSetting, saving, saved }} /> : null}
+        {engine === "llama_cpp" ? <NumberSettingRow label="批大小" settingKey="local_llm_n_batch" fallback={512} {...{ settings, updateSetting, saving, saved }} /> : null}
         <NumberSettingRow label="并发槽位（1–8）" settingKey="local_llm_concurrency" fallback={2} {...{ settings, updateSetting, saving, saved }} />
         <NumberSettingRow label="最大输出" settingKey="local_llm_max_new_tokens" fallback={4096} {...{ settings, updateSetting, saving, saved }} />
         <NumberSettingRow label="超时（秒）" settingKey="local_llm_timeout_sec" fallback={300} {...{ settings, updateSetting, saving, saved }} />

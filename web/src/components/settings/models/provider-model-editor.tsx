@@ -110,7 +110,7 @@ export function ProviderModelItem({
                 ))}
               </OptionSelect>
             </ProviderFormRow>
-            <ProviderFormRow label="Endpoint">
+            <ProviderFormRow label="接口路径">
               <ProviderTextInput
                 fieldKey={`${provider.id}-${model.model_id}-endpoint`}
                 value={model.endpoint_path || getEndpointPathForModelType(modelType)}

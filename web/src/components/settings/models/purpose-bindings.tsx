@@ -57,7 +57,7 @@ export function PurposeModelBindings({ settings, updateSetting }: PurposeModelBi
     {
       key: "mindmap",
       label: "思维导图",
-      description: "导图 map/reduce 和层级结构生成。",
+      description: "导图的分段归纳和层级结构生成。",
       options: textOptions,
       fallback: bindingValue(runtimeBindings.mindmap, "deepseek", settings.deepseek_mindmap_model, "deepseek-v4-flash"),
     },

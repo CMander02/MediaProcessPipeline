@@ -79,7 +79,7 @@ export function CustomProfilesEditor({
       <div className="grid gap-3 lg:grid-cols-2">
         <SettingRow label="名称" settingKey="custom_profile_name" value={activeProfile.name} onSave={async (_key, value) => updateProfile("name", String(value))} saving={{}} saved={{}} />
         <SettingRow label="模型" settingKey="custom_profile_model" value={activeProfile.model} onSave={async (_key, value) => updateProfile("model", String(value))} saving={{}} saved={{}} />
-        <SettingRow label="API Base" settingKey="custom_profile_base" value={activeProfile.api_base} onSave={async (_key, value) => updateProfile("api_base", String(value))} saving={{}} saved={{}} />
+        <SettingRow label="API 地址" settingKey="custom_profile_base" value={activeProfile.api_base} onSave={async (_key, value) => updateProfile("api_base", String(value))} saving={{}} saved={{}} />
         <SettingRow label="API Key" settingKey="custom_profile_key" value={activeProfile.api_key} onSave={async (_key, value) => updateProfile("api_key", String(value))} saving={{}} saved={{}} masked />
       </div>
     </div>

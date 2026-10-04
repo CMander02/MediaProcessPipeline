@@ -68,7 +68,7 @@ export function ZhihuCard({ settings, updateSetting, saving, saved }: ZhihuCardP
       </CardHeader>
       <CardContent className="space-y-5">
         <p className="text-sm text-muted-foreground">
-          支持想法和回答链接。知乎反爬较重，优先使用 headless 浏览器；回答页被拦截时会自动用真实浏览器兜底。
+          支持想法和回答链接。知乎反爬较重，优先使用无界面浏览器；回答页被拦截时会自动用真实浏览器兜底。
         </p>
 
         <div className="flex items-center gap-3">
@@ -131,7 +131,7 @@ export function YoutubeCard({ settings, updateSetting, saving, saved }: YoutubeC
         />
 
         <SettingRow
-          label="Cookies 文件"
+          label="Cookie 文件"
           settingKey="youtube_cookies_file"
           value={String(settings.youtube_cookies_file ?? "")}
           onSave={updateSetting}
@@ -339,7 +339,7 @@ export function XiaohongshuCard({ settings, updateSetting, saving, saved, onStat
           placeholder="留空使用 data/auth/xiaohongshu_storage_state.json"
         />
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <span>Cookies: {status?.cookie_count ?? 0}</span>
+          <span>Cookie 数：{status?.cookie_count ?? 0}</span>
           {status?.updated_at && <span>{new Date(status.updated_at).toLocaleString()}</span>}
           {status?.error && <span className="text-destructive">{status.error}</span>}
         </div>
@@ -483,7 +483,7 @@ export function TwitterCard({ settings, updateSetting, saving, saved, onStatusCh
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">
-          X Article 的完整正文需要登录会话。登录一次后，处理流程会打开文章页并保存全文。
+          X 长文（Article）的完整正文需要登录会话。登录一次后，处理流程会打开文章页并保存全文。
         </p>
         <SettingRow
           label="登录态文件"
@@ -495,7 +495,7 @@ export function TwitterCard({ settings, updateSetting, saving, saved, onStatusCh
           placeholder="留空使用 data/auth/twitter_storage_state.json"
         />
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <span>Cookies: {status?.cookie_count ?? 0}</span>
+          <span>Cookie 数：{status?.cookie_count ?? 0}</span>
           {status?.updated_at && <span>{new Date(status.updated_at).toLocaleString()}</span>}
           {status?.error && <span className="text-destructive">{status.error}</span>}
         </div>

@@ -221,7 +221,7 @@ export function RegistrySettings({
       const status = await api.settings.providerOAuthStatus(providerId)
       const expectedType = providers.find((provider) => provider.id === providerId)?.provider_type
       if (expectedType && status.provider_type !== expectedType) {
-        throw new Error("OAuth 检测结果与当前 Provider 类型不一致，请重试。")
+        throw new Error("OAuth 检测结果与当前服务商类型不一致，请重试。")
       }
       setOauthStatus({ providerId, status })
       setMessage(status.message)
@@ -235,7 +235,7 @@ export function RegistrySettings({
 
   return (
     <ModelListLayout
-      searchPlaceholder="搜索 Providers..."
+      searchPlaceholder="搜索服务商…"
       query={query}
       onQueryChange={setQuery}
       items={providerEntries}
@@ -248,7 +248,7 @@ export function RegistrySettings({
         <div className="mt-3 space-y-2 border-t border-border pt-3">
           <Button type="button" variant="outline" size="sm" onClick={addProvider} className="h-9 w-full gap-1.5">
             <HugeiconsIcon icon={PlusSignIcon} className="h-3.5 w-3.5" />
-            添加 Provider
+            添加服务商
           </Button>
         </div>
       )}
@@ -399,13 +399,13 @@ function ProviderDetailPanel({
         </ProviderFormRow>
         <ProviderFormRow label="类型">
           <OptionSelect
-            aria-label="Provider 类型"
+            aria-label="服务商类型"
             value={provider.provider_type || "openai_compatible"}
             onValueChange={(value) => onUpdateProvider(provider.id, { provider_type: value })}
           >
             <option value="deepseek">DeepSeek</option>
             <option value="siliconflow">SiliconFlow</option>
-            <option value="openai_compatible">OpenAI-compatible</option>
+            <option value="openai_compatible">OpenAI 兼容</option>
             <option value="anthropic">Anthropic</option>
             <option value="codex_oauth">Codex OAuth</option>
             <option value="agy_oauth">Antigravity OAuth</option>
@@ -465,14 +465,14 @@ function ProviderDetailPanel({
           </>
         ) : (
           <>
-            <ProviderFormRow label="API Mode">
+            <ProviderFormRow label="接口模式">
               <ProviderTextInput
                 fieldKey={`${provider.id}-api-mode`}
                 value={provider.api_mode || "chat_completions"}
                 onCommit={(value) => onUpdateProvider(provider.id, { api_mode: value })}
               />
             </ProviderFormRow>
-            <ProviderFormRow label="API Base" className="xl:col-span-2">
+            <ProviderFormRow label="API 地址" className="xl:col-span-2">
               <ProviderTextInput
                 fieldKey={`${provider.id}-api-base`}
                 value={provider.api_base || ""}
@@ -566,7 +566,7 @@ function providerListItem(provider: ProviderConfig): ModelListItem {
     title: provider.name || provider.id,
     description: [
       providerTypeLabel(provider),
-      `${models.length} models`,
+      `${models.length} 个模型`,
       capabilitySummary,
     ].filter(Boolean).join(" · "),
     badge: providerBadge(provider),

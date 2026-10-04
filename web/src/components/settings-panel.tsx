@@ -70,14 +70,14 @@ const GROUPS: GroupDef[] = [
       { id: "models", title: "各步骤的模型", keywords: "模型用途 字幕简单润色 字幕二次润色 字幕分析 全文总结 思维导图 图文理解 知识库向量 润色并发数 绑定" },
       { id: "local-llm", title: "本地大模型", keywords: "本地大模型 LLM 推理引擎 GGUF Transformers Hugging Face 运行设备 上下文 数据类型 显存" },
       { id: "inference", title: "推理模式", keywords: "推理模式 半重叠推理 显存 detail.md 视频详情" },
-      { id: "knowledge", title: "知识库索引", mobile: true, keywords: "知识库 Embedding 向量 自动索引 API Base API Key 模型 向量维度" },
+      { id: "knowledge", title: "知识库索引", mobile: true, keywords: "知识库 Embedding 向量 自动索引 API 地址 API Base API Key 模型 向量维度" },
     ],
   },
   {
     id: "providers",
     label: "模型服务商",
     description: "API 和 OAuth 服务商，以及它们提供的模型。",
-    sections: [{ id: "providers", title: "模型服务商", keywords: "模型服务商 Provider API Key API Base DeepSeek SiliconFlow OpenAI Anthropic OAuth Codex Kimi Qoder 获取模型 同步模型 添加模型" }],
+    sections: [{ id: "providers", title: "模型服务商", keywords: "模型服务商 服务商 Provider API Key API 地址 API Base 接口模式 DeepSeek SiliconFlow OpenAI Anthropic OAuth Codex Kimi Qoder 获取模型 同步模型 添加模型" }],
   },
   {
     id: "sources",
@@ -600,7 +600,7 @@ export function SettingsPanel() {
               <CardTitle className="text-base">知识库索引</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <p className="text-xs text-muted-foreground">OpenAI-Compatible 嵌入 API，用于任务完成后自动索引字幕+摘要。</p>
+              <p className="text-xs text-muted-foreground">OpenAI 兼容的嵌入 API，用于任务完成后自动索引字幕和摘要。</p>
               <div className="flex items-center justify-between gap-4">
                 <Label htmlFor="kb-enabled">自动索引</Label>
                 <Switch
@@ -610,7 +610,7 @@ export function SettingsPanel() {
                 />
               </div>
               <SettingRow
-                label="API Base"
+                label="API 地址"
                 settingKey="kb_embedding_api_base"
                 value={String(settings.kb_embedding_api_base ?? "")}
                 onSave={updateSetting}
@@ -807,7 +807,7 @@ export function SettingsPanel() {
             </CardHeader>
             <CardContent className="space-y-3">
               <p className="text-xs leading-5 text-muted-foreground">
-                网页 Scrape fallback 服务。通用网页先使用本地 Defuddle，失败后调用 Jina Reader 返回 Markdown。
+                网页抓取的兜底服务。通用网页先使用本地 Defuddle，失败后调用 Jina Reader 返回 Markdown。
               </p>
               <div className="flex items-center justify-between">
                 <div>
@@ -840,7 +840,7 @@ export function SettingsPanel() {
                 />
               </div>
               <SettingRow
-                label="API Base"
+                label="API 地址"
                 settingKey="jina_reader_api_base"
                 value={String(settings.jina_reader_api_base ?? "https://r.jina.ai")}
                 onSave={updateSetting}

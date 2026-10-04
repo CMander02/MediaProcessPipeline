@@ -428,7 +428,7 @@ export function providerTypeLabel(provider: ProviderConfig): string {
   if (type === "agy_oauth") return "Antigravity OAuth"
   if (type === "kimi_oauth") return "Kimi Code OAuth"
   if (type === "qoder_oauth") return "QoderCN OAuth"
-  return "OpenAI-compatible"
+  return "OpenAI 兼容"
 }
 
 export function isOAuthProvider(provider: ProviderConfig): boolean {

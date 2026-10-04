@@ -11,7 +11,7 @@ export function DeepSeekConfig({ settings, updateSetting, saving, saved }: DeepS
         常用模型名包括 deepseek-v4-flash 和 deepseek-v4-pro。
       </p>
       <SettingRow
-        label="API Base"
+        label="API 地址"
         settingKey="deepseek_api_base"
         value={String(settings.deepseek_api_base ?? "https://api.deepseek.com")}
         onSave={updateSetting}

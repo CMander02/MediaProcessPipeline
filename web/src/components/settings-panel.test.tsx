@@ -540,7 +540,7 @@ describe("SettingsPanel", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "模型服务商" }))
 
-    const providerSearch = await screen.findByPlaceholderText("搜索 Providers...")
+    const providerSearch = await screen.findByPlaceholderText("搜索服务商…")
     const providerList = providerSearch.closest("aside")
     expect(providerList).not.toBeNull()
     expect(within(providerList as HTMLElement).getByRole("button", { name: /DeepSeek/ })).toBeInTheDocument()
@@ -556,7 +556,7 @@ describe("SettingsPanel", () => {
     expect(screen.queryByRole("button", { name: /本地 HF 模型/ })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /Vision Server/ })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /Purpose Binding/ })).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: /添加 Provider/ })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /添加服务商/ })).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "批量导入" })).not.toBeInTheDocument()
     expect(screen.queryByRole("combobox", { name: "能力筛选" })).not.toBeInTheDocument()
     expect(screen.queryByRole("combobox", { name: "Provider 筛选" })).not.toBeInTheDocument()
@@ -564,7 +564,8 @@ describe("SettingsPanel", () => {
 
     fireEvent.click(siliconFlowButton)
     expect(screen.getByRole("heading", { name: "SiliconFlow" })).toBeInTheDocument()
-    expect(screen.getByText("API Base")).toBeInTheDocument()
+    expect(screen.getByText("API 地址")).toBeInTheDocument()
+    expect(screen.getByText("接口模式")).toBeInTheDocument()
     expect(screen.getByText("API Key")).toBeInTheDocument()
     expect(screen.getByDisplayValue("https://api.siliconflow.cn/v1")).toBeInTheDocument()
 
@@ -619,7 +620,7 @@ describe("SettingsPanel", () => {
   it("asks before deleting a provider from its ⋯ menu", async () => {
     render(<SettingsPanel />)
     fireEvent.click(await screen.findByRole("button", { name: "模型服务商" }))
-    const providerList = (await screen.findByPlaceholderText("搜索 Providers...")).closest("aside") as HTMLElement
+    const providerList = (await screen.findByPlaceholderText("搜索服务商…")).closest("aside") as HTMLElement
     fireEvent.click(within(providerList).getByRole("button", { name: /SiliconFlow/ }))
 
     const menu = screen.getByRole("button", { name: "「SiliconFlow」的更多操作" })
