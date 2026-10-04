@@ -330,6 +330,14 @@ export interface LocalAsrModelsStatus {
   } | null
 }
 
+export interface BilibiliAuthStatus {
+  logged_in: boolean
+  uid?: string
+  expires?: string | null
+  days_left?: number | null
+  message?: string
+}
+
 export interface TwitterAuthStatus {
   storage_state_path: string
   storage_state_exists: boolean
@@ -792,10 +800,7 @@ export const api = {
     pollQr: (sessionId: string) => post<{
       state: "waiting" | "scanned" | "expired" | "success"; message: string; uid?: string
     }>("/api/pipeline/bilibili/auth/qr/poll", { session_id: sessionId }),
-    status: () =>
-      get<{ logged_in: boolean; uid?: string; expires?: string; days_left?: number; message?: string }>(
-        "/api/pipeline/bilibili/status",
-      ),
+    status: () => get<BilibiliAuthStatus>("/api/pipeline/bilibili/status"),
   },
 
   xiaohongshu: {

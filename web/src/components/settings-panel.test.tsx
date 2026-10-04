@@ -450,6 +450,13 @@ describe("SettingsPanel", () => {
     }
     expect(within(screen.getByRole("region", { name: "YouTube" })).getByRole("combobox", { name: "代理模式" }))
       .toHaveTextContent("跟随全局（系统代理）")
+
+    // The overview on top reads the same statuses the cards below show.
+    const overview = screen.getByRole("list", { name: "来源状态" })
+    expect(within(overview).getByRole("button", { name: /^哔哩哔哩/ })).toHaveTextContent("未登录")
+    expect(await within(overview).findByRole("button", { name: "X未登录 · 长文需要" })).toBeInTheDocument()
+    expect(await within(overview).findByRole("button", { name: "小红书未登录 · 可选" })).toBeInTheDocument()
+    expect(within(overview).getByRole("button", { name: "知乎无需登录" })).toBeInTheDocument()
   })
 
   it("finds settings across groups and opens the one picked", async () => {

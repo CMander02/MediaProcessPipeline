@@ -7,11 +7,12 @@ import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { api, type Settings, type YtdlpStatus } from "@/lib/api"
+import { api, type BilibiliAuthStatus, type Settings, type TwitterAuthStatus, type XiaohongshuAuthStatus, type YtdlpStatus } from "@/lib/api"
 import { usePreferences } from "@/hooks/use-preferences"
 import { systemNotificationsAvailable } from "@/hooks/use-task-notifications"
 import { OptionSelect, ProxySetting, SettingRow } from "@/components/settings/setting-controls"
 import { LibraryLocation } from "@/components/settings/library-location"
+import { SourceOverview } from "@/components/settings/source-overview"
 import { describeProxy } from "@/lib/proxy"
 import { LocalModelSection, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
 import { BilibiliCard, PlaceholderSection, TwitterCard, XiaohongshuCard, YoutubeCard, ZhihuCard } from "@/components/settings/source-cards"
@@ -153,7 +154,10 @@ export function SettingsPanel() {
   const [ytdlpMessage, setYtdlpMessage] = useState<string | null>(null)
 
   // Bilibili auth status (needed for sidebar dot indicator)
-  const [biliLoggedIn, setBiliLoggedIn] = useState<boolean | null>(null)
+  const [biliStatus, setBiliStatus] = useState<BilibiliAuthStatus | null>(null)
+  const [twitterStatus, setTwitterStatus] = useState<TwitterAuthStatus | null>(null)
+  const [xiaohongshuStatus, setXiaohongshuStatus] = useState<XiaohongshuAuthStatus | null>(null)
+  const biliLoggedIn = biliStatus ? biliStatus.logged_in : null
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return
@@ -191,8 +195,8 @@ export function SettingsPanel() {
     void loadSettings()
     void loadYtdlpStatus()
     api.bilibili.status()
-      .then((s) => setBiliLoggedIn(s.logged_in))
-      .catch(() => setBiliLoggedIn(false))
+      .then(setBiliStatus)
+      .catch(() => setBiliStatus({ logged_in: false, message: "无法连接后端" }))
   }, [online, loadSettings, loadYtdlpStatus])
 
   const unlockSettings = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -637,11 +641,11 @@ export function SettingsPanel() {
           </Card>
         )
       case "bilibili":
-        return <BilibiliCard {...sourceProps} onAuthChange={setBiliLoggedIn} />
+        return <BilibiliCard {...sourceProps} onAuthChange={setBiliStatus} />
       case "youtube":
         return <YoutubeCard {...sourceProps} />
       case "twitter":
-        return <TwitterCard {...sourceProps} />
+        return <TwitterCard {...sourceProps} onStatusChange={setTwitterStatus} />
       case "xiaoyuzhou":
         return (
           <PlaceholderSection
@@ -651,7 +655,7 @@ export function SettingsPanel() {
           />
         )
       case "xiaohongshu":
-        return <XiaohongshuCard {...sourceProps} />
+        return <XiaohongshuCard {...sourceProps} onStatusChange={setXiaohongshuStatus} />
       case "zhihu":
         return <ZhihuCard {...sourceProps} />
       case "library":
@@ -1107,6 +1111,15 @@ export function SettingsPanel() {
                     <NativeConnectionSettings />
                     <OfflineSyncStatus />
                   </>
+                )}
+                {activeGroup.id === "sources" && (
+                  <SourceOverview
+                    settings={settings}
+                    bilibili={biliStatus}
+                    twitter={twitterStatus}
+                    xiaohongshu={xiaohongshuStatus}
+                    onOpen={(sectionId) => setPendingJump(sectionId)}
+                  />
                 )}
                 {sections.map((section) => (
                   <section

@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
-import { api, type Settings } from "@/lib/api"
+import { api, type BilibiliAuthStatus, type Settings, type TwitterAuthStatus, type XiaohongshuAuthStatus } from "@/lib/api"
 import { BilibiliLogin } from "./bilibili-login"
 import { OptionSelect, ProxySetting, SettingRow } from "./setting-controls"
 
@@ -158,6 +158,16 @@ interface XiaohongshuCardProps {
   updateSetting: (key: string, value: unknown) => Promise<void>
   saving: Record<string, boolean>
   saved: Record<string, boolean>
+  /** Called with every status the card reads, for the overview above the cards */
+  onStatusChange?: (status: XiaohongshuAuthStatus) => void
+}
+
+interface TwitterCardProps {
+  settings: Settings
+  updateSetting: (key: string, value: unknown) => Promise<void>
+  saving: Record<string, boolean>
+  saved: Record<string, boolean>
+  onStatusChange?: (status: TwitterAuthStatus) => void
 }
 
 const XHS_IMAGE_STRATEGIES = [
@@ -204,22 +214,19 @@ function normalizeXhsStrategyOrder(value: unknown): XhsImageStrategy[] {
   return order
 }
 
-export function XiaohongshuCard({ settings, updateSetting, saving, saved }: XiaohongshuCardProps) {
-  const [status, setStatus] = useState<{
-    configured_cookie: boolean
-    storage_state_path: string
-    storage_state_exists: boolean
-    cookie_count: number
-    login_cookie: boolean
-    updated_at?: string
-    error?: string
-  } | null>(null)
+export function XiaohongshuCard({ settings, updateSetting, saving, saved, onStatusChange }: XiaohongshuCardProps) {
+  const [status, setStatusState] = useState<XiaohongshuAuthStatus | null>(null)
   const [platformConfig, setPlatformConfig] = useState<XiaohongshuPlatformConfig | null>(null)
   const [savingOrder, setSavingOrder] = useState(false)
   const [savedOrder, setSavedOrder] = useState(false)
   const [loggingIn, setLoggingIn] = useState(false)
 
-  const refreshStatus = () => {
+  const setStatus = useCallback((next: XiaohongshuAuthStatus) => {
+    setStatusState(next)
+    onStatusChange?.(next)
+  }, [onStatusChange])
+
+  const refreshStatus = useCallback(() => {
     api.xiaohongshu.status()
       .then(setStatus)
       .catch((error) => {
@@ -232,10 +239,11 @@ export function XiaohongshuCard({ settings, updateSetting, saving, saved }: Xiao
           error: error instanceof Error ? error.message : String(error),
         })
       })
-  }
+  }, [setStatus])
+
+  useEffect(() => refreshStatus(), [refreshStatus])
 
   useEffect(() => {
-    refreshStatus()
     api.platforms.list()
       .then((result) => {
         const xhs = result.platforms.find((platform) => platform.id === "xiaohongshu")
@@ -259,15 +267,15 @@ export function XiaohongshuCard({ settings, updateSetting, saving, saved }: Xiao
       const next = await api.xiaohongshu.login(180)
       setStatus(next)
     } catch (error) {
-      setStatus((prev) => ({
+      setStatus({
         configured_cookie: false,
         storage_state_path: "",
         storage_state_exists: false,
         cookie_count: 0,
         login_cookie: false,
-        ...prev,
+        ...status,
         error: error instanceof Error ? error.message : String(error),
-      }))
+      })
     } finally {
       setLoggingIn(false)
     }
@@ -421,19 +429,17 @@ interface BilibiliCardProps {
   updateSetting: (key: string, value: unknown) => Promise<void>
   saving: Record<string, boolean>
   saved: Record<string, boolean>
-  onAuthChange?: (loggedIn: boolean) => void
+  onAuthChange?: (status: BilibiliAuthStatus) => void
 }
 
-export function TwitterCard({ settings, updateSetting, saving, saved }: XiaohongshuCardProps) {
-  const [status, setStatus] = useState<{
-    storage_state_path: string
-    storage_state_exists: boolean
-    cookie_count: number
-    logged_in: boolean
-    updated_at?: string
-    error?: string
-  } | null>(null)
+export function TwitterCard({ settings, updateSetting, saving, saved, onStatusChange }: TwitterCardProps) {
+  const [status, setStatusState] = useState<TwitterAuthStatus | null>(null)
   const [loggingIn, setLoggingIn] = useState(false)
+
+  const setStatus = useCallback((next: TwitterAuthStatus) => {
+    setStatusState(next)
+    onStatusChange?.(next)
+  }, [onStatusChange])
 
   const refreshStatus = useCallback(() => {
     api.twitter.status().then(setStatus).catch((error) => setStatus({
@@ -443,7 +449,7 @@ export function TwitterCard({ settings, updateSetting, saving, saved }: Xiaohong
       logged_in: false,
       error: error instanceof Error ? error.message : String(error),
     }))
-  }, [])
+  }, [setStatus])
 
   useEffect(() => refreshStatus(), [refreshStatus])
 
@@ -453,13 +459,13 @@ export function TwitterCard({ settings, updateSetting, saving, saved }: Xiaohong
     try {
       setStatus(await api.twitter.login(180))
     } catch (error) {
-      setStatus((previous) => ({
-        storage_state_path: previous?.storage_state_path ?? "",
-        storage_state_exists: previous?.storage_state_exists ?? false,
-        cookie_count: previous?.cookie_count ?? 0,
+      setStatus({
+        storage_state_path: status?.storage_state_path ?? "",
+        storage_state_exists: status?.storage_state_exists ?? false,
+        cookie_count: status?.cookie_count ?? 0,
         logged_in: false,
         error: error instanceof Error ? error.message : String(error),
-      }))
+      })
     } finally {
       setLoggingIn(false)
     }
@@ -516,13 +522,7 @@ interface BilibiliPlatformConfig {
 }
 
 export function BilibiliCard({ settings, updateSetting, saving, saved, onAuthChange }: BilibiliCardProps) {
-  const [status, setStatus] = useState<{
-    logged_in: boolean
-    uid?: string
-    expires?: string
-    days_left?: number
-    message?: string
-  } | null>(null)
+  const [status, setStatus] = useState<BilibiliAuthStatus | null>(null)
   const [platformConfig, setPlatformConfig] = useState<BilibiliPlatformConfig | null>(null)
   const [savedQuality, setSavedQuality] = useState(false)
   const [savedSubtitle, setSavedSubtitle] = useState(false)
@@ -535,10 +535,11 @@ export function BilibiliCard({ settings, updateSetting, saving, saved, onAuthCha
     try {
       const nextStatus = await api.bilibili.status()
       setStatus(nextStatus)
-      onAuthChange?.(nextStatus.logged_in)
+      onAuthChange?.(nextStatus)
     } catch {
-      setStatus({ logged_in: false, message: "无法连接后端" })
-      onAuthChange?.(false)
+      const failed = { logged_in: false, message: "无法连接后端" }
+      setStatus(failed)
+      onAuthChange?.(failed)
     } finally {
       setCheckingAuth(false)
     }
