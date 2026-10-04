@@ -55,7 +55,13 @@ export function ProviderTextInput({
       step={type === "number" ? 1 : undefined}
       aria-label={ariaLabel}
       defaultValue={value}
-      onBlur={(event) => onCommit(event.target.value)}
+      onBlur={(event) => {
+        if (event.target.value !== value) onCommit(event.target.value)
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur()
+        if (event.key === "Escape") event.currentTarget.value = value
+      }}
       placeholder={placeholder}
       className={[
         "h-8 w-full rounded-md border border-input bg-background px-2 text-sm",
@@ -68,7 +74,7 @@ export function ProviderTextInput({
 export function ProviderEmptyState({ hasProviders }: { hasProviders: boolean }) {
   return (
     <div className="flex h-full min-h-64 items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground">
-      {hasProviders ? "当前筛选条件下没有 Provider。" : "还没有 Provider。"}
+      {hasProviders ? "没有符合搜索的服务商。" : "还没有服务商。"}
     </div>
   )
 }

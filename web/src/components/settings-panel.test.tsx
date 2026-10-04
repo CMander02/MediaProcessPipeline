@@ -478,6 +478,19 @@ describe("SettingsPanel", () => {
     expect(search).toHaveValue("")
   })
 
+  it("shows a failed save right under the field", async () => {
+    vi.mocked(api.settings.patch).mockRejectedValueOnce(new Error("超时必须是正整数"))
+    render(<SettingsPanel />)
+    fireEvent.click(await screen.findByRole("button", { name: "存储与网络" }))
+
+    const timeout = await screen.findByRole("textbox", { name: "VLM 超时" })
+    fireEvent.change(timeout, { target: { value: "-5" } })
+    fireEvent.blur(timeout)
+
+    expect(await screen.findByText("没保存上：超时必须是正整数")).toBeInTheDocument()
+    expect(timeout).toHaveValue("-5")
+  })
+
   it("keeps library location, network and queue under 存储与网络", async () => {
     render(<SettingsPanel />)
 

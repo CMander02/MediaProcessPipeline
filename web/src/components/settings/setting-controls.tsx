@@ -1,6 +1,6 @@
-import { Children, isValidElement, useState, type ReactNode } from "react"
+import { Children, isValidElement, useContext, useEffect, useRef, useState, type ReactNode } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { FloppyDiskIcon, FolderOpenIcon, Tick02Icon } from "@hugeicons/core-free-icons"
+import { FolderOpenIcon, Tick02Icon } from "@hugeicons/core-free-icons"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { describeProxy, proxyMode, type ProxyMode } from "@/lib/proxy"
+import { SettingsSaveErrors } from "./save-errors"
 
 export type DeviceValue = "auto" | "cuda" | "cpu"
 
@@ -104,10 +105,14 @@ interface ProxySettingProps extends SettingRowProps {
   inheritFrom?: { where: string; value: string }
 }
 
-export function ProxySetting({
-  ...props
-}: ProxySettingProps) {
-  return <ProxySettingEditor key={`${props.settingKey}:${props.value}`} {...props} />
+export function ProxySetting(props: ProxySettingProps) {
+  const error = useContext(SettingsSaveErrors)[props.settingKey]
+  return (
+    <div className="space-y-1">
+      <ProxySettingEditor key={`${props.settingKey}:${props.value}`} {...props} />
+      <FieldError error={error} />
+    </div>
+  )
 }
 
 function ProxySettingEditor({
@@ -129,10 +134,9 @@ function ProxySettingEditor({
     if (nextMode === "none") void onSave(settingKey, "direct")
   }
 
-  const customDirty = mode === "custom" && customValue.trim() !== value.trim()
   const saveCustom = () => {
     const normalized = customValue.trim()
-    if (normalized) void onSave(settingKey, normalized)
+    if (normalized && normalized !== value.trim()) void onSave(settingKey, normalized)
   }
 
   return (
@@ -155,23 +159,12 @@ function ProxySettingEditor({
             aria-label={`${String(label)}地址`}
             value={customValue}
             onChange={(event) => setCustomValue(event.target.value)}
+            onBlur={saveCustom}
             onKeyDown={(event) => event.key === "Enter" && saveCustom()}
             className="h-8 flex-1 text-sm"
             autoComplete="off"
             placeholder="http://localhost:7897"
           />
-          {customDirty && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={saveCustom}
-              disabled={saving[settingKey] || !customValue.trim()}
-              className="h-8 px-2"
-              aria-label={`保存${String(label)}地址`}
-            >
-              <HugeiconsIcon icon={FloppyDiskIcon} className="h-3.5 w-3.5" />
-            </Button>
-          )}
         </div>
       )}
       <p className="pl-[6.75rem] text-xs text-muted-foreground">
@@ -220,44 +213,139 @@ export function DeviceChoice({
   )
 }
 
-export function PathPickerRow({
-  ...props
-}: SettingRowProps & { title?: string; pickerLabel?: string }) {
-  return <PathPickerRowEditor key={`${props.settingKey}:${props.value}`} {...props} />
+interface SavedChange {
+  from: string
+  to: string
+}
+
+/**
+ * The one save rule for text settings: a change saves on blur or Enter, the field then says
+ * 已保存 with 撤销 for a few seconds, and a failed save shows its reason under the field.
+ */
+function useFieldSave({ settingKey, value, onSave }: Pick<SettingRowProps, "settingKey" | "value" | "onSave">) {
+  const error = useContext(SettingsSaveErrors)[settingKey]
+  const [change, setChange] = useState<SavedChange | null>(null)
+  const timer = useRef<number | undefined>(undefined)
+
+  useEffect(() => () => window.clearTimeout(timer.current), [])
+
+  const save = async (next: string) => {
+    const from = value
+    window.clearTimeout(timer.current)
+    setChange(null)
+    await onSave(settingKey, next)
+    setChange({ from, to: next })
+    timer.current = window.setTimeout(() => setChange(null), 6000)
+  }
+
+  const undo = () => {
+    if (!change) return
+    window.clearTimeout(timer.current)
+    setChange(null)
+    void onSave(settingKey, change.from)
+  }
+
+  // A failed save leaves its reason in the context, so it is never reported as saved.
+  return { save, undo, change: error ? null : change, error }
+}
+
+function SaveStatus({
+  saving,
+  change,
+  canUndo,
+  onUndo,
+}: {
+  saving: boolean
+  change: SavedChange | null
+  canUndo: boolean
+  onUndo: () => void
+}) {
+  if (saving) return <span className="shrink-0 text-xs text-muted-foreground">保存中…</span>
+  if (!change) return null
+  return (
+    <span role="status" className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+      <HugeiconsIcon icon={Tick02Icon} className="size-3.5 text-emerald-500" />
+      已保存
+      {canUndo && (
+        <button type="button" onClick={onUndo} className="font-medium text-foreground underline-offset-2 hover:underline">
+          撤销
+        </button>
+      )}
+    </span>
+  )
+}
+
+function FieldError({ error }: { error?: string }) {
+  if (!error) return null
+  return <p className="pl-[6.75rem] text-xs text-destructive">没保存上：{error}</p>
+}
+
+/** Commits a text field on blur or Enter when it changed; Esc puts the saved value back. */
+function useCommittedText(value: string, onCommit: (next: string) => void) {
+  const [text, setText] = useState(value)
+  const committed = useRef(value)
+  const commit = () => {
+    if (text === value || text === committed.current) return
+    committed.current = text
+    onCommit(text)
+  }
+  return {
+    text,
+    setText,
+    inputProps: {
+      value: text,
+      onChange: (event: React.ChangeEvent<HTMLInputElement>) => setText(event.target.value),
+      onBlur: commit,
+      onKeyDown: (event: React.KeyboardEvent<HTMLInputElement>) => {
+        if (event.key === "Enter") commit()
+        if (event.key === "Escape") setText(value)
+      },
+    },
+  }
+}
+
+type PathPickerRowProps = SettingRowProps & { title?: string; pickerLabel?: string }
+
+export function PathPickerRow(props: PathPickerRowProps) {
+  const field = useFieldSave(props)
+  return (
+    <div className="space-y-1">
+      <PathPickerRowEditor
+        key={`${props.settingKey}:${props.value}`}
+        {...props}
+        onCommit={(next) => void field.save(next)}
+        status={<SaveStatus saving={Boolean(props.saving[props.settingKey])} change={field.change} canUndo onUndo={field.undo} />}
+      />
+      <FieldError error={field.error} />
+    </div>
+  )
 }
 
 function PathPickerRowEditor({
   label,
-  settingKey,
   value,
-  onSave,
-  saving,
-  saved,
   placeholder,
   title,
   pickerLabel = "选择",
-}: SettingRowProps & { title?: string; pickerLabel?: string }) {
-  const [editValue, setEditValue] = useState(value)
+  onCommit,
+  status,
+}: PathPickerRowProps & { onCommit: (next: string) => void; status: ReactNode }) {
+  const { text, setText, inputProps } = useCommittedText(value, onCommit)
 
-  const pickDirectory = async () => {
-    const manual = window.prompt(title ?? "输入文件夹路径", editValue)
-    if (manual !== null) {
-      setEditValue(manual)
-      await onSave(settingKey, manual)
+  const pickDirectory = () => {
+    const manual = window.prompt(title ?? "输入文件夹路径", text)
+    if (manual !== null && manual !== value) {
+      setText(manual)
+      onCommit(manual)
     }
   }
-
-  const isDirty = editValue !== value
-  const isSaving = saving[settingKey]
-  const isSaved = saved[settingKey]
 
   return (
     <div className="flex items-center gap-3">
       <Label className="w-24 shrink-0 text-sm text-muted-foreground">{label}</Label>
       <Input
-        value={editValue}
-        onChange={(event) => setEditValue(event.target.value)}
-        onKeyDown={(event) => event.key === "Enter" && onSave(settingKey, editValue)}
+        {...inputProps}
+        aria-label={typeof label === "string" ? label : undefined}
         className="h-8 flex-1 text-sm"
         autoComplete="off"
         placeholder={placeholder}
@@ -266,88 +354,59 @@ function PathPickerRowEditor({
         <HugeiconsIcon icon={FolderOpenIcon} className="h-3.5 w-3.5" />
         {pickerLabel}
       </Button>
-      {isDirty && (
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => onSave(settingKey, editValue)}
-          disabled={isSaving}
-          className="h-8 px-2"
-        >
-          {isSaved ? (
-            <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5" />
-          ) : (
-            <HugeiconsIcon icon={FloppyDiskIcon} className="h-3.5 w-3.5" />
-          )}
-        </Button>
-      )}
-      {!isDirty && isSaved && (
-        <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
-      )}
+      {status}
     </div>
   )
 }
 
-export function SettingRow({
-  ...props
-}: SettingRowProps) {
-  return <SettingRowEditor key={`${props.settingKey}:${props.value}`} {...props} />
+export function SettingRow(props: SettingRowProps) {
+  const field = useFieldSave(props)
+  return (
+    <div className="space-y-1">
+      <SettingRowEditor
+        key={`${props.settingKey}:${props.value}`}
+        {...props}
+        onCommit={(next) => void field.save(next)}
+        status={(
+          <SaveStatus
+            saving={Boolean(props.saving[props.settingKey])}
+            change={field.change}
+            // A masked secret comes back as its mask, which can't be saved back.
+            canUndo={!props.masked}
+            onUndo={field.undo}
+          />
+        )}
+      />
+      <FieldError error={field.error} />
+    </div>
+  )
 }
 
 function SettingRowEditor({
   label,
-  settingKey,
   value,
-  onSave,
-  saving,
-  saved,
   masked,
   placeholder,
   unit,
   short,
-}: SettingRowProps) {
-  const [editValue, setEditValue] = useState(value)
-
-  const isDirty = editValue !== value
-  const isSaving = saving[settingKey]
-  const isSaved = saved[settingKey]
-
-  const handleSave = () => {
-    if (!isDirty) return
-    onSave(settingKey, editValue)
-  }
+  onCommit,
+  status,
+}: SettingRowProps & { onCommit: (next: string) => void; status: ReactNode }) {
+  const { inputProps } = useCommittedText(value, onCommit)
 
   return (
     <div className="flex items-center gap-3">
       <Label className="w-24 shrink-0 text-sm text-muted-foreground">{label}</Label>
       <Input
+        {...inputProps}
         type={masked ? "password" : "text"}
-        value={editValue}
-        onChange={(event) => setEditValue(event.target.value)}
-        onKeyDown={(event) => event.key === "Enter" && handleSave()}
+        aria-label={typeof label === "string" ? label : undefined}
         className={cn("h-8 text-sm", short || unit ? "w-28 flex-none" : "flex-1")}
         autoComplete="off"
         placeholder={placeholder}
       />
       {unit && <span className="text-sm text-muted-foreground">{unit}</span>}
-      {isDirty && (
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={handleSave}
-          disabled={isSaving}
-          className="h-8 px-2"
-        >
-          {isSaved ? (
-            <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5" />
-          ) : (
-            <HugeiconsIcon icon={FloppyDiskIcon} className="h-3.5 w-3.5" />
-          )}
-        </Button>
-      )}
-      {!isDirty && isSaved && (
-        <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
-      )}
+      {status}
     </div>
   )
 }

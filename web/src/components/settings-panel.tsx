@@ -13,6 +13,8 @@ import { systemNotificationsAvailable } from "@/hooks/use-task-notifications"
 import { OptionSelect, ProxySetting, SettingRow } from "@/components/settings/setting-controls"
 import { LibraryLocation } from "@/components/settings/library-location"
 import { SourceOverview } from "@/components/settings/source-overview"
+import { SettingsSaveErrors } from "@/components/settings/save-errors"
+import { notifyError } from "@/lib/notify"
 import { describeProxy } from "@/lib/proxy"
 import { LocalModelSection, PurposeModelBindings, RegistrySettings } from "@/components/settings/model-sections"
 import { BilibiliCard, PlaceholderSection, TwitterCard, XiaohongshuCard, YoutubeCard, ZhihuCard } from "@/components/settings/source-cards"
@@ -125,7 +127,7 @@ export function SettingsPanel() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [saving, setSaving] = useState<Record<string, boolean>>({})
   const [saved, setSaved] = useState<Record<string, boolean>>({})
-  const [saveError, setSaveError] = useState<string | null>(null)
+  const [saveErrors, setSaveErrors] = useState<Record<string, string>>({})
   const [loadError, setLoadError] = useState<string | null>(null)
   const [apiTokenInput, setApiTokenInput] = useState("")
   const [authenticating, setAuthenticating] = useState(false)
@@ -222,13 +224,20 @@ export function SettingsPanel() {
             status ? { ...status, auto_update: Boolean(updates.ytdlp_auto_update) } : status
           ))
         }
-        setSaveError(null)
+        setSaveErrors((errors) => {
+          const next = { ...errors }
+          for (const key of keys) delete next[key]
+          return next
+        })
         setSaved((s) => keys.reduce((acc, key) => ({ ...acc, [key]: true }), s))
         setTimeout(() => {
           setSaved((s) => keys.reduce((acc, key) => ({ ...acc, [key]: false }), s))
         }, 1500)
       } catch (e) {
-        setSaveError(e instanceof Error ? e.message : String(e))
+        const message = e instanceof Error ? e.message : String(e)
+        // Fields show this next to themselves; the toast covers switches and selects.
+        setSaveErrors((errors) => keys.reduce((acc, key) => ({ ...acc, [key]: message }), errors))
+        notifyError("设置没保存上", e)
       } finally {
         setSaving((s) => keys.reduce((acc, key) => ({ ...acc, [key]: false }), s))
       }
@@ -993,12 +1002,8 @@ export function SettingsPanel() {
   )
 
   return (
+    <SettingsSaveErrors.Provider value={saveErrors}>
     <div className="h-full min-h-0 w-full">
-      {saveError && (
-        <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {saveError}
-        </div>
-      )}
       <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row lg:gap-5">
         <div className="shrink-0 lg:hidden">
           {searchBox("settings-search-mobile")}
@@ -1147,5 +1152,6 @@ export function SettingsPanel() {
         </div>
       </div>
     </div>
+    </SettingsSaveErrors.Provider>
   )
 }

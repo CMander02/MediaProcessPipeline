@@ -4,7 +4,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import "@testing-library/jest-dom/vitest"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { PathPickerRow, ProxySetting } from "./setting-controls"
+import { SettingsSaveErrors } from "./save-errors"
+import { PathPickerRow, ProxySetting, SettingRow } from "./setting-controls"
 
 afterEach(() => {
   cleanup()
@@ -75,10 +76,9 @@ describe("ProxySetting", () => {
       />,
     )
     choose(screen.getByRole("combobox", { name: "代理模式" }), "自定义")
-    fireEvent.change(screen.getByRole("textbox", { name: "代理地址" }), {
-      target: { value: "http://localhost:7897" },
-    })
-    fireEvent.click(screen.getByRole("button", { name: "保存代理地址" }))
+    const address = screen.getByRole("textbox", { name: "代理地址" })
+    fireEvent.change(address, { target: { value: "http://localhost:7897" } })
+    fireEvent.blur(address)
 
     await waitFor(() =>
       expect(onSave).toHaveBeenLastCalledWith("network_proxy", "http://localhost:7897"),
@@ -120,5 +120,82 @@ describe("ProxySetting", () => {
     )
     choose(screen.getByRole("combobox", { name: "代理模式" }), "跟随全局（系统代理）")
     await waitFor(() => expect(onSave).toHaveBeenLastCalledWith("youtube_proxy", ""))
+  })
+})
+
+describe("SettingRow", () => {
+  const row = (onSave: (key: string, value: unknown) => Promise<void>, value = "30", masked = false) => (
+    <SettingRow label="超时" settingKey="web_scrape_timeout" value={value} onSave={onSave} saving={{}} saved={{}} masked={masked} />
+  )
+
+  it("saves a change on blur or Enter, and only once", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    render(row(onSave))
+    const field = screen.getByRole("textbox", { name: "超时" })
+
+    fireEvent.blur(field)
+    expect(onSave).not.toHaveBeenCalled()
+
+    fireEvent.change(field, { target: { value: "45" } })
+    fireEvent.keyDown(field, { key: "Enter" })
+    fireEvent.blur(field)
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith("web_scrape_timeout", "45"))
+    expect(onSave).toHaveBeenCalledTimes(1)
+  })
+
+  it("puts the saved value back on Escape", () => {
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    render(row(onSave))
+    const field = screen.getByRole("textbox", { name: "超时" })
+
+    fireEvent.change(field, { target: { value: "45" } })
+    fireEvent.keyDown(field, { key: "Escape" })
+    expect(field).toHaveValue("30")
+    fireEvent.blur(field)
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
+  it("says 已保存 next to the field and undoes back to the old value", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    const { rerender } = render(row(onSave))
+    const field = screen.getByRole("textbox", { name: "超时" })
+
+    fireEvent.change(field, { target: { value: "45" } })
+    fireEvent.blur(field)
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith("web_scrape_timeout", "45"))
+    rerender(row(onSave, "45"))
+
+    expect(await screen.findByRole("status")).toHaveTextContent("已保存")
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }))
+    expect(onSave).toHaveBeenLastCalledWith("web_scrape_timeout", "30")
+    expect(screen.queryByRole("status")).not.toBeInTheDocument()
+  })
+
+  it("offers no undo for a masked secret", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    const { container } = render(row(onSave, "sk-****", true))
+    const field = container.querySelector("input") as HTMLInputElement
+
+    fireEvent.change(field, { target: { value: "sk-new" } })
+    fireEvent.blur(field)
+    expect(await screen.findByRole("status")).toHaveTextContent("已保存")
+    expect(screen.queryByRole("button", { name: "撤销" })).not.toBeInTheDocument()
+  })
+
+  it("shows why a save failed under the field instead of 已保存", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    render(
+      <SettingsSaveErrors.Provider value={{ web_scrape_timeout: "超时必须是正整数" }}>
+        {row(onSave)}
+      </SettingsSaveErrors.Provider>,
+    )
+    const field = screen.getByRole("textbox", { name: "超时" })
+
+    fireEvent.change(field, { target: { value: "-1" } })
+    fireEvent.blur(field)
+    await waitFor(() => expect(onSave).toHaveBeenCalled())
+    expect(screen.getByText("没保存上：超时必须是正整数")).toBeInTheDocument()
+    expect(screen.queryByRole("status")).not.toBeInTheDocument()
+    expect(field).toHaveValue("-1")
   })
 })
