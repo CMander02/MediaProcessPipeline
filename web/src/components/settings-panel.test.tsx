@@ -273,6 +273,7 @@ vi.mock("@/lib/api", () => ({
         new: "2026.07.09",
         output: "",
         restart_scheduled: true,
+        restart_after_tasks: 2,
       }),
     },
     bilibili: {
@@ -426,7 +427,8 @@ describe("SettingsPanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "高级" }))
 
     expect(await screen.findByRole("region", { name: "yt-dlp" })).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "更新到最新并重启后端" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "更新到最新" }))
+    expect(await screen.findByText(/还有任务在处理，后端会在它们结束后自动重启/)).toBeInTheDocument()
     expect(screen.getByRole("region", { name: "网页抓取" })).toBeInTheDocument()
     expect(screen.getByText("启用 Defuddle")).toBeInTheDocument()
     expect(screen.getByText("启用 Playwright")).toBeInTheDocument()

@@ -395,11 +395,18 @@ export function SettingsPanel() {
         setYtdlpMessage(result.output || "yt-dlp 更新失败")
         return
       }
-      setYtdlpMessage(`yt-dlp ${result.old ?? "unknown"} -> ${result.new ?? "unknown"}${result.restart_scheduled ? "，后端正在重启" : "，当前环境已更新"}`)
+      const restartingNow = Boolean(result.restart_scheduled) && !result.restart_after_tasks
+      const after = !result.restart_scheduled
+        ? "，当前环境已更新"
+        : restartingNow
+          ? "，后端正在重启"
+          : "。还有任务在处理，后端会在它们结束后自动重启"
+      setYtdlpMessage(`yt-dlp ${result.old ?? "unknown"} -> ${result.new ?? "unknown"}${after}`)
       setYtdlpStatus((status) => (
         status ? { ...status, installed: result.new, latest: result.new, is_stale: false, check_error: null } : status
       ))
-      if (result.restart_scheduled) reloadAfterBackendRestart()
+      // A restart that waits for tasks may be hours away; reloading now would only drop this message.
+      if (restartingNow) reloadAfterBackendRestart()
     } catch (error) {
       setYtdlpMessage(error instanceof Error ? error.message : String(error))
     } finally {
@@ -779,10 +786,13 @@ export function SettingsPanel() {
                   <HugeiconsIcon icon={Tick02Icon} className="h-3.5 w-3.5 text-emerald-500" />
                 )}
               </div>
-              <Button type="button" variant="outline" onClick={upgradeYtdlp} disabled={ytdlpUpdating}>
-                {ytdlpUpdating && <HugeiconsIcon icon={Loading03Icon} className="mr-2 h-4 w-4 animate-spin" />}
-                更新到最新并重启后端
-              </Button>
+              <div className="space-y-1">
+                <Button type="button" variant="outline" onClick={upgradeYtdlp} disabled={ytdlpUpdating}>
+                  {ytdlpUpdating && <HugeiconsIcon icon={Loading03Icon} className="mr-2 h-4 w-4 animate-spin" />}
+                  更新到最新
+                </Button>
+                <p className="text-xs text-muted-foreground">更新后要重启后端才生效；有任务在处理时，会等它们结束再自动重启。</p>
+              </div>
               {ytdlpStatus?.source && <p className="text-xs text-muted-foreground">检查来源：{ytdlpStatus.source}</p>}
               {ytdlpStatus?.check_error && <p className="text-xs text-muted-foreground">{ytdlpStatus.check_error}</p>}
               {ytdlpMessage && <p className="text-xs text-muted-foreground">{ytdlpMessage}</p>}

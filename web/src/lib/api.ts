@@ -365,6 +365,8 @@ export interface YtdlpUpgradeResult {
   command?: string[]
   restart_recommended?: boolean
   restart_scheduled?: boolean
+  /** Tasks the restart waits for; 0 means the backend restarts right away */
+  restart_after_tasks?: number
 }
 
 export interface PipelineStep {

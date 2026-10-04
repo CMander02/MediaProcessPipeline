@@ -442,18 +442,49 @@ async def get_ytdlp_status():
     }
 
 
+_idle_restart: asyncio.Task | None = None
+
+
+def _busy_task_count() -> int:
+    """Tasks running or waiting in the queue; paused tasks don't count."""
+    from app.core.queue import get_task_queue
+
+    queue = get_task_queue()
+    return len(queue.active_task_ids) + queue.pending_count
+
+
+async def _wait_until_idle_then_restart(poll_sec: float = 5.0) -> None:
+    from app.services.ingestion.ytdlp_version import schedule_process_restart
+
+    while _busy_task_count():
+        await asyncio.sleep(poll_sec)
+    schedule_process_restart(1.0)
+
+
+def _restart_when_idle() -> None:
+    global _idle_restart
+    if _idle_restart is None or _idle_restart.done():
+        _idle_restart = asyncio.create_task(_wait_until_idle_then_restart())
+
+
 @router.post("/ytdlp/upgrade")
 async def upgrade_ytdlp(background_tasks: BackgroundTasks):
-    """Upgrade yt-dlp and restart the backend process when the upgrade succeeds."""
+    """Upgrade yt-dlp; when that needs a restart, restart now if the queue is idle,
+    otherwise once the running and queued tasks are done."""
     from app.services.ingestion.ytdlp_version import schedule_process_restart, upgrade
 
     result = await asyncio.to_thread(upgrade)
     restart_scheduled = bool(result.get("ok") and result.get("restart_recommended"))
+    busy = _busy_task_count() if restart_scheduled else 0
     if restart_scheduled:
-        background_tasks.add_task(schedule_process_restart, 1.0)
+        if busy:
+            _restart_when_idle()
+        else:
+            background_tasks.add_task(schedule_process_restart, 1.0)
     return {
         **result,
         "restart_scheduled": restart_scheduled,
+        "restart_after_tasks": busy,
     }
 
 
