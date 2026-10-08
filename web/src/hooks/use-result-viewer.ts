@@ -374,7 +374,11 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
       setMediaUrl(null)
       return
     }
-    setMediaUrl(api.filesystem.mediaUrl(arch.media_file))
+    const url = api.filesystem.mediaUrl(arch.media_file)
+    // Subtitle and speaker edits also change the archive revision. Keep the media
+    // source stable for those edits; corrected durations still refresh old media.
+    const revision = arch.duration_seconds ?? arch.metadata?.duration_seconds
+    setMediaUrl(revision == null ? url : `${url}${url.includes("?") ? "&" : "?"}revision=${encodeURIComponent(String(revision))}`)
   }, [online])
 
   useEffect(() => {

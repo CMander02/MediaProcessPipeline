@@ -62,6 +62,36 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe("result viewer state", () => {
+  it.each([undefined, 5448.448])("keeps the media URL when archive edits change revision (duration %s)", async (duration) => {
+    const archive = { ...mocks.archive, revision: 12, duration_seconds: duration }
+    mocks.repository.get.mockResolvedValue(archive)
+    const { result } = renderHook(() => useResultViewer({ archivePath: mocks.archive.path }))
+    const expectedUrl = `media:/library/fixture/source.wav${duration === undefined ? "" : `?revision=${duration}`}`
+    await waitFor(() => expect(result.current.mediaUrl).toBe(expectedUrl))
+    mocks.repository.get.mockResolvedValue({
+      ...archive,
+      revision: 13,
+      metadata: { ...archive.metadata, extra: { speaker_revision: 2 } },
+    })
+    await act(async () => {
+      const handlers = mocks.sse.mock.calls.at(-1)?.[1] as { onFileReady: (event: unknown) => void }
+      handlers.onFileReady({ file: "metadata.json" })
+    })
+    await waitFor(() => expect(result.current.archive?.revision).toBe(13))
+    expect(result.current.mediaUrl).toBe(expectedUrl)
+  })
+
+  it("refreshes the media URL when its duration is corrected", async () => {
+    mocks.repository.get.mockResolvedValue({ ...mocks.archive, revision: 12, duration_seconds: 5000 })
+    const { result } = renderHook(() => useResultViewer({ archivePath: mocks.archive.path }))
+    await waitFor(() => expect(result.current.mediaUrl).toBe("media:/library/fixture/source.wav?revision=5000"))
+    mocks.repository.get.mockResolvedValue({ ...mocks.archive, revision: 13, duration_seconds: 5448.448 })
+    await act(async () => {
+      const handlers = mocks.sse.mock.calls.at(-1)?.[1] as { onFileReady: (event: unknown) => void }
+      handlers.onFileReady({ file: "metadata.json" })
+    })
+    await waitFor(() => expect(result.current.mediaUrl).toBe("media:/library/fixture/source.wav?revision=5448.448"))
+  })
   it("loads transcript, summary, mindmap and media through the archive repository", async () => {
     const { result } = renderHook(() => useResultViewer({ archivePath: mocks.archive.path }))
     await waitFor(() => expect(result.current.summary).toBe("# Summary"))

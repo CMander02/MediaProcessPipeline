@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type RefCallback } from "react"
+import { useEffect, useRef, type RefCallback } from "react"
 import Artplayer from "artplayer"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { RepeatIcon } from "@hugeicons/core-free-icons"
@@ -38,20 +38,12 @@ function VideoPlayer({
   const containerRef = useRef<HTMLDivElement>(null)
   const artRef = useRef<Artplayer | null>(null)
   const cleanupRef = useRef<(() => void) | null>(null)
-
-  // Create VTT blob URL from SRT content
-  const vttUrl = useMemo(() => {
-    if (!subtitleSrt) return null
-    const vtt = srtToVTT(subtitleSrt)
-    const blob = new Blob([vtt], { type: "text/vtt" })
-    return URL.createObjectURL(blob)
-  }, [subtitleSrt])
+  const onLoopChangeRef = useRef(onLoopChange)
+  const subtitleUpdateRef = useRef<Promise<void>>(Promise.resolve())
 
   useEffect(() => {
-    return () => {
-      if (vttUrl) URL.revokeObjectURL(vttUrl)
-    }
-  }, [vttUrl])
+    onLoopChangeRef.current = onLoopChange
+  }, [onLoopChange])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -62,7 +54,6 @@ function VideoPlayer({
       volume: 1,
       autoSize: false,
       autoMini: false,
-      loop,
       mutex: true,
       backdrop: true,
       fullscreen: true,
@@ -77,46 +68,31 @@ function VideoPlayer({
       moreVideoAttr: {
         crossOrigin: "use-credentials",
         preload: "metadata",
-        loop,
       },
       settings: [{
+        name: "loop",
         html: "循环",
-        tooltip: loop ? "开" : "关",
-        switch: loop,
+        tooltip: "关",
+        switch: false,
         onSwitch(item) {
           const nextState = !item.switch
           if (art.video) art.video.loop = nextState
-          onLoopChange?.(nextState)
+          onLoopChangeRef.current?.(nextState)
           item.tooltip = nextState ? "开" : "关"
           return nextState
         },
       }],
     }
 
-    if (vttUrl) {
-      options.subtitle = { url: vttUrl, type: "vtt", style: { fontSize: "18px" }, encoding: "utf-8" }
-      options.settings = [...(options.settings ?? []), {
-        html: "字幕",
-        tooltip: "开",
-        switch: true,
-        onSwitch(item) {
-          const nextState = !item.switch
-          art.subtitle.show = nextState
-          item.tooltip = nextState ? "开" : "关"
-          return nextState
-        },
-      }]
-    }
-
     const art = new Artplayer(options)
 
     artRef.current = art
+    subtitleUpdateRef.current = Promise.resolve()
 
     // Expose the internal <video> element to useMediaSync
     art.on("ready", () => {
       const video = art.video
       if (video) {
-        video.loop = loop
         const ret = bindMedia(video)
         if (typeof ret === "function") {
           cleanupRef.current = ret
@@ -135,7 +111,58 @@ function VideoPlayer({
         artRef.current = null
       }
     }
-  }, [src, vttUrl, bindMedia, loop, onLoopChange])
+  }, [src, bindMedia])
+
+  useEffect(() => {
+    const art = artRef.current
+    if (!art) return
+    art.video.loop = loop
+    art.setting.update({ name: "loop", html: "循环", switch: loop, tooltip: loop ? "开" : "关" })
+  }, [src, bindMedia, loop])
+
+  useEffect(() => {
+    const art = artRef.current
+    if (!art) return
+    const setting = art.setting.find("subtitle")
+    if (subtitleSrt) {
+      if (!setting) {
+        art.subtitle.show = true
+        art.setting.add({
+          name: "subtitle",
+          html: "字幕",
+          tooltip: "开",
+          switch: true,
+          onSwitch(item) {
+            const nextState = !item.switch
+            art.subtitle.show = nextState
+            item.tooltip = nextState ? "开" : "关"
+            return nextState
+          },
+        })
+      }
+    } else {
+      art.subtitle.show = false
+      if (!setting) return
+      art.setting.remove("subtitle")
+    }
+
+    // Replace only the subtitle track; keep the playing video and its current time.
+    const vtt = subtitleSrt ? srtToVTT(subtitleSrt) : "WEBVTT\n\n"
+    let cancelled = false
+    // Artplayer does not cancel pending loads. Keep older loads from finishing last.
+    subtitleUpdateRef.current = subtitleUpdateRef.current.then(async () => {
+      if (cancelled) return
+      const vttUrl = URL.createObjectURL(new Blob([vtt], { type: "text/vtt" }))
+      try {
+        await art.subtitle.switch(vttUrl, { type: "vtt", style: { fontSize: "18px" }, encoding: "utf-8" })
+      } catch {
+        // Artplayer already displays subtitle load errors in its notice area.
+      } finally {
+        URL.revokeObjectURL(vttUrl)
+      }
+    })
+    return () => { cancelled = true }
+  }, [src, bindMedia, subtitleSrt])
 
   return (
     <div className="w-full rounded-lg overflow-hidden bg-black">
