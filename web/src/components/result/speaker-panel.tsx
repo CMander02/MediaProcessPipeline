@@ -1,8 +1,9 @@
-import { Fragment, useMemo, useState, useRef, type KeyboardEvent } from "react"
+import { Fragment, useMemo, useState } from "react"
 import type { Subtitle } from "@/lib/srt"
 import { getSpeakerColor, extractSpeakers, findSubtitleAtTime, formatSpeakerLabel } from "@/lib/srt"
 import { formatDuration } from "@/lib/format"
 import { cn } from "@/lib/utils"
+import { SpeakerNameEditor } from "./speaker-name-editor"
 
 interface SpeakerPanelProps {
   subtitles: Subtitle[]
@@ -38,18 +39,6 @@ export function SpeakerPanel({
   const setExpanded = (value: boolean) => (controlled ? onCollapsedChange(!value) : setExpandedLocal(value))
   const durationMs = duration * 1000 || subtitles.at(-1)?.endTime || 0
   const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null)
-  const [editValue, setEditValue] = useState("")
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  const beginRename = (speaker: string) => {
-    setEditValue(speaker)
-    setEditingSpeaker(speaker)
-    window.setTimeout(() => {
-      inputRef.current?.focus()
-      inputRef.current?.select()
-    }, 30)
-  }
-
   const speakers = useMemo(() => {
     const names = extractSpeakers(subtitles)
     if (names.length === 0) return []
@@ -80,21 +69,11 @@ export function SpeakerPanel({
     onSeek(fraction * durationMs)
   }
 
-  const handleSaveRename = () => {
-    const newName = editValue.trim()
+  const handleSaveRename = (newName: string) => {
     if (newName && editingSpeaker && newName !== editingSpeaker) {
       onRenameSpeaker?.(editingSpeaker, newName)
     }
     setEditingSpeaker(null)
-  }
-
-  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") {
-      e.preventDefault()
-      handleSaveRename()
-    } else if (e.key === "Escape") {
-      setEditingSpeaker(null)
-    }
   }
 
   const playheadPct = durationMs > 0 ? ((currentTime * 1000) / durationMs) * 100 : 0
@@ -149,14 +128,13 @@ export function SpeakerPanel({
         {speakers.map((s) => (
           <Fragment key={s.name}>
             {editingSpeaker === s.name ? (
-              <input
-                ref={inputRef}
-                value={editValue}
-                onChange={(e) => setEditValue(e.target.value)}
-                onKeyDown={handleKeyDown}
-                onBlur={handleSaveRename}
-                className="text-xs font-medium rounded border bg-background px-1 py-0.5 outline-none focus:ring-1 focus:ring-primary"
-                style={{ color: s.color }}
+              <SpeakerNameEditor
+                initialValue={s.name}
+                label={`${formatSpeakerLabel(s.name)} 的名字`}
+                options={speakers.filter((speaker) => speaker.name !== s.name).map((speaker) => speaker.name)}
+                color={s.color}
+                onSave={handleSaveRename}
+                onCancel={() => setEditingSpeaker(null)}
               />
             ) : (
               <button
@@ -164,7 +142,7 @@ export function SpeakerPanel({
                 disabled={renaming || editingDisabled}
                 className="text-xs font-medium hover:underline cursor-pointer text-left truncate max-w-[10rem]"
                 style={{ color: s.color }}
-                onClick={() => beginRename(s.name)}
+                onClick={() => setEditingSpeaker(s.name)}
                 title="点击编辑说话人名称"
               >
                 {formatSpeakerLabel(s.name)}
