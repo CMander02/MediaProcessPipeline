@@ -318,8 +318,8 @@ class RuntimeSettings(BaseModel):
     kb_embedding_api_key: str = ""
     kb_embedding_model: str = "qwen3-embedding-0.6b"
     kb_embedding_dim: int = 1024
-    kb_chunk_size_chars: int = 400
-    kb_chunk_overlap_chars: int = 50
+    kb_chunk_size_chars: int = Field(default=400, gt=0)
+    kb_chunk_overlap_chars: int = Field(default=50, ge=0)
 
     # Document-style service registry. The flat fields above remain the
     # compatibility surface used by existing services.
@@ -350,6 +350,12 @@ class RuntimeSettings(BaseModel):
     # Paths
     data_root: str = "D:/Video/MediaProcessPipeline"
     media_retention_policy: Literal["all", "playback", "text"] = "all"
+
+    @model_validator(mode="after")
+    def _validate_kb_chunk_window(self):
+        if self.kb_chunk_overlap_chars >= self.kb_chunk_size_chars:
+            raise ValueError("kb_chunk_overlap_chars must be less than kb_chunk_size_chars")
+        return self
 
     @field_validator("remote_sync_interval_sec")
     @classmethod

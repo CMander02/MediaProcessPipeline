@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+from pydantic import ValidationError
 
 from app.core.network import httpx_client_kwargs, urllib_urlopen
 from app.core.settings import (
@@ -513,6 +514,10 @@ async def patch_settings(updates: dict[str, Any]):
     from app.core.workspace_lifecycle import WorkspaceBusyError
     try:
         updated = patch_runtime_settings(cleaned)
+    except ValidationError as exc:
+        raise HTTPException(
+            422, exc.errors(include_url=False, include_context=False, include_input=False),
+        ) from exc
     except WorkspaceBusyError as exc:
         raise HTTPException(409, str(exc)) from exc
     return _mask_settings(updated)

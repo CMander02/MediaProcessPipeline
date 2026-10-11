@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 
 
 def _sliding_window(text: str, chunk_size: int, overlap: int) -> list[str]:
+    if chunk_size <= 0 or not 0 <= overlap < chunk_size:
+        raise ValueError("chunk_size must be positive and 0 <= overlap < chunk_size")
     if not text.strip():
         return []
     chunks: list[str] = []
