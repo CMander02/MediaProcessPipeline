@@ -110,18 +110,29 @@ server {
     listen 443 ssl;
     server_name mpp.example.com;
 
+    # Application limit: 10 GiB per file, plus room for multipart headers.
+    client_max_body_size 10241m;
+    client_body_timeout 300s;
+
     location / {
         proxy_pass http://localhost:18000;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_request_buffering off;
         proxy_buffering off;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 3600s;
     }
 }
 ```
 
 `proxy_buffering off` 让 SSE 任务进度及时到达浏览器。防火墙只需放行反向代理使用的 HTTP/HTTPS 端口；`18000` 可以限制在服务器或可信网络范围内。
+
+Nginx 默认只接收 1 MiB 请求体。上例允许单文件 10 GiB，并为 multipart 请求头留出 1 MiB；实际文件上限仍由应用检查。`client_body_timeout` 和 `proxy_send_timeout` 限制相邻读写之间的等待时间，不是整个上传的总时长。`proxy_request_buffering off` 让上传直接流向后端，避免反代先将整份媒体暂存到磁盘。后端资料库仍需为上传文件预留空间；若上层代理启用了请求缓存，也需检查其上传上限与临时目录容量。
+
+保存配置后执行 `sudo nginx -t`，通过后重新加载 Nginx。用大于 1 MiB 的文件检查上传；若收到 413，请检查所有代理层的请求体上限，再检查应用的 10 GiB 文件限制。
 
 ## 三端入口
 
