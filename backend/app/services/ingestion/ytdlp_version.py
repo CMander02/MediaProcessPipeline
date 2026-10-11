@@ -387,7 +387,9 @@ def schedule_process_restart(delay_sec: float = 1.0) -> None:
 
     def _restart() -> None:
         time.sleep(max(delay_sec, 0.0))
-        args = [sys.executable, *sys.argv]
+        # sys.argv drops interpreter flags such as `-m`; orig_argv retains the
+        # actual launch mode for CLI, uvicorn and the desktop backend wrapper.
+        args = [sys.executable, *sys.orig_argv[1:]]
         logger.warning("Restarting backend process: %s", " ".join(args))
         try:
             os.execv(sys.executable, args)
