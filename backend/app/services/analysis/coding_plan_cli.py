@@ -351,6 +351,30 @@ def _codex_current_model() -> str:
     return str(data.get("model") or "").strip()
 
 
+def _codex_cached_models() -> list[str]:
+    """Read the CLI's public model catalog without accessing OAuth credentials.
+
+    Codex refreshes this cache itself. A missing or invalid cache must not
+    prevent use of the configured default model.
+    """
+    codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+    try:
+        data = json.loads((codex_home / "models_cache.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+        return []
+
+    models = []
+    for item in data["models"]:
+        if not isinstance(item, dict) or item.get("visibility", "list") != "list":
+            continue
+        slug = item.get("slug")
+        if isinstance(slug, str) and slug.strip() and slug.strip() != "default":
+            models.append(slug.strip())
+    return list(dict.fromkeys(models))
+
+
 def _agy_current_model() -> str:
     settings_file = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
     if not settings_file.is_file():
@@ -500,7 +524,9 @@ async def coding_plan_status(
             )
             current_model = _codex_current_model()
             authenticated = code == 0 and "logged in" in f"{stdout}\n{stderr}".lower()
-            models = [current_model] if current_model else []
+            models = _codex_cached_models()
+            if current_model and current_model not in models:
+                models.append(current_model)
         elif normalized == AGY_PROVIDER_TYPE:
             code, stdout, stderr = await _run_cli(
                 [str(executable), "models"],
@@ -594,7 +620,7 @@ async def coding_plan_models(provider_type: str, *, cli_path: str = "") -> list[
         )
     elif str(provider_type).strip().lower() == KIMI_PROVIDER_TYPE:
         catalog.extend(_kimi_model_catalog())
-    elif str(provider_type).strip().lower() == QODER_PROVIDER_TYPE:
+    elif str(provider_type).strip().lower() in {CODEX_PROVIDER_TYPE, QODER_PROVIDER_TYPE}:
         for model_id in status.get("models", []):
             normalized_id = str(model_id).strip()
             if normalized_id and normalized_id != "default":

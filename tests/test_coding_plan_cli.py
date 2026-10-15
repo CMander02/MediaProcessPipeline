@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -152,6 +153,80 @@ async def test_codex_status_reads_login_state_without_token_files(monkeypatch, t
     assert status["authenticated"] is True
     assert status["current_model"] == "gpt-5.6-sol"
     assert "token" not in status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("current_model", ["gpt-6-astra", "gpt-5.6-luna", ""])
+async def test_codex_catalog_discovers_cached_models_beyond_default(
+    monkeypatch, tmp_path, current_model
+):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    (tmp_path / "config.toml").write_text(f'model = "{current_model}"', encoding="utf-8")
+    (tmp_path / "models_cache.json").write_text(json.dumps({"models": [
+        {"slug": "gpt-6-luna", "visibility": "list"},
+        {"slug": "gpt-5.6-luna", "visibility": "list", "supported_in_api": False},
+        {"slug": " gpt-5.6-luna ", "visibility": "list"},
+        {"slug": "codex-auto-review", "visibility": "hide"},
+        {"slug": "hidden-model", "visibility": "hidden"},
+        {"slug": "default"},
+        {"slug": ""},
+        {"slug": 123},
+        {},
+        None,
+    ]}), encoding="utf-8")
+
+    async def fake_run(command, **_kwargs):
+        assert command[-2:] == ["login", "status"]
+        return 0, "Logged in using ChatGPT", ""
+
+    monkeypatch.setattr(
+        coding_plan_cli, "resolve_coding_plan_executable", lambda *_a, **_kw: Path("codex")
+    )
+    monkeypatch.setattr(coding_plan_cli, "_run_cli", fake_run)
+
+    status = await coding_plan_cli.coding_plan_status("codex_oauth")
+    assert status["models"] == list(dict.fromkeys(
+        ["gpt-6-luna", "gpt-5.6-luna"] + ([current_model] if current_model else [])
+    ))
+    models = await coding_plan_cli.coding_plan_models("codex_oauth")
+    assert [model["id"] for model in models] == ["default"] + [
+        model for model in ["gpt-6-luna", "gpt-5.6-luna"] if model != current_model
+    ]
+    assert models[0].get("cli_model_name", "") == current_model
+    for model in models[1:]:
+        assert model["cli_model_name"] == model["id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cache",
+    [None, b"{", b"\xff", b"[]", b"null", b"{}", b'{"models": null}', b'{"models": {}}'],
+)
+async def test_codex_catalog_falls_back_to_default_without_valid_cache(
+    monkeypatch, tmp_path, cache
+):
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text('model = "gpt-6-astra"', encoding="utf-8")
+    if cache is not None:
+        (codex_home / "models_cache.json").write_bytes(cache)
+
+    async def fake_run(*_args, **_kwargs):
+        return 0, "Logged in using ChatGPT", ""
+
+    monkeypatch.setattr(
+        coding_plan_cli, "resolve_coding_plan_executable", lambda *_a, **_kw: Path("codex")
+    )
+    monkeypatch.setattr(coding_plan_cli, "_run_cli", fake_run)
+    models = await coding_plan_cli.coding_plan_models("codex_oauth")
+    assert models == [{
+        "id": "default",
+        "display_name": "CLI 当前默认模型（gpt-6-astra）",
+        "model_type": "llm",
+        "cli_model_name": "gpt-6-astra",
+    }]
 
 
 @pytest.mark.asyncio
