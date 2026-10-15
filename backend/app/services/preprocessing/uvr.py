@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.core.paths import get_workspace_paths
-
 from app.core.settings import RuntimeSettings, get_runtime_settings
 
 logger = logging.getLogger(__name__)
@@ -118,6 +117,7 @@ class UVRService:
         self._current_model_dir: str | None = None
         self._current_chunk_duration: float | None = None
         self._current_device: str | None = None
+        self._current_mdx_segment_size: int | None = None
         self._execution_provider: str | None = None
 
     def release(self) -> None:
@@ -127,6 +127,7 @@ class UVRService:
         self._current_model_dir = None
         self._current_chunk_duration = None
         self._current_device = None
+        self._current_mdx_segment_size = None
         self._execution_provider = None
 
     def _configure_separator_device(
@@ -190,6 +191,11 @@ class UVRService:
         device = rt.uvr_device
         chunk_duration = float(rt.uvr_chunk_duration_sec or 0)
         chunk_duration_arg = chunk_duration if chunk_duration > 0 else None
+        mdx_segment_size = rt.uvr_mdx_segment_size
+        mdx_params = {
+            "hop_length": 1024, "segment_size": mdx_segment_size,
+            "overlap": 0.25, "batch_size": 1, "enable_denoise": False,
+        }
 
         # Check if we need to reinitialize (settings changed)
         if (
@@ -198,6 +204,7 @@ class UVRService:
             and self._current_model_dir == model_dir
             and self._current_chunk_duration == chunk_duration_arg
             and self._current_device == device
+            and self._current_mdx_segment_size == mdx_segment_size
         ):
             return
 
@@ -263,6 +270,7 @@ class UVRService:
                     model_file_dir=str(model_file_dir),
                     output_single_stem="Vocals",
                     chunk_duration=chunk_duration_arg,
+                    mdx_params=mdx_params,
                 )
                 self._execution_provider = self._configure_separator_device(
                     self._separator,
@@ -279,6 +287,7 @@ class UVRService:
                     model_file_dir=str(base_model_dir / "MDX_Net_Models"),
                     output_single_stem="Vocals",
                     chunk_duration=chunk_duration_arg,
+                    mdx_params=mdx_params,
                 )
                 self._execution_provider = self._configure_separator_device(
                     self._separator,
@@ -293,6 +302,7 @@ class UVRService:
                     output_format="wav",
                     output_single_stem="Vocals",
                     chunk_duration=chunk_duration_arg,
+                    mdx_params=mdx_params,
                 )
                 self._execution_provider = self._configure_separator_device(
                     self._separator,
@@ -305,6 +315,7 @@ class UVRService:
             self._current_model_dir = model_dir
             self._current_chunk_duration = chunk_duration_arg
             self._current_device = device
+            self._current_mdx_segment_size = mdx_segment_size
 
         except ImportError as exc:
             if exc.name and exc.name.startswith("audio_separator"):

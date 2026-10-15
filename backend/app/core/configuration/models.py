@@ -215,6 +215,8 @@ class RuntimeSettings(BaseModel):
     uvr_htdemucs_path: str = ""
     # audio-separator chunking guard for long files; 0 disables chunking.
     uvr_chunk_duration_sec: float = 300.0
+    # MDX inference window, independent of file chunk duration; smaller uses less RAM.
+    uvr_mdx_segment_size: int = Field(default=256, ge=32, le=4096)
 
     # Local LLM / VLM (Transformers directory or llama.cpp GGUF)
     local_llm_engine: str = "transformers"  # "transformers" | "llama_cpp"

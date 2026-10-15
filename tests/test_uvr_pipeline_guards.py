@@ -76,6 +76,7 @@ def test_uvr_separator_uses_configured_chunk_duration(tmp_path, monkeypatch):
             uvr_model_dir=str(model_dir),
             uvr_device="cpu",
             uvr_chunk_duration_sec=300.0,
+            uvr_mdx_segment_size=64,
         ),
     )
 
@@ -83,6 +84,26 @@ def test_uvr_separator_uses_configured_chunk_duration(tmp_path, monkeypatch):
     service._ensure_init()
 
     assert created[0]["chunk_duration"] == 300.0
+    assert created[0]["mdx_params"]["segment_size"] == 64
+
+    # Changing the inference window must reload the cached model.
+    settings = uvr_mod.get_runtime_settings()
+    service._ensure_init(settings)
+    assert len(created) == 1
+    settings.uvr_mdx_segment_size = 128
+    service._ensure_init(settings)
+    assert len(created) == 2
+    assert created[1]["mdx_params"]["segment_size"] == 128
+    service.release()
+    assert service._current_mdx_segment_size is None
+
+
+def test_uvr_mdx_segment_size_is_bounded():
+    assert RuntimeSettings().uvr_mdx_segment_size == 256
+    assert RuntimeSettings(uvr_mdx_segment_size=64).uvr_mdx_segment_size == 64
+    for value in (0, 31, 4097):
+        with pytest.raises(ValidationError):
+            RuntimeSettings(uvr_mdx_segment_size=value)
 
 
 def test_uvr_chunk_duration_setting_is_non_negative():
