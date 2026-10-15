@@ -31,25 +31,18 @@ export function parseChapterTimeline(content: string): TranscriptTocNode[] | nul
 
 export function completeChapterRanges(nodes: TranscriptTocNode[] | null, duration: number): TranscriptTocNode[] {
   if (!nodes?.length) return []
-  return nodes.map((node, index) => {
-    const nextStart = nodes[index + 1]?.start
-    const inferredEnd = typeof nextStart === "number" ? nextStart : duration > 0 ? duration : undefined
-    return {
-      ...node,
-      title: cleanChapterTitle(node.title),
-      end: typeof node.end === "number" ? node.end : inferredEnd,
-    }
-  })
+  return withEnds(nodes, duration > 0 ? duration : undefined)
 }
 
 const byStart = (left: TranscriptTocNode, right: TranscriptTocNode) => (left.start ?? 0) - (right.start ?? 0)
 const isTimed = (node: TranscriptTocNode) => typeof node.start === "number" && Number.isFinite(node.start)
 
-/** Give each node an end: its own, else the next sibling's start, else the parent's end. */
+/** Bound playback ranges by the next sibling and parent, even for overlapping topic ranges. */
 function withEnds(nodes: TranscriptTocNode[], parentEnd: number | undefined): TranscriptTocNode[] {
   return nodes.map((node, index) => {
-    const next = nodes[index + 1]?.start
-    const end = typeof node.end === "number" ? node.end : typeof next === "number" ? next : parentEnd
+    const limits = [node.end, nodes[index + 1]?.start, parentEnd]
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+    const end = limits.length ? Math.min(...limits) : undefined
     return { ...node, title: cleanChapterTitle(node.title), end, children: undefined }
   })
 }

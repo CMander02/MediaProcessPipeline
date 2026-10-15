@@ -60,6 +60,57 @@ describe("buildChapterTree", () => {
   it("keeps a flat list when there is no mindmap", () => {
     expect(buildChapterTree(chapters, null, 400).every((node) => !node.children)).toBe(true)
   })
+
+  it("assigns sections only once when mindmap topic ranges overlap later chapters", () => {
+    const overlappingMindmap = {
+      title: "Mindmap",
+      children: [
+        { title: "Broad topic", start: 565, end: 3119, children: [] },
+        {
+          title: "Training", start: 993, end: 1288,
+          children: [{ title: "Pretraining", start: 1088, end: 1182 }],
+        },
+        {
+          title: "Limits", start: 1290, end: 1482,
+          children: [{ title: "Human decisions", start: 1290, end: 1412 }],
+        },
+      ],
+    }
+    const tree = buildChapterTree(null, overlappingMindmap, 3400)
+    const flattened = flattenChapterTree(tree)
+    expect(flattened.filter(({ node }) => node.title === "Pretraining")).toHaveLength(1)
+    expect(flattened.filter(({ node }) => node.title === "Human decisions")).toHaveLength(1)
+    expect(tree[0].end).toBe(993)
+    expect(tree[0].children).toBeUndefined()
+    expect(chapterPathAt(tree, 1088).map((node) => node.title)).toEqual(["Training", "Pretraining"])
+    expect(chapterPathAt(tree, 1290).map((node) => node.title)).toEqual(["Limits", "Human decisions"])
+    expect(overlappingMindmap.children[0].end).toBe(3119)
+  })
+
+  it("bounds explicit chapter and section ends while retaining repeated titles at different times", () => {
+    const tree = buildChapterTree([
+      { title: "First", start: 0, end: 200 },
+      { title: "Second", start: 100, end: 300 },
+    ], {
+      title: "Mindmap",
+      children: [{ title: "Topic", children: [
+        { title: "Example", start: 10, end: 180, children: [
+          { title: "Before boundary", start: 20, end: 90 },
+          { title: "Past boundary", start: 60, end: 70 },
+        ] },
+        { title: "Next section", start: 50, end: 200 },
+        { title: "Example", start: 100, end: 300 },
+      ] }],
+    }, 250)
+
+    expect(tree.map((node) => node.end)).toEqual([100, 250])
+    expect(tree[0].children?.map((node) => node.end)).toEqual([50, 100])
+    expect(tree[0].children?.[0].children).toEqual([
+      { title: "Before boundary", start: 20, end: 50, children: undefined },
+    ])
+    expect(tree[1].children?.[0]).toMatchObject({ title: "Example", start: 100, end: 250 })
+    expect(chapterPathAt(tree, 100).map((node) => node.title)).toEqual(["Second", "Example"])
+  })
 })
 
 describe("chapterPathAt", () => {
