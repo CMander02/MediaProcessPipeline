@@ -11,6 +11,39 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.services.analysis import coding_plan_cli  # noqa: E402
 
 
+@pytest.mark.parametrize("name", ["codex", "codex.exe"])
+def test_codex_configured_executable_takes_precedence_over_path(monkeypatch, tmp_path, name):
+    executable = tmp_path / name
+    executable.touch()
+    monkeypatch.setattr(coding_plan_cli.shutil, "which", lambda _: "/other/codex")
+    assert coding_plan_cli._resolve_codex_executable(str(executable)) == executable
+
+
+@pytest.mark.parametrize("suffix", [".cmd", ".bat", ".ps1"])
+def test_codex_configured_shell_wrapper_falls_back_to_native_cli(monkeypatch, tmp_path, suffix):
+    wrapper = tmp_path / f"codex{suffix}"
+    wrapper.touch()
+    monkeypatch.setattr(coding_plan_cli.shutil, "which", lambda _: "/native/codex.exe")
+    assert coding_plan_cli._resolve_codex_executable(str(wrapper)) == Path("/native/codex.exe")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix desktop PATH fallback")
+@pytest.mark.parametrize("installation", ["local_bin", "standalone"])
+def test_codex_discovery_without_shell_path(monkeypatch, tmp_path, installation):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(coding_plan_cli.shutil, "which", lambda _: None)
+    codex_home = tmp_path / "custom-codex-home"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    executable = (
+        tmp_path / ".local" / "bin" / "codex" if installation == "local_bin"
+        else codex_home / "packages" / "standalone" / "current" / "bin" / "codex"
+    )
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+    assert coding_plan_cli._resolve_codex_executable() == executable
+
+
 def test_agy_model_id_matches_cli_slug_format():
     assert coding_plan_cli.agy_model_id("Gemini 3.1 Pro (High)") == "gemini-3.1-pro-high"
     assert (

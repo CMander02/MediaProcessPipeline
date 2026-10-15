@@ -118,12 +118,25 @@ def _resolve_agy_executable(cli_path: str = "") -> Path | None:
 
 def _resolve_codex_executable(cli_path: str = "") -> Path | None:
     configured = _configured_path(cli_path)
-    if configured is not None and configured.suffix.lower() == ".exe":
+    if configured is not None and configured.suffix.lower() not in {".cmd", ".bat", ".ps1"}:
         return configured
 
     discovered = shutil.which("codex.exe") or shutil.which("codex")
     if discovered and Path(discovered).suffix.lower() not in {".cmd", ".bat", ".ps1"}:
         return Path(discovered)
+
+    # Finder/Dock launches do not inherit shell PATH entries such as ~/.local/bin.
+    if os.name != "nt":
+        codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+        candidates = (
+            Path.home() / ".local" / "bin" / "codex",
+            codex_home / "packages" / "standalone" / "current" / "bin" / "codex",
+            Path("/opt/homebrew/bin/codex"),
+            Path("/usr/local/bin/codex"),
+        )
+        for candidate in candidates:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return candidate
 
     app_data = os.environ.get("APPDATA", "")
     package_root = Path(app_data) / "npm" / "node_modules" / "@openai" / "codex"
