@@ -371,6 +371,7 @@ class TaskQueue:
                 "speaker_identity.json", "analysis.json", "summary.json", "summary.md",
                 "mindmap.json", "mindmap.md", "detail.md", "subtitle_validation.json",
                 "source_context.json", "source_context.asr.json",
+                ".asr-checkpoint.json", ".asr-checkpoint.tmp",
             )
             for filename in generated:
                 (task_dir / filename).unlink(missing_ok=True)

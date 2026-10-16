@@ -1,6 +1,8 @@
 """Recognition service entrypoint."""
 
 import asyncio
+import hashlib
+import json
 import logging
 from pathlib import Path
 from typing import Any, Callable
@@ -60,10 +62,10 @@ def get_asr_service(provider: str | None = None) -> ASRService:
 
 def release_asr_models() -> None:
     """Release ASR-owned GPU resources without binding queue.py to a provider."""
+    from app.services.recognition.llama_cpp_asr import release_llama_cpp_asr_service
     from app.services.recognition.moss_cpp_asr import release_moss_cpp_service
     from app.services.recognition.sherpa_onnx_asr import release_sherpa_onnx_service
     from app.services.recognition.siliconflow_asr import release_siliconflow_service
-    from app.services.recognition.llama_cpp_asr import release_llama_cpp_asr_service
 
     release_moss_cpp_service()
     release_llama_cpp_asr_service()
@@ -115,6 +117,32 @@ async def transcribe_audio(
         raise RuntimeError(binding.reason or f"ASR provider '{binding.provider}' is not configured")
     provider_id = binding.provider
     service = get_asr_service(provider_id)
+    reported_progress = 0.0
+
+    def report_progress(update: dict[str, Any]) -> None:
+        nonlocal reported_progress
+        if not progress_callback:
+            return
+        update = dict(update)
+        # Reserve the last fifth of transcription for full-audio diarization.
+        # Otherwise ASR reaches 100%, then the task jumps back to 0%.
+        if binding.diarize and provider_id != "moss_cpp":
+            value = max(0.0, min(1.0, float(update.get("progress") or 0.0)))
+            phase = update.get("phase")
+            if phase == "diarizing":
+                update["progress"] = 0.8 + 0.2 * value
+            elif phase == "aligning":
+                update["progress"] = 0.55 + 0.25 * value
+            elif phase == "recognition_complete":
+                update["progress"] = 0.8
+            else:
+                weight = (
+                    0.55 if binding.request_kwargs.get("timestamp_mode") == "qwen_forced" else 0.8
+                )
+                update["progress"] = weight * value
+        reported_progress = max(reported_progress, float(update.get("progress") or 0.0))
+        update["progress"] = reported_progress
+        progress_callback(update)
 
     def _run_transcribe() -> dict[str, Any]:
         if provider_id in {"sherpa_onnx", "llama_cpp"}:
@@ -126,7 +154,7 @@ async def transcribe_audio(
                 chunk_strategy=binding.chunk_strategy,
                 hotwords=hotwords,
                 runtime_config=binding.request_kwargs,
-                progress_callback=progress_callback,
+                progress_callback=report_progress,
             )
         if provider_id == "siliconflow":
             return service.transcribe(
@@ -152,23 +180,78 @@ async def transcribe_audio(
             num_speakers=binding.num_speakers,
         )
 
-    result = await asyncio.to_thread(_run_transcribe)
+    # Keep completed local ASR/alignment across interruption in the subsequent
+    # diarization phase. Store only a hash of runtime parameters (no credentials).
+    checkpoint = (
+        Path(output_dir) / ".asr-checkpoint.json"
+        if output_dir and provider_id in {"llama_cpp", "sherpa_onnx"}
+        else None
+    )
+    signature = None
+    result = None
+    if checkpoint:
+        audio_stat = Path(audio_path).stat()
+        parameters = {
+            "version": 1,
+            "audio": str(Path(audio_path).resolve()),
+            "size": audio_stat.st_size,
+            "mtime_ns": audio_stat.st_mtime_ns,
+            "provider": provider_id,
+            "model": binding.model,
+            "language": binding.language,
+            "chunk_strategy": binding.chunk_strategy,
+            "runtime_config": binding.request_kwargs,
+            "hotwords": hotwords,
+        }
+        signature = hashlib.sha256(
+            json.dumps(parameters, sort_keys=True, default=str).encode()
+        ).hexdigest()
+        try:
+            cached = json.loads(checkpoint.read_text(encoding="utf-8"))
+            if cached.get("signature") == signature and isinstance(
+                cached.get("result", {}).get("segments"), list
+            ):
+                result = cached["result"]
+                logger.info("Restored completed ASR/alignment checkpoint: %s", checkpoint)
+                report_progress(
+                    {
+                        "phase": "recognition_complete",
+                        "progress": 1.0,
+                        "message": "已恢复完成的转写和时间对齐",
+                    }
+                )
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+    if result is None:
+        result = await asyncio.to_thread(_run_transcribe)
+        if checkpoint:
+            checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            temporary = checkpoint.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps({"signature": signature, "result": result}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            temporary.replace(checkpoint)
     from app.services.recognition.quality import filter_asr_segments
 
     raw_segments = result.get("segments")
     if isinstance(raw_segments, list):
         filtered_segments, quality_diagnostics = filter_asr_segments(raw_segments)
         result["segments"] = filtered_segments
-        result["quality_diagnostics"] = list(result.get("quality_diagnostics") or []) + quality_diagnostics
+        result["quality_diagnostics"] = (
+            list(result.get("quality_diagnostics") or []) + quality_diagnostics
+        )
     if binding.diarize and provider_id != "moss_cpp":
         raw_segments = result.get("segments")
         if isinstance(raw_segments, list) and raw_segments:
             if progress_callback:
-                progress_callback({
-                    "phase": "diarizing",
-                    "progress": 0.0,
-                    "message": "正在执行完整音频说话人分离",
-                })
+                report_progress(
+                    {
+                        "phase": "diarizing",
+                        "progress": 0.0,
+                        "message": "正在执行完整音频说话人分离",
+                    }
+                )
             cache_path = Path(output_dir) / "diarization.json" if output_dir else None
             diarization_result = await asyncio.to_thread(
                 get_diarization_service().apply,
@@ -178,6 +261,7 @@ async def transcribe_audio(
                 min_speakers=min_speakers,
                 max_speakers=max_speakers,
                 cache_path=cache_path,
+                progress_callback=report_progress,
             )
             result["segments"] = diarization_result["segments"]
             result["speakers"] = diarization_result["speakers"]
@@ -185,13 +269,15 @@ async def transcribe_audio(
             result["diarization"] = diarization_result["diarization"]
             result["diarization_cache_hit"] = diarization_result["cache_hit"]
             if progress_callback:
-                progress_callback({
-                    "phase": "diarizing",
-                    "progress": 1.0,
-                    "message": (
-                        f"说话人分离完成：{diarization_result['speaker_count']} 位说话人"
-                    ),
-                })
+                report_progress(
+                    {
+                        "phase": "diarizing",
+                        "progress": 1.0,
+                        "message": (
+                            f"说话人分离完成：{diarization_result['speaker_count']} 位说话人"
+                        ),
+                    }
+                )
     segments = service.to_segments(result)
     srt_content = service.to_srt(segments)
     detected_language = result.get("language", language or "unknown")
@@ -212,7 +298,7 @@ async def transcribe_audio(
         "provider": provider_id,
         "audio_processing_flow": "moss" if provider_id == "moss_cpp" else "asr",
         "language": detected_language or language or "unknown",
-        "segments": [s.model_dump() if hasattr(s, 'model_dump') else s for s in segments],
+        "segments": [s.model_dump() if hasattr(s, "model_dump") else s for s in segments],
         "speakers": speakers,
         "speaker_count": int(result.get("speaker_count", len(speakers))),
         "diarization": result.get("diarization", "pyannote" if binding.diarize else "none"),

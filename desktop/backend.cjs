@@ -86,7 +86,12 @@ class BackendController extends EventEmitter {
     const child = spawn(spec.command, spec.args, {
       cwd: spec.cwd, windowsHide: true, detached: process.platform !== 'win32',
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' },
+      env: {
+        ...process.env,
+        // Finder/Dock launches do not inherit the user's shell PATH.
+        ...(process.platform === 'darwin' ? { PATH: ['/opt/homebrew/bin', '/usr/local/bin', process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'].join(':') } : {}),
+        PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1',
+      },
     });
     this.child = child;
     this.emit('ownership-change');

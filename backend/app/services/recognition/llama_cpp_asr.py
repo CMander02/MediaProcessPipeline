@@ -116,7 +116,7 @@ class LlamaCppASRService:
         parallel = max(1, min(16, int(config.get("parallel") or 8)))
         device = str(config.get("device") or "auto")
         if device == "auto":
-            device = "cuda" if self.runtime._has_nvidia_gpu() else "cpu"
+            device = LocalLlamaCppRuntime._resolve_device(device)
         runtime_config = {
             **config, "device": device, "ctx": 4096, "parallel": parallel,
             "alias": "Qwen3-ASR", "keepalive_sec": 0, "cache_type": "f16", "cache_ram": 0,
@@ -180,8 +180,8 @@ class LlamaCppASRService:
         timestamp_source = "vad" if strategy in {"vad", "auto", "sherpa_vad"} else "fixed"
         if config.get("timestamp_mode") == "qwen_forced":
             from app.services.recognition.alignment import get_qwen_forced_aligner
-            from app.core.paths import CONFIG_FILE
-            temp_root = CONFIG_FILE.parent / "tmp" / "asr-alignment"
+            from app.core.paths import get_workspace_paths
+            temp_root = get_workspace_paths().temporary("asr-alignment")
             temp_root.mkdir(parents=True, exist_ok=True)
             aligned = []
             aligner = get_qwen_forced_aligner()
@@ -191,7 +191,11 @@ class LlamaCppASRService:
                     for i, segment in enumerate(segments):
                         progress(i, len(segments), f"正在对齐 {i + 1}/{len(segments)} 段", "aligning")
                         wav.write_bytes(wav_bytes(AudioChunk(segment["start"], segment["end"])))
-                        units = aligner.align(wav, segment["text"], detected, model_path=config["aligner_model_path"], device=device)
+                        units = aligner.align(
+                            wav, segment["text"], detected,
+                            model_path=config["aligner_model_path"],
+                            device="cpu" if device == "metal" else device,
+                        )
                         if not units:
                             raise RuntimeError(f"Forced alignment returned no timestamps for segment {i + 1}")
                         aligned.extend(_merge_timed_units(units, offset=segment["start"]))

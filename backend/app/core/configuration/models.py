@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.user_paths import default_data_root
+
 
 class CustomLLMProfile(BaseModel):
     """OpenAI-compatible custom LLM endpoint profile."""
@@ -190,6 +192,8 @@ class RuntimeSettings(BaseModel):
     pyannote_model_path: str = ""
     pyannote_segmentation_path: str = ""
     pyannote_embedding_path: str = ""
+    # Empty preserves legacy sherpa_device selection; MPS is PyTorch's Apple GPU backend.
+    pyannote_device: str = ""
     diarization_batch_size: int = 16
 
     # Voiceprint (speaker embedding) library
@@ -350,7 +354,7 @@ class RuntimeSettings(BaseModel):
     remote_sync_include_media: bool = False
 
     # Paths
-    data_root: str = "D:/Video/MediaProcessPipeline"
+    data_root: str = Field(default_factory=lambda: str(default_data_root()))
     media_retention_policy: Literal["all", "playback", "text"] = "all"
 
     @model_validator(mode="after")
@@ -419,6 +423,14 @@ class RuntimeSettings(BaseModel):
         device = value.strip().lower()
         if device not in {"auto", "cuda", "cpu"}:
             raise ValueError("sherpa_device must be one of: auto, cuda, cpu")
+        return device
+
+    @field_validator("pyannote_device")
+    @classmethod
+    def _validate_pyannote_device(cls, value: str) -> str:
+        device = value.strip().lower()
+        if device not in {"", "auto", "cuda", "cpu", "mps"}:
+            raise ValueError("pyannote_device must be one of: auto, cuda, cpu, mps")
         return device
 
     @field_validator("uvr_device")

@@ -6,8 +6,9 @@ import hashlib
 import json
 import logging
 import os
+import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 from app.core.network import runtime_proxy_url
@@ -148,8 +149,21 @@ class DiarizationService:
         model_path = str(rt.pyannote_model_path or "")
         if not model_path:
             raise RuntimeError("Pyannote diarization is enabled but pyannote_model_path is empty")
-        configured_device = str(getattr(rt, "sherpa_device", "auto") or "auto")
-        device = "cuda" if configured_device == "auto" else configured_device
+        configured_device = str(getattr(rt, "pyannote_device", "") or "")
+        if configured_device:
+            if configured_device == "auto":
+                device = (
+                    "cuda"
+                    if torch.cuda.is_available()
+                    else "mps"
+                    if torch.backends.mps.is_available()
+                    else "cpu"
+                )
+            else:
+                device = configured_device
+        else:
+            legacy_device = str(getattr(rt, "sherpa_device", "auto") or "auto")
+            device = "cuda" if legacy_device == "auto" else legacy_device
         batch_size = max(1, int(getattr(rt, "diarization_batch_size", 16) or 16))
         key = (
             model_path,
@@ -163,6 +177,10 @@ class DiarizationService:
 
         if device.startswith("cuda") and not torch.cuda.is_available():
             raise RuntimeError("Pyannote device is CUDA but torch.cuda.is_available() is false")
+        if device == "mps" and not torch.backends.mps.is_available():
+            raise RuntimeError(
+                "Pyannote device is MPS but torch.backends.mps.is_available() is false"
+            )
 
         self._configure_huggingface_proxy()
         config_path = self._prepare_model_config(model_path)
@@ -198,7 +216,39 @@ class DiarizationService:
         import torch
         import torchaudio
 
-        audio, sample_rate = sf.read(str(audio_path), dtype="float32", always_2d=False)
+        try:
+            audio, sample_rate = sf.read(str(audio_path), dtype="float32", always_2d=False)
+        except sf.LibsndfileError:
+            # libsndfile cannot decode AAC/M4A. FFmpeg also normalizes channels
+            # and sample rate without writing another full-length audio file.
+            try:
+                decoded = subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-nostdin",
+                        "-v",
+                        "error",
+                        "-i",
+                        str(audio_path),
+                        "-ac",
+                        "1",
+                        "-ar",
+                        "16000",
+                        "-f",
+                        "f32le",
+                        "pipe:1",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                message = exc.stderr.decode("utf-8", errors="replace")[-2000:]
+                raise RuntimeError(f"FFmpeg could not decode diarization audio: {message}") from exc
+            audio = np.frombuffer(decoded.stdout, dtype="<f4").copy()
+            sample_rate = 16000
+            if not audio.size:
+                raise RuntimeError(f"FFmpeg decoded no diarization audio: {audio_path}")
         if audio.ndim > 1:
             audio = np.mean(audio, axis=1)
         if sample_rate != 16000:
@@ -332,8 +382,8 @@ class DiarizationService:
             overlap_by_speaker: dict[str, float] = {}
             for index in indexes:
                 speaker = speakers[index]
-                overlap_by_speaker[speaker] = (
-                    overlap_by_speaker.get(speaker, 0.0) + float(overlaps[index])
+                overlap_by_speaker[speaker] = overlap_by_speaker.get(speaker, 0.0) + float(
+                    overlaps[index]
                 )
             segment["speaker"] = max(overlap_by_speaker, key=overlap_by_speaker.get)
             result.append(segment)
@@ -355,6 +405,7 @@ class DiarizationService:
         min_speakers: int | None = None,
         max_speakers: int | None = None,
         cache_path: str | Path | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         import pandas as pd
         import torch
@@ -388,7 +439,38 @@ class DiarizationService:
             )
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            output = pipeline(self._load_audio(audio_file), **kwargs)
+
+            def report_progress(name: str, artifact: Any, **details: Any) -> None:
+                stages = {
+                    "segmentation": (0.0, 0.35, "检测语音与说话人切换"),
+                    "speaker_counting": (0.35, 0.0, "统计重叠说话人数"),
+                    "embeddings": (0.35, 0.60, "提取说话人声纹"),
+                    "discrete_diarization": (0.95, 0.04, "合并说话人分离结果"),
+                }
+                if name not in stages:
+                    return
+                start, weight, label = stages[name]
+                total = details.get("total")
+                completed = details.get("completed")
+                ratio = (
+                    min(1.0, max(0.0, float(completed) / float(total)))
+                    if total and completed is not None
+                    else 1.0
+                )
+                message = f"说话人分离：{label}"
+                update = {
+                    "phase": "diarizing",
+                    "diarization_stage": name,
+                    "progress": start + weight * ratio,
+                    "message": message,
+                }
+                if total and completed is not None:
+                    update.update(completed_chunks=int(completed), total_chunks=int(total))
+                    update["message"] += f" {int(completed)}/{int(total)}"
+                if progress_callback:
+                    progress_callback(update)
+
+            output = pipeline(self._load_audio(audio_file), hook=report_progress, **kwargs)
             turns = self._annotation_to_turns(output)
             self._write_cache(resolved_cache, signature, turns)
         else:

@@ -1,9 +1,10 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.user_paths import default_data_root
 from app.version import __version__
 
 
@@ -36,8 +37,8 @@ class Settings(BaseSettings):
         "https://localhost",
     ]
 
-    # Data paths - simplified flat structure
-    data_root: Path = Path("D:/Video/MediaProcessPipeline")  # All task outputs go here
+    # Persistent library stays independent of the source checkout.
+    data_root: Path = Field(default_factory=default_data_root)
 
     # =========================================================================
     # LLM Configuration (使用 LiteLLM 统一处理)

@@ -19,6 +19,8 @@ dependencies = [
     "opencc>=1.4.0,<2",
     # Unified local ASR runtime. CUDA wheels installed by setup keep this version identity.
     "sherpa-onnx==1.13.4",
+    # The macOS wheel delegates its native runtime to a separate core wheel.
+    "sherpa-onnx-core==1.13.4; sys_platform == 'darwin'",
     # CLI
     "typer>=0.15.0",
     "rich>=13.0.0",
@@ -51,9 +53,10 @@ uvr = [
     "torch~=2.8.0",
     "torchaudio~=2.8.0",
     # 音频处理 (UVR5 人声分离)
-    "audio-separator[gpu]>=0.41.0",
+    "audio-separator[gpu]>=0.41.0; sys_platform != 'darwin'",
+    "audio-separator[cpu]>=0.41.0; sys_platform == 'darwin'",
     # CUDA 12 + cuDNN 9; newer Windows wheels target CUDA 13.
-    "onnxruntime-gpu==1.22.0",
+    "onnxruntime-gpu==1.22.0; sys_platform != 'darwin'",
 ]
 local-asr = [
     "torch~=2.8.0",
@@ -88,8 +91,9 @@ local-models = [
     "torchaudio~=2.8.0",
     # audio-separator[gpu] provides onnxruntime-gpu, which also includes the CPU provider.
     # Installing onnxruntime alongside it overwrites the shared Python module on Windows.
-    "audio-separator[gpu]>=0.41.0",
-    "onnxruntime-gpu==1.22.0",
+    "audio-separator[gpu]>=0.41.0; sys_platform != 'darwin'",
+    "audio-separator[cpu]>=0.41.0; sys_platform == 'darwin'",
+    "onnxruntime-gpu==1.22.0; sys_platform != 'darwin'",
     # Qwen3-ASR inference is handled by sherpa-onnx; qwen-asr supplies ForcedAligner only.
     "qwen-asr>=0.0.6",
     "pyannote-audio>=3.4.0,<4",
@@ -112,15 +116,15 @@ select = ["E", "F", "I", "W"]
 testpaths = ["tests"]
 
 # ============================================================================
-# UV 配置：强制使用 PyTorch CUDA 12.8 索引
+# UV 配置：Windows/Linux 使用 CUDA 12.8；macOS 使用 PyPI wheel
 # ============================================================================
 # 4090 + CUDA 13.0 驱动向下兼容 CUDA 12.8
 # torch~=2.8.0 满足 qwen-asr 和 pyannote-audio 要求
 # ============================================================================
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu128" }
-torchaudio = { index = "pytorch-cu128" }
+torch = { index = "pytorch-cu128", marker = "sys_platform != 'darwin'" }
+torchaudio = { index = "pytorch-cu128", marker = "sys_platform != 'darwin'" }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

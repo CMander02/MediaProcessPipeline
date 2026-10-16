@@ -15,6 +15,15 @@ from app.core.settings import (  # noqa: E402
 from app.services.recognition.diarization import DiarizationService  # noqa: E402
 
 
+def test_pyannote_device_is_independent_of_sherpa_device():
+    settings = RuntimeSettings(pyannote_device=" MPS ", sherpa_device="cpu")
+    assert settings.pyannote_device == "mps"
+    assert settings.sherpa_device == "cpu"
+    assert RuntimeSettings().pyannote_device == ""
+    with pytest.raises(ValueError, match="pyannote_device"):
+        RuntimeSettings(pyannote_device="metal")
+
+
 def test_custom_profile_state_normalizes_active_profile():
     data = {
         "custom_llm_profiles": [

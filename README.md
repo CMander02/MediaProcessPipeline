@@ -44,7 +44,7 @@ MediaProcessPipeline/
 │   └── mpp                     # bash
 └── config.json                 # 运行时配置；
                                 # 实际数据/任务输出/SQLite 走 settings.data_root
-                                # （本机：D:/Video/MediaProcessPipeline/）
+                                # 默认使用当前用户的系统应用数据目录
 ```
 
 ## 快速开始
@@ -250,7 +250,7 @@ cd web && npm run dev              # :5173
 
 ## 配置
 
-运行时配置保存在项目根目录 `config.json`。任务数据库由 `data_root` 和资料库布局决定：旧库使用 `tasks.db`，新库使用 `state/tasks.db`；新归档位于 `archives/<title>/`。现有库保持原路径，可用 `mpp storage migrate` 预览目录整理，详见[资料库迁移与恢复](docs/storage-migration.md)。
+运行时配置保存在项目根目录 `config.json`。新安装的 `data_root` 默认位于系统用户应用数据目录：macOS 为 `~/Library/Application Support/MediaProcessPipeline`，Windows 为 `%LOCALAPPDATA%/MediaProcessPipeline`，Linux 为 `~/.local/share/MediaProcessPipeline`（支持 `XDG_DATA_HOME`）。设置中可指定其他资料库位置，已有配置保持生效。任务数据库由 `data_root` 和资料库布局决定：旧库使用 `tasks.db`，新库使用 `state/tasks.db`；新归档位于 `archives/<title>/`。可用 `mpp storage migrate` 预览目录整理和资料库复制，详见[资料库迁移与恢复](docs/storage-migration.md)。
 
 在前端设置页面或根目录 `config.json` 中配置：
 

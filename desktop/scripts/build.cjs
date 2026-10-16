@@ -13,9 +13,13 @@ if (frontend.error) throw frontend.error;
 if (frontend.status !== 0) process.exit(frontend.status || 1);
 fs.copyFileSync(path.join(root, 'web', 'public', 'pwa-512x512.png'), path.join(desktop, 'assets', 'icon.png'));
 
+const mac = process.platform === 'darwin';
+if (mac && process.argv.includes('--portable')) throw new Error('Portable EXE builds are Windows-only; use npm run pack or npm run dist on macOS.');
 build({
   projectDir: desktop,
-  targets: Platform.WINDOWS.createTarget(process.argv.includes('--dir') ? ['dir'] : process.argv.includes('--portable') ? ['portable'] : ['nsis'], Arch.x64),
+  targets: mac
+    ? Platform.MAC.createTarget(process.argv.includes('--dir') ? ['dir'] : ['dmg'], process.arch === 'arm64' ? Arch.arm64 : Arch.x64)
+    : Platform.WINDOWS.createTarget(process.argv.includes('--dir') ? ['dir'] : process.argv.includes('--portable') ? ['portable'] : ['nsis'], Arch.x64),
   config,
   publish: 'never',
 }).catch((error) => { console.error(error); process.exitCode = 1; });

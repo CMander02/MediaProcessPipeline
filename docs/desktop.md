@@ -4,6 +4,20 @@ MPP Desktop 使用 Electron 打开现有 React 界面。FastAPI 继续在 `http:
 
 ## 安装与使用
 
+### macOS（Apple Silicon）
+
+```bash
+brew install ffmpeg llama.cpp
+uv sync --extra local-models --extra dev
+cd web && npm ci && cd ../desktop && npm ci && npm run pack
+```
+
+将 `desktop/dist/mac-arm64/MPP Desktop.app` 拷贝到 `~/Applications/`，首次打开选择项目根目录，然后拖到 Dock。模型路径在设置中指向本地模型目录；UVR 的设备选择 `cpu`，本地 GGUF LLM 设备选择 `auto`，会使用 Apple Silicon 的 Metal 加速。macOS 自动安装 PyPI 的 PyTorch 和 CPU ONNX Runtime，Windows/Linux 继续使用已有 CUDA 依赖。
+
+Pyannote 可以独立使用 PyTorch MPS 加速：`mpp config pyannote_device mps`。可选值为 `auto`（CUDA → MPS → CPU）、`cpu`、`cuda`、`mps`；未设置时沿用原来的 `sherpa_device`。这与 MLX 无关，也不改变 Sherpa 的 ONNX 执行设备。说话人分离按语音检测、声纹批次、结果合并报告进度；本地 ASR 和时间对齐完成后会保存断点，中断后自动复用，音频或识别参数变化时重新计算。
+
+Dock 启动会补充 Homebrew 的 PATH，因此后端可以找到 FFmpeg 和 llama-server。macOS 桌面配置保存在 `~/Library/Application Support/MPP Desktop/desktop-settings.json`。`npm run dist` 生成 DMG，`npm run portable` 仅用于 Windows。
+
 ### 本机免安装使用
 
 在项目的 `desktop/` 目录执行 `npm run portable`，生成 `desktop/dist/MPP-Desktop-Portable.exe`。直接双击即可启动，也可为它创建桌面快捷方式。

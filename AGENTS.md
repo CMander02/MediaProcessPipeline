@@ -65,6 +65,7 @@ CLI (mpp) / HTTP
 
 ### 数据持久化
 
+- 新安装资料库默认使用用户应用数据目录：macOS 为 `~/Library/Application Support/MediaProcessPipeline`，Windows 为 `%LOCALAPPDATA%/MediaProcessPipeline`，Linux 为 `$XDG_DATA_HOME/MediaProcessPipeline`（默认 `~/.local/share/MediaProcessPipeline`）。统一通过 `app.core.user_paths.default_data_root()` 获取，已有自定义 `data_root` 保持生效。
 - Runtime settings 存项目根目录 `config.json`，由 `app.core.paths.CONFIG_FILE` 定位。
 - 全新资料库采用 `data_root/state/tasks.db`、`state/kb.db`、`state/voiceprints/`、`state/auth/`；归档为 `archives/{title}/`，同名加 `(2)` 后缀。
 - 现有混合布局继续使用 `data_root/tasks.db` 和原归档路径。路径统一通过 `get_workspace_paths()` 解析；避免拼接固定布局。

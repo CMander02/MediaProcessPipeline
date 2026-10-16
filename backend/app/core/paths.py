@@ -81,6 +81,7 @@ class WorkspacePaths:
             "uploads",
             "manual_task",
             "pyannote",
+            "asr-alignment",
             "download",
             "uvr",
             "search",
@@ -92,7 +93,7 @@ class WorkspacePaths:
             return self.root / owner
         if owner in {"pyannote", "search"}:
             return self.root / ".cache" / owner
-        if owner in {"download", "uvr"}:
+        if owner in {"download", "uvr", "asr-alignment"}:
             return self.root / "tmp" / owner
         return self.root / f"_{owner}"
 

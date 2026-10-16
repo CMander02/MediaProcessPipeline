@@ -344,7 +344,8 @@ def test_source_expansion_supports_emoji_directories_and_globs(tmp_path: Path):
     expanded = expand_sources([str(folder)], recursive=False)
     globbed = expand_sources([str(folder / "*.mp3")], recursive=False)
 
-    assert expanded == [str(first.resolve()), str(second.resolve())]
+    # Directory enumeration order differs between filesystems.
+    assert sorted(expanded) == sorted([str(first.resolve()), str(second.resolve())])
     assert globbed == [str(second.resolve())]
 
 

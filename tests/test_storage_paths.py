@@ -9,8 +9,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from app.core import database
-from app.core.paths import LAYOUT_FILE, get_workspace_paths, reset_workspace_paths
+from app.core.paths import LAYOUT_FILE, WorkspacePaths, get_workspace_paths, reset_workspace_paths
 from app.models import Task, TaskStatus, TaskType
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_alignment_temporary_files_stay_in_workspace(tmp_path, version):
+    assert (
+        WorkspacePaths(tmp_path, version).temporary("asr-alignment")
+        == tmp_path / "tmp/asr-alignment"
+    )
 
 
 @pytest.fixture

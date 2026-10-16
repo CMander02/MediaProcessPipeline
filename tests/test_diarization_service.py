@@ -1,4 +1,6 @@
 import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +13,37 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.models import TranscriptSegment  # noqa: E402
 from app.services import recognition  # noqa: E402
 from app.services.recognition.diarization import DiarizationService  # noqa: E402
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="FFmpeg is required for AAC decoding")
+def test_diarization_decodes_m4a_with_ffmpeg(tmp_path):
+    import torch
+
+    audio = tmp_path / "测试 🎧.m4a"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=2",
+            "-ac",
+            "2",
+            "-c:a",
+            "aac",
+            str(audio),
+        ],
+        check=True,
+    )
+    decoded = DiarizationService._load_audio(audio)
+    assert decoded["sample_rate"] == 16000
+    assert decoded["waveform"].shape[0] == 1
+    assert 32000 <= decoded["waveform"].shape[1] < 33000
+    assert torch.isfinite(decoded["waveform"]).all()
+    assert decoded["waveform"].abs().max() > 0.01
 
 
 def test_assign_speakers_uses_largest_global_turn_overlap():
@@ -50,12 +83,15 @@ def test_assign_speakers_preserves_words_when_a_cue_crosses_speaker_turns():
 
 def test_assign_speakers_sums_overlap_and_ignores_brief_interjections():
     original = [{"start": 0.0, "end": 5.0, "text": "没关系，然后我们继续。"}]
-    mapped = DiarizationService.assign_speakers(original, [
-        {"start": 0.0, "end": 2.0, "speaker": "SPEAKER_00"},
-        {"start": 2.0, "end": 2.2, "speaker": "SPEAKER_01"},
-        {"start": 2.2, "end": 5.0, "speaker": "SPEAKER_00"},
-        {"start": 0.4, "end": 3.4, "speaker": "SPEAKER_02"},
-    ])
+    mapped = DiarizationService.assign_speakers(
+        original,
+        [
+            {"start": 0.0, "end": 2.0, "speaker": "SPEAKER_00"},
+            {"start": 2.0, "end": 2.2, "speaker": "SPEAKER_01"},
+            {"start": 2.2, "end": 5.0, "speaker": "SPEAKER_00"},
+            {"start": 0.4, "end": 3.4, "speaker": "SPEAKER_02"},
+        ],
+    )
     assert mapped == [{**original[0], "speaker": "SPEAKER_00"}]
 
 
@@ -97,9 +133,36 @@ def test_checkpoint_file_resolves_model_directory(tmp_path):
     checkpoint = model_dir / "pytorch_model.bin"
     checkpoint.write_bytes(b"weights")
 
-    assert DiarizationService._checkpoint_file(
-        str(model_dir), "segmentation"
-    ) == checkpoint.resolve()
+    assert (
+        DiarizationService._checkpoint_file(str(model_dir), "segmentation") == checkpoint.resolve()
+    )
+
+
+def test_diarization_reports_batch_progress_and_clamps_final_batch(tmp_path, monkeypatch):
+    audio_path = tmp_path / "audio.wav"
+    audio_path.write_bytes(b"audio")
+    service = DiarizationService()
+    updates = []
+
+    def pipeline(audio, *, hook, **kwargs):
+        hook("segmentation", None, completed=0, total=21)
+        hook("segmentation", None, completed=32, total=21)
+        hook("embeddings", None, completed=0, total=4)
+        hook("embeddings", None, completed=2, total=4)
+        hook("embeddings", None, completed=4, total=4)
+        hook("discrete_diarization", None)
+        return object()
+
+    monkeypatch.setattr(service, "_ensure_pipeline", lambda: pipeline)
+    monkeypatch.setattr(service, "_load_audio", lambda _: {})
+    monkeypatch.setattr(service, "_annotation_to_turns", lambda _: [])
+    service.apply(audio_path, [], progress_callback=updates.append)
+
+    assert [item["progress"] for item in updates] == pytest.approx(
+        [0, 0.35, 0.35, 0.65, 0.95, 0.99]
+    )
+    assert updates[3]["message"] == "说话人分离：提取说话人声纹 2/4"
+    assert updates[3]["completed_chunks"] == 2
 
 
 @pytest.mark.asyncio
@@ -130,7 +193,13 @@ async def test_transcribe_audio_runs_global_diarization_on_original_audio(
 
     class ASRService:
         def transcribe(self, *args, **kwargs):
+            captured["asr_calls"] = captured.get("asr_calls", 0) + 1
             captured["asr_diarize"] = kwargs.get("diarize")
+            kwargs["progress_callback"]({"phase": "transcribing", "progress": 1.0})
+            if kwargs["runtime_config"].get("timestamp_mode") == "qwen_forced":
+                for value in [0.0, 0.5, 1.0]:
+                    kwargs["progress_callback"]({"phase": "aligning", "progress": value})
+                kwargs["progress_callback"]({"phase": "transcribing", "progress": 1.0})
             return {
                 "language": "zh",
                 "segments": [{"start": 0.0, "end": 2.0, "text": "你好"}],
@@ -150,6 +219,7 @@ async def test_transcribe_audio_runs_global_diarization_on_original_audio(
             captured["audio_path"] = str(audio_path)
             captured["segments"] = segments
             captured["kwargs"] = kwargs
+            kwargs["progress_callback"]({"phase": "diarizing", "progress": 0.5})
             return {
                 "segments": [{**segments[0], "speaker": "SPEAKER_00"}],
                 "speakers": ["SPEAKER_00"],
@@ -160,6 +230,7 @@ async def test_transcribe_audio_runs_global_diarization_on_original_audio(
 
     monkeypatch.setattr(recognition, "get_diarization_service", GlobalDiarization)
 
+    updates = []
     result = await recognition.transcribe_audio(
         str(asr_audio),
         output_dir=tmp_path,
@@ -168,6 +239,7 @@ async def test_transcribe_audio_runs_global_diarization_on_original_audio(
         min_speakers=1,
         max_speakers=3,
         diarization_audio_path=str(original_audio),
+        progress_callback=updates.append,
     )
 
     assert captured["audio_path"] == str(original_audio)
@@ -179,3 +251,24 @@ async def test_transcribe_audio_runs_global_diarization_on_original_audio(
     assert result["segments"][0]["speaker"] == "SPEAKER_00"
     assert result["speaker_count"] == 1
     assert result["diarization"] == "pyannote"
+    assert [item["progress"] for item in updates] == pytest.approx([0.8, 0.8, 0.9, 1.0])
+
+    # A later interruption in diarization must not repeat completed ASR/alignment.
+    await recognition.transcribe_audio(str(asr_audio), output_dir=tmp_path, provider="sherpa_onnx")
+    assert captured["asr_calls"] == 1
+    await recognition.transcribe_audio(
+        str(asr_audio), output_dir=tmp_path, provider="sherpa_onnx", hotwords=["千问"]
+    )
+    assert captured["asr_calls"] == 2
+    binding.request_kwargs["timestamp_mode"] = "qwen_forced"
+    updates.clear()
+    await recognition.transcribe_audio(
+        str(asr_audio),
+        output_dir=tmp_path,
+        provider="sherpa_onnx",
+        progress_callback=updates.append,
+    )
+    assert captured["asr_calls"] == 3
+    assert [item["progress"] for item in updates] == pytest.approx(
+        [0.55, 0.55, 0.675, 0.8, 0.8, 0.8, 0.9, 1.0]
+    )

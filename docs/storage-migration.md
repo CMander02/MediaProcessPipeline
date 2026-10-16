@@ -2,6 +2,20 @@
 
 `config.json` 位于项目根目录。它的 `data_root` 指向当前资料库，CLI 与 HTTP 使用同一配置入口。
 
+## 默认资料库位置
+
+新安装使用当前用户的系统应用数据目录，资料库独立于源码和桌面应用：
+
+| 系统 | 默认 `data_root` |
+| --- | --- |
+| macOS | `~/Library/Application Support/MediaProcessPipeline` |
+| Windows | `%LOCALAPPDATA%/MediaProcessPipeline` |
+| Linux | `$XDG_DATA_HOME/MediaProcessPipeline`，未设置时为 `~/.local/share/MediaProcessPipeline` |
+
+已有 `config.json` 中明确指定的路径继续生效。默认位置只用于未配置资料库的安装，不会自动搬动已有数据。在应用设置的“资料库位置”中可以切换到外置硬盘等自定义目录；切换位置本身不复制旧库，需要先按下文迁移。
+
+`state/` 保存数据库、认证和声纹；`archives/` 保存持久归档；`tmp/`、`logs/`、`backups/` 分别保存工作文件、日志和迁移备份。模型目录单独配置，可共享 `~/AIGC/Models`。项目内的 `data/` 仅用于开发测试或明确配置的便携资料库。
+
 全新资料库使用以下布局，`.mpp-layout.json` 保存布局版本 2：
 
 ```text

@@ -73,6 +73,7 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "pyannote_model_path",
         "pyannote_segmentation_path",
         "pyannote_embedding_path",
+        "pyannote_device",
         "diarization_batch_size",
     ],
     "subtitle": [

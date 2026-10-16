@@ -13,6 +13,7 @@ module.exports = {
   directories: { output: 'dist' },
   files: ['*.cjs', '!electron-builder.cjs', 'launcher/**', 'assets/icon.png', 'package.json'],
   win: { target: [{ target: 'nsis', arch: ['x64'] }], icon: 'assets/icon.png' },
+  mac: { category: 'public.app-category.productivity', icon: 'assets/icon.png', identity: '-' },
   portable: { artifactName: 'MPP-Desktop-Portable.${ext}' },
   nsis: {
     oneClick: false,

@@ -132,3 +132,25 @@ def test_missing_projector_and_unsupported_native_timestamps(config):
 def test_parse_asr_scaffolding():
     assert module.parse_asr_text("language English<asr_text>Hello.<|im_end|>") == ("Hello.", "english")
     assert module.parse_asr_text("你好", "zh") == ("你好", "zh")
+
+
+def test_mac_auto_asr_uses_metal_and_cpu_alignment(monkeypatch, service, config, tmp_path):
+    from app.services.recognition import alignment
+
+    svc, audio, runtime, _ = service
+    mock_client(monkeypatch)
+    monkeypatch.setattr(module.LocalLlamaCppRuntime, "_resolve_device", lambda value: "metal")
+    alignment_devices = []
+
+    def align(audio_path, text, language, **kwargs):
+        alignment_devices.append(kwargs["device"])
+        return [{"text": text, "start": 0.0, "end": 1.0}]
+
+    aligner = SimpleNamespace(align=align, release=lambda: None)
+    monkeypatch.setattr(alignment, "get_qwen_forced_aligner", lambda: aligner)
+    config.update(device="auto", timestamp_mode="qwen_forced", aligner_model_path=str(tmp_path))
+    result = svc.transcribe(str(audio), runtime_config=config)
+    assert runtime.config["device"] == "metal"
+    assert result["runtime_provider"] == "metal"
+    assert result["timestamp_source"] == "qwen_forced"
+    assert alignment_devices == ["cpu", "cpu", "cpu"]

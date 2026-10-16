@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import platform
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -117,18 +119,29 @@ class LocalLlamaCppRuntime:
 
     @staticmethod
     def _resolve_binary(value: str) -> str:
-        binary = value.strip() or shutil.which("llama-server") or shutil.which("llama-server.exe") or ""
+        binary = (
+            value.strip() or shutil.which("llama-server") or shutil.which("llama-server.exe") or ""
+        )
         if not binary or not Path(binary).is_file():
             raise RuntimeError("llama-server is unavailable; configure llama_cpp_binary_path")
         return binary
 
     @staticmethod
-    def _device_args(config: dict[str, Any]) -> list[str]:
-        device = str(config.get("device") or "auto").lower()
+    def _resolve_device(value: str) -> str:
+        device = str(value or "auto").lower()
         if device == "auto":
-            device = "cuda" if LocalLlamaCppRuntime._has_nvidia_gpu() else "cpu"
-        if device == "cuda":
-            layers = int(config.get("n_gpu_layers") if config.get("n_gpu_layers") is not None else 99)
+            if sys.platform == "darwin" and platform.machine() == "arm64":
+                return "metal"
+            return "cuda" if LocalLlamaCppRuntime._has_nvidia_gpu() else "cpu"
+        return device
+
+    @staticmethod
+    def _device_args(config: dict[str, Any]) -> list[str]:
+        device = LocalLlamaCppRuntime._resolve_device(str(config.get("device") or "auto"))
+        if device in {"cuda", "metal"}:
+            layers = int(
+                config.get("n_gpu_layers") if config.get("n_gpu_layers") is not None else 99
+            )
             return ["-fa", "on", "-ngl", str(layers)]
         return ["-ngl", "0"]
 
@@ -155,7 +168,7 @@ class LocalLlamaCppRuntime:
             if self._process and self._process.poll() is not None:
                 raise RuntimeError("Local llama.cpp server exited during startup")
             try:
-                response = httpx.get(f"{self._base_url}/health", timeout=2)
+                response = httpx.get(f"{self._base_url}/health", timeout=2, trust_env=False)
                 if response.status_code < 500:
                     return
             except Exception as exc:
