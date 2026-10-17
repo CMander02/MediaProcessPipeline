@@ -3,17 +3,20 @@
 All prompts produce plain text only: `- ` list markers with 2-space indentation.
 No markdown formatting (no bold, italic, links, code, headings).
 
-Prompts are written in English to avoid biasing the model toward outputting
-a single language. The user's primary language is injected explicitly so the
-model can mirror the source's linguistic structure — including code-switched
-segments (e.g. Chinese with English technical terms).
+Generated outline prose uses Simplified Chinese. Source names and evidence
+quotes retain their original spelling.
 """
 
-from app.services.analysis.text_locale import language_script_instruction
+from app.services.analysis.prompts.outline_language import OUTLINE_LANGUAGE_POLICY
 
 MINDMAP_SYSTEM_PROMPT = """You create a source-grounded timed content map.
 Canonical names and source chapter timestamps are read-only facts. Every chapter must
-remain represented. Return only the requested indented list."""
+remain represented. Preserve who makes a claim, its assumptions, scope and uncertainty.
+Keep anecdotes and comparisons recognizable as examples; never turn a scoped guarantee
+or a speaker's opinion into an unconditional fact. Combine repeated points within the
+same discussion, preserving any distinct conditions or counterarguments.
+Return only the requested indented list.
+""" + OUTLINE_LANGUAGE_POLICY
 
 
 # ---------------------------------------------------------------------------
@@ -22,27 +25,11 @@ remain represented. Return only the requested indented list."""
 
 
 def _language_clause(user_language: str | None) -> str:
-    """Build the 'primary language + preserve code-switching' instruction block.
-
-    The cardinal rule: do NOT force the output into a single language when the
-    source mixes languages. Proper nouns, quoted phrases, product/model names,
-    code identifiers, and in-line foreign terms must be kept verbatim in their
-    original script. Only the surrounding connective prose adopts the primary
-    language.
-    """
+    """Keep source language metadata separate from the output language policy."""
     lang = (user_language or "").strip() or "auto-detect from transcript"
-    script_instruction = language_script_instruction(user_language)
     return f"""## Language policy (critical)
-- The transcript's primary language: {lang}.
-- Write the connective / narrative words of each node in that primary language.
-{script_instruction}
-- PRESERVE code-switched content verbatim. If the source mixes languages
-  (for example Chinese narration with English technical terms, Japanese quotes,
-  proper nouns, brand names, code identifiers, song titles), keep those tokens
-  in their original script and spelling. Do NOT translate them.
-- Do NOT collapse a multilingual transcript into a monolingual output.
-- If a speaker quotes another language, keep the quote in its original form
-  and (only when clarity demands it) add a short parenthetical gloss."""
+- Transcript language (source metadata only): {lang}.
+{OUTLINE_LANGUAGE_POLICY}"""
 
 
 # ---------------------------------------------------------------------------
@@ -60,15 +47,18 @@ concise display-oriented mind-map.
 ## Core requirements
 1. Distill and rephrase — do NOT copy sentences verbatim. Turn scattered
    conversational speech into information-dense bullet points.
-2. The root topic is implicit; level-1 nodes are 5-8 main branches; level-2
-   nodes are the key points under each branch.
+2. The root topic is implicit. Let the source determine the number of branches:
+   a short single-topic clip may need only 1-3 branches and a few key points.
+   Use more branches only for distinct arguments or actual sections.
 3. Keep the default hierarchy shallow: normally 2 levels below the root;
    never exceed 3 levels below the root unless one exceptional branch truly
    needs one more layer. Absolute maximum depth: 5 including the root.
-4. Keep the whole map presentation-friendly: ideally 20-40 nodes total.
+4. Keep the whole map presentation-friendly and proportional to the source.
+   A few-minute clip usually needs 3-12 nodes; expand only for substantive content.
 5. Each node should be a short phrase, not a paragraph or transcript quote.
-6. Filter out filler words, speaker small talk, and low-value anecdotes unless
-   they are crucial to the video's argument.
+6. Preserve meaningful opening conversation, introductions and event setup as
+   a separate opening branch, with its actual content summarized. Preserve each
+   main presenter's distinct contribution. Omit empty greetings and verbal filler.
 7. If the transcript includes timestamps, append a timestamp range to every node
    in square brackets, using the node's earliest relevant start and latest
    relevant end, e.g. `- 背景 [00:00:03 - 00:01:12]`.

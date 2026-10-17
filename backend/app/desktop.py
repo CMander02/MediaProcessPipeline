@@ -58,7 +58,8 @@ def main() -> None:
     # A Windows venv's redirector can have a different PID from its interpreter.
     print(f"MPP_DESKTOP_PID={os.getpid()}", flush=True)
     server = uvicorn.Server(uvicorn.Config(
-        "app.main:app", host="localhost", port=18000,
+        # Bind IPv4 explicitly; the desktop continues to open http://localhost.
+        "app.main:app", host="127.0.0.1", port=18000,
         # Other browser clients can keep SSE responses open during desktop exit.
         timeout_graceful_shutdown=5,
     ))

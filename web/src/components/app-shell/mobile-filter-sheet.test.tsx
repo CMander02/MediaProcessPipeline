@@ -41,6 +41,6 @@ describe("MobileFilterSheet", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "恢复默认" }))
     expect(controls.resetFilters).toHaveBeenCalled()
-    expect(controls.setSort).toHaveBeenCalledWith("created_desc")
+    expect(controls.setSort).toHaveBeenCalledWith("processed_desc")
   })
 })

@@ -6,6 +6,9 @@ export interface OfflineFileDescriptor {
 }
 
 export interface ArchiveItem {
+  last_processed_at?: string
+  content_key?: string
+  folder_id?: string | null
   archive_id?: string
   revision?: number
   title: string
@@ -43,6 +46,10 @@ export interface ArchiveItem {
 import type { ArchiveSort, ArchiveStatus, MediaFilter } from "@/lib/archive-filters"
 
 export interface ArchiveQuery {
+  include_folders?: boolean
+  folder_id?: string
+  unclassified?: boolean
+  offset?: number
   page: number
   page_size: number
   search: string
@@ -74,6 +81,9 @@ export interface ArchiveFacets {
 }
 
 export interface ArchivePage extends ArchiveIndexStatus {
+  folders?: import("@/lib/library-types").LibraryFolder[]
+  entries?: import("@/lib/library-types").LibraryEntry[] | null
+  archive_total?: number
   archives: ArchiveItem[]
   total: number
   page: number

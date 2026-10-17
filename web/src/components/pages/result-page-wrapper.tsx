@@ -22,6 +22,7 @@ export function ResultPageWrapper() {
   if (route.resultType === "archive" && route.resultId) {
     return (
       <ResultPageComplete
+        key={`${route.resultId}:${route.taskId ?? ""}`}
         archivePath={route.resultId}
         taskId={route.taskId}
         startAt={startSeconds(route.params.t)}
@@ -31,7 +32,7 @@ export function ResultPageWrapper() {
 
   // Legacy task route — resolve output_dir then redirect to archive view
   if (route.resultType === "task" && route.resultId) {
-    return <TaskResolver taskId={route.resultId} />
+    return <TaskResolver key={route.resultId} taskId={route.resultId} />
   }
 
   // Fallback
@@ -48,7 +49,9 @@ function TaskResolver({ taskId }: { taskId: string }) {
   const [outputDir, setOutputDir] = useState<string | null>(null)
 
   useEffect(() => {
+    let cancelled = false
     api.tasks.get(taskId).then((task) => {
+      if (cancelled) return
       const dir = task.result?.output_dir as string | undefined
       if (dir) {
         setOutputDir(dir)
@@ -57,8 +60,10 @@ function TaskResolver({ taskId }: { taskId: string }) {
         setResolved("live")
       }
     }).catch(() => {
+      if (cancelled) return
       setResolved("live")
     })
+    return () => { cancelled = true }
   }, [taskId])
 
   if (resolved === "loading") {

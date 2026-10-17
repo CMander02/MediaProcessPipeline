@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 from contextlib import asynccontextmanager
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +15,7 @@ from app.core.workspace_lifecycle import run_in_thread, WorkspaceActivityMiddlew
 from app.api.routes import (
     auth,
     filesystem,
+    library,
     logs,
     pipeline,
     search,
@@ -107,8 +108,12 @@ async def lifespan(app: FastAPI):
 
     # Initialize SQLite task store
     init_db()
+    from app.core.archive_sync import recover_archive_imports
+    await run_in_thread(recover_archive_imports, Path(rt.data_root))
     from app.core.archive_lifecycle import get_archive_lifecycle
     await run_in_thread(get_archive_lifecycle().recover)
+    from app.core.library_batch import get_library_batch_service
+    await get_library_batch_service().recover()
 
     # Startup maintenance can run after the health endpoint becomes available.
     from app.services.ingestion.ytdlp_version import auto_update_on_startup, warn_if_stale
@@ -234,6 +239,7 @@ async def auth_middleware(request: Request, call_next):
 
 # Include routers
 app.include_router(tasks.router, prefix="/api")
+app.include_router(library.router, prefix='/api')
 app.include_router(pipeline.router, prefix="/api")
 app.include_router(settings_router.router, prefix="/api")
 app.include_router(filesystem.router, prefix="/api")
@@ -256,13 +262,36 @@ async def health_check():
 
 # Serve frontend static files (built Vite output)
 _web_dist = Path(__file__).resolve().parent.parent.parent / "web" / "dist"
+
+
+def _static_file(path: str) -> Path | None:
+    """Resolve a public asset without following paths outside the build directory."""
+    # ASGI has already URL-decoded the path. Reject Windows syntax on all hosts
+    # so a deployment change cannot turn a previously harmless URL into a path.
+    if ("\\" in path or "\x00" in path or ":" in path
+            or PureWindowsPath(path).drive or path.startswith("/")
+            or ".." in path.split("/")):
+        return None
+    try:
+        root = _web_dist.resolve(strict=True)
+        candidate = (root / path).resolve()
+        if not candidate.is_relative_to(root):
+            return None
+        return candidate
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
 if _web_dist.is_dir():
     app.mount("/assets", NoStoreStaticFiles(directory=str(_web_dist / "assets")), name="static")
 
     # Serve static files in root (favicon, etc.)
     @app.get("/favicon.svg")
     async def favicon():
-        return FileResponse(_web_dist / "favicon.svg", headers=_NO_STORE_HEADERS)
+        file_path = _static_file("favicon.svg")
+        if file_path is None or not file_path.is_file():
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
+        return FileResponse(file_path, headers=_NO_STORE_HEADERS)
 
     # SPA fallback: serve index.html for all non-API routes
     @app.get("/{path:path}")
@@ -272,8 +301,13 @@ if _web_dist.is_dir():
                 status_code=404,
                 content={"detail": f"API route not found: /{path}"},
             )
-        file_path = _web_dist / path
+        file_path = _static_file(path)
+        if file_path is None:
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
         if file_path.is_file():
             return FileResponse(file_path, headers=_NO_STORE_HEADERS)
-        return FileResponse(_web_dist / "index.html", headers=_NO_STORE_HEADERS)
+        index = _static_file("index.html")
+        if index is None or not index.is_file():
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
+        return FileResponse(index, headers=_NO_STORE_HEADERS)
 

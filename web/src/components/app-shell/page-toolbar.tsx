@@ -7,6 +7,7 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import { MobileFilterSheet } from "@/components/app-shell/mobile-filter-sheet"
 import { titleBarButtonClass } from "@/components/app-shell/navigation"
 import { FacetFilter, type FacetOption } from "@/components/library/facet-filter"
+import { LibraryScopeSwitch } from "@/components/library/library-navigation"
 import { PlatformIcon } from "@/components/platform-icon"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -65,7 +66,7 @@ export function PageToolbar({ library }: PageToolbarProps) {
   const active = hasActiveFilters(library)
   const sortLabel = SORT_OPTIONS.find((option) => option.value === library.sort)?.label ?? "最新创建"
   const mobileCount = library.statuses.length + library.media.length + library.sources.length
-    + Number(library.duplicates) + Number(library.sort !== "created_desc")
+    + Number(library.duplicates) + Number(library.sort !== "processed_desc")
 
   const search = (className: string, inputClassName: string) => (
     <div className={className}>
@@ -87,6 +88,7 @@ export function PageToolbar({ library }: PageToolbarProps) {
   return (
     <div className="min-w-0" role="search" aria-label="文件搜索与筛选">
       <div className="flex min-w-0 items-center gap-2 md:hidden">
+        <LibraryScopeSwitch className="flex" />
         {search("relative min-w-0 flex-1", "h-11 pl-9 text-sm")}
         <Button
           type="button"
@@ -106,7 +108,8 @@ export function PageToolbar({ library }: PageToolbarProps) {
 
       {/* Filters sit next to the page links and look like them; search follows. */}
       <div className="hidden min-w-0 items-center gap-1.5 overflow-x-auto md:flex">
-        <div className="flex shrink-0 items-center gap-0.5">
+        <Button variant="ghost" size="sm" className="h-8 shrink-0 min-[1400px]:hidden" onClick={() => setMobileFiltersOpen(true)} aria-label="筛选与排序"><HugeiconsIcon icon={FilterHorizontalIcon} className="size-4" /><span className="hidden lg:inline">筛选</span></Button>
+        <div className="hidden shrink-0 items-center gap-0.5 min-[1400px]:flex">
           <FacetFilter
             title="状态"
             icon={Progress03Icon}
@@ -145,10 +148,10 @@ export function PageToolbar({ library }: PageToolbarProps) {
           />
         </div>
         {/* The search box gives way first when the title bar gets tight. */}
-        {search("relative w-44 min-w-32 lg:w-64", "h-8 pl-8 text-[13px]")}
+        {search("relative w-28 min-w-20 min-[1400px]:w-44 min-[1700px]:w-64", "h-8 pl-8 text-[13px]")}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button type="button" className={cn(titleBarButtonClass(false), "data-[state=open]:bg-muted data-[state=open]:text-foreground")}>
+            <button type="button" className={cn(titleBarButtonClass(false), "hidden min-[1400px]:flex data-[state=open]:bg-muted data-[state=open]:text-foreground")}>
               <HugeiconsIcon icon={SortingDownIcon} className="size-4" />
               {sortLabel}
             </button>

@@ -107,6 +107,9 @@ function VideoPlayer({
       }
       bindMedia(null)
       if (artRef.current) {
+        artRef.current.video.pause()
+        artRef.current.video.removeAttribute("src")
+        artRef.current.video.load()
         artRef.current.destroy(false)
         artRef.current = null
       }

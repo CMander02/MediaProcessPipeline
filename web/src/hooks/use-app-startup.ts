@@ -12,6 +12,6 @@ export function useAppStartup() {
       navigate(`#/result/archive?path=${encodeURIComponent(preferences.lastArchivePath)}`, { replace: true })
       return
     }
-    navigate("#/files", { replace: true })
+    navigate(preferences.libraryScope === "all" ? "#/files?scope=all" : "#/files", { replace: true })
   }, [])
 }

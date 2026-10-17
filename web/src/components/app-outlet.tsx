@@ -1,6 +1,6 @@
 import { lazy, Suspense } from "react"
 
-import { FilesPage } from "@/components/pages/files-page"
+import { LibraryPage } from "@/components/pages/library-page"
 import { LoadingState } from "@/components/ui/page-state"
 import type { LibraryFilters } from "@/lib/archive-filters"
 import type { Route } from "@/lib/router"
@@ -22,7 +22,7 @@ interface AppOutletProps {
 export function AppOutlet({ route, library }: AppOutletProps) {
   return (
     <Suspense fallback={<LoadingState title="正在载入页面" className="h-full" />}>
-      {route.page === "files" ? <FilesPage {...library} /> : null}
+      {route.page === "files" ? <LibraryPage {...library} /> : null}
       {route.page === "submit" ? <SubmitPage /> : null}
       {route.page === "backend" ? <BackendPage /> : null}
       {route.page === "result" ? <ResultPageWrapper /> : null}

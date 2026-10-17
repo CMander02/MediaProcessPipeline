@@ -138,7 +138,7 @@ def download_subtitles(
         }
     """
     url = normalize_bilibili_source_url(url)
-    import yt_dlp
+    from app.services.ingestion.public_ytdlp import public_youtube_dl
 
     preferred_langs = _parse_lang_priority(langs)
     empty = _empty_subtitle_result()
@@ -222,7 +222,7 @@ def download_subtitles(
         **ytdlp_auth_opts(),
     }
     try:
-        with yt_dlp.YoutubeDL(metadata_opts) as ydl:
+        with public_youtube_dl(metadata_opts) as ydl:
             info = ydl.extract_info(url, download=False)
     except Exception as e:
         if is_youtube_network_error(e, url):
@@ -274,7 +274,7 @@ def download_subtitles(
             **ytdlp_auth_opts(),
         }
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with public_youtube_dl(ydl_opts) as ydl:
                 ydl.download([url])
         except Exception as e:
             if is_youtube_network_error(e, url):

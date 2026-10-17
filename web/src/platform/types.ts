@@ -19,6 +19,8 @@ export interface ConnectionCheck {
 }
 
 export interface OfflineSyncStatus {
+  serverUrl?: string
+  workspaceId?: string
   syncing: boolean
   cursor: number
   archiveCount: number

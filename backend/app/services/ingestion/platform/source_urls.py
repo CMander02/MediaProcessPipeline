@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 from app.core.logging_setup import log_event
 from app.core.network import runtime_proxy_url as shared_runtime_proxy_url
-from app.core.network import urllib_urlopen
+from app.core.public_urls import public_urlopen as urllib_urlopen
 
 logger = logging.getLogger(__name__)
 
@@ -323,14 +323,7 @@ def _resolve_bilibili_short_url_once(url: str, *, method: str) -> str | None:
 
 
 def _urllib_urlopen_no_redirect(req: urllib.request.Request, *, timeout: float):
-    handlers: list[urllib.request.BaseHandler] = [_NoRedirectHandler()]
-    proxy = shared_runtime_proxy_url()
-    if proxy == "":
-        handlers.append(urllib.request.ProxyHandler({}))
-    elif proxy:
-        handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-    opener = urllib.request.build_opener(*handlers)
-    return opener.open(req, timeout=timeout)
+    return urllib_urlopen(req, timeout=timeout, follow_redirects=False)
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):

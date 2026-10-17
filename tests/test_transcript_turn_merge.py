@@ -1,4 +1,27 @@
 from app.services.analysis.llm import merge_consecutive_speaker_segments, srt_to_markdown
+from app.services.analysis.transcript_outputs import _enforce_polish_constraints, _segments_to_srt
+
+
+def test_unknown_speaker_cues_remain_separate():
+    source = "1\n00:00:00,000 --> 00:00:01,000\n[unknown] 坐牢。\n\n2\n00:00:01,000 --> 00:00:02,000\n[unknown] Scaling Law 本身是正确的。"
+    assert merge_consecutive_speaker_segments(source) == source
+
+
+def test_polish_speaker_only_response_preserves_original_dialogue_before_merge():
+    source = [
+        {"index": 1, "timestamp": "00:00:01,000 --> 00:00:02,000", "text": "[主持人] 为什么？"},
+        {
+            "index": 2,
+            "timestamp": "00:00:02,000 --> 00:00:04,000",
+            "text": "[田渊栋] 这段回答需要完整保留。",
+        },
+    ]
+    response = [source[0], {**source[1], "text": "[田渊栋]"}]
+
+    constrained = _enforce_polish_constraints(response, source, {})
+    merged = merge_consecutive_speaker_segments(_segments_to_srt(constrained))
+
+    assert "[田渊栋] 这段回答需要完整保留。" in merged
 
 
 def test_merge_consecutive_speaker_segments_merges_same_speaker_runs():
@@ -193,3 +216,15 @@ def test_merge_consecutive_speaker_segments_orders_overlapping_split_cues():
     ]
 
     assert starts == sorted(starts)
+
+
+def test_lineage_tracks_many_to_one_and_one_to_many_without_guessing_cue_ids():
+    source = "7\n00:00:00,000 --> 00:00:01,000\n[A] 第一段。\n\n11\n00:00:01,000 --> 00:00:02,000\n[A] 第二段。"
+    lineage = []
+    merge_consecutive_speaker_segments(source, lineage=lineage)
+    assert lineage == [{"output_index": 1, "source_indexes": [7, 11], "estimated_timing": False}]
+    lineage = []
+    merge_consecutive_speaker_segments(
+        "9\n00:00:00,000 --> 00:00:10,000\n[A] 第一段。第二段。", max_chars=5, max_sentences=1, lineage=lineage)
+    assert len(lineage) == 2
+    assert all(row["source_indexes"] == [9] and row["estimated_timing"] for row in lineage)

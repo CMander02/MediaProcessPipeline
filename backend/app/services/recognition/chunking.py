@@ -131,6 +131,7 @@ class ASRChunker:
             return self._merge_vad_chunks(chunks, max_duration)
         command = [
             "ffmpeg",
+            "-protocol_whitelist", "file,pipe,crypto,data",
             "-hide_banner",
             "-loglevel",
             "error",
@@ -221,6 +222,7 @@ class ASRChunker:
         duration = max(0.0, chunk.end - chunk.start)
         cmd = [
             "ffmpeg",
+            "-protocol_whitelist", "file,pipe,crypto,data",
             "-y",
             "-hide_banner",
             "-loglevel",
@@ -248,6 +250,7 @@ class ASRChunker:
     def probe_duration(self, audio_path: str | Path) -> float:
         cmd = [
             "ffprobe",
+            "-protocol_whitelist", "file,pipe,crypto,data",
             "-v",
             "error",
             "-show_entries",
@@ -257,7 +260,7 @@ class ASRChunker:
             str(audio_path),
         ]
         try:
-            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
             return float(result.stdout.strip())
         except FileNotFoundError as e:
             raise RuntimeError("ffprobe not found in PATH; install FFmpeg for ASR chunking") from e
@@ -469,6 +472,7 @@ class ASRChunker:
             tmp_path = Path(tmp.name)
         cmd = [
             "ffmpeg",
+            "-protocol_whitelist", "file,pipe,crypto,data",
             "-y",
             "-hide_banner",
             "-loglevel",

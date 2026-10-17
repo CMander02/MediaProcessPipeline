@@ -33,17 +33,22 @@ def test_speaker_rename_updates_text_json_and_sqlite_mirrors(tmp_path, monkeypat
         def save_artifact(self, task_id, filename, content, content_type):
             saved[filename] = (task_id, content, content_type)
 
+        def get(self, task_id):
+            return None
+
     monkeypatch.setattr(artifact_sync, "get_task_store", lambda: FakeTaskStore())
 
     changed = artifact_sync.sync_speaker_artifacts(
         "task-id", tmp_path, "SPEAKER_00", "孟繁青"
     )
 
-    assert set(changed) == {"transcript_polished.srt", "summary.md", "metadata.json"}
+    assert set(changed) == {"transcript_polished.srt", "metadata.json"}
     assert "[孟繁青]" in (tmp_path / "transcript_polished.srt").read_text(encoding="utf-8")
-    assert "孟繁青" in (tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert (tmp_path / "summary.md").read_text(encoding="utf-8") == "SPEAKER_00 介绍了项目。"
     metadata = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["speakers"] == ["孟繁青"]
+    assert metadata["nested"]["host"] == "SPEAKER_00"
+    assert metadata["extra"]["derived_content_stale"] is True
     assert set(saved) == set(changed)
     assert saved["metadata.json"][2] == "application/json"
 
@@ -95,3 +100,27 @@ async def test_task_rename_resolves_voiceprint_by_current_person_name(tmp_path, 
     assert response.status == "renamed"
     assert renamed == [("person-1", "孟繁青")]
     assert synchronized[0][2:] == ("Unknown-abcd", "孟繁青")
+
+
+@pytest.mark.asyncio
+async def test_stale_transcript_and_unknown_rename_rejected_before_library_mutation(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    (tmp_path / "transcript_polished.srt").write_text("newer text", encoding="utf-8")
+    monkeypatch.setattr(voiceprint_route, "get_task_store", lambda: SimpleNamespace(
+        get=lambda _: SimpleNamespace(status="completed", result={"output_dir": str(tmp_path)})
+    ))
+    monkeypatch.setattr(voiceprint_route, "get_voiceprint_store", lambda: pytest.fail("must not mutate library"))
+    for old_name, expected in [("SPEAKER_00", "old text"), ("unknown", "newer text")]:
+        with pytest.raises(HTTPException) as exc:
+            await voiceprint_route.rename_task_speaker(uuid4(), voiceprint_route.SpeakerRenameRequest(
+                old_name=old_name, new_name="张明", expected_srt=expected,
+            ))
+        assert exc.value.status_code == 409
+
+
+def test_manual_name_does_not_replace_person_mentioned_in_cue_body(tmp_path, monkeypatch):
+    content = "1\n00:00:00,000 --> 00:00:01,000\n[张明] 我和张明讨论。"
+    (tmp_path / "transcript_polished.srt").write_text(content, encoding="utf-8")
+    monkeypatch.setattr(artifact_sync, "get_task_store", lambda: SimpleNamespace(save_artifact=lambda *args: None))
+    artifact_sync.sync_speaker_artifacts("task-id", tmp_path, "张明", "李华")
+    assert (tmp_path / "transcript_polished.srt").read_text(encoding="utf-8") == content.replace("[张明]", "[李华]")

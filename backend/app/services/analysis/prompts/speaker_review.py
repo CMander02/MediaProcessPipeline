@@ -22,6 +22,8 @@ def get_speaker_review_prompt(
         "title": context.get("title", ""),
         "language": context.get("language", "unknown"),
         "speaker_candidates": context.get("speaker_candidates", []),
+        "participant_evidence": context.get("participant_evidence", {}),
+        "mixed_speaker_cues": context.get("mixed_speaker_cues", []),
         "speakers": speakers,
         "editable_indexes": targets,
         "cues": cues,
@@ -30,6 +32,7 @@ def get_speaker_review_prompt(
 
 规则：
 1. 全文共用 speakers 中的 ID；只在这些 ID 之间修正 editable_indexes 内的条目。
+   mixed_speaker_cues 是音频确认的多声混合片段，保持未分配，不能凭文字指定给一个人。
 2. 先结合明确的自我介绍与前后文确定人物和 ID 的对应，再逐条检查归属。
    原标签和示例可能含错标，遇到同一人明确自报姓名、职责与原标签冲突时应修正。
    保留原文字、时间戳和条目边界。

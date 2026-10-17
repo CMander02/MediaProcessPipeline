@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from "vitest"
 
 import { api } from "@/lib/api"
+import { archiveServerKey, rememberArchiveWorkspace } from "@/lib/archive-cache-scope"
 import type { PlatformAdapter } from "@/platform"
 import { createArchiveRepository, resolveOfflineFileUrl } from "@/repositories/archive-repository"
 
@@ -54,6 +55,17 @@ function nativePlatform(): PlatformAdapter {
 }
 
 describe("Android ArchiveRepository", () => {
+  it("does not reuse a file URL from another workspace with the same archive ID", async () => {
+    const server = archiveServerKey()
+    const repository = createArchiveRepository(nativePlatform())
+    rememberArchiveWorkspace(server, "workspace-A")
+    const [archive] = await repository.list()
+    expect(resolveOfflineFileUrl(archive.path, "images/00.jpg")).toContain("images/00.jpg")
+    rememberArchiveWorkspace(server, "workspace-B")
+    expect(resolveOfflineFileUrl(archive.path, "images/00.jpg")).toBeNull()
+    rememberArchiveWorkspace(server, "workspace-A")
+    expect(resolveOfflineFileUrl(archive.path, "images/00.jpg")).toContain("images/00.jpg")
+  })
   it("filters and clamps offline pages using native records", async () => {
     const platform = nativePlatform()
     const [record] = await platform.listOfflineArchives()

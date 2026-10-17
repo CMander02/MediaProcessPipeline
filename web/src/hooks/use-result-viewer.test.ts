@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => {
   const archive = {
     path: "/library/fixture", title: "Fixture", task_id: null, processing: false,
     has_video: false, media_file: "/library/fixture/source.wav",
-    metadata: { title: "Fixture", source_url: "https://example.com/source" },
+    metadata: { title: "Fixture", source_url: "https://example.com/source", extra: { subtitle_source: "asr", speaker_label_contract: 1 } },
   }
   return {
     archive,
@@ -62,6 +62,48 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe("result viewer state", () => {
+  it("ignores late generated files and SSE responses from the previous archive", async () => {
+    let resolveOld!: (value: string) => void
+    let resolveSse!: (value: string) => void
+    const old = new Promise<string>((resolve) => { resolveOld = resolve })
+    const sse = new Promise<string>((resolve) => { resolveSse = resolve })
+    mocks.repository.get.mockImplementation(async (path: string) => ({ ...mocks.archive, path }))
+    mocks.repository.readFile.mockImplementation((path: string) => path === "/A/summary.md" ? old
+      : path === "/A/new-summary.md" ? sse : Promise.resolve(path === "/B/summary.md" ? "Summary B" : ""))
+    const { result, rerender } = renderHook(({ path }) => useResultViewer({ archivePath: path, taskId: null }), { initialProps: { path: "/A" } })
+    await waitFor(() => expect(result.current.archive?.path).toBe("/A"))
+    act(() => {
+      const handlers = mocks.sse.mock.calls.at(-1)?.[1] as { onFileReady: (event: unknown) => void }
+      handlers.onFileReady({ file: "summary.md", path: "/A/new-summary.md" })
+    })
+    rerender({ path: "/B" })
+    await waitFor(() => expect(result.current.summary).toBe("Summary B"))
+    await act(async () => { resolveOld("Summary A"); resolveSse("Updated A") })
+    expect(result.current.archive?.path).toBe("/B")
+    expect(result.current.summary).toBe("Summary B")
+  })
+
+  it("keeps an unsaved draft when a newer transcript arrives over SSE", async () => {
+    const { result } = renderHook(() => useResultViewer({ archivePath: mocks.archive.path }))
+    await waitFor(() => expect(result.current.subtitles).toHaveLength(1))
+    act(() => result.current.setSubtitles([{ ...result.current.subtitles[0], text: "My draft" }]))
+    mocks.repository.readFile.mockResolvedValue(srt.replace("Hello", "Server version"))
+    await act(async () => {
+      const handlers = mocks.sse.mock.calls.at(-1)?.[1] as { onFileReady: (event: unknown) => void }
+      handlers.onFileReady({ file: "transcript.srt", path: "/library/fixture/transcript.srt" })
+    })
+    expect(result.current.subtitles[0].text).toBe("My draft")
+    expect(result.current.transcript).toBe(srt)
+    expect(result.current.hasUnsavedTranscript).toBe(true)
+  })
+
+  it("preserves bracket annotations in an unpolished platform transcript", async () => {
+    mocks.repository.get.mockResolvedValue({ ...mocks.archive, metadata: { extra: { subtitle_source: "platform", speaker_label_contract: 1 } } })
+    const { result } = renderHook(() => useResultViewer({ archivePath: mocks.archive.path }))
+    await waitFor(() => expect(result.current.subtitles).toHaveLength(1))
+    expect(result.current.subtitles[0].speaker).toBeUndefined()
+    expect(result.current.subtitles[0].text).toBe("[Speaker 1] Hello")
+  })
   it.each([undefined, 5448.448])("keeps the media URL when archive edits change revision (duration %s)", async (duration) => {
     const archive = { ...mocks.archive, revision: 12, duration_seconds: duration }
     mocks.repository.get.mockResolvedValue(archive)
@@ -92,6 +134,7 @@ describe("result viewer state", () => {
     })
     await waitFor(() => expect(result.current.mediaUrl).toBe("media:/library/fixture/source.wav?revision=5448.448"))
   })
+
   it("loads transcript, summary, mindmap and media through the archive repository", async () => {
     const { result } = renderHook(() => useResultViewer({ archivePath: mocks.archive.path }))
     await waitFor(() => expect(result.current.summary).toBe("# Summary"))
@@ -132,11 +175,9 @@ describe("result viewer state", () => {
     expect(mocks.renameSpeaker).not.toHaveBeenCalled()
   })
 
-  it("serializes manual renames until the file save finishes", async () => {
+  it("serializes manual renames until the server save finishes", async () => {
     let finishRename!: (value: unknown) => void
-    let finishSave!: (value: unknown) => void
     mocks.renameSpeaker.mockImplementation(() => new Promise((resolve) => { finishRename = resolve }))
-    mocks.write.mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve }))
     const { result } = renderHook(() => useResultViewer({ archivePath: mocks.archive.path, taskId: "task-1" }))
     await waitFor(() => expect(result.current.subtitles).toHaveLength(1))
     let pending!: Promise<void>
@@ -149,13 +190,8 @@ describe("result viewer state", () => {
     await act(async () => {
       finishRename({ status: "renamed", person_name: "李华" })
     })
-    expect(result.current.renamingSpeaker).toBe(true)
-    await act(async () => { await result.current.handleRenameSpeaker("李华", "张明") })
-    expect(mocks.renameSpeaker).toHaveBeenCalledOnce()
-    await act(async () => {
-      finishSave({ success: true })
-      await pending
-    })
+    await act(async () => { await pending })
+    expect(mocks.write).not.toHaveBeenCalled()
     expect(result.current.renamingSpeaker).toBe(false)
     expect(result.current.hasUnsavedTranscript).toBe(false)
     expect(result.current.subtitles[0].speaker).toBe("李华")

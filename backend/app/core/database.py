@@ -10,6 +10,7 @@ import json
 import logging
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,50 @@ _connection: sqlite3.Connection | None = None
 _db_lock = threading.Lock()  # Serialize all DB writes
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS library_meta (
+    id INTEGER PRIMARY KEY CHECK (id=1),
+    revision INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO library_meta VALUES (1,0);
+CREATE TABLE IF NOT EXISTS library_folders (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    source_collection_key TEXT UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS library_folder_members (
+    content_key TEXT PRIMARY KEY,
+    folder_id TEXT REFERENCES library_folders(id) ON DELETE SET NULL,
+    origin TEXT NOT NULL DEFAULT 'manual',
+    added_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_library_members_folder ON library_folder_members(folder_id);
+CREATE TABLE IF NOT EXISTS library_collection_members (
+    collection_key TEXT NOT NULL,
+    content_key TEXT NOT NULL,
+    PRIMARY KEY (collection_key,content_key)
+);
+CREATE TABLE IF NOT EXISTS library_folder_covers (
+    folder_id TEXT PRIMARY KEY REFERENCES library_folders(id) ON DELETE CASCADE,
+    content_key TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS library_collections (
+    collection_key TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    owner_name TEXT NOT NULL DEFAULT '',
+    owner_avatar_url TEXT NOT NULL DEFAULT '',
+    avatar BLOB,
+    checked_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS library_deletions (
+    content_key TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL,
+    targets TEXT NOT NULL,
+    folder_id TEXT,
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS archive_deletions (
     original_path TEXT PRIMARY KEY,
     staging_name TEXT NOT NULL,
@@ -275,25 +320,47 @@ def _row_to_task(row: sqlite3.Row) -> Task:
     )
 
 
+@contextmanager
+def task_write_transaction():
+    """Serialize read-then-create across SQLite connections, as well as local writers."""
+    conn = _get_conn()
+    with _db_lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+
+
+def _save_task_row(conn: sqlite3.Connection, task: Task) -> None:
+    """Write one task within the caller's transaction; never commit or notify here."""
+    if not conn.execute('SELECT 1 FROM tasks WHERE id=?', (str(task.id),)).fetchone():
+        from app.core.content_identity import task_content_key
+        if conn.execute('SELECT 1 FROM library_deletions WHERE content_key=?', (task_content_key(task),)).fetchone():
+            raise ValueError('content_deleting')
+    row = _task_to_row(task)
+    cols = ", ".join(row.keys())
+    placeholders = ", ".join(f":{k}" for k in row.keys())
+    updates = ", ".join(
+        f"{column} = excluded.{column}"
+        for column in row if column not in {"id", "created_at"}
+    )
+    conn.execute(
+        f"INSERT INTO tasks ({cols}) VALUES ({placeholders}) "
+        f"ON CONFLICT(id) DO UPDATE SET {updates}", row,
+    )
+
+
 class TaskStore:
     """SQLite-backed task persistence."""
 
     def save(self, task: Task) -> None:
         """Insert or update a task while preserving its identity and child records."""
         conn = _get_conn()
-        row = _task_to_row(task)
-        cols = ", ".join(row.keys())
-        placeholders = ", ".join(f":{k}" for k in row.keys())
-        updates = ", ".join(
-            f"{column} = excluded.{column}"
-            for column in row if column not in {"id", "created_at"}
-        )
         with _db_lock, conn:
-            conn.execute(
-                f"INSERT INTO tasks ({cols}) VALUES ({placeholders}) "
-                f"ON CONFLICT(id) DO UPDATE SET {updates}",
-                row,
-            )
+            _save_task_row(conn, task)
         self._archive_changed(task)
 
     @staticmethod

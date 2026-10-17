@@ -255,3 +255,17 @@ g.mpp-current-chapter > .markmap-foreign div { color: var(--primary); font-weigh
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
+
+.collection-scrollbar {
+  scrollbar-width: auto;
+}
+@supports (-moz-appearance: none) {
+  .collection-scrollbar { scrollbar-color: var(--muted-foreground) var(--muted); }
+}
+.collection-scrollbar::-webkit-scrollbar { width: 10px; }
+.collection-scrollbar::-webkit-scrollbar-track { background: var(--muted); }
+.collection-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--muted-foreground);
+  border: 2px solid var(--muted);
+  border-radius: 6px;
+}

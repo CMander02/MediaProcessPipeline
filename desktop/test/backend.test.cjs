@@ -6,7 +6,7 @@ const { BackendController, inspectServer } = require('../backend.cjs');
 
 async function listener(handler) {
   const server = http.createServer(handler);
-  await new Promise((resolve) => server.listen(0, 'localhost', resolve));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   return { server, url: `http://localhost:${server.address().port}`, port: server.address().port };
 }
 

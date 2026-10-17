@@ -49,7 +49,7 @@ def test_source_context_extracts_timeline_entities_and_speaker_constraint():
         "孟繁青": "guest",
     }
     assert context.speaker_count_hint.exact == 2
-    assert speaker_constraints(context) == (2, 2, 2)
+    assert speaker_constraints(context) == (None, None, None)
     assert {"Evolvent AI", "RSIBench-Data", "Kimi K2.5", "曲凯", "孟繁青"} <= set(
         context.asr_hotwords
     )
@@ -125,7 +125,7 @@ def test_source_analysis_fields_override_untrusted_timeline_and_speaker_count():
 
     assert merged["timeline"][0]["start"] == 0
     assert merged["timeline"][1]["start"] == 75
-    assert merged["speakers_detected"] == 2
+    assert merged["speakers_detected"] == 7  # Candidate count is not a measured voice count.
     assert merged["language"] == "zh-CN"
 
 

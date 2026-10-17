@@ -8,21 +8,22 @@ the /{task_id} catch-all, otherwise FastAPI tries to parse "events" as a UUID.
 """
 
 import asyncio
-import ipaddress
 import json
 import logging
 import re
 from datetime import datetime
+from functools import partial
 from pathlib import Path
-from urllib.parse import urlparse
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from app.core.atomic_file import atomic_write_text
 from app.core.database import get_task_store
-from app.core.paths import get_workspace_paths
 from app.core.events import get_event_bus
+from app.core.paths import get_workspace_paths
+from app.core.public_urls import UnsafeURLError, validate_public_http_url
 from app.core.pipeline import (
     PIPELINE_STEPS,
     PipelineStep,
@@ -30,13 +31,14 @@ from app.core.pipeline import (
     _looks_like_local_path,
     create_task_dir,
     pipeline_steps_schema,
-    write_metadata_json,
 )
 from app.core.queue import get_task_queue
 from app.core.security import filesystem_access_allowed
 from app.core.settings import get_runtime_settings
 from app.core.source_resolver import resolve_source_flow
+from app.core.workspace_lifecycle import run_in_thread
 from app.models import Task, TaskBatchCreate, TaskCreate, TaskStatus
+from app.models.task import TaskImportItem, TaskImportResponse
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 logger = logging.getLogger(__name__)
@@ -59,23 +61,15 @@ def _is_managed_staging_source(source: str, data_root: str) -> bool:
 
 def _validate_public_http_url(url: str) -> None:
     """Validate URL task sources before they reach downloader backends."""
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise HTTPException(400, f"Unsupported URL scheme: {parsed.scheme!r}")
-
-    hostname = parsed.hostname or ""
-    if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
-        raise HTTPException(400, "URL pointing to localhost is not allowed")
-
+    # The source resolver accepts pasted BV identifiers with an accidental
+    # https:// prefix. It fetches the official Bilibili API, never this host.
+    bvid = re.fullmatch(r"https?://(BV[0-9A-Za-z]{10})/?", url)
+    if bvid:
+        url = f"https://www.bilibili.com/video/{bvid.group(1)}"
     try:
-        addr = ipaddress.ip_address(hostname)
-        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
-            raise HTTPException(400, "URL pointing to private/reserved IP is not allowed")
-    except ValueError:
-        pass
-
-    if hostname in ("169.254.169.254", "metadata.google.internal"):
-        raise HTTPException(400, "URL pointing to cloud metadata endpoint is not allowed")
+        validate_public_http_url(url)
+    except UnsafeURLError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -83,12 +77,8 @@ def _validate_public_http_url(url: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@router.post("", response_model=Task)
-async def create_task(task_create: TaskCreate, request: Request):
-    """Create a new processing task and submit it to the queue."""
-    from app.services.ingestion.ytdlp import normalize_bilibili_source_url
-
-    source = normalize_bilibili_source_url(_clean_source_path(task_create.source))
+def _prepare_task(task_create: TaskCreate, request: Request, source: str) -> tuple[Task, dict]:
+    """Apply the same access checks and initial flow to every task entry point."""
     runtime = get_runtime_settings()
     if (
         _looks_like_local_path(source)
@@ -108,8 +98,7 @@ async def create_task(task_create: TaskCreate, request: Request):
         completed_steps=[],
     )
 
-    # Create task directory immediately so frontend can navigate to result page
-    if source.startswith(("http://", "https://")):
+    if source.lower().startswith(("http://", "https://")):
         _validate_public_http_url(source)
 
     if _looks_like_local_path(source):
@@ -133,25 +122,58 @@ async def create_task(task_create: TaskCreate, request: Request):
     task.platform = source_flow.platform
     task.content_subtype = source_flow.content_subtype
 
-    task_dir = create_task_dir(task.id, title)
-    write_metadata_json(
-        task_dir,
-        {
-            "title": title,
-            "source_url": source,
-            "source_type": source_flow.source_type,
-            "platform": source_flow.platform,
-            "content_subtype": source_flow.content_subtype,
-            "flow_id": source_flow.flow_id,
-            "media_type": media_type,
-        },
-        status="queued",
+    from app.core.content_identity import new_content_key
+    archive_id = str(task.id)
+    task.options = {**task.options, 'archive_id': archive_id, 'content_key': new_content_key(source, archive_id)}
+    metadata = {
+        'archive_id': archive_id,
+        'content_key': task.options['content_key'],
+        "title": title,
+        "source_url": source,
+        "source_type": source_flow.source_type,
+        "platform": source_flow.platform,
+        "content_subtype": source_flow.content_subtype,
+        "flow_id": source_flow.flow_id,
+        "media_type": media_type,
+        "status": "queued",
+    }
+    return task, metadata
+
+
+def _initialize_task(task: Task, *, metadata: dict) -> None:
+    task_dir = create_task_dir(task.id, metadata["title"])
+    task.result = {"output_dir": str(task_dir)}
+    # This is a new directory with no DB artifact mirror yet. Notify the index
+    # only after the task transaction commits, and avoid nested artifact/DB locks.
+    atomic_write_text(
+        task_dir / "metadata.json", json.dumps(metadata, indent=2, ensure_ascii=False),
     )
 
-    task.result = {"output_dir": str(task_dir)}
+
+@router.post("", response_model=Task)
+async def create_task(task_create: TaskCreate, request: Request):
+    """Create a new processing task and submit it to the queue."""
+    from app.services.ingestion.ytdlp import normalize_bilibili_source_url
+
+    source = normalize_bilibili_source_url(_clean_source_path(task_create.source))
+    task, metadata = await run_in_thread(_prepare_task, task_create, request, source)
+    from app.core.task_import import detect_import_collection
+    from app.core.database import task_write_transaction, _save_task_row
+    from app.core.library import assign_import
+    await run_in_thread(detect_import_collection, source)
+    _initialize_task(task, metadata=metadata)
 
     store = get_task_store()
-    store.save(task)
+    try:
+        with task_write_transaction() as conn:
+            _save_task_row(conn, task)
+            assign_import(conn, task.options['content_key'])
+    except BaseException:
+        task_dir = Path(task.result['output_dir'])
+        (task_dir / 'metadata.json').unlink(missing_ok=True)
+        task_dir.rmdir()
+        raise
+    store._archive_changed(task)
 
     queue = get_task_queue()
     await queue.submit(task.id)
@@ -168,8 +190,8 @@ async def create_tasks_batch(batch_create: TaskBatchCreate, request: Request):
         normalize_bilibili_source_url(_clean_source_path(source)) for source in batch_create.sources
     ]
     for source in normalized_sources:
-        if source.startswith(("http://", "https://")):
-            _validate_public_http_url(source)
+        if source.lower().startswith(("http://", "https://")):
+            await run_in_thread(_validate_public_http_url, source)
 
     tasks_created: list[Task] = []
     for source in normalized_sources:
@@ -185,6 +207,114 @@ async def create_tasks_batch(batch_create: TaskBatchCreate, request: Request):
             )
         )
     return tasks_created
+
+
+@router.post("/import", response_model=TaskImportResponse)
+async def import_tasks(batch_create: TaskBatchCreate, request: Request):
+    """Import selected sources with per-item results and submit-time deduplication."""
+    from app.core.archive_index import source_key
+    from app.core.archive_sync import get_archive_sync_service
+    from app.core.task_import import import_task, normalize_import_source, detect_import_collection
+    from app.core.library import get_library_service
+    from app.services.ingestion.platform.bilibili.collection import inspect_bilibili_collection
+
+    await run_in_thread(get_archive_sync_service().flush_changes)
+    items: list[TaskImportItem] = []
+    seen: dict[str, TaskImportItem] = {}
+    # Resolve explicitly selected collections once; clients cannot claim arbitrary membership.
+    collection_errors = {}
+    selected_collection_destinations = {}
+    create_collection_errors = []
+    for selection in batch_create.collection_folders:
+        if not selection.create_folder:
+            continue
+        try:
+            normalized_collection = await run_in_thread(normalize_import_source, selection.source)
+            await run_in_thread(_validate_public_http_url, normalized_collection)
+            collection = await run_in_thread(inspect_bilibili_collection, normalized_collection)
+            folder = await run_in_thread(get_library_service().register_collection, collection, create=True)
+            for member in collection.get('items') or []:
+                if member.get('content_key'):
+                    selected_collection_destinations[member['content_key']] = folder['id']
+        except Exception as exc:
+            collection_errors[selection.source] = str(exc)
+            create_collection_errors.append(str(exc))
+    inspected_bvs = set()
+    for source in batch_create.sources:
+        content_key = None
+        item = None
+        try:
+            normalized = await run_in_thread(normalize_import_source, source)
+            content_key = source_key(normalized)
+            if content_key and content_key.startswith('bilibili:'):
+                bv = content_key.split(':')[1]
+                if bv not in inspected_bvs:
+                    inspected_bvs.add(bv)
+                    detection_error = await run_in_thread(detect_import_collection, normalized)
+                    if detection_error:
+                        collection_errors[source] = detection_error
+            task, metadata = await run_in_thread(_prepare_task, TaskCreate(
+                task_type=batch_create.task_type, source=normalized,
+                options=batch_create.options, webhook_url=batch_create.webhook_url,
+            ), request, normalized)
+            request_key = content_key or normalized
+            if request_key in seen:
+                previous = seen[request_key]
+                item = previous.model_copy(update={
+                    "source": source,
+                    "outcome": "reused" if previous.outcome == "created" else previous.outcome,
+                    "reason": "duplicate_in_request",
+                })
+            else:
+                item = await run_in_thread(
+                    import_task, task, partial(_initialize_task, metadata=metadata),
+                    folder_id=(selected_collection_destinations.get(content_key)
+                               if content_key in selected_collection_destinations else batch_create.folder_id),
+                    explicit_folder=('folder_id' in batch_create.model_fields_set
+                                     or content_key in selected_collection_destinations),
+                    move_existing=batch_create.move_existing,
+                )
+                item.source = source
+                seen[request_key] = item
+                if item.outcome == "created":
+                    queue = get_task_queue()
+                    try:
+                        await queue.submit(item.task.id)
+                    except Exception as exc:
+                        task_id = item.task.id
+                        if (task_id not in queue.get_queue_snapshot()
+                                and task_id not in queue.active_task_ids):
+                            # A regular notification error is retryable through
+                            # the existing resume action. Process interruption
+                            # (BaseException) instead leaves QUEUED for startup.
+                            message = f"入队失败，可重试此任务：{exc}"
+                            store = get_task_store()
+                            store.update_status(
+                                task_id, TaskStatus.FAILED, error=message, message=message,
+                            )
+                            from app.core.pipeline import update_metadata_status
+                            update_metadata_status(
+                                Path(item.task.result["output_dir"]), "failed",
+                            )
+                            item.task = store.get(task_id)
+                            item.outcome = "failed"
+                            item.reason = "queue_notification_failed"
+                            item.error = message
+                        else:
+                            logger.warning(
+                                "Task %s was enqueued, but notification failed: %s", task_id, exc,
+                            )
+        except Exception as exc:
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            item = TaskImportItem(
+                source=source, content_key=content_key, outcome="failed", error=str(detail),
+            )
+        if source in collection_errors:
+            item.folder_error = collection_errors[source]
+        elif create_collection_errors:
+            item.folder_error = '; '.join(create_collection_errors)
+        items.append(item)
+    return TaskImportResponse(items=items)
 
 
 @router.get("", response_model=list[Task])

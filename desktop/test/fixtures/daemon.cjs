@@ -13,7 +13,7 @@ if (mode !== 'timeout') {
       response.setHeader('Content-Type', 'text/html');
       response.end('<html><div id="root">MPP fixture</div></html>');
     }
-  }).listen(port, 'localhost');
+  }).listen(port, '127.0.0.1');
 }
 process.stdin.resume();
 process.stdin.once('end', () => {

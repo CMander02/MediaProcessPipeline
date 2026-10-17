@@ -20,7 +20,11 @@ Dock 启动会补充 Homebrew 的 PATH，因此后端可以找到 FFmpeg 和 lla
 
 ### 本机免安装使用
 
-在项目的 `desktop/` 目录执行 `npm run portable`，生成 `desktop/dist/MPP-Desktop-Portable.exe`。直接双击即可启动，也可为它创建桌面快捷方式。
+在项目的 `desktop/` 目录执行 `npm run portable`，自动重新构建前端，并更新项目根目录的 `MPP.exe`。直接双击即可启动，也可为它创建桌面快捷方式。重新构建前先退出正在运行的根目录 EXE。
+
+便携版的打包中间文件集中放在系统临时目录，构建结束后自动清理；项目中保留 `MPP.exe` 和运行需要的 `web/dist/`。日常重复构建会更新同名文件。
+
+EXE 是桌面启动器，业务前端和 Python 后端仍从项目目录加载。需要固定整套稳定版本时，应使用对应版本的独立项目目录，并在该目录构建前端和 EXE；开发工作继续使用开发目录。
 
 单文件 EXE 放在项目根目录或默认的 `desktop/dist/` 时，会自动发现项目。放到其他位置时，首次选择一次项目目录；已选择的目录会持续保存。便携版启动时将 Electron 解压到临时目录，首次打开会有短暂等待。
 
@@ -105,7 +109,7 @@ npm run dist
 产物：
 
 - `desktop/dist/MPP-Desktop-<版本>-Setup.exe`：Windows x64 安装器。
-- `desktop/dist/MPP-Desktop-Portable.exe`：运行 `npm run portable` 生成的免安装单文件程序。
+- `MPP.exe`（项目根目录）：运行 `npm run portable` 生成的免安装单文件程序，中间文件自动清理。
 - `desktop/dist/win-unpacked/MPP Desktop.exe`：可直接运行的应用；移动时需保留整个 `win-unpacked/` 目录。
 
 只构建应用目录可执行 `npm run pack`。发布签名沿用 electron-builder 的签名配置；本机开发打包可生成未签名安装器。Python/CUDA/模型的首次自动安装和应用自动更新属于后续功能。
@@ -120,6 +124,7 @@ npm run dist
 | 后端已连接，前端页面尚未就绪 | 构建前端并重启提供该页面的后端，再重试 |
 | 端口被其他服务使用 | 释放端口 `18000` 后重试 |
 | 服务暂时没有响应 | 等待现有服务完成初始化，或查看该服务日志 |
+| 页面进程已退出 | 启动页会重新加载并显示“重试”。点击“重试”连接后端；重复出现时查看启动日志中的退出码 |
 | 后端启动超过 120 秒 | 查看启动日志、模型路径和模型配置，处理错误后重试 |
 
 如果后端配置了 API Token，桌面页面使用与 Web 版相同的解锁界面。桌面壳仅管理本机服务，外部 HTTP/HTTPS 链接交给默认浏览器打开。

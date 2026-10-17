@@ -8,7 +8,9 @@ const SERVER_URL = 'http://localhost:18000';
 
 function request(url, timeout = 1500) {
   return new Promise((resolve, reject) => {
-    const req = http.get(url, { agent: false }, (response) => {
+    // Match the desktop daemon's IPv4 loopback listener. A blocked ::1 must
+    // not turn an unused port into a misleading "service busy" result.
+    const req = http.get(url, { agent: false, family: 4 }, (response) => {
       let body = '';
       response.setEncoding('utf8');
       response.on('data', (chunk) => {

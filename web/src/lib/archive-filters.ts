@@ -1,6 +1,6 @@
 export type MediaFilter = "all" | "video" | "audio" | "image"
 
-export type ArchiveSort = "created_desc" | "created_asc" | "published_desc" | "title_asc"
+export type ArchiveSort = "processed_desc" | "created_desc" | "created_asc" | "published_desc" | "title_asc"
 
 /** Library status of an archive; cancelled runs count as failed, as in the server index. */
 export type ArchiveStatus = "processing" | "paused" | "failed" | "completed"
@@ -13,6 +13,7 @@ export const STATUS_OPTIONS: Array<{ value: ArchiveStatus; label: string; hint?:
 ]
 
 export const SORT_OPTIONS: Array<{ value: ArchiveSort; label: string }> = [
+  { value: "processed_desc", label: "最近处理" },
   { value: "created_desc", label: "最新创建" },
   { value: "created_asc", label: "最早创建" },
   { value: "published_desc", label: "最新发布" },
@@ -121,7 +122,7 @@ export interface LibraryFilters {
 }
 
 export const DEFAULT_LIBRARY_FILTERS: LibraryFilters = {
-  search: "", media: [], sources: [], statuses: [], duplicates: false, sort: "created_desc",
+  search: "", media: [], sources: [], statuses: [], duplicates: false, sort: "processed_desc",
 }
 
 /** True when anything but the sort order narrows the list. */

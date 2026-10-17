@@ -1,4 +1,4 @@
-import { useState, type MouseEvent as ReactMouseEvent } from "react"
+import { useState, type MouseEvent as ReactMouseEvent, type DragEvent } from "react"
 import type { ArchiveItem } from "@/hooks/use-archives"
 import { formatDuration } from "@/lib/format"
 import { api, type Task } from "@/lib/api"
@@ -49,6 +49,16 @@ interface ArchiveCardProps {
   selectionMode?: boolean
   selected?: boolean
   onSelect?: (event: ReactMouseEvent) => void
+  onMove?: () => void
+  onMoveOut?: () => void
+  /** Folder of the item, shown when the list ignores folders */
+  folderName?: string
+  onSetCover?: () => void
+  /** This item is the folder's chosen cover */
+  isCover?: boolean
+  draggable?: boolean
+  onDragStart?: (event: DragEvent) => void
+  onDragEnd?: () => void
 }
 
 type MenuKind = "context" | "dropdown"
@@ -71,6 +81,14 @@ export function ArchiveCard({
   selectionMode = false,
   selected = false,
   onSelect,
+  onMove,
+  onMoveOut,
+  folderName,
+  onSetCover,
+  isCover = false,
+  draggable = false,
+  onDragStart,
+  onDragEnd,
 }: ArchiveCardProps) {
   const [imgError, setImgError] = useState(false)
   const [showRename, setShowRename] = useState(false)
@@ -157,6 +175,14 @@ export function ArchiveCard({
           </Item>
         )}
         {(onRenamed || onMediaRetention) && <Separator />}
+        {onMove && <Item onClick={onMove}><HugeiconsIcon icon={FolderOpenIcon} className="h-4 w-4" />移到文件夹…</Item>}
+        {onMoveOut && <Item onClick={onMoveOut}>移到未分类</Item>}
+        {onSetCover && (
+          <Item disabled={isCover} onClick={onSetCover}>
+            <HugeiconsIcon icon={isCover ? Tick02Icon : Image01Icon} className="h-4 w-4" />
+            {isCover ? "已是文件夹封面" : "设为文件夹封面"}
+          </Item>
+        )}
         {onRenamed && (
           <Item onClick={() => setShowRename(true)}>
             <HugeiconsIcon icon={PencilEdit01Icon} className="h-4 w-4" />
@@ -195,6 +221,9 @@ export function ArchiveCard({
             type="button"
             onClick={(event) => (selectionMode && onSelect ? onSelect(event) : onClick())}
             data-archive-path={archive.path}
+            draggable={draggable}
+            onDragStart={onDragStart}
+            onDragEnd={onDragEnd}
             aria-pressed={selectionMode ? selected : undefined}
             className="flex w-full flex-col rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
@@ -205,6 +234,7 @@ export function ArchiveCard({
             )}>
               {showThumbnail && thumbnailUrl ? (
                 <img
+                  draggable={false}
                   src={thumbnailUrl}
                   alt=""
                   loading="lazy"
@@ -278,6 +308,12 @@ export function ArchiveCard({
                     strokeWidth={1.75}
                   />
                 </span>
+                {folderName && (
+                  <span className="flex min-w-0 max-w-[45%] shrink-0 items-center gap-0.5 rounded bg-muted px-1 py-px text-foreground/75" title={`在文件夹「${folderName}」中`}>
+                    <HugeiconsIcon icon={FolderOpenIcon} className="h-3 w-3 shrink-0" strokeWidth={1.75} />
+                    <span className="truncate">{folderName}</span>
+                  </span>
+                )}
                 {typeof archive.metadata?.platform === "string" && (
                   normalizeSourceFilter(archive.metadata.platform) === "local" ? (
                     <span className="flex shrink-0 items-center" title="本地文件">

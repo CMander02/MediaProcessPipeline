@@ -18,7 +18,7 @@ from app.core.settings import RuntimeSettings
 
 @pytest.fixture
 def config(tmp_path):
-    values = {"device": "cuda", "parallel": 2, "chunk_strategy": "fixed", "max_chunk_sec": 1}
+    values = {"device": "cuda", "parallel": 2, "chunk_strategy": "fixed", "max_chunk_sec": 1, "timestamp_mode": "vad"}
     for key in ("model_path", "mmproj_path", "binary_path"):
         path = tmp_path / key
         path.write_bytes(b"test")
@@ -45,8 +45,8 @@ def service(monkeypatch, config, tmp_path):
     return svc, audio, runtime, calls
 
 
-def mock_client(monkeypatch, *, fail=False):
-    state = SimpleNamespace(active=0, peak=0, payloads=[], finished=[])
+def mock_client(monkeypatch, *, fail=False, truncate_above=None):
+    state = SimpleNamespace(active=0, peak=0, payloads=[], finished=[], durations=[])
     lock = threading.Lock()
     class Client:
         def __init__(self, **kwargs): pass
@@ -61,11 +61,13 @@ def mock_client(monkeypatch, *, fail=False):
                 state.active += 1
                 state.peak = max(state.peak, state.active)
                 state.payloads.append(json)
+                state.durations.append(len(wave) / sr)
             time.sleep(0.08 if index == 1 else 0.01)
             with lock:
                 state.active -= 1
                 state.finished.append(index)
-            choice = {"finish_reason": "length" if fail and index == 2 else "stop",
+            truncated = (fail and index == 2) or (truncate_above is not None and len(wave) / sr > truncate_above)
+            choice = {"finish_reason": "length" if truncated else "stop",
                       "message": {"content": f"language Chinese<asr_text>片段{index}。"}}
             return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"choices": [choice]})
     monkeypatch.setattr(module.httpx, "Client", Client)
@@ -98,6 +100,60 @@ def test_length_limit_fails_task_and_releases_runtime(monkeypatch, service, conf
     assert runtime.stopped
 
 
+@pytest.mark.parametrize("maximum, duration, expected_times, requests_count", [
+    (2, 4, [(0, 1), (1, 2), (2, 3), (3, 4)], 6),
+    (3, 3, [(0, 1.5), (1.5, 3)], 3),
+    (8, 8, [(i, i + 1) for i in range(8)], 15),
+])
+def test_length_limit_retries_shorter_audio_with_ordered_timestamps(
+    monkeypatch, service, config, maximum, duration, expected_times, requests_count,
+):
+    svc, audio, runtime, _ = service
+    samples = np.concatenate([np.full(16000, (i + 1) / 10, dtype=np.float32) for i in range(duration)])
+    monkeypatch.setattr(module.subprocess, "run", lambda *a, **kw: SimpleNamespace(
+        returncode=0, stdout=samples.tobytes(), stderr=b"",
+    ))
+    config.update(max_chunk_sec=maximum)
+    requests = mock_client(monkeypatch, truncate_above=1.5)
+    updates = []
+    result = svc.transcribe(str(audio), runtime_config=config, progress_callback=updates.append)
+    assert [(s["start"], s["end"]) for s in result["segments"]] == expected_times
+    assert [s["text"] for s in result["segments"]] == [f"片段{int(start) + 1}。" for start, _ in expected_times]
+    assert len(requests.payloads) == requests_count
+    assert requests.peak <= config["parallel"]
+    assert all(p["max_tokens"] == 512 for p in requests.payloads)
+    assert updates[-1]["progress"] == 1
+    assert runtime.stopped
+
+
+def test_length_limit_retries_are_bounded_and_fail_without_partial_success(monkeypatch, service, config):
+    svc, audio, runtime, _ = service
+    config.update(max_chunk_sec=3, parallel=1)
+    requests = mock_client(monkeypatch, truncate_above=0)
+    with pytest.raises(RuntimeError, match=r"output token limit at 0.000-1.500s"):
+        svc.transcribe(str(audio), runtime_config=config)
+    assert requests.durations == [3, 1.5]
+    assert runtime.stopped
+
+
+def test_length_limit_retries_only_failed_vad_interval(monkeypatch, service, config):
+    svc, audio, runtime, calls = service
+    config.update(chunk_strategy="vad", vad_model_path="test-vad")
+    monkeypatch.setattr(module.ASRChunker, "sherpa_vad_chunks", lambda *a, **kw: [
+        module.AudioChunk(0, 1), module.AudioChunk(1, 3),
+    ])
+    requests = mock_client(monkeypatch, truncate_above=1.5)
+    result = svc.transcribe(str(audio), runtime_config=config)
+    assert result["segments"] == [
+        {"start": 0, "end": 1, "text": "片段1。"},
+        {"start": 1, "end": 2, "text": "片段2。"},
+        {"start": 2, "end": 3, "text": "片段3。"},
+    ]
+    assert sorted(requests.durations) == [1, 1, 1, 2]
+    assert len(calls) == 1
+    assert runtime.stopped
+
+
 def test_reuses_decoded_samples_for_vad(monkeypatch, service, config):
     svc, audio, _, calls = service
     mock_client(monkeypatch)
@@ -114,7 +170,8 @@ def test_reuses_decoded_samples_for_vad(monkeypatch, service, config):
 
 def test_default_binding_and_explicit_provider_override(config):
     settings = RuntimeSettings(llama_cpp_binary_path=config["binary_path"],
-        llama_asr_model_path=config["model_path"], llama_asr_mmproj_path=config["mmproj_path"])
+        llama_asr_model_path=config["model_path"], llama_asr_mmproj_path=config["mmproj_path"],
+        qwen3_aligner_model_path=str(Path(config["model_path"]).parent))
     binding = resolve_asr_binding(settings)
     assert binding.provider == "llama_cpp"
     assert binding.configured
@@ -132,6 +189,49 @@ def test_missing_projector_and_unsupported_native_timestamps(config):
 def test_parse_asr_scaffolding():
     assert module.parse_asr_text("language English<asr_text>Hello.<|im_end|>") == ("Hello.", "english")
     assert module.parse_asr_text("你好", "zh") == ("你好", "zh")
+
+
+@pytest.mark.parametrize("mode", [None, "auto", "qwen_forced"])
+def test_default_forced_alignment_uses_chunk_audio_and_absolute_offsets(monkeypatch, service, config, mode):
+    from app.services.recognition import alignment
+    svc, audio, runtime, _ = service
+    mock_client(monkeypatch)
+    config.pop("timestamp_mode")
+    if mode is not None:
+        config["timestamp_mode"] = mode
+    config["aligner_model_path"] = str(audio.parent)
+    aligned_audio = []
+    released = []
+    def align(path, text, language, **kwargs):
+        assert runtime.stopped  # ASR frees GPU memory before loading the aligner.
+        samples, sr = sf.read(path)
+        aligned_audio.append(round(float(samples[0]) * 10))
+        assert sr == 16000 and len(samples) == 16000
+        return [{"text": text, "start": 0.2, "end": 0.8}]
+    monkeypatch.setattr(alignment, "get_qwen_forced_aligner", lambda: SimpleNamespace(
+        align=align, release=lambda: released.append(True)))
+    result = svc.transcribe(str(audio), runtime_config=config)
+    assert result["timestamp_source"] == "qwen_forced"
+    assert [(s["start"], s["end"]) for s in result["segments"]] == [(0.2, 0.8), (1.2, 1.8), (2.2, 2.8)]
+    assert aligned_audio == [1, 2, 3]
+    assert released == [True]
+
+
+def test_auto_requires_aligner_instead_of_silent_vad_fallback(config):
+    assert "required" in module.validate_llama_asr_config({**config, "timestamp_mode": "auto"})
+
+
+def test_empty_alignment_fails_and_releases_model(monkeypatch, service, config):
+    from app.services.recognition import alignment
+    svc, audio, _, _ = service
+    mock_client(monkeypatch)
+    config.update(timestamp_mode="auto", aligner_model_path=str(audio.parent))
+    released = []
+    monkeypatch.setattr(alignment, "get_qwen_forced_aligner", lambda: SimpleNamespace(
+        align=lambda *args, **kwargs: [], release=lambda: released.append(True)))
+    with pytest.raises(RuntimeError, match="no timestamps"):
+        svc.transcribe(str(audio), runtime_config=config)
+    assert released == [True]
 
 
 def test_mac_auto_asr_uses_metal_and_cpu_alignment(monkeypatch, service, config, tmp_path):

@@ -1,4 +1,5 @@
-import { useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
@@ -24,7 +25,7 @@ import { cn } from "@/lib/utils"
 import { ImageNoteViewer } from "@/components/result/image-note-viewer"
 import { SpeakerPanel } from "@/components/result/speaker-panel"
 import { AttemptsMenu } from "@/components/result/attempts-menu"
-import { buildHash, libraryHash, navigate } from "@/lib/router"
+import { buildHash, libraryHash, navigate, parseHash, setNavigationGuard } from "@/lib/router"
 import { PlatformIcon } from "@/components/platform-icon"
 import {
   DropdownMenu,
@@ -50,8 +51,19 @@ import {
   timelineTime,
 } from "../../lib/result-timeline"
 
-export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt }: ResultViewerProps) {
-  const view = useResultViewer({ archivePath, taskId: taskIdProp, startAt })
+export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, embedded, onTarget, onDeleted }: ResultViewerProps & { onDeleted?: () => void }) {
+  const container = useRef<HTMLDivElement>(null)
+  const [layoutWidth, setLayoutWidth] = useState<number | undefined>(undefined)
+  useLayoutEffect(() => {
+    if (!embedded || !container.current) return
+    const element = container.current
+    const update = () => setLayoutWidth(element.getBoundingClientRect().width)
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [embedded])
+  const view = useResultViewer({ archivePath, taskId: taskIdProp, startAt, embedded, layoutWidth, onTarget })
   const { prefs, update: updatePrefs } = usePreferences()
   const {
     mediaUrl,
@@ -75,6 +87,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt }:
     isTextNote,
     isNoteContent,
     subtitles,
+    speakerSubtitles,
+    speakerQuality,
     duration,
     currentTime,
     seekTo,
@@ -120,7 +134,35 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt }:
     resolvedTaskId,
     mergeInfo,
     resolveMerge,
+    derivedContentStale,
+    speakerHints,
+    speakerAutoFill,
+    autoFilling,
+    handleAutoFillSpeakers,
+    regenerating,
+    handleRegenerateDerived,
   } = view
+  const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null)
+  const navigationBusy = renamingSpeaker || Boolean(mergeInfo)
+  const navigationDirty = hasUnsavedTranscript || editingTitle
+  const allowNavigation = useRef(false)
+  useEffect(() => setNavigationGuard((proceed, hash) => {
+    if (allowNavigation.current || (!navigationDirty && !navigationBusy)) return true
+    if (embedded && hash) {
+      const current = parseHash(libraryHash())
+      const target = parseHash(hash)
+      if (current.page === "files" && target.page === "files" && ["view", "item", "attempt", "viewerTask", "generation"].every((key) => current.params[key] === target.params[key])) return true
+    }
+    setPendingNavigation(() => proceed)
+    return false
+  }), [navigationDirty, navigationBusy, embedded])
+  useEffect(() => {
+    const unload = (event: BeforeUnloadEvent) => {
+      if (navigationDirty || navigationBusy) { event.preventDefault(); event.returnValue = "" }
+    }
+    window.addEventListener("beforeunload", unload)
+    return () => window.removeEventListener("beforeunload", unload)
+  }, [navigationDirty, navigationBusy])
   const [confirmRerun, setConfirmRerun] = useState(false)
   // Renaming from the ⋯ menu: keep focus in the title field instead of returning it to the menu button.
   const renameFromMenu = useRef(false)
@@ -155,71 +197,6 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt }:
       连接服务器后播放音视频；摘要、字幕、导图和图文资料可继续离线阅读。
     </div>
   ) : null
-
-  const mediaPane = (
-    <div className={cn(
-      "h-full min-h-0 overflow-y-auto",
-      isPortraitLayout || isMobileLayout ? "p-0" : "p-4",
-    )}>
-      <div className={cn(
-        "space-y-3",
-        // Video results: keep the player near eye level rather than at the top edge.
-        !isNoteContent && !isPortraitLayout && !isMobileLayout && "flex min-h-full flex-col justify-center",
-      )}>
-      {isArticleNote ? (
-        <ArticleNoteReader
-          content={noteText}
-          archivePath={archivePath}
-          sep={sep}
-          descriptions={imageDescriptions}
-          isProcessing={isProcessing}
-        />
-      ) : isImageNote ? (
-        <div className="h-full">
-          <ImageNoteViewer
-            descriptions={imageDescriptions}
-            activeIndex={activeImageIdx}
-            onImageIndexChange={setActiveImageIdx}
-            isProcessing={isProcessing}
-          />
-        </div>
-      ) : isTextNote ? (
-        <div className="h-full min-h-40 overflow-y-auto rounded-lg border bg-background p-5">
-          {noteText ? (
-            <NoteMarkdown content={noteText} archivePath={archivePath} sep={sep} />
-          ) : (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              暂无正文
-            </div>
-          )}
-        </div>
-      ) : mediaPlayerBlock ? (
-        mediaPlayerBlock
-      ) : isProcessing ? (
-        <div className="flex items-center justify-center h-40 rounded-lg bg-muted/50">
-          <div className="text-center text-muted-foreground">
-            <HugeiconsIcon icon={Loading03Icon} className="h-6 w-6 animate-spin mx-auto mb-2" />
-            <p className="text-xs">正在下载媒体...</p>
-          </div>
-        </div>
-      ) : null}
-      {!isNoteContent && subtitles.length > 0 && (
-        <SpeakerPanel
-          subtitles={subtitles}
-          duration={duration}
-          currentTime={currentTime}
-          onSeek={seekTo}
-          onRenameSpeaker={handleRenameSpeaker}
-          renaming={renamingSpeaker}
-          editingDisabled={hasUnsavedTranscript || Boolean(mergeInfo)}
-          collapsed={prefs.speakerPanelCollapsed}
-          onCollapsedChange={(value) => updatePrefs({ speakerPanelCollapsed: value })}
-        />
-      )}
-      </div>
-    </div>
-  )
-  const contentPane = <ResultContentPane view={view} />
 
   // Phones: player pinned on top, one row of speakers, then the tabs fill the rest. Only the tab body scrolls.
   const phoneAvLayout = isMobileLayout && !isNoteContent
@@ -274,7 +251,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt }:
             <HugeiconsIcon icon={Link01Icon} className="h-3.5 w-3.5" />
           </button>
         ) : null}
-        <AttemptsMenu source={sourceHref} currentPath={archivePath} />
+        <AttemptsMenu source={sourceHref} currentPath={archivePath} onTarget={onTarget} />
         <span className="rounded p-1" title={headerMediaLabel}>
           <HugeiconsIcon icon={headerMediaIcon} className="h-3.5 w-3.5" strokeWidth={1.75} />
         </span>
@@ -288,7 +265,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt }:
             <HugeiconsIcon icon={ListTreeIcon} className="h-3.5 w-3.5" strokeWidth={1.75} />
           </span>
         )}
-        {subtitleSourceType && (
+        {transcript && (
           <span
             className={cn(
               "rounded px-1.5 py-0.5 text-[10px] font-medium",
@@ -296,9 +273,9 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt }:
                 ? "text-foreground"
                 : "text-muted-foreground",
             )}
-            title={subtitleSourceType === "platform" ? "字幕来自平台" : "字幕由 ASR 生成"}
+            title={subtitleSourceType === "platform" ? "字幕来自平台" : subtitleSourceType === "asr" ? "字幕由 ASR 生成" : "字幕来源未记录"}
           >
-            {subtitleSourceType === "platform" ? "平台" : "ASR"}
+            {subtitleSourceType === "platform" ? "平台" : subtitleSourceType === "asr" ? "ASR" : "来源未记录"}
           </span>
         )}
         {isPolished && (
@@ -374,10 +351,93 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt }:
     </DropdownMenu>
   )
 
+  const speakerTools = {
+    hints: speakerHints,
+    onAutoFill: resolvedTaskId && online && capabilities.archive_mutation && !isProcessing ? () => void handleAutoFillSpeakers() : undefined,
+    autoFill: {
+      busy: autoFilling || (isProcessing && ["queued", "running"].includes(speakerAutoFill?.status ?? "")),
+      error: speakerAutoFill?.status === "failed" ? speakerAutoFill.error ?? "未知原因" : null,
+    },
+    // The summary and mind map tabs say it themselves while they are open.
+    stale: derivedContentStale && !isProcessing && !["summary", "mindmap"].includes(view.activeTab),
+    onRegenerate: resolvedTaskId && online ? () => void handleRegenerateDerived() : undefined,
+    regenerating,
+  }
+
+  const mediaPane = (
+    <div className={cn(
+      "h-full min-h-0 overflow-y-auto",
+      isPortraitLayout || isMobileLayout ? "p-0" : "p-4",
+    )}>
+      {embedded && <div className="mb-3 flex min-w-0 items-center gap-2">{titleArea}{processingBadge}{moreMenu}</div>}
+      {embedded && taskError && <p role="alert" className="mb-3 text-sm text-destructive">{taskError}</p>}
+      <div className={cn(
+        "space-y-3",
+        // Video results: keep the player near eye level rather than at the top edge.
+        !embedded && !isNoteContent && !isPortraitLayout && !isMobileLayout && "flex min-h-full flex-col justify-center",
+      )}>
+      {isArticleNote ? (
+        <ArticleNoteReader
+          content={noteText}
+          archivePath={archivePath}
+          sep={sep}
+          descriptions={imageDescriptions}
+          isProcessing={isProcessing}
+        />
+      ) : isImageNote ? (
+        <div className="h-full">
+          <ImageNoteViewer
+            descriptions={imageDescriptions}
+            activeIndex={activeImageIdx}
+            onImageIndexChange={setActiveImageIdx}
+            isProcessing={isProcessing}
+          />
+        </div>
+      ) : isTextNote ? (
+        <div className="h-full min-h-40 overflow-y-auto rounded-lg border bg-background p-5">
+          {noteText ? (
+            <NoteMarkdown content={noteText} archivePath={archivePath} sep={sep} />
+          ) : (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              暂无正文
+            </div>
+          )}
+        </div>
+      ) : mediaPlayerBlock ? (
+        mediaPlayerBlock
+      ) : isProcessing ? (
+        <div className="flex items-center justify-center h-40 rounded-lg bg-muted/50">
+          <div className="text-center text-muted-foreground">
+            <HugeiconsIcon icon={Loading03Icon} className="h-6 w-6 animate-spin mx-auto mb-2" />
+            <p className="text-xs">正在下载媒体...</p>
+          </div>
+        </div>
+      ) : null}
+      {!isNoteContent && subtitles.length > 0 && (
+        <SpeakerPanel
+          subtitles={speakerSubtitles}
+          quality={speakerQuality}
+          duration={duration}
+          currentTime={currentTime}
+          onSeek={seekTo}
+          onRenameSpeaker={handleRenameSpeaker}
+          renaming={renamingSpeaker}
+          editingDisabled={hasUnsavedTranscript || Boolean(mergeInfo)}
+          collapsed={prefs.speakerPanelCollapsed}
+          onCollapsedChange={(value) => updatePrefs({ speakerPanelCollapsed: value })}
+          {...speakerTools}
+        />
+      )}
+      </div>
+    </div>
+  )
+  const contentPane = <ResultContentPane view={view} />
+
+
   return (
-    <div className="flex h-full flex-col">
+    <div ref={container} className="flex h-full min-w-0 flex-col">
       {/* Title bar */}
-      <div className="flex shrink-0 items-center gap-2 border-b px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-2">
+      {!embedded && <div className="flex shrink-0 items-center gap-2 border-b px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-2">
         <Button className="h-11 md:h-8" variant="ghost" size="sm" onClick={() => navigate(libraryHash())}>
           <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4 mr-1" />
           返回
@@ -385,9 +445,9 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt }:
         {titleArea}
         {processingBadge}
         {moreMenu}
-      </div>
+      </div>}
 
-      {showFlowDiagnostics && (taskFlow || recentTimelineEvents.length > 0) && (
+      {!embedded && showFlowDiagnostics && (taskFlow || recentTimelineEvents.length > 0) && (
         <div className="shrink-0 border-b bg-background px-4 py-3">
           {taskFlow && (
             <>
@@ -464,7 +524,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt }:
       )}
 
       {/* Error display */}
-      {taskFailed && taskError && (
+      {!embedded && taskFailed && taskError && (
         <div role="alert" className="mx-4 mt-2 shrink-0 space-y-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
           <p className="font-medium text-destructive">处理失败{failedStepLabel ? `：${failedStepLabel}` : ""}</p>
           <p className={cn("whitespace-pre-wrap break-words text-destructive/90", !errorExpanded && "line-clamp-3")}>{taskError}</p>
@@ -498,6 +558,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt }:
         {phoneAvLayout ? (
           <div className="absolute inset-0 flex flex-col">
             <div className="shrink-0 bg-background px-3 pt-2">
+              {embedded && <div className="mb-2 flex min-w-0 items-center gap-2">{titleArea}{processingBadge}{moreMenu}</div>}
+              {embedded && taskError && <p role="alert" className="mb-2 text-xs text-destructive">{taskError}</p>}
               {mediaPlayerBlock ?? (isProcessing ? (
                 <div className="flex h-24 items-center justify-center rounded-lg bg-muted/50 text-xs text-muted-foreground">
                   <HugeiconsIcon icon={Loading03Icon} className="mr-2 h-4 w-4 animate-spin" />
@@ -509,13 +571,15 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt }:
               <div className="shrink-0 border-b px-3 pb-2">
                 <SpeakerPanel
                   compact
-                  subtitles={subtitles}
+                  subtitles={speakerSubtitles}
+                  quality={speakerQuality}
                   duration={duration}
                   currentTime={currentTime}
                   onSeek={seekTo}
                   onRenameSpeaker={handleRenameSpeaker}
                   renaming={renamingSpeaker}
                   editingDisabled={hasUnsavedTranscript || Boolean(mergeInfo)}
+                  {...speakerTools}
                 />
               </div>
             )}
@@ -536,7 +600,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt }:
           </div>
         ) : isPortraitLayout ? (
           <div className="absolute inset-0 overflow-hidden p-3">
-            <div className="grid h-full min-h-0 grid-rows-[minmax(220px,42%)_minmax(0,1fr)] gap-3 sm:grid-cols-[minmax(260px,0.95fr)_minmax(300px,1fr)] sm:grid-rows-1">
+            <div className={cn("grid h-full min-h-0 grid-rows-[minmax(220px,42%)_minmax(0,1fr)] gap-3", embedded ? layoutWidth !== undefined && layoutWidth >= 640 && "grid-cols-[minmax(260px,0.95fr)_minmax(300px,1fr)] grid-rows-1" : "sm:grid-cols-[minmax(260px,0.95fr)_minmax(300px,1fr)] sm:grid-rows-1")}>
               <div className="min-h-0 overflow-hidden">
                 {mediaPane}
               </div>
@@ -565,6 +629,9 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt }:
         )}
       </div>
 
+      <Dialog open={pendingNavigation !== null} onOpenChange={(open) => { if (!open) setPendingNavigation(null) }}>
+        <DialogContent><DialogHeader><DialogTitle>{navigationBusy ? "请等待当前操作完成" : "有未保存的编辑"}</DialogTitle><DialogDescription>{navigationBusy ? "人物名称正在保存，或合并尚未确认。完成后再切换。" : "切换后会放弃当前编辑。也可以返回字幕，保存后再切换。"}</DialogDescription></DialogHeader><DialogFooter><Button variant="ghost" onClick={() => setPendingNavigation(null)}>继续编辑</Button>{!navigationBusy && <Button variant="destructive" onClick={() => { allowNavigation.current = true; const proceed = pendingNavigation; setPendingNavigation(null); proceed?.(); queueMicrotask(() => { allowNavigation.current = false }) }}>放弃并切换</Button>}</DialogFooter></DialogContent>
+      </Dialog>
       {/* Delete confirmation dialog */}
       <DeleteConfirmDialog
         open={showDeleteDialog}
@@ -573,7 +640,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt }:
         archivePath={archivePath}
         taskId={resolvedTaskId ?? undefined}
         taskDelete={Boolean(isProcessing && resolvedTaskId)}
-        onDeleted={() => navigate(libraryHash())}
+        onDeleted={onDeleted ?? (() => navigate(libraryHash()))}
       />
 
       <RerunConfirmDialog

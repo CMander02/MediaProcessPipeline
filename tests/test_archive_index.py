@@ -251,3 +251,23 @@ def test_api_keeps_legacy_shape_and_adds_pagination(library):
         assert len(result["archives"]) == 1
         assert result["workspace_id"] == str(root)
         assert client.get("/api/pipeline/archives?page=0").status_code == 422
+
+
+def test_failed_archive_carries_error_and_clears_it_when_requeued(library):
+    from app.models import Task, TaskStatus, TaskType
+    root, service = library
+    directory, _ = archive(root, "failed")
+    store = database.get_task_store()
+    task = Task(task_type=TaskType.PIPELINE, source="https://example.com/video",
+                status=TaskStatus.FAILED, error="字幕润色第 8 批仍缺少有效正文：149",
+                result={"output_dir": str(directory)})
+    store.save(task)
+    service.reconcile()
+    item = service.list_all()[0]
+    assert item["metadata"]["status"] == "failed"
+    assert item["metadata"]["error"] == task.error
+    store.update_status(task.id, TaskStatus.QUEUED, error=None)
+    service.flush_changes()
+    item = service.list_all()[0]
+    assert item["metadata"]["status"] == "queued"
+    assert item["metadata"]["error"] is None

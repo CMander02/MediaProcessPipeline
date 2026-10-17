@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 import ssl
 import urllib.error
 
@@ -71,6 +71,46 @@ def test_disk_failure_does_not_retry_network(monkeypatch, tmp_path):
     with pytest.raises(OSError):
         dash._try_download_with_backup('url', [], tmp_path / 'a', 'audio', 'ref')
     fallback.assert_not_called()
+
+
+@pytest.mark.parametrize('error_type', [httpx.RemoteProtocolError, httpx.ReadTimeout])
+def test_interrupted_body_tries_backup_and_removes_partial(monkeypatch, tmp_path, error_type):
+    dest = tmp_path / 'audio.m4s'
+    response = MagicMock()
+    response.__enter__.return_value = response
+    response.headers = {'Content-Length': '12'}
+    response.read.side_effect = [b'partial', error_type('incomplete body')]
+    complete = MagicMock()
+    complete.__enter__.return_value = complete
+    complete.headers = {'Content-Length': '8'}
+    complete.read.side_effect = [b'complete', b'']
+    requests = []
+
+    def open_stream(request, **kwargs):
+        requests.append(request.full_url)
+        return response if len(requests) == 1 else complete
+
+    def retry(*args):
+        assert not dest.exists()
+        raise error_type('incomplete body')
+
+    monkeypatch.setattr(dash, 'urllib_urlopen', open_stream)
+    monkeypatch.setattr(dash, '_download_stream_httpx', retry)
+    dash._try_download_with_backup(
+        'https://primary.test/a', ['https://backup.test/a'], dest, 'audio', 'ref')
+    assert requests == ['https://primary.test/a', 'https://backup.test/a']
+    assert dest.read_bytes() == b'complete'
+
+
+def test_all_interrupted_urls_raise_download_error(monkeypatch, tmp_path):
+    primary = Mock(side_effect=httpx.RemoteProtocolError('incomplete body'))
+    fallback = Mock(side_effect=httpx.RemoteProtocolError('incomplete body'))
+    monkeypatch.setattr(dash, '_download_stream', primary)
+    monkeypatch.setattr(dash, '_download_stream_httpx', fallback)
+    with pytest.raises(dash.DownloadError, match='All 2 download URLs failed'):
+        dash._try_download_with_backup(
+            'https://primary.test/a', ['https://backup.test/a'], tmp_path / 'a', 'audio', 'ref')
+    assert primary.call_count == fallback.call_count == 2
 
 
 def qr_service(monkeypatch, responses):

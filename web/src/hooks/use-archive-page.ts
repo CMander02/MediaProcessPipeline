@@ -35,7 +35,7 @@ export function useArchivePage(query: ArchiveQuery) {
     }
     return request.then((result) => {
       if (activeKey.current !== requestKey) return
-      const scope = rememberArchiveWorkspace(server, result.workspace_id)
+      const scope = platform.isNative && result.workspace_id === "offline" ? archiveCacheScope(server) : rememberArchiveWorkspace(server, result.workspace_id)
       const resolvedKey = `${scope}:${platform.kind}:${queryKey}`
       pages.delete(resolvedKey)
       pages.set(resolvedKey, result)
@@ -46,7 +46,7 @@ export function useArchivePage(query: ArchiveQuery) {
     }, (reason) => {
       if (activeKey.current === requestKey) setError({ key: requestKey, message: String(reason) })
     })
-  }, [platform.kind, queryKey, repository, requestKey, server])
+  }, [platform.kind, platform.isNative, queryKey, repository, requestKey, server])
 
   useEffect(() => { void refresh() }, [refresh])
   useEffect(() => { if (platform.isNative) repository.triggerSync() }, [platform.isNative, repository])
@@ -61,12 +61,18 @@ export function useArchivePage(query: ArchiveQuery) {
     const resume = () => { repository.triggerSync(); void refresh(true) }
     window.addEventListener("mpp:workspace-change", changed)
     window.addEventListener("mpp:connection-change", changed)
+    window.addEventListener("mpp:offline-scope-change", changed)
     window.addEventListener("mpp:offline-library-change", reload)
+    window.addEventListener("mpp:library-change", reload)
+    window.addEventListener("mpp:library-directory-change", reload)
     window.addEventListener("mpp:app-resume", resume)
     return () => {
       window.removeEventListener("mpp:workspace-change", changed)
       window.removeEventListener("mpp:connection-change", changed)
+      window.removeEventListener("mpp:offline-scope-change", changed)
       window.removeEventListener("mpp:offline-library-change", reload)
+      window.removeEventListener("mpp:library-change", reload)
+      window.removeEventListener("mpp:library-directory-change", reload)
       window.removeEventListener("mpp:app-resume", resume)
     }
   }, [refresh, repository])
@@ -77,7 +83,9 @@ export function useArchivePage(query: ArchiveQuery) {
     void refresh(true)
   }, [platform.kind, refresh, server])
 
-  return { archives: data?.archives ?? [], total: data?.total ?? 0, page: data?.page ?? query.page,
+  return { archives: data?.archives ?? [], folders: data?.folders ?? [], entries: data?.entries,
+    archiveTotal: data?.archive_total ?? data?.total ?? 0,
+    total: data?.total ?? 0, page: data?.page ?? query.page,
     loading: !data && error?.key !== requestKey, error: error?.key === requestKey ? error.message : null,
     indexing: data?.indexing ?? false, lastReconciledAt: data?.last_reconciled_at, facets: data?.facets,
     refresh, removeArchive }

@@ -577,9 +577,10 @@ def test_main_app_lifespan_auto_updates_ytdlp_when_enabled(tmp_path, monkeypatch
 
     with TestClient(app_main.app):
         assert queue.started is True
-        assert auto_update_calls == [True]
 
     assert queue.stopped is True
+    # Startup maintenance runs in the background and is drained on shutdown.
+    assert auto_update_calls == [True]
 
 
 def test_ytdlp_settings_endpoints_report_status_and_schedule_restart(tmp_path, monkeypatch):
@@ -1141,3 +1142,41 @@ async def test_pause_during_model_release_does_not_start_postprocess(tmp_path, m
         worker.cancel()
         await asyncio.gather(worker, return_exceptions=True)
         database.close_db()
+
+
+@pytest.mark.asyncio
+async def test_full_rerun_reuses_directory_and_discards_generated_checkpoints(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings_module, "_runtime_settings", RuntimeSettings(data_root=str(tmp_path)))
+    database.reset_db_path(tmp_path)
+    store = database.get_task_store()
+    directory = tmp_path / "原文件夹 (3)"
+    directory.mkdir()
+    (directory / "metadata.json").write_text('{"title":"original","status":"failed"}', encoding="utf-8")
+    (directory / "video.mp4").write_bytes(b"source")
+    (directory / "transcript_polished.srt").write_text("old", encoding="utf-8")
+    (directory / "subtitle_speakers.json").write_text("{}", encoding="utf-8")
+    (directory / "my-notes.md").write_text("keep", encoding="utf-8")
+    task = Task(task_type=TaskType.PIPELINE, status=TaskStatus.FAILED,
+                source=str(tmp_path / "gone-staging" / "video.mp4"),
+                error="polish failed", completed_steps=["download", "transcribe"],
+                result={"output_dir": str(directory), "analysis": {"old": True}},
+                flow={"completed_steps": ["resolve"]})
+    store.save(task)
+    store.save_artifact(task.id, "transcript_polished.srt", "old", "text/plain")
+    queue = queue_module.TaskQueue()
+    assert await queue.rerun_full(task.id)
+    saved = store.get(task.id)
+    assert saved.id == task.id
+    assert saved.result == {"output_dir": str(directory)}
+    assert saved.source == str(directory / "video.mp4")
+    assert saved.completed_steps == [] and saved.flow is None and saved.error is None
+    assert saved.status == TaskStatus.QUEUED
+    assert not (directory / "transcript_polished.srt").exists()
+    assert not (directory / "subtitle_speakers.json").exists()
+    assert store.get_artifact(task.id, "transcript_polished.srt") is None
+    assert (directory / "video.mp4").read_bytes() == b"source"
+    assert (directory / "my-notes.md").read_text() == "keep"
+    from app.core.pipeline_steps.artifacts import _rename_task_dir_to_title
+    assert _rename_task_dir_to_title(directory, "new title") == (directory, None)
+    assert not await queue.rerun_full(task.id)
+    assert queue.get_queue_snapshot() == [task.id]

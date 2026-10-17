@@ -18,7 +18,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
 
-from app.core.network import urllib_urlopen
+from app.core.public_urls import public_urlopen as urllib_urlopen
 from app.core.settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)

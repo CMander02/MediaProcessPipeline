@@ -15,7 +15,7 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.core.logging_setup import log_event
-from app.core.network import urllib_urlopen
+from app.core.public_urls import public_urlopen as urllib_urlopen
 from app.core.paths import get_workspace_paths
 from app.core.settings import get_runtime_settings
 from app.models import ChapterInfo, MediaMetadata, MediaType
@@ -224,7 +224,7 @@ class YtdlpService:
         if _is_generic_webpage_url(url):
             return self._download_webpage(url, output_dir)
 
-        import yt_dlp
+        from app.services.ingestion.public_ytdlp import public_youtube_dl
 
         outtmpl = str(output_dir / "%(title)s.%(ext)s")
 
@@ -251,7 +251,7 @@ class YtdlpService:
 
         log_event(logger, logging.INFO, "download.video.started", url=url)
         try:
-            with yt_dlp.YoutubeDL(video_opts) as ydl:
+            with public_youtube_dl(video_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
         except Exception as e:
             if is_youtube_network_error(e, url):
@@ -275,7 +275,7 @@ class YtdlpService:
                 **ytdlp_auth_opts(),
             }
             try:
-                with yt_dlp.YoutubeDL(meta_opts) as ydl:
+                with public_youtube_dl(meta_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
             except Exception as e:
                 if _is_twitter_url(url):
@@ -310,6 +310,7 @@ class YtdlpService:
                         "-hide_banner",
                         "-loglevel",
                         "error",
+                        "-protocol_whitelist", "file,pipe,crypto,data",
                         "-i",
                         str(video_file),
                         "-vn",
@@ -809,6 +810,7 @@ class YtdlpService:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             context_kwargs = {
+                "service_workers": "block",
                 "user_agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
@@ -819,8 +821,10 @@ class YtdlpService:
             if auth_path.exists():
                 context_kwargs["storage_state"] = str(auth_path)
             context = browser.new_context(**context_kwargs)
+            from app.services.ingestion.public_browser import goto_public_page, protect_browser_context
+            protect_browser_context(context)
             page = context.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            goto_public_page(page, url, wait_until="domcontentloaded", timeout=45000)
             page.wait_for_timeout(3000)
             data = page.evaluate(
                 """() => {
@@ -872,7 +876,7 @@ class YtdlpService:
             article_url = str(data.get("article_url") or "") if isinstance(data, dict) else ""
             if article_url and auth_path.exists():
                 article_page = context.new_page()
-                article_page.goto(article_url, wait_until="domcontentloaded", timeout=45000)
+                goto_public_page(article_page, article_url, wait_until="domcontentloaded", timeout=45000)
                 article_page.wait_for_timeout(4000)
                 if "/i/flow/login" not in article_page.url:
                     article_data = article_page.evaluate(
@@ -981,7 +985,7 @@ class YtdlpService:
 
             return fetch_webpage_metadata(url)
 
-        import yt_dlp
+        from app.services.ingestion.public_ytdlp import public_youtube_dl
 
         ydl_opts = {
             "quiet": True,
@@ -990,7 +994,7 @@ class YtdlpService:
             **ytdlp_auth_opts(),
         }
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with public_youtube_dl(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as e:
             if _is_twitter_url(url):
@@ -1004,7 +1008,7 @@ class YtdlpService:
 
     def _download_audio_only(self, url: str, output_dir: Path, title: str) -> Path:
         """Fallback: download audio only using yt-dlp."""
-        import yt_dlp
+        from app.services.ingestion.public_ytdlp import public_youtube_dl
 
         ydl_opts = {
             "format": "bestaudio/best",
@@ -1024,7 +1028,7 @@ class YtdlpService:
 
         log_event(logger, logging.INFO, "download.audio_only.started", url=url)
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with public_youtube_dl(ydl_opts) as ydl:
                 ydl.extract_info(url, download=True)
         except Exception as e:
             if is_youtube_network_error(e, url):

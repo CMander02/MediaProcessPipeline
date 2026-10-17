@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.logging_setup import log_event
-from app.core.network import urllib_urlopen
+from app.core.public_urls import public_urlopen as urllib_urlopen
 from app.core.settings import get_runtime_settings
 from app.services.ingestion.platform.source_urls import (
     _extract_bilibili_bvid,

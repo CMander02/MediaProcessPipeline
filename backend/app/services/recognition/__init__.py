@@ -268,6 +268,10 @@ async def transcribe_audio(
             result["speaker_count"] = diarization_result["speaker_count"]
             result["diarization"] = diarization_result["diarization"]
             result["diarization_cache_hit"] = diarization_result["cache_hit"]
+            result["speaker_quality"] = diarization_result.get("speaker_quality", {})
+            result["diarization_parameters"] = diarization_result.get("parameters", {})
+            result["mixed_speaker_cues"] = [index for index, row in enumerate(diarization_result["segments"], 1)
+                                          if row.get("speaker_assignment", {}).get("status") == "mixed"]
             if progress_callback:
                 report_progress(
                     {
@@ -302,6 +306,9 @@ async def transcribe_audio(
         "speakers": speakers,
         "speaker_count": int(result.get("speaker_count", len(speakers))),
         "diarization": result.get("diarization", "pyannote" if binding.diarize else "none"),
+        "diarization_parameters": result.get("diarization_parameters", {}),
+        "speaker_quality": result.get("speaker_quality", {}),
+        "mixed_speaker_cues": result.get("mixed_speaker_cues", []),
         "quality_diagnostics": result.get("quality_diagnostics", []),
         "model": result.get("model", binding.model),
         "runtime_provider": result.get("runtime_provider"),

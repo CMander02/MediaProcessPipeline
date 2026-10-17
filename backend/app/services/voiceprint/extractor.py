@@ -208,3 +208,53 @@ def extract_voiceprints(
         ))
 
     return results
+
+
+def _embed(embedding_model: Any, samples: np.ndarray) -> np.ndarray | None:
+    import torch
+
+    waveform = torch.from_numpy(samples).float().unsqueeze(0).unsqueeze(0)
+    output = embedding_model(waveform)
+    vector = output.detach().cpu().numpy() if hasattr(output, "detach") else np.asarray(output)
+    vector = np.asarray(vector, dtype=np.float32).reshape(-1)
+    norm = np.linalg.norm(vector)
+    return vector / norm if norm >= 1e-8 else None
+
+
+def cue_voice_similarity(
+    audio_path: str | Path,
+    cues: list[dict[str, Any]],
+    voiceprints: list[ExtractedVoiceprint],
+    pyannote_pipeline: Any,
+    min_seconds: float = 1.0,
+) -> list[dict[str, Any]]:
+    """How much each subtitle line sounds like each speaker of the recording.
+
+    ``cues`` are {index, start, end}. Each line long enough for a usable embedding is compared
+    with every speaker's voiceprint (cosine similarity), so a line the diarization left open can
+    be matched by voice.
+    """
+    if not cues or not voiceprints:
+        return []
+    audio = _load_audio_mono_16k(audio_path)
+    model = _get_embedding_model(pyannote_pipeline)
+    rows = []
+    for cue in cues:
+        start, end = float(cue["start"]), float(cue["end"])
+        if end - start < min_seconds:
+            continue
+        samples = audio[max(0, int(start * SAMPLE_RATE)):min(len(audio), int(end * SAMPLE_RATE))]
+        if len(samples) < min_seconds * SAMPLE_RATE:
+            continue
+        try:
+            vector = _embed(model, samples)
+        except Exception as exc:
+            logger.warning("Could not embed subtitle line %s: %s", cue.get("index"), exc)
+            continue
+        if vector is None:
+            continue
+        rows.append({
+            "index": cue["index"], "start": round(start, 3), "end": round(end, 3),
+            "similarity": {vp.speaker_label: round(float(np.dot(vector, vp.embedding)), 4) for vp in voiceprints},
+        })
+    return rows

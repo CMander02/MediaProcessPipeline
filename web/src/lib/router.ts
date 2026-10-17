@@ -59,6 +59,29 @@ export function buildHash(page: string, params: Record<string, string | number |
 }
 
 let currentRoute: Route = parseHash(window.location.hash)
+let currentHash = window.location.hash || "#/files"
+let historyIndex = Number(window.history.state?.mppLibraryIndex ?? 0)
+let historyMaximum = historyIndex
+const historyEntries = new Map<number, string>([[historyIndex, currentHash]])
+window.history.replaceState({ ...window.history.state, mppLibraryIndex: historyIndex }, "")
+let navigationGuard: ((proceed: () => void, hash: string) => boolean) | null = null
+let rollingBack = false
+let approvedTraversal = false
+export function setNavigationGuard(guard: ((proceed: () => void, hash: string) => boolean) | null) {
+  navigationGuard = guard
+  return () => { if (navigationGuard === guard) navigationGuard = null }
+}
+export function libraryHistoryState() { return { back: historyIndex > 0, forward: historyIndex < historyMaximum } }
+/** The entry Back returns to, when this session recorded it. */
+export function previousHash(): string | undefined {
+  return historyIndex > 0 ? historyEntries.get(historyIndex - 1) : undefined
+}
+export function goLibraryHistory(direction: "back" | "forward") {
+  const delta = direction === "back" ? -1 : 1
+  if (delta < 0 ? historyIndex <= 0 : historyIndex >= historyMaximum) return
+  const proceed = () => { approvedTraversal = true; window.history.go(delta) }
+  if (!navigationGuard || navigationGuard(proceed, historyEntries.get(historyIndex + delta) ?? "")) proceed()
+}
 let lastLibraryHash = currentRoute.page === "files" ? normalizedLibraryHash(window.location.hash) : "#/files"
 const listeners = new Set<() => void>()
 
@@ -67,11 +90,37 @@ function normalizedLibraryHash(hash: string): string {
 }
 
 function handleHashChange() {
+  if (rollingBack) return
+  currentHash = window.location.hash || "#/files"
   currentRoute = parseHash(window.location.hash)
   if (currentRoute.page === "files") lastLibraryHash = normalizedLibraryHash(window.location.hash)
   listeners.forEach((l) => l())
 }
 window.addEventListener("hashchange", handleHashChange)
+window.addEventListener("popstate", () => {
+  const next = Number(window.history.state?.mppLibraryIndex ?? historyIndex)
+  if (rollingBack) { rollingBack = false; return }
+  if (!approvedTraversal && navigationGuard && next !== historyIndex) {
+    const delta = next - historyIndex
+    const proceed = () => {
+      // Wait for the rollback before traversing to the chosen entry.
+      const traverse = () => { approvedTraversal = true; window.history.go(delta) }
+      if (rollingBack) window.addEventListener("popstate", traverse, { once: true })
+      else traverse()
+    }
+    if (!navigationGuard(proceed, window.location.hash)) {
+      rollingBack = true
+      window.history.go(-delta)
+      // Do not publish the temporary target during its following hashchange event.
+      return
+    }
+  }
+  approvedTraversal = false
+  historyIndex = next
+  historyMaximum = Math.max(historyMaximum, next)
+  historyEntries.set(next, window.location.hash)
+  handleHashChange()
+})
 
 function subscribe(listener: () => void) {
   listeners.add(listener)
@@ -92,13 +141,33 @@ export function libraryHash(): string {
 }
 
 export function navigate(hash: string, options?: { replace?: boolean }) {
+  if (hash === currentHash) return
+  const proceed = () => commitNavigation(hash, options)
+  if (navigationGuard && !navigationGuard(proceed, hash)) return
+  proceed()
+}
+
+/** Replace the current entry with `parent` and open `hash` above it, so Back lands on `parent`. */
+export function navigateAbove(parent: string, hash: string) {
+  if (parent === hash) { navigate(hash, { replace: true }); return }
+  const proceed = () => {
+    if (parent !== currentHash) commitNavigation(parent, { replace: true })
+    commitNavigation(hash)
+  }
+  if (navigationGuard && !navigationGuard(proceed, hash)) return
+  proceed()
+}
+
+function commitNavigation(hash: string, options?: { replace?: boolean }) {
   if (options?.replace) {
-    window.history.replaceState(null, "", hash)
+    window.history.replaceState({ ...window.history.state, mppLibraryIndex: historyIndex }, "", hash)
   } else {
-    window.location.hash = hash
+    historyIndex += 1
+    historyMaximum = historyIndex
+    for (const index of historyEntries.keys()) if (index >= historyIndex) historyEntries.delete(index)
+    window.history.pushState({ ...window.history.state, mppLibraryIndex: historyIndex }, "", hash)
   }
-  // Trigger update manually for replaceState (doesn't fire hashchange)
-  if (options?.replace) {
-    handleHashChange()
-  }
+  historyEntries.set(historyIndex, hash)
+  handleHashChange()
+  window.dispatchEvent(new Event("mpp:history-change"))
 }

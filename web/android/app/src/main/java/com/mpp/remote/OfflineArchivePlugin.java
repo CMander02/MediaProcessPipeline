@@ -1,6 +1,8 @@
 package com.mpp.remote;
 
 import android.content.ContentValues;
+import android.content.Context;
+import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
@@ -32,11 +34,13 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ConcurrentHashMap;
 
 @CapacitorPlugin(name = "OfflineArchive")
 public class OfflineArchivePlugin extends Plugin {
@@ -45,6 +49,13 @@ public class OfflineArchivePlugin extends Plugin {
     private static final int BUFFER_SIZE = 64 * 1024;
 
     private ArchiveDatabase database;
+    private String serverUrl = "";
+    private String workspaceId = "";
+    private String storageId = "";
+    private volatile boolean scopeReady;
+    private volatile long generation;
+    private long syncGeneration;
+    private final Set<HttpURLConnection> connections = ConcurrentHashMap.newKeySet();
     private volatile boolean syncing;
     private volatile int completedFiles;
     private volatile int totalFiles;
@@ -55,26 +66,84 @@ public class OfflineArchivePlugin extends Plugin {
 
     @Override
     public void load() {
-        database = new ArchiveDatabase();
         syncExecutor = Executors.newSingleThreadExecutor();
     }
 
     @Override
     protected void handleOnDestroy() {
+        generation++;
+        for (HttpURLConnection connection : connections) connection.disconnect();
         if (syncExecutor != null) syncExecutor.shutdownNow();
         if (database != null) database.close();
     }
 
+    /** Switching waits for the old sync to stop before opening another database. */
     @PluginMethod
-    public void getStatus(PluginCall call) {
+    public synchronized void selectWorkspace(PluginCall call) {
+        String nextServer = trimServerUrl(call.getString("serverUrl", ""));
+        String nextWorkspace = call.getString("workspaceId", "");
+        if (scopeReady && serverUrl.equals(nextServer) && workspaceId.equals(nextWorkspace)) {
+            call.resolve(statusObject());
+            return;
+        }
+        long requestedGeneration = ++generation;
+        scopeReady = false;
+        for (HttpURLConnection connection : connections) connection.disconnect();
+        syncExecutor.execute(() -> {
+            synchronized (this) {
+                if (requestedGeneration != generation) {
+                    call.reject("资料库切换已取消");
+                    return;
+                }
+                try {
+                    if (database != null) database.close();
+                    database = null;
+                    serverUrl = nextServer;
+                    workspaceId = nextWorkspace;
+                    storageId = "";
+                    if (!serverUrl.isEmpty() && !workspaceId.isEmpty()) {
+                        SharedPreferences catalog = getContext().getSharedPreferences("offline_workspaces", Context.MODE_PRIVATE);
+                        String key = new JSONArray().put(serverUrl).put(workspaceId).toString();
+                        storageId = catalog.getString(key, "");
+                        if (storageId.isEmpty()) {
+                            storageId = UUID.randomUUID().toString();
+                            if (!catalog.edit().putString(key, storageId).commit()) throw new IOException("无法保存离线资料库标识");
+                        }
+                        database = new ArchiveDatabase(storageId);
+                    }
+                    // Legacy offline_archives.db and offline_archives/ have unknown
+                    // ownership. Keep them untouched for recovery; never mix them in.
+                    resetProgress();
+                    scopeReady = true;
+                    call.resolve(statusObject());
+                } catch (Exception error) {
+                    call.reject("切换离线资料库失败", error);
+                }
+            }
+        });
+    }
+
+    private boolean requireScope(PluginCall call) {
+        if (!scopeReady || !serverUrl.equals(trimServerUrl(call.getString("serverUrl", "")))
+            || !workspaceId.equals(call.getString("workspaceId", ""))) {
+            call.reject("离线资料库已切换，请刷新后重试");
+            return false;
+        }
+        return true;
+    }
+
+    @PluginMethod
+    public synchronized void getStatus(PluginCall call) {
+        if (!requireScope(call)) return;
         call.resolve(statusObject());
     }
 
     @PluginMethod
-    public void listArchives(PluginCall call) {
+    public synchronized void listArchives(PluginCall call) {
+        if (!requireScope(call)) return;
         try {
             JSObject result = new JSObject();
-            result.put("archives", database.listArchives());
+            result.put("archives", database == null ? new JSArray() : database.listArchives());
             call.resolve(result);
         } catch (Exception error) {
             call.reject("读取离线资料库失败", error);
@@ -82,10 +151,11 @@ public class OfflineArchivePlugin extends Plugin {
     }
 
     @PluginMethod
-    public void getArchive(PluginCall call) {
+    public synchronized void getArchive(PluginCall call) {
+        if (!requireScope(call)) return;
         String archiveId = call.getString("archiveId", "");
         try {
-            JSObject archive = database.getArchive(archiveId);
+            JSObject archive = database == null ? null : database.getArchive(archiveId);
             if (archive == null) {
                 call.reject("离线资料不存在");
                 return;
@@ -97,7 +167,8 @@ public class OfflineArchivePlugin extends Plugin {
     }
 
     @PluginMethod
-    public void readText(PluginCall call) {
+    public synchronized void readText(PluginCall call) {
+        if (!requireScope(call)) return;
         String archiveId = call.getString("archiveId", "");
         String relativePath = call.getString("relativePath", "");
         try {
@@ -113,18 +184,20 @@ public class OfflineArchivePlugin extends Plugin {
     }
 
     @PluginMethod
-    public void sync(PluginCall call) {
+    public synchronized void sync(PluginCall call) {
+        if (!requireScope(call)) return;
         if (syncing) {
             call.resolve(statusObject());
             return;
         }
         String serverUrl = trimServerUrl(call.getString("serverUrl", ""));
         String token = call.getString("token", "");
-        if (serverUrl.isEmpty()) {
-            call.reject("服务器地址为空");
+        if (serverUrl.isEmpty() || database == null) {
+            call.reject("请先连接服务器并确认资料库");
             return;
         }
         syncing = true;
+        syncGeneration = generation;
         lastError = "";
         completedFiles = 0;
         totalFiles = 0;
@@ -134,12 +207,14 @@ public class OfflineArchivePlugin extends Plugin {
         syncExecutor.execute(() -> {
             try {
                 performSync(serverUrl, token);
+                checkSync();
                 syncing = false;
                 database.setMeta("last_sync", String.valueOf(System.currentTimeMillis()));
                 database.setMeta("last_error", "");
                 emitProgress("同步完成");
                 call.resolve(statusObject());
             } catch (SyncException error) {
+                if (syncGeneration != generation) { syncing = false; call.reject("资料库已切换，同步已取消"); return; }
                 syncing = false;
                 lastError = error.getMessage();
                 database.setMeta("last_error", lastError);
@@ -148,6 +223,7 @@ public class OfflineArchivePlugin extends Plugin {
                 details.put("statusCode", error.status);
                 call.reject(lastError, String.valueOf(error.status), error, details);
             } catch (Exception error) {
+                if (syncGeneration != generation) { syncing = false; call.reject("资料库已切换，同步已取消"); return; }
                 syncing = false;
                 lastError = readableError(error);
                 database.setMeta("last_error", lastError);
@@ -158,7 +234,9 @@ public class OfflineArchivePlugin extends Plugin {
     }
 
     @PluginMethod
-    public void clear(PluginCall call) {
+    public synchronized void clear(PluginCall call) {
+        if (!requireScope(call)) return;
+        if (database == null) { call.resolve(statusObject()); return; }
         if (syncing) {
             call.reject("同步进行中，请稍后再清理");
             return;
@@ -176,7 +254,9 @@ public class OfflineArchivePlugin extends Plugin {
     }
 
     @PluginMethod
-    public void resetIndex(PluginCall call) {
+    public synchronized void resetIndex(PluginCall call) {
+        if (!requireScope(call)) return;
+        if (database == null) { call.resolve(statusObject()); return; }
         if (syncing) {
             call.reject("同步进行中，请稍后再重建索引");
             return;
@@ -192,6 +272,7 @@ public class OfflineArchivePlugin extends Plugin {
     }
 
     private void performSync(String serverUrl, String token) throws Exception {
+        verifyWorkspace(requestJson(serverUrl + "/api/sync/status", token));
         long cursor = database.getLongMeta("cursor", 0);
         boolean hasMore = true;
         while (hasMore) {
@@ -199,6 +280,7 @@ public class OfflineArchivePlugin extends Plugin {
                 serverUrl + "/api/sync/changes?cursor=" + cursor + "&limit=" + CHANGE_PAGE_SIZE,
                 token
             );
+            verifyWorkspace(response);
             JSONArray changes = response.optJSONArray("changes");
             if (changes == null) changes = new JSONArray();
             for (int index = 0; index < changes.length(); index++) {
@@ -221,9 +303,12 @@ public class OfflineArchivePlugin extends Plugin {
                 }
                 List<PreparedChange> preparedChanges = new ArrayList<>();
                 if (prepared != null) preparedChanges.add(prepared);
-                database.applyChanges(preparedChanges, revision);
-                if (prepared != null && prepared.deleted) {
-                    deleteTree(archiveDirectory(prepared.archiveId));
+                synchronized (this) {
+                    checkSync();
+                    database.applyChanges(preparedChanges, revision);
+                    if (prepared != null && prepared.deleted) {
+                        deleteTree(archiveDirectory(prepared.archiveId));
+                    }
                 }
                 cursor = revision;
                 emitProgress("已保存离线资料");
@@ -231,7 +316,10 @@ public class OfflineArchivePlugin extends Plugin {
 
             long nextCursor = response.optLong("next_cursor", cursor);
             if (nextCursor > cursor) {
-                database.applyChanges(new ArrayList<>(), nextCursor);
+                synchronized (this) {
+                    checkSync();
+                    database.applyChanges(new ArrayList<>(), nextCursor);
+                }
                 cursor = nextCursor;
             }
             hasMore = response.optBoolean("has_more", false);
@@ -250,6 +338,7 @@ public class OfflineArchivePlugin extends Plugin {
             serverUrl + "/api/sync/archives/" + Uri.encode(archiveId) + "/manifest",
             token
         );
+        verifyWorkspace(manifest);
         JSONArray files = manifest.optJSONArray("files");
         if (files == null) files = new JSONArray();
         List<FileRecord> records = new ArrayList<>();
@@ -299,7 +388,11 @@ public class OfflineArchivePlugin extends Plugin {
         }
         if (firstError != null) throw firstError;
 
-        replaceDirectory(stageDirectory, finalDirectory);
+        verifyWorkspace(requestJson(serverUrl + "/api/sync/status", token));
+        synchronized (this) {
+            checkSync();
+            replaceDirectory(stageDirectory, finalDirectory);
+        }
         JSONObject enriched = new JSONObject(snapshot.toString());
         enriched.put("archive_id", archiveId);
         enriched.put("revision", revision);
@@ -315,6 +408,7 @@ public class OfflineArchivePlugin extends Plugin {
         File stageDirectory,
         FileRecord record
     ) throws Exception {
+        checkSync();
         File staged = safeChild(stageDirectory, record.relativePath);
         if (staged.isFile() && record.sha256.equals(sha256(staged))) {
             markFileComplete(record);
@@ -337,6 +431,7 @@ public class OfflineArchivePlugin extends Plugin {
 
     private void markFileComplete(FileRecord record) {
         synchronized (this) {
+            if (syncGeneration != generation) return;
             completedFiles += 1;
             completedBytes += record.size;
         }
@@ -348,21 +443,28 @@ public class OfflineArchivePlugin extends Plugin {
         ensureDirectory(parent, "无法创建离线文件目录");
         File partial = new File(destination.getPath() + ".part");
         HttpURLConnection connection = openConnection(url, token);
-        int status = connection.getResponseCode();
-        if (status == 401) throw new SyncException(401, "访问令牌已失效");
-        if (status < 200 || status >= 300) {
-            throw new SyncException(status, readError(connection, "下载离线文件失败"));
-        }
-        try (
-            InputStream input = new BufferedInputStream(connection.getInputStream());
-            BufferedOutputStream output = new BufferedOutputStream(new FileOutputStream(partial))
-        ) {
-            byte[] buffer = new byte[BUFFER_SIZE];
-            int length;
-            while ((length = input.read(buffer)) >= 0) output.write(buffer, 0, length);
+        try {
+            int status = connection.getResponseCode();
+            if (status == 401) throw new SyncException(401, "访问令牌已失效");
+            if (status < 200 || status >= 300) {
+                throw new SyncException(status, readError(connection, "下载离线文件失败"));
+            }
+            try (
+                InputStream input = new BufferedInputStream(connection.getInputStream());
+                BufferedOutputStream output = new BufferedOutputStream(new FileOutputStream(partial))
+            ) {
+                byte[] buffer = new byte[BUFFER_SIZE];
+                int length;
+                while ((length = input.read(buffer)) >= 0) {
+                    checkSync();
+                    output.write(buffer, 0, length);
+                }
+            }
         } finally {
+            connections.remove(connection);
             connection.disconnect();
         }
+        checkSync();
         if (!expectedHash.equals(sha256(partial))) {
             partial.delete();
             throw new IOException("离线文件校验失败");
@@ -376,29 +478,55 @@ public class OfflineArchivePlugin extends Plugin {
 
     private JSONObject requestJson(String url, String token) throws Exception {
         HttpURLConnection connection = openConnection(url, token);
-        int status = connection.getResponseCode();
-        if (status == 401) throw new SyncException(401, "访问令牌已失效");
-        if (status < 200 || status >= 300) {
-            throw new SyncException(status, readError(connection, "同步服务返回错误"));
-        }
-        try (InputStream input = connection.getInputStream()) {
-            return new JSONObject(readStream(input));
+        try {
+            int status = connection.getResponseCode();
+            if (status == 401) throw new SyncException(401, "访问令牌已失效");
+            if (status < 200 || status >= 300) {
+                throw new SyncException(status, readError(connection, "同步服务返回错误"));
+            }
+            try (InputStream input = connection.getInputStream()) {
+                JSONObject response = new JSONObject(readStream(input));
+                checkSync();
+                return response;
+            }
         } finally {
+            connections.remove(connection);
             connection.disconnect();
         }
     }
 
     private HttpURLConnection openConnection(String url, String token) throws IOException {
+        checkSync();
         HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
         connection.setUseCaches(false);
         connection.setConnectTimeout(15_000);
         connection.setReadTimeout(60_000);
         connection.setRequestProperty("Accept", "application/json, */*");
         connection.setRequestProperty("X-Requested-With", "mpp-android-sync");
+        connection.setRequestProperty("X-MPP-Workspace-ID", Uri.encode(workspaceId));
         if (token != null && !token.isEmpty()) {
             connection.setRequestProperty("Authorization", "Bearer " + token);
         }
+        connections.add(connection);
+        if (syncGeneration != generation) {
+            connections.remove(connection);
+            connection.disconnect();
+            checkSync();
+        }
         return connection;
+    }
+
+    private void checkSync() throws IOException {
+        if (syncGeneration != generation || Thread.currentThread().isInterrupted()) {
+            throw new IOException("资料库已切换，同步已取消");
+        }
+    }
+
+    private void verifyWorkspace(JSONObject response) throws IOException {
+        checkSync();
+        if (!workspaceId.equals(response.optString("workspace_id"))) {
+            throw new IOException("服务器资料库已切换，请重新连接");
+        }
     }
 
     private void enrichSnapshot(JSONObject snapshot, File directory) {
@@ -418,15 +546,17 @@ public class OfflineArchivePlugin extends Plugin {
 
     private JSObject statusObject() {
         JSObject status = new JSObject();
+        status.put("serverUrl", serverUrl);
+        status.put("workspaceId", workspaceId);
         status.put("syncing", syncing);
-        status.put("cursor", database.getLongMeta("cursor", 0));
-        status.put("archiveCount", database.countArchives());
+        status.put("cursor", database == null ? 0 : database.getLongMeta("cursor", 0));
+        status.put("archiveCount", database == null ? 0 : database.countArchives());
         status.put("completedFiles", completedFiles);
         status.put("totalFiles", totalFiles);
         status.put("completedBytes", completedBytes);
         status.put("totalBytes", totalBytes);
-        status.put("lastSync", database.getLongMeta("last_sync", 0));
-        String persistedError = database.getMeta("last_error", "");
+        status.put("lastSync", database == null ? 0 : database.getLongMeta("last_sync", 0));
+        String persistedError = database == null ? "" : database.getMeta("last_error", "");
         status.put("lastError", lastError.isEmpty() ? persistedError : lastError);
         return status;
     }
@@ -440,16 +570,16 @@ public class OfflineArchivePlugin extends Plugin {
     }
 
     private File resolveDeclaredFile(String archiveId, String relativePath) throws IOException {
-        if (!database.hasFile(archiveId, relativePath)) return null;
+        if (database == null || !database.hasFile(archiveId, relativePath)) return null;
         return safeChild(archiveDirectory(archiveId), relativePath);
     }
 
     private File archiveRoot() {
-        return new File(getContext().getFilesDir(), "offline_archives");
+        return new File(getContext().getFilesDir(), "offline_workspaces/" + storageId + "/archives");
     }
 
     private File tempRoot() {
-        return new File(getContext().getFilesDir(), "offline_tmp");
+        return new File(getContext().getFilesDir(), "offline_workspaces/" + storageId + "/tmp");
     }
 
     private File archiveDirectory(String archiveId) {
@@ -625,8 +755,8 @@ public class OfflineArchivePlugin extends Plugin {
     }
 
     private final class ArchiveDatabase extends SQLiteOpenHelper {
-        ArchiveDatabase() {
-            super(getContext(), "offline_archives.db", null, 1);
+        ArchiveDatabase(String storageId) {
+            super(getContext(), "offline_archives_" + storageId + ".db", null, 1);
         }
 
         @Override

@@ -9,16 +9,20 @@ import { navigate } from "@/lib/router"
 import { api, type Task } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { hasActiveFilters, type LibraryFilters } from "@/lib/archive-filters"
-import { archiveQueryFilters } from "@/hooks/use-library-controls"
-import { archiveStatus } from "@/lib/archive-query"
+import { archiveQueryFilters, type LibraryScope } from "@/hooks/use-library-controls"
 import { publishLibraryFacets } from "@/lib/library-facets"
 import type { ArchiveItem } from "@/hooks/use-archives"
 import { ArchiveCard } from "@/components/archive-card"
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog"
 import { MediaRetentionDialog } from "@/components/media-retention-dialog"
-import { BatchMediaRetentionDialog } from "@/components/batch-media-retention-dialog"
-import { archiveExportEntries, uniqueFolders } from "@/lib/archive-export"
-import { createZip, downloadBytes } from "@/lib/zip"
+import { LibraryBatchActions } from "@/components/library/library-batch-actions"
+import { FolderCard } from "@/components/library/folder-card"
+import type { LibraryFolder } from "@/lib/library-types"
+import { LibraryDropTarget } from "@/components/library/library-drop-target"
+import { MoveContentsDialog } from "@/components/library/move-contents-dialog"
+import { useLibraryMove } from "@/hooks/use-library-move"
+import { startLibraryDrag } from "@/lib/library-drag"
+import { libraryChanged } from "@/hooks/use-library-directory"
 import {
   Pagination,
   PaginationContent,
@@ -58,9 +62,16 @@ const PHONE_BATCH = 12
 // Largest page the archive API serves
 const MAX_QUERY = 500
 const AUTO_CHECK_AFTER_MS = 30 * 60 * 1000
+const EMPTY_FOLDERS: LibraryFolder[] = []
 
 interface FilesPageProps {
   /** Search, status, type, source and sort from the title bar */
+  /** "all" lists every item regardless of folders; folders and their contents otherwise */
+  scope?: LibraryScope
+  folderId?: string
+  folders?: LibraryFolder[]
+  onFolderOpen?: (id: string) => void
+  onArchiveOpen?: (archive: ArchiveItem) => void
   filters: LibraryFilters
   /** Current page, kept in the URL so 返回 / reload restore it */
   page?: number
@@ -73,14 +84,15 @@ let returnFocusPath: string | null = null
 let autoCheckDone = false
 
 export function FilesPage({
-  filters, page: pageProp, onPageChange,
+  filters, page: pageProp, onPageChange, scope = "folders", folderId, folders = [], onFolderOpen, onArchiveOpen,
 }: FilesPageProps) {
+  const all = scope === "all"
   const { capabilities, online } = useAppAccess()
   const platform = usePlatform()
   const isPhone = useMediaQuery("(max-width: 767px)")
   const { update: updatePrefs } = usePreferences()
   // Fallback local page state for embeddings that don't route the page through the URL (tests).
-  const filterKey = JSON.stringify(filters)
+  const filterKey = JSON.stringify({ ...filters, folderId, scope })
   const [pagination, setPagination] = useState({ filterKey, page: 1 })
   if (!onPageChange && pagination.filterKey !== filterKey) setPagination({ filterKey, page: 1 })
   const page = onPageChange ? (pageProp ?? 1) : (pagination.filterKey === filterKey ? pagination.page : 1)
@@ -94,10 +106,10 @@ export function FilesPage({
   const phoneLimit = Math.min(MAX_QUERY, phoneState.filterKey === filterKey ? phoneState.limit : PHONE_BATCH)
   const [rerunTarget, setRerunTarget] = useState<ArchiveItem | null>(null)
   const [gridLayout, setGridLayout] = useState<{ columns: number; rowGap: number } | null>(null)
-  const query = isPhone
-    ? { page: 1, page_size: phoneLimit }
-    : { page, page_size: pageSize }
-  const { archives, total, page: resolvedPage, loading, error, indexing, lastReconciledAt, facets,
+  const limit = isPhone ? phoneLimit : pageSize
+  const folderScope = all ? {} : folderId ? { folder_id: folderId } : { unclassified: true, include_folders: true }
+  const query = { page: isPhone ? 1 : page, page_size: limit, ...folderScope }
+  const { archives, folders: pageFolders = EMPTY_FOLDERS, entries, total, archiveTotal = total, loading, error, indexing, lastReconciledAt, facets,
     refresh, removeArchive } = useArchivePage({ ...query, ...archiveQueryFilters(filters) })
   const [checking, setChecking] = useState(false)
   const [paginationRangeSize, setPaginationRangeSize] = useState(7)
@@ -108,26 +120,51 @@ export function FilesPage({
   const [taskActionPath, setTaskActionPath] = useState<string | null>(null)
   const [selectionMode, setSelectionMode] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [moveKeys, setMoveKeys] = useState<string[] | null>(null)
+  const [dragging, setDragging] = useState(false)
+  const moved = (keys: string[]) => {
+    setSelected((current) => new Set([...current].filter((key) => !keys.includes(key))))
+    setMoveKeys((current) => current?.filter((key) => !keys.includes(key)) ?? null)
+    removeArchive()
+  }
+  const { busy: moving, move } = useLibraryMove(moved)
+  const canMove = online && capabilities.archive_mutation
+  const folderNames = useMemo(() => new Map(folders.map((folder) => [folder.id, folder.name])), [folders])
+  const coverKey = folders.find((folder) => folder.id === folderId)?.cover_content_key ?? null
+  const setCover = async (key: string) => {
+    if (!folderId) return
+    try {
+      await api.library.setCover(folderId, key)
+      libraryChanged()
+      notifySuccess("已设为文件夹封面")
+    } catch (reason) {
+      notifyError("设置封面失败", reason)
+    }
+  }
   const anchorIndex = useRef<number | null>(null)
-  const [batchBusy, setBatchBusy] = useState<"retry" | "delete" | "export" | null>(null)
-  const [confirmBatchDelete, setConfirmBatchDelete] = useState(false)
-  const [batchRetention, setBatchRetention] = useState<ArchiveItem[] | null>(null)
   const [retryAll, setRetryAll] = useState<{ items: ArchiveItem[]; done: number; running: boolean } | null>(null)
   const [cleanup, setCleanup] = useState<{ count: number; busy: boolean } | null>(null)
   const gridRef = useRef<HTMLDivElement>(null)
   const sentinelRef = useRef<HTMLDivElement>(null)
-  const lastArchives = useRef<ArchiveItem[]>([])
-  if (!loading) lastArchives.current = archives
+  const [lastPage, setLastPage] = useState({ filterKey, archives, folders: pageFolders, entries })
+  if (isPhone && !loading && !error && (lastPage.filterKey !== filterKey || lastPage.archives !== archives || lastPage.folders !== pageFolders || lastPage.entries !== entries)) {
+    setLastPage({ filterKey, archives, folders: pageFolders, entries })
+  }
   // On phones "load more" grows one query; keep showing what we had while it reloads.
-  const shown = loading && isPhone ? lastArchives.current : archives
+  const held = loading && isPhone && lastPage.filterKey === filterKey ? lastPage : null
+  const shown = held?.archives ?? archives
+  const shownFolders = held?.folders ?? pageFolders
+  const shownEntries = held?.entries ?? entries
+  const archiveMap = new Map(shown.map((item) => [item.archive_id ?? item.path, item]))
+  const folderMap = new Map(shownFolders.map((folder) => [folder.id, folder]))
+  const visibleEntries = shownEntries ?? [
+    ...shown.map((item) => ({ kind: "archive" as const, id: item.archive_id ?? item.path })),
+    ...shownFolders.map((folder) => ({ kind: "folder" as const, id: folder.id })),
+  ]
+  const itemKey = (item: ArchiveItem) => item.content_key || item.path
 
   const { tasks: activeTasks } = useActiveTasks()
   const tasksById = useMemo(() => new Map<string, Task>(activeTasks.map((task) => [task.id, task])), [activeTasks])
-
-  useEffect(() => {
-    if (isPhone) return
-    if (!loading && resolvedPage !== page) setPage(resolvedPage)
-  }, [isPhone, loading, page, resolvedPage, setPage])
 
   useEffect(() => {
     publishLibraryFacets(facets)
@@ -180,7 +217,11 @@ export function FilesPage({
   }, [lastReconciledAt, loading, online, platform.isNative, refresh])
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const safePage = Math.min(resolvedPage, totalPages)
+  const safePage = Math.min(page, totalPages)
+  useEffect(() => {
+    if (!loading && !isPhone && page > totalPages) setPage(totalPages)
+    anchorIndex.current = null
+  }, [loading, isPhone, page, totalPages, setPage])
 
   useLayoutEffect(() => {
     const grid = gridRef.current
@@ -217,7 +258,7 @@ export function FilesPage({
       observer.disconnect()
       window.removeEventListener("resize", updatePageSize)
     }
-  }, [archives.length, total, loading, isPhone])
+  }, [archives.length, pageFolders.length, total, loading, isPhone])
 
   // Phones scroll through the whole library instead of paging.
   useEffect(() => {
@@ -225,13 +266,13 @@ export function FilesPage({
     const grid = gridRef.current
     if (!isPhone || !sentinel || !grid || typeof IntersectionObserver === "undefined") return
     const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting) && !loading && shown.length < total && phoneLimit < MAX_QUERY) {
+      if (entries.some((entry) => entry.isIntersecting) && !loading && shown.length + pageFolders.length < total && phoneLimit < MAX_QUERY) {
         setPhoneState({ filterKey, limit: phoneLimit + PHONE_BATCH })
       }
     }, { root: grid, rootMargin: "400px" })
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [filterKey, isPhone, loading, phoneLimit, shown.length, total])
+  }, [filterKey, isPhone, loading, phoneLimit, shown.length, pageFolders.length, total])
 
   // ---------- selection ----------
   const exitSelection = useCallback(() => {
@@ -242,17 +283,19 @@ export function FilesPage({
 
   useEffect(() => {
     exitSelection()
-  }, [filterKey, page, exitSelection])
+    setMoveKeys(null)
+    setDragging(false)
+  }, [filterKey, exitSelection])
 
   const toggleSelect = (index: number, event: ReactMouseEvent) => {
-    const path = shown[index]?.path
+    const path = shown[index] ? itemKey(shown[index]) : null
     if (!path) return
     setSelectionMode(true)
     setSelected((current) => {
       const next = new Set(current)
       if (event.shiftKey && anchorIndex.current !== null) {
         const [from, to] = [anchorIndex.current, index].sort((a, b) => a - b)
-        for (let i = from; i <= to; i += 1) next.add(shown[i].path)
+        for (let i = from; i <= to; i += 1) next.add(itemKey(shown[i]))
       } else if (next.has(path)) {
         next.delete(path)
       } else {
@@ -271,82 +314,12 @@ export function FilesPage({
       if (event.key === "Escape") exitSelection()
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
         event.preventDefault()
-        setSelected(new Set(shown.map((item) => item.path)))
+        setSelected((current) => new Set([...current, ...shown.map(itemKey)]))
       }
     }
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
   }, [exitSelection, selectionMode, shown])
-
-  const selectedItems = shown.filter((item) => selected.has(item.path))
-  const retryable = selectedItems.filter((item) => {
-    const state = archiveStatus(item)
-    return Boolean(item.task_id) && (state === "failed" || state === "paused")
-  })
-
-  const runBatchRetry = async () => {
-    if (batchBusy || retryable.length === 0) return
-    setBatchBusy("retry")
-    let done = 0
-    const failures: string[] = []
-    for (const item of retryable) {
-      try {
-        if (archiveStatus(item) === "paused") await api.tasks.resume(item.task_id!)
-        else await api.tasks.checkpointRerun(item.task_id!)
-        done += 1
-      } catch {
-        failures.push(item.title)
-      }
-    }
-    setBatchBusy(null)
-    if (done) notifySuccess(`${done} 项已加入处理队列`)
-    if (failures.length) notifyError(`${failures.length} 项没能加入队列`, failures.slice(0, 3).join("、"))
-    exitSelection()
-    void refreshActiveTasks()
-    await refresh(true)
-  }
-
-  const runBatchDelete = async () => {
-    setConfirmBatchDelete(false)
-    if (batchBusy || selectedItems.length === 0) return
-    setBatchBusy("delete")
-    let done = 0
-    const failures: string[] = []
-    for (const item of selectedItems) {
-      try {
-        if (item.processing && item.task_id) await api.tasks.delete(item.task_id)
-        else await api.archives.delete(item.path)
-        done += 1
-      } catch {
-        failures.push(item.title)
-      }
-    }
-    setBatchBusy(null)
-    if (done) notifySuccess(`已删除 ${done} 项`)
-    if (failures.length) notifyError(`${failures.length} 项没能删除`, failures.slice(0, 3).join("、"))
-    exitSelection()
-    removeArchive()
-  }
-
-  const runBatchExport = async () => {
-    if (batchBusy || selectedItems.length === 0) return
-    setBatchBusy("export")
-    try {
-      const folders = uniqueFolders(selectedItems.map((item) => item.title))
-      const entries = (await Promise.all(selectedItems.map((item, index) => archiveExportEntries(item, folders[index])))).flat()
-      if (entries.length === 0) {
-        notifyError("没有可导出的内容", "选中的条目还没有摘要或字幕。")
-        return
-      }
-      const stamp = new Date().toISOString().slice(0, 10)
-      downloadBytes(`MPP 导出 ${stamp}（${selectedItems.length} 项）.zip`, createZip(entries))
-      notifySuccess(`已导出 ${selectedItems.length} 项`, "每项一个文件夹：摘要、导图、字幕（SRT 和纯文本）。")
-    } catch (reason) {
-      notifyError("导出失败", reason)
-    } finally {
-      setBatchBusy(null)
-    }
-  }
 
   // ---------- retry every failed item in the current filter ----------
   const openRetryAll = async () => {
@@ -355,6 +328,7 @@ export function FilesPage({
       for (let next = 1; ; next += 1) {
         const result = await api.archives.page({
           page: next, page_size: MAX_QUERY, ...archiveQueryFilters({ ...filters, statuses: ["failed"], duplicates: false }),
+          ...(all ? {} : folderId ? { folder_id: folderId } : { unclassified: true }),
         })
         found.push(...(result.archives as ArchiveItem[]))
         if (found.length >= result.total || result.archives.length === 0) break
@@ -435,6 +409,9 @@ export function FilesPage({
   }
 
   const handleOpen = (path: string, taskId?: string) => {
+    returnFocusPath = path
+    const item = shown.find((archive) => archive.path === path)
+    if (onArchiveOpen && item) { onArchiveOpen(item); return }
     updatePrefs({ lastArchivePath: path })
     returnFocusPath = path
     const tid = taskId ? `&taskId=${encodeURIComponent(taskId)}` : ""
@@ -495,34 +472,57 @@ export function FilesPage({
   const pageItems = getPaginationItems(safePage, totalPages, paginationRangeSize)
   const filtered = hasActiveFilters(filters)
 
-  if (loading && !retentionTarget && shown.length === 0) {
+  if (loading && !retentionTarget && shown.length === 0 && pageFolders.length === 0) {
     return <LoadingState title="正在加载文件" className="h-full" />
   }
 
   return (
     <div className={cn(
-      "grid h-full min-h-0 gap-2 px-3 pt-3 pb-1 sm:px-4",
+      "relative grid h-full min-h-0 gap-2 px-3 pt-3 pb-1 sm:px-4",
       platform.isNative ? "grid-rows-[auto_minmax(0,1fr)_auto]" : "grid-rows-[minmax(0,1fr)_auto]",
     )}>
       {platform.isNative && <OfflineSyncStatus compact />}
+      {dragging && (folderId || all) && <div className="absolute inset-x-4 top-4 z-20 flex max-h-48 flex-wrap items-center gap-2 overflow-auto rounded-md border bg-background/95 p-2 shadow-md" aria-label="拖动内容以移动">
+        <span className="text-xs text-muted-foreground">移到：</span>
+        <LibraryDropTarget label="未分类" disabled={moving} onDropContents={(keys) => void move(keys, null)}><span className="block rounded-md border px-3 py-2 text-xs">未分类</span></LibraryDropTarget>
+        {folders.filter((folder) => folder.id !== folderId).map((folder) => <LibraryDropTarget key={folder.id} label={folder.name} disabled={moving} onDropContents={(keys) => void move(keys, folder.id)}><span className="block max-w-64 truncate rounded-md border px-3 py-2 text-xs">{folder.name}</span></LibraryDropTarget>)}
+      </div>}
 
       {/* Grid */}
-      {shown.length > 0 ? (
+      {shown.length > 0 || shownFolders.length > 0 ? (
         <div
           ref={gridRef}
           data-testid="archive-grid"
           className="grid h-full min-h-0 grid-cols-2 content-start items-start gap-3 overflow-x-hidden overflow-y-auto max-md:*:[contain-intrinsic-size:auto_220px] max-md:*:[content-visibility:auto] sm:gap-x-5 sm:gap-y-4 lg:grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] min-[1972px]:grid-cols-7"
           style={gridLayout ? { gridTemplateColumns: `repeat(${gridLayout.columns}, minmax(0, 1fr))`, rowGap: gridLayout.rowGap } : undefined}
         >
-          {shown.map((a, index) => (
+          {visibleEntries.map((entry) => {
+            if (entry.kind === "folder") {
+              const folder = folderMap.get(entry.id)
+              return folder ? <LibraryDropTarget key={`folder:${folder.id}`} label={folder.name} disabled={moving} onDropContents={(keys) => void move(keys, folder.id)}>
+                <FolderCard folder={folder} onOpen={() => onFolderOpen?.(folder.id)} />
+              </LibraryDropTarget> : null
+            }
+            const a = archiveMap.get(entry.id)
+            if (!a) return null
+            const index = shown.indexOf(a)
+            return (
             <ArchiveCard
               key={a.path}
               archive={a}
               compact
               task={a.task_id ? tasksById.get(a.task_id) : undefined}
               selectionMode={selectionMode}
-              selected={selected.has(a.path)}
-              onSelect={platform.isNative ? undefined : (event) => toggleSelect(index, event)}
+              selected={selected.has(itemKey(a))}
+              onSelect={(event) => toggleSelect(index, event)}
+              draggable={canMove && !!a.content_key && !moving}
+              onDragStart={(event) => { startLibraryDrag(event, selected.has(itemKey(a)) ? [...selected] : [itemKey(a)]); setDragging(true) }}
+              onDragEnd={() => setDragging(false)}
+              onMove={canMove && a.content_key ? () => setMoveKeys([a.content_key!]) : undefined}
+              onMoveOut={canMove && a.content_key && (folderId || (all && a.folder_id)) ? () => void move([a.content_key!], null) : undefined}
+              folderName={all && a.folder_id ? folderNames.get(a.folder_id) : undefined}
+              onSetCover={canMove && folderId && a.content_key ? () => void setCover(a.content_key!) : undefined}
+              isCover={Boolean(folderId && a.content_key && coverKey === a.content_key)}
               onClick={() => handleOpen(a.path, a.task_id)}
               onDelete={capabilities.archive_mutation ? () => setDeleteTarget({
                 title: a.title,
@@ -541,11 +541,11 @@ export function FilesPage({
               checkpointRerunning={checkpointRerunningPath === a.path}
               taskActionBusy={taskActionPath === a.path}
             />
-          ))}
+          )})}
           {isPhone && (
             <div ref={sentinelRef} className="col-span-full flex min-h-10 items-center justify-center py-2 text-xs text-muted-foreground">
-              {shown.length < total
-                ? (loading ? "正在加载…" : phoneLimit >= MAX_QUERY ? `已显示前 ${shown.length} 项，用搜索或筛选缩小范围` : `已显示 ${shown.length} / ${total}`)
+              {shown.length + shownFolders.length < total
+                ? (loading ? "正在加载…" : phoneLimit >= MAX_QUERY ? `已显示前 ${shown.length + shownFolders.length} 项，用搜索或筛选缩小范围` : `已显示 ${shown.length + shownFolders.length} / ${total}`)
                 : `共 ${total} 项`}
             </div>
           )}
@@ -553,8 +553,8 @@ export function FilesPage({
       ) : (
         <EmptyState
           className="h-full min-h-0"
-          title={error ? "文件加载失败" : filtered ? "没有匹配的结果" : "还没有归档结果"}
-          description={error ?? (filtered ? "调整搜索条件或筛选项后再试。" : "处理完成后，文件会显示在这里。")}
+          title={error ? "文件加载失败" : filtered ? "没有匹配的结果" : folderId ? "文件夹是空的" : "还没有归档结果"}
+          description={error ?? (filtered ? "调整搜索条件或筛选项后再试。" : folderId ? "选中内容后用“移到文件夹…”，或把卡片拖到文件夹上。" : "处理完成后，文件会显示在这里。")}
         />
       )}
 
@@ -565,36 +565,22 @@ export function FilesPage({
           <span className="shrink-0 font-medium tabular-nums">已选 {selected.size} 项</span>
           <span className="hidden shrink-0 text-xs text-muted-foreground xl:inline">Shift 点选范围 · Ctrl+A 全选本页 · Esc 退出</span>
           <span className="flex-1" />
-          <Button size="sm" variant="outline" className="h-7 shrink-0 px-2.5 text-xs" disabled={!online || retryable.length === 0 || batchBusy !== null} onClick={() => void runBatchRetry()}>
-            {batchBusy === "retry" && <HugeiconsIcon icon={Loading03Icon} className="size-4 animate-spin" />}
-            继续 / 重试{retryable.length ? ` ${retryable.length}` : ""}
-          </Button>
-          {capabilities.archive_mutation && !platform.isNative && (
-            <Button size="sm" variant="outline" className="h-7 shrink-0 px-2.5 text-xs" disabled={selected.size === 0 || batchBusy !== null} onClick={() => setBatchRetention(selectedItems)}>
-              媒体保留…
-            </Button>
-          )}
-          {!platform.isNative && (
-            <Button size="sm" variant="outline" className="h-7 shrink-0 px-2.5 text-xs" disabled={selected.size === 0 || batchBusy !== null} onClick={() => void runBatchExport()} title="摘要、导图和字幕打包成 zip">
-              {batchBusy === "export" && <HugeiconsIcon icon={Loading03Icon} className="size-4 animate-spin" />}
-              导出
-            </Button>
-          )}
-          {capabilities.archive_mutation && (
-            <Button size="sm" variant="outline" className="h-7 shrink-0 px-2.5 text-xs text-destructive hover:text-destructive" disabled={selected.size === 0 || batchBusy !== null} onClick={() => setConfirmBatchDelete(true)}>
-              {batchBusy === "delete" && <HugeiconsIcon icon={Loading03Icon} className="size-4 animate-spin" />}
-              删除…
-            </Button>
-          )}
-          <Button size="sm" variant="ghost" className="h-7 shrink-0 px-2.5 text-xs" onClick={() => setSelected(new Set(shown.map((item) => item.path)))}>全选本页</Button>
+          {canMove && <><Button size="sm" variant="outline" className="h-7 shrink-0 px-2 text-xs" disabled={!selected.size || moving} onClick={() => setMoveKeys([...selected])}>移到文件夹…</Button>{(folderId || all) && <Button size="sm" variant="outline" className="h-7 shrink-0 px-2 text-xs" disabled={!selected.size || moving} onClick={() => void move([...selected], null)}>移到未分类</Button>}</>}
+          <LibraryBatchActions scope={{ type: "selected", content_keys: [...selected] }} compact onCompleted={(keys) => {
+            setSelected((current) => new Set([...current].filter((key) => !keys.includes(key))))
+            removeArchive()
+          }} />
+          <Button size="sm" variant="ghost" className="h-7 shrink-0 px-2.5 text-xs" onClick={() => setSelected((current) => new Set([...current, ...shown.map(itemKey)]))}>全选本页</Button>
           <Button size="sm" variant="ghost" className="h-7 shrink-0 px-2.5 text-xs" onClick={exitSelection}>取消</Button>
+          {!isPhone && totalPages > 1 && <><Button size="sm" variant="ghost" className="h-7 shrink-0 px-2 text-xs" disabled={safePage <= 1} onClick={() => setPage(safePage - 1)}>上一页</Button><span className="shrink-0 text-xs">{safePage} / {totalPages}</span><Button size="sm" variant="ghost" className="h-7 shrink-0 px-2 text-xs" disabled={safePage >= totalPages} onClick={() => setPage(safePage + 1)}>下一页</Button></>}
         </div>
       ) : (
         <div className="relative flex h-8 min-w-0 items-center gap-1">
           <span className="w-40 shrink-0 truncate text-xs tabular-nums text-muted-foreground max-md:hidden">
-            {filtered && facets?.total ? `筛选后 ${total} / 共 ${facets.total} 项` : `${facets?.total ?? total} 项`}
+            {filtered && facets?.total ? `筛选后 ${total} / 共 ${facets.total} 项` : `${total} 项`}
           </span>
           {(isPhone || totalPages <= 1) && <span className="flex-1" />}
+          {platform.isNative && canMove && <Button type="button" size="sm" variant="ghost" className="h-7 shrink-0 px-2 text-xs" onClick={() => setSelectionMode(true)}>选择</Button>}
           {!isPhone && totalPages > 1 && (
             <Pagination data-testid="files-pagination" className="h-8 min-w-0 flex-1">
               <PaginationContent>
@@ -637,7 +623,7 @@ export function FilesPage({
           )}
           {!platform.isNative && (
             <div className="flex min-w-40 shrink-0 items-center justify-end gap-1 max-md:min-w-0">
-              {filters.statuses.includes("failed") && !filters.duplicates && online && total > 0 && (
+              {filters.statuses.includes("failed") && !filters.duplicates && online && archiveTotal > 0 && (
                 <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => void openRetryAll()}>
                   全部重试…
                 </Button>
@@ -686,8 +672,7 @@ export function FilesPage({
 
       {retentionTarget && <MediaRetentionDialog archive={retentionTarget}
         onClose={() => setRetentionTarget(null)} onApplied={() => void refresh(true)} />}
-      {batchRetention && <BatchMediaRetentionDialog archives={batchRetention}
-        onClose={() => { setBatchRetention(null); exitSelection() }} onApplied={() => void refresh(true)} />}
+      {moveKeys?.length ? <MoveContentsDialog contentKeys={moveKeys} sourceFolderId={folderId} onClose={() => setMoveKeys(null)} onMoved={moved} /> : null}
       <AlertDialog open={retryAll !== null} onOpenChange={(open) => { if (!open && !retryAll?.running) setRetryAll(null) }}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -726,20 +711,7 @@ export function FilesPage({
           if (target) void handleRerun(target)
         }}
       />
-      <AlertDialog open={confirmBatchDelete} onOpenChange={setConfirmBatchDelete}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>删除 {selected.size} 项？</AlertDialogTitle>
-            <AlertDialogDescription>
-              会删除这些条目的所有文件（归档、字幕、摘要等）；正在处理的任务会先停止。此操作不可撤销。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter className="border-t-0">
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={() => void runBatchDelete()}>删除</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+
       <AlertDialog open={cleanup !== null} onOpenChange={(open) => { if (!open && !cleanup?.busy) setCleanup(null) }}>
         <AlertDialogContent>
           <AlertDialogHeader>

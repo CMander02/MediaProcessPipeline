@@ -4,9 +4,11 @@ import { api } from "@/lib/api"
 import type { PlatformAdapter, OfflineArchiveRecord } from "@/platform"
 import type { ArchiveItem, ArchivePage, ArchiveQuery, OfflineFileDescriptor } from "@/repositories/archive-types"
 import { queryLocalArchives } from "@/lib/archive-query"
+import { archiveCacheScope } from "@/lib/archive-cache-scope"
+import { libraryDirectorySnapshot } from "@/hooks/use-library-directory"
 
 const OFFLINE_PREFIX = "offline://"
-let activeSync: Promise<void> | null = null
+const activeSyncs = new Map<string, Promise<void>>()
 const offlineFileCache = new Map<string, Map<string, string>>()
 
 export interface ArchiveRepository {
@@ -27,13 +29,15 @@ export function isOfflineArchivePath(path: string): boolean {
 export function resolveOfflineFileUrl(archivePath: string, relativePath: string): string | null {
   const parsed = parseOfflinePath(archivePath)
   if (!parsed) return null
-  return offlineFileCache.get(parsed.archiveId)?.get(normalizeRelativePath(relativePath)) ?? null
+  return offlineFileCache.get(`${archiveCacheScope()}:${parsed.archiveId}`)?.get(normalizeRelativePath(relativePath)) ?? null
 }
 
 export function createArchiveRepository(platform: PlatformAdapter): ArchiveRepository {
   if (!platform.isNative) return createWebArchiveRepository()
 
   const normalize = (record: OfflineArchiveRecord): ArchiveItem => {
+    const directory = libraryDirectorySnapshot()
+    const contentKey = directory.archive_keys?.[String(record.archive_id)] ?? (record as unknown as ArchiveItem).content_key
     const offlineFiles = (record.offline_files ?? []).map((file) => ({
       relativePath: file.relative_path,
       url: Capacitor.convertFileSrc(file.uri),
@@ -41,7 +45,7 @@ export function createArchiveRepository(platform: PlatformAdapter): ArchiveRepos
       mime: file.mime,
     }))
     offlineFileCache.set(
-      String(record.archive_id),
+      `${archiveCacheScope()}:${record.archive_id}`,
       new Map(offlineFiles.map((file) => [file.relativePath, file.url])),
     )
     const thumbnailUrl = ["thumbnail.jpg", "thumbnail.webp", "thumbnail.png", "cover.jpg", "cover.webp", "cover.png"]
@@ -51,6 +55,9 @@ export function createArchiveRepository(platform: PlatformAdapter): ArchiveRepos
       ...(record as unknown as ArchiveItem),
       path: String(record.path),
       archive_id: String(record.archive_id),
+      content_key: contentKey,
+      folder_id: contentKey ? directory.members?.[contentKey] ?? null : null,
+      last_processed_at: contentKey ? directory.processed_at?.[contentKey] ?? (record as unknown as ArchiveItem).last_processed_at : undefined,
       server_path: typeof record.server_path === "string" ? record.server_path : undefined,
       offline: true,
       offlineFiles,
@@ -59,14 +66,16 @@ export function createArchiveRepository(platform: PlatformAdapter): ArchiveRepos
   }
 
   const triggerSync = () => {
-    if (activeSync) return
-    activeSync = platform.syncOfflineArchives()
+    const scope = archiveCacheScope()
+    if (activeSyncs.has(scope)) return
+    const sync = platform.syncOfflineArchives()
       .then(() => undefined)
       .catch(() => undefined)
       .finally(() => {
-        activeSync = null
+        activeSyncs.delete(scope)
         window.dispatchEvent(new Event("mpp:offline-library-change"))
       })
+    activeSyncs.set(scope, sync)
   }
 
   return {
@@ -74,8 +83,10 @@ export function createArchiveRepository(platform: PlatformAdapter): ArchiveRepos
       return (await platform.listOfflineArchives()).map(normalize)
     },
     async listPage(query) {
-      const items = (await platform.listOfflineArchives()).map(normalize)
-      return { ...queryLocalArchives(items, query), workspace_id: "offline", revision: 0,
+      const directory = libraryDirectorySnapshot()
+      const items = (await platform.listOfflineArchives()).map(normalize).map((item) => ({ ...item,
+        folder_id: item.content_key ? directory.members?.[item.content_key] ?? null : item.folder_id }))
+      return { ...queryLocalArchives(items, query, directory.folders), workspace_id: "offline", revision: 0,
         last_reconciled_at: null, indexing: false }
     },
     async get(path) {

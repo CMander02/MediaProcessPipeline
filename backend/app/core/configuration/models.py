@@ -195,6 +195,8 @@ class RuntimeSettings(BaseModel):
     # Empty preserves legacy sherpa_device selection; MPS is PyTorch's Apple GPU backend.
     pyannote_device: str = ""
     diarization_batch_size: int = 16
+    diarization_clustering_strategy: Literal["largest", "native", "diverse", "kmeans++"] = "largest"
+    diarization_clustering_threshold: float | None = Field(default=None, ge=0, le=2)
 
     # Voiceprint (speaker embedding) library
     enable_voiceprint: bool = False

@@ -457,6 +457,19 @@ class VoiceprintStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def sample_embeddings(self, sample_ids: list[str]) -> dict[str, np.ndarray]:
+        """Stored (normalized) embeddings of the given samples."""
+        if not sample_ids:
+            return {}
+        conn = self._get_conn()
+        rows = conn.execute(
+            f"""SELECT m.sample_id, v.embedding FROM sample_meta m
+                JOIN voiceprint_samples v ON v.rowid = m.rowid
+                WHERE m.sample_id IN ({','.join('?' for _ in sample_ids)})""",
+            tuple(sample_ids),
+        ).fetchall()
+        return {row["sample_id"]: np.frombuffer(row["embedding"], dtype=np.float32) for row in rows}
+
     def clip_path_for_sample(self, sample_id: str) -> str | None:
         conn = self._get_conn()
         row = conn.execute(

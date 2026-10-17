@@ -81,11 +81,11 @@ def mindmap_markdown_to_timed_tree(markdown: str) -> dict[str, Any]:
 
 def _compose_chapter_mindmap(
     chapters: list[dict],
-    chapter_summaries: dict[str, str],
+    chapter_summaries: dict[tuple[int, float], str],
 ) -> str:
     """Use source chapters as immutable top-level mindmap nodes."""
     lines: list[str] = []
-    for chapter in chapters:
+    for index, chapter in enumerate(chapters):
         title = str(chapter.get("title") or "").strip()
         if not title:
             continue
@@ -93,19 +93,38 @@ def _compose_chapter_mindmap(
             start = float(chapter.get("start_time") or 0)
         except (TypeError, ValueError):
             start = 0
-        timestamp = _seconds_to_srt_timestamp(start).split(",", 1)[0]
+        timestamp = _seconds_to_srt_timestamp(start)
+        if start == int(start):
+            timestamp = timestamp.split(",", 1)[0]
         lines.append(f"- {title} [{timestamp}]")
-        summary = _filter_mindmap_lines(chapter_summaries.get(title, ""))
+        summary_value = chapter_summaries.get(_chapter_key(chapter, index))
+        if summary_value is None:
+            # Keep compatibility with callers that keyed unique chapters by
+            # their display title before stable collision keys were added.
+            summary_value = chapter_summaries.get(title, "")
+        summary = _filter_mindmap_lines(summary_value)
         for raw_line in summary.splitlines():
             if raw_line.strip():
                 lines.append(f"  {raw_line}")
     return "\n".join(lines)
 
 
+def _chapter_key(chapter: dict, index: int) -> tuple[int, float]:
+    """Return a collision-free key while keeping chapter titles for display."""
+    try:
+        start_value = chapter.get("start_time")
+        if start_value is None:
+            start_value = chapter.get("start", 0)
+        start = float(start_value or 0)
+    except (TypeError, ValueError):
+        start = 0.0
+    return index, start
+
+
 def _split_segments_by_chapters(
     segments: list[dict],
     chapters: list[dict],
-) -> dict[str, str]:
+) -> dict[tuple[int, float], str]:
     """Split SRT segments into chapter-keyed text blocks."""
 
     def ts_to_seconds(ts_str: str) -> float:
@@ -131,12 +150,12 @@ def _split_segments_by_chapters(
         for seg in segments
     ]
 
-    chapter_texts: dict[str, str] = {}
+    chapter_texts: dict[tuple[int, float], str] = {}
     for i, ch in enumerate(chapters):
         start_s = ts_to_seconds(ch.get("start_time", 0))
         end_s = ts_to_seconds(chapters[i + 1]["start_time"]) if i + 1 < len(chapters) else 1e9
         texts = [text for s, text in seg_starts if start_s <= s < end_s]
-        chapter_texts[ch["title"]] = "\n".join(texts)
+        chapter_texts[_chapter_key(ch, i)] = "\n".join(texts)
 
     return chapter_texts
 
@@ -144,16 +163,16 @@ def _split_segments_by_chapters(
 def _split_plain_by_chapters(
     text: str,
     chapters: list[dict],
-) -> dict[str, str]:
+) -> dict[tuple[int, float], str]:
     """Rough split of plain text by chapter proportion."""
     total_len = len(text)
     n = len(chapters)
     chunk = total_len // max(n, 1)
-    result: dict[str, str] = {}
+    result: dict[tuple[int, float], str] = {}
     for i, ch in enumerate(chapters):
         start = i * chunk
         end = (i + 1) * chunk if i + 1 < n else total_len
-        result[ch["title"]] = text[start:end]
+        result[_chapter_key(ch, i)] = text[start:end]
     return result
 
 
@@ -190,19 +209,22 @@ def _build_global_context(
 def _filter_mindmap_lines(resp: str) -> str:
     """Filter response to plain text list lines, strip any markdown formatting."""
     lines = [
-        l
-        for l in resp.strip().split("\n")
-        if l.strip().startswith("-") or l.strip().startswith("*")
+        line
+        for line in resp.strip().split("\n")
+        if line.strip().startswith("-") or line.strip().startswith("*")
     ]
     # Normalize * to -
-    lines = [l.replace("* ", "- ", 1) if l.lstrip().startswith("* ") else l for l in lines]
+    lines = [
+        line.replace("* ", "- ", 1) if line.lstrip().startswith("* ") else line
+        for line in lines
+    ]
     # Strip markdown formatting: bold, italic, code, links
     cleaned = []
-    for l in lines:
-        l = l.replace("**", "").replace("__", "")  # bold
-        l = l.replace("*", "").replace("_", "")  # italic (careful: only standalone)
-        l = re.sub(r"`([^`]*)`", r"\1", l)  # inline code
-        l = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", l)  # links
-        l = re.sub(r"^(\s*- )#+\s*", r"\1", l)  # heading markers after bullet
-        cleaned.append(l)
+    for line in lines:
+        line = line.replace("**", "").replace("__", "")  # bold
+        line = line.replace("*", "").replace("_", "")  # italic (careful: only standalone)
+        line = re.sub(r"`([^`]*)`", r"\1", line)  # inline code
+        line = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", line)  # links
+        line = re.sub(r"^(\s*- )#+\s*", r"\1", line)  # heading markers after bullet
+        cleaned.append(line)
     return "\n".join(cleaned) if cleaned else resp

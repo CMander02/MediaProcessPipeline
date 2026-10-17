@@ -10,7 +10,7 @@ import time
 import urllib.parse
 import urllib.request
 
-from app.core.network import urllib_urlopen
+from app.core.public_urls import public_urlopen as urllib_urlopen
 
 from .auth import get_cookie, get_wbi_keys
 

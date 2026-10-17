@@ -3,6 +3,7 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import { ArrowLeft02Icon, ArrowRight02Icon } from "@hugeicons/core-free-icons"
 
 import { cn } from "@/lib/utils"
+import { goLibraryHistory, libraryHistoryState } from "@/lib/router"
 
 // The Navigation API (Chromium, so the desktop app) knows whether back/forward are possible.
 interface NavigationLike extends EventTarget {
@@ -17,6 +18,8 @@ function navigationApi(): NavigationLike | null {
 }
 
 function go(direction: "back" | "forward") {
+  const local = libraryHistoryState()
+  if (local[direction]) { goLibraryHistory(direction); return }
   const nav = navigationApi()
   if (!nav) {
     if (direction === "back") window.history.back()
@@ -32,13 +35,13 @@ function go(direction: "back" | "forward") {
 export function HistoryButtons({ className }: { className?: string }) {
   const [state, setState] = useState(() => {
     const nav = navigationApi()
-    return { back: nav?.canGoBack ?? true, forward: nav?.canGoForward ?? true }
+    return { back: nav?.canGoBack ?? libraryHistoryState().back, forward: nav?.canGoForward ?? libraryHistoryState().forward }
   })
 
   useEffect(() => {
     const nav = navigationApi()
     const update = () => {
-      if (nav) setState({ back: nav.canGoBack, forward: nav.canGoForward })
+      setState(nav ? { back: nav.canGoBack, forward: nav.canGoForward } : libraryHistoryState())
     }
     const onKey = (event: KeyboardEvent) => {
       if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
@@ -52,10 +55,14 @@ export function HistoryButtons({ className }: { className?: string }) {
     nav?.addEventListener("currententrychange", update)
     window.addEventListener("keydown", onKey)
     window.addEventListener("mouseup", onMouse)
+    window.addEventListener("mpp:history-change", update)
+    window.addEventListener("popstate", update)
     return () => {
       nav?.removeEventListener("currententrychange", update)
       window.removeEventListener("keydown", onKey)
       window.removeEventListener("mouseup", onMouse)
+      window.removeEventListener("mpp:history-change", update)
+      window.removeEventListener("popstate", update)
     }
   }, [])
 

@@ -32,7 +32,7 @@ def validate_llama_asr_config(config: dict[str, Any]) -> str:
         mode = config.get("timestamp_mode", "auto")
         if mode not in {"auto", "vad", "qwen_forced"}:
             return "llama.cpp ASR supports auto, vad, or qwen_forced timestamps"
-        if mode == "qwen_forced" and (not config.get("aligner_model_path") or not Path(config["aligner_model_path"]).is_dir()):
+        if mode in {"auto", "qwen_forced"} and (not config.get("aligner_model_path") or not Path(config["aligner_model_path"]).is_dir()):
             return "Qwen3 ForcedAligner model directory is required"
     except (RuntimeError, OSError) as exc:
         return str(exc)
@@ -90,7 +90,8 @@ class LlamaCppASRService:
                                    "message": message, "completed_chunks": done, "total_chunks": total})
         progress(0, 1, "准备 llama.cpp 音频分段", "preparing")
         decoded = subprocess.run(
-            ["ffmpeg", "-v", "error", "-i", str(audio_file), "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"],
+            ["ffmpeg", "-v", "error", "-protocol_whitelist", "file,pipe,crypto,data",
+             "-i", str(audio_file), "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"],
             capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if decoded.returncode:
@@ -121,7 +122,7 @@ class LlamaCppASRService:
             **config, "device": device, "ctx": 4096, "parallel": parallel,
             "alias": "Qwen3-ASR", "keepalive_sec": 0, "cache_type": "f16", "cache_ram": 0,
         }
-        results: list[tuple[str, str] | None] = [None] * len(chunks)
+        results: list[list[tuple[AudioChunk, str, str]] | None] = [None] * len(chunks)
         def wav_bytes(chunk: AudioChunk) -> bytes:
             out = io.BytesIO()
             sf.write(out, samples[round(chunk.start * 16000):round(chunk.end * 16000)], 16000, format="WAV", subtype="PCM_16")
@@ -131,13 +132,13 @@ class LlamaCppASRService:
             infer_started = time.monotonic()
             logger.info("llama.cpp ASR: model=%s chunks=%d parallel=%d device=%s", config["model_path"], len(chunks), parallel, device)
             with httpx.Client(base_url=base_url, timeout=float(config.get("timeout_sec") or 120), trust_env=False) as client:
-                def infer(index: int) -> tuple[str, str]:
+                def infer(index: int, chunk: AudioChunk) -> list[tuple[AudioChunk, str, str]]:
                     payload: dict[str, Any] = {
                         "model": "Qwen3-ASR",
                         "messages": [
                             {"role": "system", "content": " ".join(hotwords or [])},
                             {"role": "user", "content": [{"type": "input_audio", "input_audio": {
-                                "format": "wav", "data": base64.b64encode(wav_bytes(chunks[index])).decode("ascii"),
+                                "format": "wav", "data": base64.b64encode(wav_bytes(chunk)).decode("ascii"),
                             }}]},
                         ],
                         "temperature": 0, "seed": 42,
@@ -150,10 +151,27 @@ class LlamaCppASRService:
                     response.raise_for_status()
                     choice = response.json()["choices"][0]
                     if choice.get("finish_reason") == "length":
-                        raise RuntimeError(f"ASR chunk {index + 1}/{len(chunks)} reached its output token limit")
-                    return parse_asr_text(choice["message"]["content"], language)
+                        # Discard truncated text and retry only this interval. Shorter
+                        # audio also breaks repetition loops without raising the budget
+                        # for every request. Keep at least one second in each half.
+                        if chunk.end - chunk.start < 2.0:
+                            raise RuntimeError(
+                                f"ASR chunk {index + 1}/{len(chunks)} reached its output token limit "
+                                f"at {chunk.start:.3f}-{chunk.end:.3f}s after shortening the audio"
+                            )
+                        midpoint = round((chunk.start + chunk.end) * 8000) / 16000
+                        logger.warning(
+                            "ASR chunk %d/%d reached output token limit at %.3f-%.3fs; retrying shorter audio",
+                            index + 1, len(chunks), chunk.start, chunk.end,
+                        )
+                        return (
+                            infer(index, AudioChunk(chunk.start, midpoint))
+                            + infer(index, AudioChunk(midpoint, chunk.end))
+                        )
+                    text, detected_language = parse_asr_text(choice["message"]["content"], language)
+                    return [(chunk, text, detected_language)]
                 with ThreadPoolExecutor(max_workers=parallel, thread_name_prefix="llama-asr") as pool:
-                    futures = {pool.submit(infer, i): i for i in range(len(chunks))}
+                    futures = {pool.submit(infer, i, chunk): i for i, chunk in enumerate(chunks)}
                     try:
                         for completed, future in enumerate(as_completed(futures), 1):
                             index = futures[future]
@@ -169,16 +187,17 @@ class LlamaCppASRService:
 
         segments = []
         detected = language or "unknown"
-        for chunk, result in zip(chunks, results):
+        for result in results:
             assert result is not None
-            text, detected_language = result
-            if detected_language not in {"auto", "unknown"}:
-                detected = detected_language
-            if text:
-                segments.append({"start": chunk.start, "end": chunk.end, "text": text})
+            for chunk, text, detected_language in result:
+                if detected_language not in {"auto", "unknown"}:
+                    detected = detected_language
+                if text:
+                    segments.append({"start": chunk.start, "end": chunk.end, "text": text})
         segments, echoes_removed = _remove_hotword_echoes(segments, tuple(hotwords or []))
         timestamp_source = "vad" if strategy in {"vad", "auto", "sherpa_vad"} else "fixed"
-        if config.get("timestamp_mode") == "qwen_forced":
+        # Qwen GGUF returns text without word timestamps; auto must align it.
+        if config.get("timestamp_mode", "auto") in {"auto", "qwen_forced"}:
             from app.services.recognition.alignment import get_qwen_forced_aligner
             from app.core.paths import get_workspace_paths
             temp_root = get_workspace_paths().temporary("asr-alignment")
@@ -198,7 +217,9 @@ class LlamaCppASRService:
                         )
                         if not units:
                             raise RuntimeError(f"Forced alignment returned no timestamps for segment {i + 1}")
-                        aligned.extend(_merge_timed_units(units, offset=segment["start"]))
+                        aligned.extend(_merge_timed_units(
+                            units, offset=segment["start"], end_bound=segment["end"]
+                        ))
                 segments = aligned
             finally:
                 aligner.release()

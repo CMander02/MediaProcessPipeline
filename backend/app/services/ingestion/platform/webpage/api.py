@@ -22,7 +22,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from app.core.network import httpx_client_kwargs, urllib_urlopen
+from app.core.public_urls import (
+    public_httpx_client_kwargs as httpx_client_kwargs,
+    public_urlopen as urllib_urlopen,
+)
 from app.core.logging_setup import log_event
 from app.core.settings import get_runtime_settings
 
@@ -179,11 +182,15 @@ def _run_defuddle_markdown(url: str) -> str:
     if not command:
         raise RuntimeError("Defuddle CLI is not installed")
     timeout = float(getattr(rt, "web_scrape_timeout_sec", 30) or 30)
+    source_html, _ = _get_text_with_retries(
+        url, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout, label="Web page",
+    )
     last_error = ""
     for attempt in range(_SCRAPE_RETRIES):
         try:
             completed = subprocess.run(
-                [*command, "parse", url, "--md"],
+                [*command, "parse", "-", "--md"],
+                input=source_html,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -213,8 +220,12 @@ def _run_defuddle_prop(url: str, prop: str) -> str:
     if not command:
         return ""
     timeout = float(getattr(rt, "web_scrape_timeout_sec", 30) or 30)
+    source_html, _ = _get_text_with_retries(
+        url, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout, label="Web page",
+    )
     completed = subprocess.run(
-        [*command, "parse", url, "-p", prop],
+        [*command, "parse", "-", "-p", prop],
+        input=source_html,
         capture_output=True,
         text=True,
         encoding="utf-8",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import threading
@@ -129,6 +130,24 @@ async def _run_voiceprint_step(
         log_event(logger, logging.INFO, "voiceprint.skipped", reason="no_voiceprints")
         return recognition_segments
 
+    # Lines the diarization left open are compared with each voice while the model is loaded,
+    # so the speaker step can decide them by voice as well as by the surrounding dialogue.
+    pending = [
+        {"index": index, "start": segment.get("start"), "end": segment.get("end")}
+        for index, segment in enumerate(recognition_segments, 1)
+        if str(segment.get("speaker") or "unknown").casefold() == "unknown"
+        and segment.get("start") is not None and segment.get("end") is not None
+    ]
+    if pending:
+        try:
+            from app.services.voiceprint.extractor import cue_voice_similarity
+
+            evidence = cue_voice_similarity(audio_path, pending, voiceprints, pipeline_obj)
+            await _write_text_artifact(task, task_dir, "speaker_voice_evidence.json", json.dumps(
+                {"version": 1, "cues": evidence}, ensure_ascii=False, indent=2))
+        except Exception as exc:
+            log_event(logger, logging.WARNING, "voiceprint.line_similarity_failed", error=exc)
+
     try:
         resolutions = resolve_speakers(
             task_id=str(task.id),
@@ -159,12 +178,23 @@ async def transcribe(ctx: PipelineContext) -> None:
     from app.services.recognition import transcribe_audio
     from app.services.recognition.subtitle_processor import process_subtitles
 
+    # Speaker-count evidence must be available before acoustic clustering.
+    # Switch GPU ownership explicitly when tagging metadata between ASR jobs.
+    preparing_asr = PipelineStep.TRANSCRIBE not in ctx.done and not ctx.has_subtitle
+    if preparing_asr:
+        from app.core.queue import _release_transcription_models
+        await asyncio.to_thread(_release_transcription_models)
     ctx.source_context = await _prepare_source_context(
         ctx.task,
         ctx.task_dir,
         ctx.metadata,
-        enrich=not ctx.stop_after_transcribe,
+        enrich=preparing_asr or not ctx.stop_after_transcribe,
     )
+    if preparing_asr:
+        from app.core.queue import _release_local_llm_runtime
+        from app.services.analysis.llm import offload_local_llm
+        await asyncio.to_thread(_release_local_llm_runtime)
+        await asyncio.to_thread(offload_local_llm)
     ctx.analysis = source_context_to_analysis(ctx.source_context)
 
     if ctx.has_subtitle and PipelineStep.TRANSCRIBE not in ctx.done:
@@ -613,12 +643,16 @@ async def transcribe(ctx: PipelineContext) -> None:
                         "timestamp_source": recognition.get("timestamp_source"),
                         "asr_metadata": recognition.get("asr_metadata", {}),
                         "diarization": recognition.get("diarization", "none"),
+                        "diarization_parameters": recognition.get("diarization_parameters", {}),
+                        "speaker_quality": recognition.get("speaker_quality", {}),
                     }
+                    ctx.metadata.extra["mixed_speaker_cues"] = recognition.get("mixed_speaker_cues", [])
                     resolved_speakers = sorted(
                         {
                             str(segment.get("speaker") or "").strip()
                             for segment in ctx.recognition_segments
                             if str(segment.get("speaker") or "").strip()
+                            and str(segment.get("speaker")).casefold() != "unknown"
                         }
                     )
                     ctx.metadata.extra["speakers"] = resolved_speakers

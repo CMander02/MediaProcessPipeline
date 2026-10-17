@@ -49,13 +49,18 @@ async def test_full_transcript_uses_name_at_end_for_all_matching_cues(model):
     rows = [("SPEAKER_00", "完整长篇讨论内容。" * 80) for _ in range(30)]
     rows.append(("SPEAKER_00", "感谢收听，我是张明。"))
     source = transcript(rows)
-    model.return_value = response(mapping(evidence=[31]))
+    async def answer(prompt, **kwargs):
+        payload = json.loads(prompt.split("本窗口字幕与来源：\n")[1])
+        return response(mapping(evidence=[31])) if any(cue["index"] == 31 for cue in payload["cues"]) else response()
+    model.side_effect = answer
     report = await speaker_identity.infer_speaker_names(source)
     assert report["status"] == "completed"
-    payload = json.loads(model.call_args.args[0].split("完整字幕与来源：\n")[1])
-    assert len(payload["cues"]) == 31
+    payload = json.loads(model.call_args.args[0].split("本窗口字幕与来源：\n")[1])
+    visible = {cue["index"] for call in model.call_args_list
+               for cue in json.loads(call.args[0].split("本窗口字幕与来源：\n")[1])["cues"]}
+    assert visible == set(range(1, 32))
     assert payload["cues"][-1]["text"] == "感谢收听，我是张明。"
-    assert model.await_count == 1
+    assert model.await_count > 1
     assert model.call_args.kwargs["stage"] == "polish"
     assert speaker_identity.apply_speaker_names(source, report["mappings"]) == source.replace(
         "[SPEAKER_00]", "[张明]"
@@ -152,7 +157,7 @@ async def test_name_conflicts_are_rejected(model):
     assert (await speaker_identity.infer_speaker_names(source))["status"] == "failed"
 
 
-@pytest.mark.parametrize("source", ["", transcript([("张明", "今天聊一下技术。")])])
+@pytest.mark.parametrize("source", ["", transcript([("张明", "今天聊一下技术。")]), transcript([("unknown", "嗯。")])])
 @pytest.mark.asyncio
 async def test_no_anonymous_labels_skips_model(model, source):
     assert await speaker_identity.infer_speaker_names(source) == {
@@ -184,6 +189,11 @@ def test_apply_names_preserves_cue_body_line_endings_and_named_speakers():
     assert result == source.replace("  [SPEAKER_00]", "  [张明]", 1)
 
 
+def test_unknown_bucket_cannot_be_renamed_as_one_person():
+    source = transcript([("unknown", "嗯。"), ("unknown", "对。")])
+    assert speaker_identity.apply_speaker_names(source, [mapping(label="unknown")]) == source
+
+
 def lecture_context(**changes):
     return {
         "title": "青稞 Talk 第146期",
@@ -202,12 +212,12 @@ def lecture_context(**changes):
 
 
 @pytest.mark.asyncio
-async def test_dominant_lecture_uses_summary_identity_and_bounded_excerpts(model):
+async def test_dominant_lecture_uses_source_identity_and_bounded_excerpts(model):
     source = transcript(
         [("SPEAKER_00", "接下来讲解多模态研究中的技术细节。" * 120) for _ in range(120)]
         + [("SPEAKER_01", "请问您如何理解这个技术问题？")]
     )
-    context = lecture_context()
+    context = lecture_context(description="本次演讲者江澈介绍多模态研究。")
     model.return_value = response(mapping(name="江澈", evidence=[]))
     report = await speaker_identity.infer_speaker_names(source, context)
 
@@ -217,11 +227,11 @@ async def test_dominant_lecture_uses_summary_identity_and_bounded_excerpts(model
     assert len(report["mappings"]) == 1
     assert report["mappings"][0]["current_name"] == "江澈"
     assert "97.5%" in report["mappings"][0]["reason"]
-    assert "summary" in report["mappings"][0]["reason"]
+    assert "description" in report["mappings"][0]["reason"]
     prompt = model.call_args.args[0]
     payload = json.loads(prompt.split("主讲识别资料：\n")[1])
-    assert payload["summary"] == context["summary"]
-    assert payload["description"] == ""
+    assert "summary" not in payload
+    assert payload["description"] == context["description"]
     assert payload["main_speaker"] == "SPEAKER_00"
     assert len(payload["speaker_excerpts"]) <= 6
     assert all(len(cue["text"]) <= 600 for cue in payload["speaker_excerpts"])
@@ -235,12 +245,13 @@ async def test_dominant_lecture_uses_summary_identity_and_bounded_excerpts(model
 
 @pytest.mark.parametrize("content_type", ["技术分享", "Talk", "其他"])
 @pytest.mark.asyncio
-async def test_lecture_type_or_explicit_summary_selects_compact_mode(model, content_type):
+async def test_lecture_summary_alone_cannot_supply_identity(model, content_type):
     source = transcript([("SPEAKER_00", "下面介绍今天的技术主题。")])
     model.return_value = response(mapping(name="江澈", evidence=[]))
     context = lecture_context(analysis={"content_type": content_type})
     report = await speaker_identity.infer_speaker_names(source, context)
-    assert report["status"] == "completed"
+    assert report["status"] == "failed"
+    assert report["mappings"] == []
     assert report["method"] == "dominant_lecture"
 
 
@@ -254,7 +265,7 @@ async def test_interview_preserves_full_dialogue_even_with_dominant_speaker(mode
         source, lecture_context(analysis={"content_type": content_type})
     )
     assert report == {"status": "completed", "mappings": []}
-    payload = json.loads(model.call_args.args[0].split("完整字幕与来源：\n")[1])
+    payload = json.loads(model.call_args.args[0].split("本窗口字幕与来源：\n")[1])
     assert len(payload["cues"]) == 2
 
 
@@ -267,7 +278,7 @@ async def test_lecture_without_dominant_share_uses_full_dialogue(model):
     ])
     report = await speaker_identity.infer_speaker_names(source, context)
     assert report == {"status": "completed", "mappings": []}
-    assert "完整字幕与来源：" in model.call_args.args[0]
+    assert "本窗口字幕与来源：" in model.call_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -350,3 +361,21 @@ def test_speaker_activity_falls_back_to_srt_duration_not_cue_count():
         "speaker": "SPEAKER_01", "duration_seconds": 2, "share": 0.166667, "cue_count": 2,
     }
     assert speaker_identity.build_speaker_activity("invalid or missing transcript") == []
+
+
+@pytest.mark.asyncio
+async def test_valid_late_evidence_survives_an_invalid_earlier_window(model):
+    rows = [("SPEAKER_00", "完整长篇讨论内容。" * 80) for _ in range(30)]
+    rows.append(("SPEAKER_00", "感谢收听，我是张明。"))
+    async def answer(prompt, **kwargs):
+        payload = json.JSONDecoder().raw_decode(prompt.split("本窗口字幕与来源：\n")[1])[0]
+        indexes = {cue["index"] for cue in payload["cues"]}
+        if 1 in indexes:
+            return response(mapping(evidence=[99999]))
+        return response(mapping(evidence=[31])) if 31 in indexes else response()
+    model.side_effect = answer
+    report = await speaker_identity.infer_speaker_names(transcript(rows))
+    assert report["status"] == "partial"
+    assert report["failed_windows"]
+    assert report["mappings"][0]["current_name"] == "张明"
+    assert report["mappings"][0]["evidence_indexes"] == [31]

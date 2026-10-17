@@ -89,6 +89,7 @@ async def postprocess(ctx: PipelineContext) -> None:
         return
 
     await review_transcript_speakers(ctx)
+    await identify_transcript_speakers(ctx)
 
     # Polish the reviewed speaker labels, then generate downstream analysis.
     polish_ran = False
@@ -122,9 +123,14 @@ async def postprocess(ctx: PipelineContext) -> None:
                 ctx.analysis = {"proper_nouns": hotwords}
             polish_context = dict(ctx.analysis)
             ctx.polished = await polish_text(ctx.reviewed_srt or ctx.srt, context=polish_context)
+            if lineage := polish_context.pop("_speaker_lineage", None):
+                import json
+                await _write_text_artifact(ctx.task, ctx.task_dir, "transcript_lineage.json", json.dumps(lineage, ensure_ascii=False, indent=2))
             await _raise_if_cancelled(ctx.task.id)
         if ctx.polished:
             from app.services.analysis import srt_to_markdown
+            from app.services.analysis.speaker_quality import finalize_speaker_quality
+            finalize_speaker_quality(ctx.metadata.extra, ctx.polished, ctx.task.options.get("num_speakers"))
 
             await _write_text_artifact(
                 ctx.task, ctx.task_dir, "transcript_polished.srt", ctx.polished
@@ -144,15 +150,9 @@ async def postprocess(ctx: PipelineContext) -> None:
         await _raise_if_cancelled(ctx.task.id)
     # end if POLISH not in done
 
-    from app.services.analysis.transcript_outputs import _parse_srt, _split_speaker_prefix
-
-    speakers = sorted({
-        speaker
-        for cue in _parse_srt(ctx.polished or ctx.reviewed_srt or ctx.srt)
-        if (speaker := _split_speaker_prefix(cue["text"])[0])
-    })
-    ctx.metadata.extra["speakers"] = speakers
-    ctx.metadata.extra["speaker_count"] = len(speakers)
+    from app.services.analysis.speaker_quality import finalize_speaker_quality
+    finalize_speaker_quality(ctx.metadata.extra, ctx.polished or ctx.reviewed_srt or ctx.srt, ctx.task.options.get("num_speakers"))
+    speakers = ctx.metadata.extra["speakers"]
 
     # ── Step 5: Analyze + Summarize + Mindmap from polished text ─────────────
     # If an older interrupted task already completed ANALYZE before POLISH,
@@ -181,7 +181,31 @@ async def postprocess(ctx: PipelineContext) -> None:
             else None,
             "source_context": ctx.source_context,
         }
-        source_timeline = list(ctx.source_context.get("timeline") or [])
+        from app.services.analysis.content_selection import (
+            CONTENT_SELECTION_RESPONSE_SCHEMA,
+            CONTENT_SELECTION_SYSTEM_PROMPT,
+        )
+        from app.services.analysis.llm import get_llm_service
+        from app.services.analysis.summary_source import outline_guided_context, prepare_summary_source
+
+        async def select_call(prompt: str) -> str:
+            return await get_llm_service()._call(
+                prompt, stage="analyze", system_prompt=CONTENT_SELECTION_SYSTEM_PROMPT,
+                response_schema=CONTENT_SELECTION_RESPONSE_SCHEMA,
+            )
+
+        selected_source = await prepare_summary_source(
+            ctx.polished or ctx.srt or ctx.transcript,
+            {"title": ctx.metadata.title, **video_metadata}, ctx.source_context, select_call,
+        )
+        import json as _json
+
+        await _write_text_artifact(
+            ctx.task, ctx.task_dir, "content_selection.json",
+            _json.dumps(selected_source["selection"], ensure_ascii=False, indent=2),
+        )
+        summary_context = selected_source["source_context"]
+        source_timeline = list(summary_context.get("timeline") or [])
         mindmap_metadata = {
             "title": ctx.metadata.title,
             "uploader": ctx.metadata.uploader,
@@ -192,14 +216,14 @@ async def postprocess(ctx: PipelineContext) -> None:
                 else [
                     {"title": ch.title, "start_time": ch.start_time} for ch in ctx.metadata.chapters
                 ]
-                if ctx.metadata.chapters
+                if ctx.metadata.chapters and selected_source["selection"]["status"] != "filtered"
                 else None
             ),
-            "source_context": ctx.source_context,
+            "source_context": summary_context,
         }
 
+        mindmap_text = selected_source["text"]
         analysis_text = _plain_text_from_srt(ctx.polished) if ctx.polished else ctx.transcript
-        mindmap_text = ctx.polished or ctx.srt or ctx.transcript
 
         from app.services.analysis.source_context import (
             canonicalize_text,
@@ -214,8 +238,6 @@ async def postprocess(ctx: PipelineContext) -> None:
             ctx.analysis["speakers_detected"] = len(speakers)
         user_language = _user_language_hint(ctx.analysis)
 
-        import json as _json
-
         if ctx.analysis:
             await _write_text_artifact(
                 ctx.task,
@@ -224,19 +246,13 @@ async def postprocess(ctx: PipelineContext) -> None:
                 _json.dumps(ctx.analysis, indent=2, ensure_ascii=False),
             )
 
-        tasks = [
-            summarize_text(
-                analysis_text,
-                user_language=user_language,
-                source_context=ctx.source_context,
-            ),
-            generate_mindmap(mindmap_text, metadata=mindmap_metadata, user_language=user_language),
-        ]
+        tasks = [generate_mindmap(
+            mindmap_text, metadata=mindmap_metadata, user_language=user_language,
+        )]
         if ctx.rt.generate_video_detail:
             tasks.append(generate_detail(mindmap_text, user_language=user_language))
         results = await asyncio.gather(*tasks)
-        ctx.summary = results[0]
-        ctx.mindmap = results[1]
+        ctx.mindmap = results[0]
         ctx.mindmap = canonicalize_text(ctx.mindmap, ctx.source_context)
         from app.services.analysis.text_locale import normalize_chinese_script
 
@@ -245,7 +261,12 @@ async def postprocess(ctx: PipelineContext) -> None:
             user_language,
             source_text=mindmap_text,
         )
-        ctx.detail = canonicalize_text(results[2], ctx.source_context) if len(results) > 2 else ""
+        ctx.summary = await summarize_text(
+            _plain_text_from_srt(mindmap_text) if ctx.polished or ctx.srt else mindmap_text,
+            user_language=user_language,
+            source_context=outline_guided_context(summary_context, ctx.mindmap),
+        )
+        ctx.detail = canonicalize_text(results[1], ctx.source_context) if len(results) > 1 else ""
         await _raise_if_cancelled(ctx.task.id)
 
         if ctx.summary:
@@ -254,13 +275,13 @@ async def postprocess(ctx: PipelineContext) -> None:
             await _write_mindmap_files(ctx.task, ctx.task_dir, ctx.mindmap)
         if ctx.detail:
             await _write_detail_file(ctx.task, ctx.task_dir, ctx.detail)
+        # The new summary and mind map were written from the current speaker names.
+        ctx.metadata.extra.pop("derived_content_stale", None)
+        ctx.metadata.extra.pop("derived_content_stale_reason", None)
 
         await _update_step(ctx.task, PipelineStep.ANALYZE, completed=True)
     # end if ANALYZE not in done
 
-    # Identify the presenter using the completed analysis and summary, then keep
-    # the in-memory outputs in sync with the files before final archiving.
-    await identify_transcript_speakers(ctx)
 
     # Step 6: Archive (finalize — writes any missing files, sets status to completed)
     await _raise_if_cancelled(ctx.task.id)

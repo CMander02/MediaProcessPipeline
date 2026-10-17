@@ -22,7 +22,7 @@ from app.services.analysis.prompts.source_context import (
 
 logger = logging.getLogger(__name__)
 
-_CONTEXT_VERSION = 1
+_CONTEXT_VERSION = 3
 _LATIN_ENTITY_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:[A-Z][A-Za-z0-9]*(?:[.-][A-Za-z0-9]+)*"
     r"(?:\s+[A-Z][A-Za-z0-9]*(?:[.-][A-Za-z0-9]+)*)*|"
@@ -42,6 +42,14 @@ _TITLE_GUEST_RE = re.compile(
     r"(?:对谈|访谈)\s*(?:[A-Za-z][A-Za-z0-9 .&+-]{1,60}\s*)?"
     r"(?:联创|联合创始人|创始人|CEO|CTO|研究员|教授)?\s*"
     r"([\u4e00-\u9fff]{2,4})(?:\s|$|[｜|：:，,])"
+)
+_DESCRIPTION_TIMELINE_RE = re.compile(
+    r"^\s*(?:[-*•]\s+|\d+[.)]\s+)?"
+    r"(?P<bracket>\[)?"
+    r"(?P<timestamp>(?:\d{1,3}:)?\d{1,3}:\d{2}(?:[.,]\d{1,3})?)"
+    r"(?(bracket)\])"
+    r"(?:\s*(?:[-–—|｜:：])\s*|\s+)"
+    r"(?P<title>\S.*?)\s*$"
 )
 
 
@@ -96,6 +104,7 @@ class SourceContext(SourceContextPatch):
     version: int = _CONTEXT_VERSION
     title: str
     uploader: str = ""
+    user_speaker_count: int | None = Field(default=None, ge=1, le=32)
     timeline: list[TimelineItem] = Field(default_factory=list)
     asr_hotwords: list[str] = Field(default_factory=list)
     source_signature: str = ""
@@ -191,6 +200,31 @@ def _language_hint(evidence: str, metadata: dict[str, Any]) -> str:
 def _timeline(metadata: dict[str, Any]) -> list[TimelineItem]:
     items: list[TimelineItem] = []
     chapters = metadata.get("chapters") or []
+    duration: float | None = None
+    try:
+        candidate_duration = float(metadata.get("duration_seconds") or 0)
+        if candidate_duration > 0:
+            duration = candidate_duration
+    except (TypeError, ValueError):
+        pass
+
+    def parse_timestamp(value: str) -> float | None:
+        parts = value.replace(",", ".").split(":")
+        try:
+            if len(parts) == 3:
+                hours, minutes, seconds = int(parts[0]), int(parts[1]), float(parts[2])
+                if minutes >= 60 or seconds >= 60:
+                    return None
+                return hours * 3600 + minutes * 60 + seconds
+            if len(parts) == 2:
+                minutes, seconds = int(parts[0]), float(parts[1])
+                if seconds >= 60:
+                    return None
+                return minutes * 60 + seconds
+        except (TypeError, ValueError):
+            return None
+        return None
+
     for chapter in chapters:
         if not isinstance(chapter, dict):
             continue
@@ -201,6 +235,8 @@ def _timeline(metadata: dict[str, Any]) -> list[TimelineItem]:
             start = max(0.0, float(chapter.get("start_time") or 0))
         except (TypeError, ValueError):
             continue
+        if duration is not None and start > duration + 30:
+            continue
         items.append(
             TimelineItem(
                 start=round(start, 3),
@@ -209,6 +245,27 @@ def _timeline(metadata: dict[str, Any]) -> list[TimelineItem]:
                 evidence="metadata.chapters",
             )
         )
+
+    if not items:
+        description = str(metadata.get("description") or "")
+        for line in description.splitlines():
+            match = _DESCRIPTION_TIMELINE_RE.match(line)
+            if not match:
+                continue
+            start = parse_timestamp(match.group("timestamp"))
+            title = match.group("title").strip(" -–—|｜:：")
+            if start is None or not title or not re.search(r"[^\W\d_]", title, re.UNICODE):
+                continue
+            if duration is not None and start > duration + 30:
+                continue
+            items.append(
+                TimelineItem(
+                    start=round(start, 3),
+                    title=title,
+                    source="source_description",
+                    evidence="metadata.description",
+                )
+            )
     items.sort(key=lambda item: item.start)
     deduped: list[TimelineItem] = []
     for item in items:
@@ -298,6 +355,18 @@ def _speaker_candidates(metadata: dict[str, Any], evidence: str) -> list[Speaker
             add(match.group(1), role, "source metadata role label", 0.98)
 
     title = str(metadata.get("title") or "")
+    # 【主持×嘉宾】 style titles name both people; the uploader among them hosts.
+    from app.services.analysis.participants import same_person_name, title_collaborators
+    uploader = str(metadata.get("uploader") or "")
+    for name in title_collaborators(title, uploader):
+        if name in seen:
+            continue
+        seen.add(name)
+        host = bool(uploader) and same_person_name(name, uploader)
+        candidates.append(SpeakerCandidate(
+            name=name, role="host" if host else "guest",
+            evidence="title collaboration with uploader" if host else "title collaboration", confidence=0.9,
+        ))
     guest_match = _TITLE_GUEST_RE.search(title)
     if guest_match:
         add(guest_match.group(1), "guest", "title interview guest", 0.96)
@@ -329,13 +398,11 @@ def _speaker_hint(
             confidence=0.97,
             evidence="source metadata names both host and guest",
         )
-    if re.search(r"对谈|访谈|interview", title, re.I) and any(
-        candidate.role == "guest" for candidate in candidates
-    ):
+    if re.search(r"双人|两人对谈|二人对谈|一对一|one.on.one|two.person", title, re.I):
         return SpeakerCountHint(
             exact=2,
             confidence=0.9,
-            evidence="one-on-one interview title and named guest",
+            evidence="explicit two-person format in title",
         )
     if re.search(r"对谈|访谈|interview", title, re.I):
         return SpeakerCountHint(
@@ -356,6 +423,15 @@ def build_deterministic_source_context(
     evidence = _source_evidence(data)
     speakers = _speaker_candidates(data, evidence)
     entities = _deterministic_entities(_entity_evidence(data))
+    # "XEric Hovagim02" from "瓜熟迪落拉XEric Hovagim02" is a person name with separator and episode attached.
+    entities = [
+        entity for entity in entities
+        if not any(
+            candidate.name in entity.canonical and candidate.name != entity.canonical
+            and len(entity.canonical) - len(candidate.name) <= 4
+            for candidate in speakers
+        )
+    ]
     for candidate in speakers:
         if not any(entity.canonical == candidate.name for entity in entities):
             aliases = []
@@ -375,15 +451,17 @@ def build_deterministic_source_context(
         [entity.canonical for entity in entities if _is_asr_hotword(entity)]
         + [candidate.name for candidate in speakers]
     )
+    count_hint = _speaker_hint(data, options, speakers)
     return SourceContext(
         title=str(data.get("title") or ""),
         uploader=str(data.get("uploader") or ""),
+        user_speaker_count=(count_hint.exact if count_hint.evidence == "task option num_speakers" else None),
         language_hint=_language_hint(evidence, data),
         content_type=_content_type(data, evidence),
         timeline=_timeline(data),
         entities=entities,
         speaker_candidates=speakers,
-        speaker_count_hint=_speaker_hint(data, options, speakers),
+        speaker_count_hint=count_hint,
         asr_hotwords=hotwords,
         source_signature=_signature(data, options),
     )
@@ -444,12 +522,26 @@ def _merge_patch(
     for item in patch.speaker_candidates:
         if item.name not in source_evidence or item.name in seen_speakers:
             continue
+        if item.name == baseline.uploader and not re.search(
+            rf"(?:主持人|主播|嘉宾|主讲人|host|guest)\s*[:：]\s*{re.escape(item.name)}",
+            source_evidence, re.I,
+        ):
+            continue
         speakers.append(item)
         seen_speakers.add(item.name)
 
     hint = baseline.speaker_count_hint
     if hint.confidence < 0.85 and patch.speaker_count_hint.confidence > hint.confidence:
         hint = patch.speaker_count_hint
+        # Model confidence alone cannot turn a partial guest list into an exact count.
+        if hint.exact and not (
+            len(speakers) == hint.exact
+            and {"host", "guest"}.issubset({speaker.role for speaker in speakers})
+        ):
+            hint = SpeakerCountHint(
+                confidence=min(hint.confidence, 0.6),
+                evidence=f"Unconfirmed participant count: {hint.evidence}",
+            )
 
     hotwords = _dedupe_strings(
         baseline.asr_hotwords
@@ -485,30 +577,30 @@ async def _tag_with_llm(
     source_payload = {
         "title": metadata.get("title"),
         "uploader": metadata.get("uploader"),
-        "description": str(metadata.get("description") or "")[:8000],
-        "tags": (metadata.get("tags") or [])[:50],
+        "description": str(metadata.get("description") or ""),
+        "tags": metadata.get("tags") or [],
         "chapters": metadata.get("chapters") or [],
     }
-    prompt = get_source_context_prompt(source_payload, baseline.model_dump(mode="json"))
+    from app.services.analysis.long_text import generate_bounded, model_limits
+
     service = get_llm_service()
-    response = await service._call(
-        prompt,
-        stage="analyze",
-        system_prompt=SOURCE_CONTEXT_SYSTEM_PROMPT,
-    )
+    context_size, output_tokens = model_limits(stage="analyze")
+
+    async def call(prompt, *, system_prompt):
+        return await service._call(prompt, stage="analyze", system_prompt=system_prompt)
+
+    async def generate(evidence):
+        return await generate_bounded(
+            evidence, lambda value: get_source_context_prompt({"source_excerpts": value}, {}), call,
+            system_prompt=SOURCE_CONTEXT_SYSTEM_PROMPT, context_size=context_size, output_tokens=output_tokens,
+        )
+
+    evidence = json.dumps(source_payload, ensure_ascii=False)
+    response = await generate(evidence)
     try:
         return SourceContextPatch.model_validate(_parse_json_object(response))
     except (ValueError, json.JSONDecodeError, ValidationError) as first_error:
-        repair_prompt = get_source_context_repair_prompt(
-            prompt,
-            response,
-            str(first_error),
-        )
-        repaired = await service._call(
-            repair_prompt,
-            stage="analyze",
-            system_prompt=SOURCE_CONTEXT_SYSTEM_PROMPT,
-        )
+        repaired = await generate(get_source_context_repair_prompt(evidence, response, str(first_error)))
         return SourceContextPatch.model_validate(_parse_json_object(repaired))
 
 
@@ -596,9 +688,6 @@ def merge_analysis_with_source(
         result[key] = _dedupe_strings(list(result.get(key) or []) + list(source.get(key) or []))
     for key in ("entities", "timeline", "speaker_candidates", "speaker_count_hint"):
         result[key] = source[key]
-    exact = source["speaker_count_hint"].get("exact")
-    if exact:
-        result["speakers_detected"] = exact
     return canonicalize_json(result, context)
 
 
@@ -617,11 +706,11 @@ def speaker_constraints(
     if context is None:
         return None, None, None
     value = context if isinstance(context, SourceContext) else SourceContext.model_validate(context)
-    hint = value.speaker_count_hint
-    if hint.exact and hint.confidence >= 0.85:
-        return hint.exact, hint.exact, hint.exact
-    if hint.confidence >= 0.65:
-        return None, hint.min, hint.max
+    # Lists and model confidence are evidence, not permission to suppress an
+    # unlisted host, audience member, or off-screen guest.
+    if value.user_speaker_count:
+        exact = value.user_speaker_count
+        return exact, exact, exact
     return None, None, None
 
 

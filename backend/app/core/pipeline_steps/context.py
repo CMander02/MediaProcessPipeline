@@ -98,6 +98,8 @@ class PipelineContext:
             return True
         # Original audio (mp3/m4a/etc.)
         for f in self.task_dir.iterdir():
+            if f.name.lower().endswith(".browser.mp3"):
+                continue
             if f.is_file() and f.suffix.lower() in {".mp3", ".flac", ".m4a", ".ogg"}:
                 self.audio_path = str(f)
                 self.vocals_path = self.audio_path

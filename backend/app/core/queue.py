@@ -110,6 +110,8 @@ def _needs_download_queue(task: Any) -> bool:
     download step at all and would otherwise occupy a download worker for
     their whole runtime.
     """
+    if task.options.get("speaker_repair", {}).get("status") in {"queued", "running"}:
+        return False
     if task.task_type == TaskType.INGESTION:
         return True
     if task.task_type != TaskType.PIPELINE:
@@ -135,6 +137,7 @@ class TaskQueue:
         self._active_download_ids: set[UUID] = set()
         self._active_gpu_id: UUID | None = None
         self._running_tasks: dict[UUID, asyncio.Task] = {}
+        self._run_finished: dict[UUID, asyncio.Event] = {}
         self._running = False
 
         # Exposed so pipeline.py can acquire it around GPU-heavy steps.
@@ -185,12 +188,18 @@ class TaskQueue:
         """
         store = get_task_store()
         bus = get_event_bus()
+        from app.core.library import task_is_deleting
+        task = store.get(task_id)
+        if task and task_is_deleting(task):
+            raise ValueError('content_deleting')
         store.update_status(task_id, TaskStatus.QUEUED)
         await bus.publish(TaskEvent(task_id, "queued"))
         task = store.get(task_id)
         t_token = set_task_context(str(task_id))
         try:
-            if task is not None and not _needs_download_queue(task):
+            if task is not None and task.options.get("speaker_repair", {}).get("status") in {"queued", "running"}:
+                await self.advance_to_postprocess(task_id)
+            elif task is not None and not _needs_download_queue(task):
                 await self._gpu_queue.put(task_id)
                 log_event(
                     logger,
@@ -210,6 +219,37 @@ class TaskQueue:
         finally:
             reset_context(t_token, task_id_var)
 
+    async def _end_speaker_repair(self, task) -> bool:
+        """A speaker repair works on finished content: stopping it returns the task to completed."""
+        intent = task.options.get("speaker_repair") or {}
+        if intent.get("status") not in {"queued", "running"} or "archive" not in set(task.completed_steps or []):
+            return False
+        for queue in (self._download_queue, self._gpu_queue, self._postprocess_queue):
+            self._remove_from_queue(queue, task.id)
+        store = get_task_store()
+        task.options = {**task.options, "speaker_repair": {**intent, "status": "cancelled"}}
+        task.status = TaskStatus.COMPLETED
+        task.message = "已停止人物补全" if intent.get("mode") == "auto" else "已停止人物复核"
+        task.progress = 1.0
+        task.current_step = "archive"
+        task.completed_at = datetime.now()
+        task.error = None
+        if task.flow:
+            steps = [step.get("id") for step in task.flow.get("steps", []) if isinstance(step, dict)]
+            task.flow = {**task.flow, "status": "completed", "progress": 1.0, "current_step": "archive",
+                         "completed_steps": steps or task.flow.get("completed_steps", [])}
+        task.result = {**(task.result or {}), "speaker_repair": {"status": "cancelled"}}
+        store.save(task)
+        if task.result.get("output_dir"):
+            from app.core.pipeline import update_metadata_status
+            update_metadata_status(Path(task.result["output_dir"]), "completed")
+        running = self._running_tasks.get(task.id)
+        if running:
+            running.cancel()
+        await get_event_bus().publish(TaskEvent(task.id, "completed", {"output_dir": task.result.get("output_dir")}))
+        log_event(logger, logging.INFO, "task.speaker_repair.stopped")
+        return True
+
     async def cancel(self, task_id: UUID) -> bool:
         store = get_task_store()
         task = store.get(task_id)
@@ -217,6 +257,8 @@ class TaskQueue:
             return False
         if task.status not in (TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.PROCESSING, TaskStatus.PAUSED):
             return False
+        if await self._end_speaker_repair(task):
+            return True
         self._remove_from_queue(self._download_queue, task_id)
         self._remove_from_queue(self._gpu_queue, task_id)
         self._remove_from_queue(self._postprocess_queue, task_id)
@@ -249,6 +291,9 @@ class TaskQueue:
             return False
         if task.status not in (TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.PROCESSING):
             return False
+        # A repair has nothing worth pausing; stopping it keeps the finished task.
+        if await self._end_speaker_repair(task):
+            return True
 
         self._remove_from_queue(self._download_queue, task_id)
         self._remove_from_queue(self._gpu_queue, task_id)
@@ -298,6 +343,20 @@ class TaskQueue:
         if force:
             resumable.update({TaskStatus.CANCELLED, TaskStatus.COMPLETED})
         if not task or task.status not in resumable:
+            return False
+        # Pause only requests cancellation. The old pipeline still owns its
+        # checkpoint and cancellation status until its cleanup has finished.
+        running = self._running_tasks.get(task_id)
+        finished = self._run_finished.get(task_id)
+        if running is not None:
+            await asyncio.gather(asyncio.shield(running), return_exceptions=True)
+            if finished is not None:
+                await finished.wait()
+            task = store.get(task_id)
+            if not task or task.status not in resumable:
+                return False
+        from app.core.library import task_is_deleting
+        if task_is_deleting(task):
             return False
 
         completed_steps = task.completed_steps
@@ -350,6 +409,33 @@ class TaskQueue:
         """Queue an in-place checkpoint rerun from any durable stopped state."""
         return await self.resume(task_id, force=True)
 
+    async def repair_speakers(self, task_id: UUID, mode: str) -> bool:
+        """Run a speaker-only proposal through the existing serial GPU worker."""
+        from uuid import uuid4
+        from app.services.analysis.speaker_repair import repair_inputs
+        store = get_task_store()
+        task = store.get(task_id)
+        if not task or task.status not in {TaskStatus.COMPLETED, TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+            return False
+        # Filling in speakers works on the finished transcript.
+        if mode == "auto" and task.status != TaskStatus.COMPLETED:
+            return False
+        if task_id in self._running_tasks:
+            return False
+        repair_inputs(task, mode)  # Validate before changing queue/task state.
+        previous = task.options.get("speaker_repair", {})
+        task.options = {**task.options, "speaker_repair": {
+            "mode": mode, "run_id": str(uuid4()), "attempt": int(previous.get("attempt", 0)) + 1,
+            "trigger": "user", "status": "queued",
+        }}
+        task.status = TaskStatus.QUEUED
+        task.error = None
+        task.completed_at = None
+        task.message = "已排队，将补全待定字幕和人物姓名" if mode == "auto" else "已排队，将生成人物复核候选"
+        store.save(task)
+        await self.advance_to_postprocess(task_id)
+        return True
+
     async def rerun_full(self, task_id: UUID) -> bool:
         """Restart all processing stages in the task's existing directory."""
         store = get_task_store()
@@ -358,11 +444,18 @@ class TaskQueue:
             TaskStatus.FAILED, TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.PAUSED,
         } or task_id in self._running_tasks:
             return False
+        from app.core.library import task_is_deleting
+        if task_is_deleting(task):
+            return False
         task_dir = next((p for p in self._task_output_dirs(task) if p.is_dir()), None)
         if task_dir:
             from app.core.paths import managed_child
             from app.core.settings import get_runtime_settings
             task_dir = managed_child(task_dir, get_runtime_settings().data_root)
+            from app.core.content_identity import archive_content_key
+            task.options.setdefault('content_key', archive_content_key({
+                'metadata': self._read_task_metadata(task_dir), 'path': str(task_dir),
+            }, task))
             # Drop generated outputs and their fallback copies; retain source media,
             # downloaded subtitles, metadata, and user files for the new run.
             generated = (
@@ -371,6 +464,10 @@ class TaskQueue:
                 "speaker_identity.json", "analysis.json", "summary.json", "summary.md",
                 "mindmap.json", "mindmap.md", "detail.md", "subtitle_validation.json",
                 "source_context.json", "source_context.asr.json",
+                "speaker_quality.json", "participant_evidence.json", "transcript_lineage.json",
+                "speaker_review.checkpoint.json", "subtitle_speakers.checkpoint.json",
+                "speaker_identity.checkpoint.json", "identity_evidence.checkpoint.json",
+                "speaker_repair.checkpoint.json", "speaker_repair.preview.json",
                 ".asr-checkpoint.json", ".asr-checkpoint.tmp",
             )
             for filename in generated:
@@ -388,6 +485,7 @@ class TaskQueue:
                 if local_source.is_file():
                     task.source = str(local_source)
         task.result = {"output_dir": str(task_dir)} if task_dir else None
+        task.options.pop("speaker_repair", None)
         task.completed_steps = []
         task.current_step = None
         task.flow = None
@@ -421,12 +519,14 @@ class TaskQueue:
         running = self._running_tasks.get(task_id)
         if running:
             running.cancel()
-            try:
-                await asyncio.wait_for(running, timeout=3.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-            except Exception:
-                pass
+            # Cancellation must finish before any physical output is removed.
+            # wait_for can cancel twice and still wait forever for a draining thread.
+            done, _ = await asyncio.wait({running}, timeout=3.0)
+            if not done:
+                from app.core.archive_lifecycle import ArchiveBusyError
+                raise ArchiveBusyError('任务仍在停止，请稍后重新预览删除')
+            if not running.cancelled():
+                running.exception()
 
         # Refresh after cancellation so the journal captures the final output paths.
         task = store.get(task_id)
@@ -592,8 +692,14 @@ class TaskQueue:
         from app.core.pipeline import PipelineStep
         stale = store.list_by_statuses([TS.QUEUED, TS.PROCESSING])
         for task in stale:
+            from app.core.library import task_is_deleting
+            if task_is_deleting(task):
+                continue
             if task.status == TS.PROCESSING:
                 store.update_status(task.id, TS.QUEUED, message="已重新排队")
+            if task.options.get("speaker_repair", {}).get("status") in {"queued", "running"}:
+                await self._postprocess_queue.put(task.id)
+                continue
             # If download was already done, skip straight to GPU queue
             completed = set(task.completed_steps or [])
             if PipelineStep.DOWNLOAD in completed:
@@ -729,11 +835,13 @@ class TaskQueue:
 
                 store = get_task_store()
                 task = store.get(task_id)
-                if not task or task.status == TaskStatus.CANCELLED:
+                from app.core.library import task_is_deleting
+                if not task or task.status in {TaskStatus.CANCELLED, TaskStatus.PAUSED} or task_is_deleting(task):
                     self._download_queue.task_done()
                     continue
 
                 self._active_download_ids.add(task_id)
+                finished = self._run_finished[task_id] = asyncio.Event()
                 t_token = set_task_context(str(task_id))
                 log_event(logger, logging.INFO, "queue.download.started")
 
@@ -751,6 +859,8 @@ class TaskQueue:
                     reset_context(t_token, task_id_var)
                     self._active_download_ids.discard(task_id)
                     self._download_queue.task_done()
+                    self._run_finished.pop(task_id, None)
+                    finished.set()
         finally:
             reset_context(w_token, worker_var)
 
@@ -795,7 +905,8 @@ class TaskQueue:
 
                 store = get_task_store()
                 task = store.get(task_id)
-                if not task or task.status in {TaskStatus.CANCELLED, TaskStatus.PAUSED}:
+                from app.core.library import task_is_deleting
+                if not task or task.status in {TaskStatus.CANCELLED, TaskStatus.PAUSED} or task_is_deleting(task):
                     source_queue.task_done()
                     continue
 
@@ -825,6 +936,7 @@ class TaskQueue:
                         waited += 1
 
                 self._active_gpu_id = task_id
+                finished = self._run_finished[task_id] = asyncio.Event()
                 t_token = set_task_context(str(task_id))
                 log_event(logger, logging.INFO, f"queue.{stage}.started")
 
@@ -856,6 +968,8 @@ class TaskQueue:
                     reset_context(t_token, task_id_var)
                     self._active_gpu_id = None
                     source_queue.task_done()
+                    self._run_finished.pop(task_id, None)
+                    finished.set()
                     await self._maybe_flush_all_models()
         finally:
             reset_context(w_token, worker_var)

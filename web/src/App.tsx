@@ -3,6 +3,7 @@ import { useDeferredValue, useMemo } from "react"
 import { AppOutlet } from "@/components/app-outlet"
 import { AppShell } from "@/components/app-shell/app-shell"
 import { PageToolbar } from "@/components/app-shell/page-toolbar"
+import { LibraryCrumbs, LibraryViewControls } from "@/components/library/library-navigation"
 import { ComposerDialog } from "@/components/composer/composer-dialog"
 import { GlobalIntake } from "@/components/composer/global-intake"
 import { CommandSearch } from "@/components/search/command-search"
@@ -45,7 +46,7 @@ function AuthenticatedApp() {
   }), [deferredSearch, library.duplicates, library.media, library.sort, library.sources, library.statuses])
 
   return (
-    <AppShell activePage={route.page} toolbar={toolbar}>
+    <AppShell activePage={route.page} toolbar={toolbar} crumbs={route.page === "files" ? <LibraryCrumbs /> : undefined} trailing={route.page === "files" ? <LibraryViewControls /> : undefined}>
       <AppOutlet
         route={route}
         library={{ filters, page: library.page, onPageChange: library.setPage }}

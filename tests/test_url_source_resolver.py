@@ -7,6 +7,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.core.source_resolver import flow_from_metadata, resolve_source_flow  # noqa: E402
 from app.models import MediaMetadata, MediaType  # noqa: E402
 from app.services.ingestion import ytdlp  # noqa: E402
+from app.services.ingestion.platform import source_urls  # noqa: E402
 
 
 def test_resolver_maps_generic_webpage_to_webpage_note_flow():
@@ -98,7 +99,7 @@ def test_resolver_maps_bilibili_read_to_note_flow():
 
 def test_resolver_maps_bilibili_short_opus_to_note_flow(monkeypatch):
     monkeypatch.setattr(
-        ytdlp,
+        source_urls,
         "_resolve_bilibili_short_url",
         lambda url: "https://m.bilibili.com/opus/1222911198638374913?share_source=COPY",
     )

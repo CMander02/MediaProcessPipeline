@@ -25,6 +25,8 @@ let logDirectory;
 let logFile;
 let project = '';
 let connecting;
+let initialPageLoading = false;
+let initialPageError;
 let quitting = false;
 let canQuit = false;
 let state = { phase: 'starting', title: '正在连接 MPP', message: '正在检查本机服务…', project };
@@ -33,22 +35,22 @@ function log(message) {
   if (logFile) fs.appendFileSync(logFile, String(message), 'utf8');
 }
 
-function report(error) {
+function report(error, reload = false) {
   log(`${new Date().toISOString()} ${error.stack || error}\n`);
-  return showLauncher({ phase: 'error', title: '暂时无法启动', message: error.message, details: backend?.tail || '' });
+  return showLauncher({ phase: 'error', title: '暂时无法启动', message: error.message, details: backend?.tail || '' }, reload);
 }
 
 function updateState(next) {
   state = { ...state, ...next, project, owned: backend?.owned || false };
-  if (window && !window.isDestroyed() && window.webContents.getURL() === launcherUrl) {
+  if (!initialPageLoading && window && !window.isDestroyed() && !window.webContents.isCrashed() && window.webContents.getURL() === launcherUrl) {
     window.webContents.send('desktop:state', state);
   }
   updateMenu();
 }
 
-async function showLauncher(next) {
+async function showLauncher(next, reload = false) {
   updateState(next);
-  if (window && !window.isDestroyed() && window.webContents.getURL() !== launcherUrl) {
+  if (window && !window.isDestroyed() && (reload || window.webContents.getURL() !== launcherUrl || window.webContents.isCrashed())) {
     // The launcher is always light; match the window buttons to it again.
     window.setTitleBarOverlay?.({ color: '#fafafa', symbolColor: '#202028', height: TITLE_BAR_HEIGHT });
     await window.loadFile(launcherFile);
@@ -147,7 +149,12 @@ function secureWindow() {
     }
   });
   contents.on('render-process-gone', (_event, details) => {
-    if (!quitting) void report(new Error(`页面进程已退出（${details.reason}），请点击重试。`));
+    if (quitting) return;
+    const error = new Error(`页面进程已退出（${details.reason}，退出码 ${details.exitCode}），请点击重试。`);
+    // Let the interrupted first load settle before loading the recovery screen.
+    // A second load here would abort start() and close the whole application.
+    if (initialPageLoading) initialPageError = error;
+    else void report(error).catch(log);
   });
 }
 
@@ -228,7 +235,31 @@ async function start() {
     window.setTitleBarOverlay?.({ color: colors.color, symbolColor: colors.symbolColor, height: TITLE_BAR_HEIGHT });
     return true;
   });
-  await window.loadFile(launcherFile);
+  initialPageLoading = true;
+  let exited;
+  const rendererExit = new Promise((resolve) => { exited = resolve; });
+  window.webContents.once('render-process-gone', exited);
+  try {
+    await window.loadFile(launcherFile);
+  } catch (error) {
+    initialPageError ||= error;
+    // loadFile can reject before Electron finishes tearing down the crashed process.
+    // Ordinary file load failures have no exit event, so keep this wait bounded.
+    let timer;
+    await Promise.race([rendererExit, new Promise((resolve) => { timer = setTimeout(resolve, 1000); })]);
+    clearTimeout(timer);
+    // A crashed renderer can still have the launcher URL while its exit event is pending.
+    await report(initialPageError, true);
+  } finally {
+    initialPageLoading = false;
+    window.webContents.removeListener('render-process-gone', exited);
+  }
+  if (initialPageError) {
+    if (window.webContents.isCrashed()) await report(initialPageError, true);
+    updateState({ phase: 'error', title: '暂时无法启动', message: initialPageError.message });
+    window.show();
+    return;
+  }
   await connect();
 }
 

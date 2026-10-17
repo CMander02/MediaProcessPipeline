@@ -26,17 +26,21 @@ export function SubmitPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 py-5 sm:px-6 md:py-8">
+      <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 px-4 py-5 sm:px-6 md:py-8">
         <div className="hidden md:block">
-          <h1 className="text-lg font-semibold">新建处理</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <h1 className="text-xl font-semibold">新建处理</h1>
+          <p className="mt-1 text-base text-muted-foreground">
             在任何页面都可以直接粘贴链接或拖入文件开始处理{isDesktopApp ? "，或按 Ctrl+N" : ""}。
           </p>
         </div>
 
         <SourceComposer
           mode="page"
-          onSubmitted={(tasks) => {
+          onSubmitted={(tasks, summary) => {
+            if (summary && (summary.reused || summary.active)) {
+              notifySuccess(`新增 ${summary.created} 项，复用 ${summary.reused} 项，处理中 ${summary.active} 项`)
+            }
+            if (!tasks.length) return
             // One item: follow it live. Several: stay here and let 活动 show progress.
             if (tasks.length === 1) {
               navigate(`#/result/task/${tasks[0].id}`)

@@ -71,6 +71,13 @@ def _counts(conn) -> dict[str, int]:
         "archive_sync_changes",
         "vec_chunks",
         "voiceprint_samples",
+        'library_meta',
+        'library_folders',
+        'library_folder_members',
+        'library_collection_members',
+        'library_folder_covers',
+        'library_collections',
+        'library_deletions',
     } & available
     return {
         name: conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0] for name in sorted(names)

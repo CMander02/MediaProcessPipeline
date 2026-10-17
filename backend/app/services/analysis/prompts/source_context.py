@@ -15,6 +15,10 @@ Your output is machine-consumed JSON. Follow these rules exactly:
 - Canonical names must use the most complete spelling present in the source.
 - Aliases contain only spellings that occur in the source or obvious ASR variants explicitly shown.
 - Speaker-count hints need an evidence string and confidence from 0 to 1.
+- An exact count requires an explicit count or a complete participant roster.
+  A podcast/interview format or one named guest alone does not establish the total.
+  A partial excerpt must not be treated as a complete roster. Preserve uncertainty.
+- An uploader or channel name is not a person's name without explicit identity evidence.
 - Return one JSON object and no surrounding prose or markdown fences.
 """
 

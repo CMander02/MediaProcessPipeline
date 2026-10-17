@@ -80,14 +80,27 @@ async def test_review_changes_labels_only_and_logs_evidence(model, caplog):
     ],
 )
 @pytest.mark.asyncio
-async def test_invalid_changes_preserve_source_and_report_failure(model, change):
+async def test_invalid_changes_are_ignored_without_failing_the_batch(model, change):
     source = transcript()
-    model.return_value = json.dumps([change])
+    model.return_value = json.dumps([change, correction(index=3, speaker="SPEAKER_00")])
     report = await speaker_review.review_speakers(source)
+    # The unsupported row keeps its cue; the valid row in the same answer still applies.
+    assert report["status"] == "completed"
+    assert report["failed_chunks"] == []
+    assert [item["index"] for item in report["changes"]] == ([3] if change["index"] != 3 else [])
+    reviewed = _parse_srt(speaker_review.apply_speaker_changes(source, report["changes"]))
+    assert [_split_speaker_prefix(cue["text"])[1] for cue in reviewed] == [
+        _split_speaker_prefix(cue["text"])[1] for cue in _parse_srt(source)
+    ]
+
+
+@pytest.mark.parametrize("answer", ["not json", '{"changes": null}', "[1, 2"])
+@pytest.mark.asyncio
+async def test_unreadable_answers_still_fail_the_batch(model, answer):
+    model.return_value = answer
+    report = await speaker_review.review_speakers(transcript())
     assert report["status"] == "failed"
     assert len(report["failed_chunks"]) == 1
-    assert report["changes"] == []
-    assert _parse_srt(speaker_review.apply_speaker_changes(source, [])) == _parse_srt(source)
 
 
 @pytest.mark.asyncio
@@ -95,11 +108,11 @@ async def test_chunks_have_read_only_overlap_and_keep_successful_changes(model):
     # Cue 24 is visible in batch 2, but only batch 1 may edit it.
     model.side_effect = [json.dumps([correction()]), json.dumps([correction(24)])]
     report = await speaker_review.review_speakers(transcript(30))
-    assert report["status"] == "partial"
+    assert report["status"] == "completed"
     assert [change["index"] for change in report["changes"]] == [2]
-    assert report["failed_chunks"][0]["chunk"] == 2
+    assert report["failed_chunks"] == []
     prompts = [call.args[0] for call in model.call_args_list]
-    payloads = [json.loads(prompt.split("待复核数据：\n", 1)[1]) for prompt in prompts]
+    payloads = [json.JSONDecoder().raw_decode(prompt.split("待复核数据：\n", 1)[1])[0] for prompt in prompts]
     assert payloads[0]["speakers"] == payloads[1]["speakers"]
     assert payloads[0]["editable_indexes"] == list(range(1, 25))
     assert payloads[1]["editable_indexes"] == list(range(25, 31))

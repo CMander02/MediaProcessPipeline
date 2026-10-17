@@ -77,6 +77,10 @@ def _rename_task_dir_to_title(task_dir: Path, title: str | None) -> tuple[Path, 
     if not title:
         return task_dir, None
 
+    # Existing archives retain their folder name when processing is restarted.
+    if (task_dir / "metadata.json").exists():
+        return task_dir, None
+
     dir_name = _sanitize_filename(title)
     if not dir_name:
         return task_dir, None
@@ -108,7 +112,7 @@ def write_metadata_json(
         data["task_id"] = task_id
     if meta_path.exists():
         existing = json.loads(meta_path.read_text(encoding="utf-8"))
-        for key in ("task_id", "archive_id"):
+        for key in ("task_id", "archive_id", "content_key"):
             if existing.get(key) and not data.get(key):
                 data[key] = existing[key]
     get_artifact_store().write(
@@ -168,7 +172,7 @@ async def _write_summary_files(
         task, task_dir, "summary.json", json.dumps(summary, indent=2, ensure_ascii=False)
     )
 
-    from app.services.archiving.archive import SUMMARY_TEMPLATE, get_archive_service
+    from app.services.archiving.archive import SUMMARY_TEMPLATE, get_archive_service, summary_sections_markdown
 
     _svc = get_archive_service()
     sum_content = SUMMARY_TEMPLATE.format(
@@ -178,6 +182,7 @@ async def _write_summary_files(
         tldr=summary.get("tldr", ""),
         key_facts=_svc._fmt_list(summary.get("key_facts", [])),
     )
+    sum_content += summary_sections_markdown(summary)
     await _write_text_artifact(task, task_dir, "summary.md", sum_content)
 
 

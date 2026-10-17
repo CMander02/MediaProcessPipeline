@@ -23,7 +23,7 @@ class DiarizationService:
 
     def __init__(self) -> None:
         self._pipeline: Any | None = None
-        self._pipeline_key: tuple[str, str, str, str, int] | None = None
+        self._pipeline_key: tuple[Any, ...] | None = None
         self._last_diarize_df: Any | None = None
         self._last_audio_path: str | None = None
 
@@ -171,6 +171,9 @@ class DiarizationService:
             str(getattr(rt, "pyannote_embedding_path", "") or ""),
             device,
             batch_size,
+            rt.diarization_clustering_strategy,
+            rt.diarization_clustering_threshold,
+            self._config_file(model_path).read_text(encoding="utf-8"),
         )
         if self._pipeline is not None and self._pipeline_key == key:
             return self._pipeline
@@ -195,6 +198,13 @@ class DiarizationService:
         else:
             pipeline = Pipeline.from_pretrained(config_path)
         pipeline = pipeline.to(torch.device(device))
+        from app.services.recognition.speaker_clustering import with_known_count_clustering
+        if hasattr(pipeline, "clustering"):
+            pipeline.clustering = with_known_count_clustering(pipeline.clustering, strategy=rt.diarization_clustering_strategy)
+            if rt.diarization_clustering_threshold is not None:
+                params = pipeline.clustering.parameters(instantiated=True)
+                params["threshold"] = rt.diarization_clustering_threshold
+                pipeline.clustering.instantiate(params)
 
         for attr in ("segmentation_batch_size", "embedding_batch_size"):
             if hasattr(pipeline, attr):
@@ -228,8 +238,11 @@ class DiarizationService:
                         "-nostdin",
                         "-v",
                         "error",
+                        "-protocol_whitelist",
+                        "file,pipe,crypto,data",
                         "-i",
                         str(audio_path),
+                        "-vn",
                         "-ac",
                         "1",
                         "-ar",
@@ -241,6 +254,7 @@ class DiarizationService:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     check=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
             except subprocess.CalledProcessError as exc:
                 message = exc.stderr.decode("utf-8", errors="replace")[-2000:]
@@ -301,7 +315,7 @@ class DiarizationService:
         rt = get_runtime_settings()
         stat = audio_path.stat()
         return {
-            "version": 1,
+            "version": 3,
             "audio_path": str(audio_path.resolve()),
             "audio_size": stat.st_size,
             "audio_mtime_ns": stat.st_mtime_ns,
@@ -311,6 +325,10 @@ class DiarizationService:
             "num_speakers": num_speakers,
             "min_speakers": min_speakers,
             "max_speakers": max_speakers,
+            "clustering": type(getattr(self._pipeline, "clustering", None)).__name__,
+            "parameters": self._pipeline.parameters(instantiated=True) if self._pipeline is not None and hasattr(self._pipeline, "parameters") else {},
+            "assignment_policy": "mixed_cue_unassigned_v1",
+            "clustering_strategy": rt.diarization_clustering_strategy,
         }
 
     @staticmethod
@@ -356,7 +374,7 @@ class DiarizationService:
         import numpy as np
 
         if not turns:
-            return [dict(segment) for segment in segments]
+            return [{**segment, "speaker": "unknown"} for segment in segments]
         starts = np.asarray([float(turn["start"]) for turn in turns], dtype=float)
         ends = np.asarray([float(turn["end"]) for turn in turns], dtype=float)
         speakers = [str(turn["speaker"]) for turn in turns]
@@ -373,6 +391,7 @@ class DiarizationService:
             overlaps = np.minimum(end, ends) - np.maximum(start, starts)
             indexes = [int(index) for index in np.flatnonzero(overlaps > 0.05)]
             if not indexes:
+                segment["speaker"] = "unknown"
                 result.append(segment)
                 continue
             # ASR cue timestamps locate the entire utterance, not individual
@@ -385,7 +404,14 @@ class DiarizationService:
                 overlap_by_speaker[speaker] = overlap_by_speaker.get(speaker, 0.0) + float(
                     overlaps[index]
                 )
-            segment["speaker"] = max(overlap_by_speaker, key=overlap_by_speaker.get)
+            if len(overlap_by_speaker) > 1:
+                segment["speaker"] = "unknown"
+                segment["speaker_assignment"] = {
+                    "status": "mixed", "candidates": overlap_by_speaker,
+                    "reason": "整条字幕覆盖多位说话人，缺少逐词时间依据",
+                }
+            else:
+                segment["speaker"] = next(iter(overlap_by_speaker))
             result.append(segment)
             assigned += 1
         logger.info(
@@ -472,6 +498,9 @@ class DiarizationService:
 
             output = pipeline(self._load_audio(audio_file), hook=report_progress, **kwargs)
             turns = self._annotation_to_turns(output)
+            observed = len({turn["speaker"] for turn in turns})
+            if num_speakers is not None and observed > num_speakers:
+                raise ValueError(f"声音分离产生 {observed} 人，超过指定 {num_speakers} 人；结果未发布")
             self._write_cache(resolved_cache, signature, turns)
         else:
             logger.info("Loaded diarization cache: %s (%d turns)", resolved_cache, len(turns))
@@ -488,6 +517,12 @@ class DiarizationService:
             "speaker_count": len(speakers),
             "diarization": "pyannote",
             "cache_hit": cache_hit,
+            "parameters": signature,
+            "speaker_quality": {
+                "target_count": num_speakers, "observed_count": len(speakers),
+                "status": "constraint_conflict" if num_speakers is not None and len(speakers) != num_speakers else "completed",
+                "mixed_segments": sum(item.get("speaker_assignment", {}).get("status") == "mixed" for item in mapped),
+            },
         }
 
 

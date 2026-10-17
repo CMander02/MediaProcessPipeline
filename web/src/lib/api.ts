@@ -6,6 +6,7 @@
 import { createSettingsPatch, type SettingsPatchInput } from "./settings-patch"
 import type { ProviderConfig, ProviderModelRecord, RuntimeSettings } from "./settings-schema"
 import type { ArchivePage, ArchiveQuery, ArchiveIndexStatus } from "@/repositories/archive-types"
+import type { LibraryDirectory, LibraryFolder, BatchAction, BatchScope, BatchPreview, BatchTarget, ImportDestination } from "./library-types"
 
 export interface Task {
   id: string
@@ -181,6 +182,28 @@ export interface LibraryMatch {
   processing: boolean
 }
 
+export interface ImportItemResult {
+  folder_id?: string | null
+  folder_outcome?: "moved" | "unchanged" | "unclassified" | "kept_other" | "ambiguous"
+  folder_error?: string | null
+  source: string
+  content_key: string | null
+  outcome: "created" | "reused" | "skipped" | "failed"
+  task?: Task | null
+  match?: LibraryMatch | null
+  reason?: string | null
+  error?: string | null
+}
+
+export interface ImportSummary {
+  created: number
+  reused: number
+  active: number
+  needsAction: number
+  failed: number
+  folderWarnings?: number
+}
+
 export interface ProbeResult {
   title?: string
   description?: string
@@ -201,6 +224,9 @@ export interface BilibiliCollectionItem {
   cover: string | null
   section?: string | null
   url: string
+  content_key?: string
+  position?: number
+  published_at?: number | null
 }
 
 export interface BilibiliCollectionResult {
@@ -210,6 +236,10 @@ export interface BilibiliCollectionResult {
   title?: string
   current_item_id?: string
   items: BilibiliCollectionItem[]
+  entry_kind?: "video"
+  collection_key?: string | null
+  total?: number
+  complete?: boolean
 }
 
 export interface XiaohongshuAuthStatus {
@@ -601,6 +631,8 @@ export const api = {
       post<Task>("/api/tasks", { task_type: "pipeline", source, options }),
     createBatch: (sources: string[], options: Record<string, unknown> = {}) =>
       post<Task[]>("/api/tasks/batch", { task_type: "pipeline", sources, options }),
+    importSources: (sources: string[], options: Record<string, unknown> = {}, destination: ImportDestination = {}) =>
+      post<{ items: ImportItemResult[] }>("/api/tasks/import", { sources, options, ...destination }),
     list: (status?: string, limit = 50) => {
       const params = new URLSearchParams({ limit: String(limit) })
       if (status) params.set("status", status)
@@ -663,6 +695,21 @@ export const api = {
     apply: (path: string, policy: import("@/lib/media-retention").MediaPolicy, files: string[]) =>
       post<import("@/lib/media-retention").MediaRetentionPreview>("/api/pipeline/media-retention/apply", { path, policy, files }),
   },
+  library: {
+    directory: () => get<LibraryDirectory>("/api/library/folders"),
+    keyForTask: (id: string) => get<{ content_key: string }>(`/api/library/contents/task/${encodeURIComponent(id)}`),
+    create: (name: string) => post<LibraryFolder>("/api/library/folders", { name }),
+    rename: (id: string, name: string) => patch<LibraryFolder>(`/api/library/folders/${encodeURIComponent(id)}`, { name }),
+    deleteFolder: (id: string) => httpDelete<{ released: number }>(`/api/library/folders/${encodeURIComponent(id)}`),
+    /** Pin a content as the folder cover; null returns to the newest content. */
+    setCover: (id: string, content_key: string | null) =>
+      put<{ folder_id: string; cover_content_key: string | null; library_revision: number }>(`/api/library/folders/${encodeURIComponent(id)}/cover`, { content_key }),
+    avatarUrl: (id: string) => resolveApiUrl(`/api/library/folders/${encodeURIComponent(id)}/avatar`),
+    move: (content_keys: string[], folder_id: string | null) => post<import("@/lib/library-types").LibraryMoveResult>("/api/library/folder-members/move", { content_keys, folder_id }),
+    resolve: (key: string) => get<{ content_key: string; folder_id: string | null; archive: import("@/repositories/archive-types").ArchiveItem | null; task_id: string | null }>(`/api/library/contents/resolve?content_key=${encodeURIComponent(key)}`),
+    preview: (action: BatchAction, scope: BatchScope) => post<BatchPreview>("/api/library/batch/preview", { action, scope }),
+    deleteContent: (target: BatchTarget) => post<{ outcome: "deleted" | "partial"; errors: Array<{ error: string }>; remaining_records: number }>("/api/library/contents/delete", target),
+  },
   archives: {
     page: (query: ArchiveQuery) => {
       const params = new URLSearchParams({ ...Object.fromEntries(
@@ -676,7 +723,7 @@ export const api = {
     cleanupDuplicates: () =>
       post<{ deleted: number; errors: Array<{ path: string; title: string; error: string }> }>("/api/pipeline/archives/duplicates/cleanup"),
     lookup: (sources: string[]) =>
-      post<{ matches: Record<string, LibraryMatch[]> }>("/api/pipeline/archives/lookup", { sources }),
+      post<{ matches: Record<string, LibraryMatch[]>; errors?: Record<string, string> }>("/api/pipeline/archives/lookup", { sources }),
     list: (options: { lite?: boolean } = {}) => {
       const params = new URLSearchParams()
       if (options.lite) params.set("lite", "true")
@@ -693,6 +740,7 @@ export const api = {
   },
 
   sync: {
+    status: () => get<{ workspace_id: string; revision: number }>("/api/sync/status"),
     changes: (cursor = 0, limit = 100) =>
       get<{ changes: SyncChange[]; next_cursor: number; has_more: boolean; server_revision: number }>(
         `/api/sync/changes?cursor=${cursor}&limit=${limit}`,
@@ -711,8 +759,8 @@ export const api = {
       get<{ success: boolean; content?: string; path?: string; error?: string }>(
         `/api/filesystem/read?path=${encodeURIComponent(path)}`,
       ),
-    write: (path: string, content: string) =>
-      post<{ success: boolean; error?: string }>("/api/filesystem/write", { path, content }),
+    write: (path: string, content: string, expectedContent?: string) =>
+      post<{ success: boolean; error?: string }>("/api/filesystem/write", { path, content, expected_content: expectedContent }),
     mediaUrl: (path: string) => resolveApiUrl(`/api/filesystem/media?path=${encodeURIComponent(path)}`),
     drives: () =>
       get<{ success: boolean; drives: Array<{ name: string; path: string; is_dir: boolean; size?: number | null }> }>(
@@ -763,6 +811,12 @@ export const api = {
   },
 
   voiceprints: {
+    repairTaskSpeakers: (taskId: string, mode: "failed" | "all" | "auto") =>
+      post<{ status: string; message: string }>(`/api/tasks/${taskId}/speakers/repair`, { mode }),
+    reconcileTaskSpeakers: (taskId: string, expectedSrt: string) =>
+      post<{ status: string; speakers: string[]; revision: number }>(`/api/tasks/${taskId}/speakers/reconcile`, { expected_srt: expectedSrt }),
+    speakerRepairPreview: (taskId: string) =>
+      get<{ index_scope: string; message: string; candidates: Array<{ index: number; timestamp: string; old_speaker: string | null; proposed_speaker: string | null; text: string }> }>(`/api/tasks/${taskId}/speakers/repair-preview`),
     listPersons: () =>
       get<Array<{ id: string; name: string; notes: string; created_at: string; sample_count: number }>>(
         "/api/voiceprints/persons",
@@ -785,6 +839,7 @@ export const api = {
       oldName: string,
       newName: string,
       onConflict: "ask" | "merge" | "new" = "ask",
+      expectedSrt?: string,
     ) =>
       patch<{
         status: "renamed" | "merged" | "conflict"
@@ -793,7 +848,7 @@ export const api = {
         conflict_person_id?: string
         conflict_person_name?: string
         conflict_sample_count?: number
-      }>(`/api/tasks/${taskId}/speakers`, { old_name: oldName, new_name: newName, on_conflict: onConflict }),
+      }>(`/api/tasks/${taskId}/speakers`, { old_name: oldName, new_name: newName, on_conflict: onConflict, expected_srt: expectedSrt }),
   },
 
   bilibili: {

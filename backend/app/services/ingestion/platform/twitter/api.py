@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 from app.core.paths import get_workspace_paths
 
-from app.core.network import urllib_urlopen
+from app.core.public_urls import public_urlopen as urllib_urlopen
 from app.core.settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)

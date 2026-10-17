@@ -39,7 +39,7 @@ export function preloadThumbnails(archives: ArchiveItem[]) {
   }
 }
 
-export function useArchives(lite = true) {
+export function useArchives(lite = true, enabled = true) {
   const platform = usePlatform()
   const [, updateIdentity] = useState(0)
   const repository = useMemo(() => createArchiveRepository(platform), [platform])
@@ -53,6 +53,7 @@ export function useArchives(lite = true) {
   const loadedRef = useRef(initialCache !== undefined)
 
   const refresh = useCallback(async (silent = false) => {
+    if (!enabled) return
     const showInitialLoader = !silent && !loadedRef.current
     try {
       if (showInitialLoader) setLoading(true)
@@ -80,7 +81,7 @@ export function useArchives(lite = true) {
         if (showInitialLoader) setLoading(false)
       }
     }
-  }, [cacheKey, lite, platform.isNative, repository])
+  }, [cacheKey, lite, enabled, platform.isNative, repository])
 
   const removeArchive = useCallback((path: string) => {
     setArchives((current) => {
@@ -105,9 +106,11 @@ export function useArchives(lite = true) {
     }
     window.addEventListener("mpp:workspace-change", changed)
     window.addEventListener("mpp:connection-change", changed)
+    window.addEventListener("mpp:offline-scope-change", changed)
     return () => {
       window.removeEventListener("mpp:workspace-change", changed)
       window.removeEventListener("mpp:connection-change", changed)
+      window.removeEventListener("mpp:offline-scope-change", changed)
     }
   }, [])
 

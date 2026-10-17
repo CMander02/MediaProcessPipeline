@@ -156,7 +156,7 @@ export function MobileFilterSheet({ open, onOpenChange, library, facets }: Mobil
             className="h-11"
             onClick={() => {
               library.resetFilters()
-              library.setSort("created_desc")
+              library.setSort("processed_desc")
             }}
           >
             恢复默认

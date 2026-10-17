@@ -126,6 +126,8 @@ def reset_workspace_stores(root: Path) -> None:
     reset_voiceprint_store()
     reset_db_path(root)
     init_db(root)
+    from app.core.archive_sync import recover_archive_imports
+    recover_archive_imports(root)
     relocate_log_file(get_workspace_paths(root).logs)
 
 

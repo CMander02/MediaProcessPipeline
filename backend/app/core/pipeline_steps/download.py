@@ -181,7 +181,7 @@ async def prepare_download(ctx: PipelineContext) -> bool:
                         source_path.parent.rmdir()
                     except OSError:
                         pass
-                else:
+                elif source_path.resolve() != dest_source.resolve():
                     shutil.copy2(str(source_path), str(dest_source))
 
             from app.core.media_retention import record_media
@@ -440,11 +440,19 @@ async def prepare_download(ctx: PipelineContext) -> bool:
                         await get_task_queue().advance_to_gpu(ctx.task.id)
                         return True
 
+                    video_ready = asyncio.Event()
+
+                    async def _download_and_signal():
+                        try:
+                            await _branch_video_download()
+                        finally:
+                            video_ready.set()
+
                     results = await asyncio.gather(
                         _run_subtitle_fast_path(
-                            ctx.task, ctx.task_dir, probe_subtitle, ctx.metadata
+                            ctx.task, ctx.task_dir, probe_subtitle, ctx.metadata, video_ready
                         ),
-                        _branch_video_download(),
+                        _download_and_signal(),
                         return_exceptions=True,
                     )
                     await _raise_if_cancelled(ctx.task.id)

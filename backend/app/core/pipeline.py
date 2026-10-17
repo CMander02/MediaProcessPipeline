@@ -140,6 +140,10 @@ async def run_pipeline(
     task: Task, _download_worker_call: bool = False, _stop_after_transcribe: bool = False
 ) -> None:
     """Run a queue stage, restoring persisted outputs at each worker handoff."""
+    if task.options.get("speaker_repair", {}).get("status") in {"queued", "running"}:
+        from app.services.analysis.speaker_repair import run_speaker_repair
+        await run_speaker_repair(task)
+        return
     context = await create_context(
         task, get_runtime_settings(), _download_worker_call, _stop_after_transcribe
     )
@@ -283,6 +287,9 @@ async def process_task(
             duration_ms=round((time.perf_counter() - started_at) * 1000),
         )
         current = store.get(task_id) or task
+        if current.status == TaskStatus.COMPLETED:
+            # A stopped speaker repair: the finished content stays as it was.
+            raise
         output_dir = current.result.get("output_dir") if current.result else None
         paused = current.status == TaskStatus.PAUSED
         final_status = TaskStatus.PAUSED if paused else TaskStatus.CANCELLED

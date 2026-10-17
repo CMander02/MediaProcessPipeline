@@ -83,6 +83,52 @@ async def test_local_llm_applies_thinking_setting(monkeypatch, stage, thinking, 
 
 
 @pytest.mark.asyncio
+async def test_local_llm_startup_preserves_task_log_context(monkeypatch):
+    from app.core.logging_setup import task_id_var, worker_var
+
+    _client(monkeypatch, content="summary", finish_reason="stop")
+    observed = []
+
+    def ensure(config):
+        observed.append((task_id_var.get(), worker_var.get()))
+        return "http://localhost:12345"
+
+    monkeypatch.setattr(
+        "app.services.analysis.local_llm_runtime.get_local_llm_runtime",
+        lambda: SimpleNamespace(ensure=ensure),
+    )
+    binding = resolve_llm_binding(
+        RuntimeSettings(llm_provider="local", local_llm_model_path="model.gguf"),
+        stage="summary",
+    )
+    task_token = task_id_var.set("469781db")
+    worker_token = worker_var.set("gpu-1")
+    try:
+        assert await LLMService()._call_local_llama_cpp("transcript", binding) == "summary"
+    finally:
+        task_id_var.reset(task_token)
+        worker_var.reset(worker_token)
+    assert observed == [("469781db", "gpu-1")]
+
+
+@pytest.mark.asyncio
+async def test_local_llm_logs_requested_stage_when_sharing_polish_settings(monkeypatch, caplog):
+    _client(monkeypatch, content="result", finish_reason="stop")
+    monkeypatch.setattr(
+        "app.services.analysis.llm.get_runtime_settings",
+        lambda: RuntimeSettings(
+            llm_provider="local", local_llm_engine="llama_cpp",
+            local_llm_model_path="model.gguf",
+        ),
+    )
+    with caplog.at_level("INFO"):
+        await LLMService()._call("transcript", stage="subtitle_speakers")
+    calls = [record.getMessage() for record in caplog.records if "llm.local.call_" in record.msg]
+    assert len(calls) == 2
+    assert all("stage=subtitle_speakers" in message for message in calls)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("context", [None, {}, {"timeline": []}])
 async def test_summary_omits_generated_timestamps_without_source_timeline(monkeypatch, context):
     service = LLMService()
@@ -93,3 +139,23 @@ async def test_summary_omits_generated_timestamps_without_source_timeline(monkey
     result = await service.summarize("会议转录文本", source_context=context)
     assert result["tldr"] == "会议讨论任务设计"
     assert result["timeline"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage,system,kind", [
+    ("speaker_review", "", "array"), ("subtitle_speakers", "", "object"),
+    ("polish", "identity", "object"), ("polish", "", None),
+])
+async def test_local_speaker_steps_request_valid_json(monkeypatch, stage, system, kind):
+    from app.services.analysis.prompts.speaker_identity import SPEAKER_IDENTITY_SYSTEM_PROMPT
+    create = _client(monkeypatch, content="[]", finish_reason="stop")
+    binding = resolve_llm_binding(RuntimeSettings(llm_provider="local", local_llm_model_path="model.gguf"), stage="polish")
+    await LLMService()._call_local_llama_cpp("input", binding, stage=stage,
+        system_prompt=SPEAKER_IDENTITY_SYSTEM_PROMPT if system else "")
+    request = create.call_args.kwargs
+    if kind is None:
+        assert "response_format" not in request
+    elif kind == "array":
+        assert request["response_format"]["schema"]["type"] == "array"
+    else:
+        assert request["response_format"] == {"type": "json_object"}

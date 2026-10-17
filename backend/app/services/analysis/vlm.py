@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import json
 import logging
 import re
 import time
@@ -81,7 +82,7 @@ def _prepare_image_bytes(image_path: Path, *, max_edge: int = 1800) -> tuple[byt
             output = io.BytesIO()
             image.save(output, format="JPEG", quality=88, optimize=True)
             prepared = output.getvalue()
-            if prepared and len(prepared) < len(raw):
+            if prepared and (len(prepared) < len(raw) or max(meta["source_size"]) > max_edge):
                 meta["payload_bytes"] = len(prepared)
                 meta["payload_size"] = list(image.size)
                 meta["media_type"] = "image/jpeg"
@@ -142,6 +143,87 @@ class VLMService:
             self._api_base = binding.api_base
             self._api_key = binding.api_key
         return self._client, self._model
+
+    def describe_participants(
+        self,
+        frames: list[dict[str, Any]],
+        context: dict[str, Any],
+        binding: EndpointBinding | None = None,
+    ) -> dict[str, Any]:
+        """Read all selected frames together. Return evidence, never voice identity."""
+        from app.core.settings import get_runtime_settings
+        from app.services.analysis.participant_evidence import (
+            PARTICIPANT_PROMPT, validate_participant_report,
+        )
+
+        if not 1 <= len(frames) <= 6:
+            raise ValueError("参与者分析需要 1–6 张图片")
+        identifiers = [frame["id"] for frame in frames]
+        if len(set(identifiers)) != len(identifiers):
+            raise ValueError("图片编号必须唯一")
+        payload = json.dumps(context, ensure_ascii=False)
+        # Reserve space for every image and the structured response. Callers
+        # must compact cited evidence; truncating it here would break references.
+        if len(payload) > 12000:
+            raise ValueError("参与者证据超出多图预算，请压缩带引用的证据后重试")
+        binding = binding or resolve_vlm_binding(get_runtime_settings())
+        import math
+        context_tokens = int(binding.request_kwargs.get("ctx") or 16384)
+        # UTF-8 bytes are a conservative text-token bound. Reserve visual tokens
+        # for every frame, and reduce all images together if necessary.
+        text_reserve = len((PARTICIPANT_PROMPT + payload).encode("utf-8")) + 512
+        image_edge = next((edge for edge in (896, 672, 448)
+                           if text_reserve + len(frames) * math.ceil(edge / 28) ** 2 + 2048 <= context_tokens), None)
+        if image_edge is None:
+            raise ValueError("全部图片、带引用的全文证据及输出超出上下文预算；未丢弃任何图片或字幕证据")
+        if binding.request_kwargs.get("local_engine") == "llama_cpp":
+            from app.services.analysis.local_llm_runtime import get_local_llm_runtime
+            base_url = get_local_llm_runtime().ensure(binding.request_kwargs)
+            binding = replace(binding, api_base=f"{base_url}/v1", api_key="local")
+        content: list[dict[str, Any]] = [{"type": "text", "text": payload}]
+        image_meta = []
+        for frame in frames:
+            raw, media_type, meta = _prepare_image_bytes(Path(frame["path"]), max_edge=image_edge)
+            image_meta.append({"id": frame["id"], "time": frame["time"], **meta})
+            content.extend([
+                {"type": "text", "text": f"图片 {frame['id']}，时间 {frame['time']} 秒"},
+                {"type": "image_url", "image_url": {
+                    "url": f"data:{media_type};base64,{base64.b64encode(raw).decode('ascii')}"
+                }},
+            ])
+        timeout = int(binding.request_kwargs.get("timeout_sec") or 180)
+        started = time.monotonic()
+        if binding.request_kwargs.get("transport") == "oauth_cli":
+            from app.services.analysis.coding_plan_cli import call_coding_plan_cli
+            raw_text = asyncio.run(call_coding_plan_cli(
+                str(binding.request_kwargs.get("provider_type") or ""),
+                model=binding.model,
+                prompt=PARTICIPANT_PROMPT + "\n" + payload + "\n" + json.dumps([
+                    {"id": f["id"], "time": f["time"]} for f in frames
+                ]),
+                cli_path=str(binding.request_kwargs.get("cli_path") or ""),
+                timeout_sec=timeout,
+                image_paths=[Path(f["path"]) for f in frames],
+            ))
+        else:
+            client, model = self._get_client(binding)
+            request_options = {}
+            if binding.request_kwargs.get("local_engine") == "llama_cpp":
+                request_options = {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+                                   "response_format": {"type": "json_object"}, "temperature": 0.1}
+            response = client.chat.completions.create(
+                model=model, max_tokens=2048, timeout=timeout,
+                messages=[{"role": "system", "content": PARTICIPANT_PROMPT},
+                          {"role": "user", "content": content}],
+                **request_options,
+            )
+            if response.choices[0].finish_reason == "length":
+                raise ValueError("参与者联合分析输出被截断")
+            raw_text = response.choices[0].message.content or ""
+        report = validate_participant_report(raw_text, frames, context)
+        return {**report, "model": binding.model, "raw_output": raw_text,
+                "budget": {"context_tokens": context_tokens, "text_reserve": text_reserve, "image_edge": image_edge, "output_tokens": 2048},
+                "images": image_meta, "duration_ms": int((time.monotonic() - started) * 1000)}
 
     def describe_image(
         self,

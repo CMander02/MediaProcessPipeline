@@ -32,6 +32,17 @@ tags: [media-pipeline]
 """
 
 
+def summary_sections_markdown(summary: dict[str, Any]) -> str:
+    """Expose the structured outline, including an opening section, in exports."""
+    sections = []
+    for item in summary.get("timeline", []):
+        title = str(item.get("title", "")).strip()
+        detail = str(item.get("summary", "")).strip()
+        if title:
+            sections.append(f"### {title}\n\n{detail}" if detail else f"### {title}")
+    return "\n## 内容脉络\n\n" + "\n\n".join(sections) + "\n" if sections else ""
+
+
 class ArchiveService:
     def archive(
         self,
@@ -65,7 +76,7 @@ class ArchiveService:
         data = metadata.model_dump(mode="json")
         if meta_path.exists():
             previous = json.loads(meta_path.read_text(encoding="utf-8"))
-            for key in ("task_id", "archive_id", "status"):
+            for key in ("task_id", "archive_id", "content_key", "status"):
                 if previous.get(key):
                     data[key] = previous[key]
         if task_id:
@@ -112,6 +123,7 @@ class ArchiveService:
                 tldr=summary.get("tldr", "") if summary else "",
                 key_facts=self._fmt_list(summary.get("key_facts", []) if summary else []),
             )
+            content += summary_sections_markdown(summary)
             artifacts.write(task_id, output_dir, sum_path.name, content)
             files["summary"] = str(sum_path)
 
@@ -160,6 +172,7 @@ class ArchiveService:
         task = get_task_store().find_task_by_output_dir(task_dir)
         task_map = {self._path_key(task_dir): {
             "id": str(task.id), "created_at": task.created_at.isoformat(), "status": task.status,
+            "error": task.error,
         }} if task else {}
         return self._archive_item(task_dir, task_map, lite=lite)
 
@@ -169,7 +182,7 @@ class ArchiveService:
             from app.core.database import _get_conn, _database_root
 
             rows = _get_conn().execute(
-                "SELECT id,created_at,status,path_fields,COALESCE(json_extract(result,'$.output_dir'),"
+                "SELECT id,created_at,status,error,path_fields,COALESCE(json_extract(result,'$.output_dir'),"
                 "json_extract(result,'$.archive.output_dir')) AS output_dir FROM tasks "
                 "WHERE result IS NOT NULL AND json_valid(result)"
             )
@@ -181,6 +194,7 @@ class ArchiveService:
                         out_dir = _database_root() / out_dir
                     dir_to_task[self._path_key(out_dir)] = {
                         "id": task["id"], "created_at": task["created_at"], "status": task["status"],
+                        "error": task["error"],
                     }
         except Exception:
             pass
@@ -287,6 +301,9 @@ class ArchiveService:
         meta_status = task_info.get("status") or metadata.get("status", "completed")
         processing = meta_status in ("queued", "processing", "paused")
         metadata["status"] = meta_status
+        metadata["error"] = (
+            task_info.get("error", metadata.get("error")) if meta_status == "failed" else None
+        )
         task_id = (
             task_info.get("id")
             or metadata.get("task_id")
@@ -371,6 +388,7 @@ class ArchiveService:
             "media_type",
             "content_subtype",
             "status",
+            "error",
             "task_id",
             "archive_id",
         }

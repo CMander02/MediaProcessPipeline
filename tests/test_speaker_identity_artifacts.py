@@ -76,38 +76,24 @@ def archive(tmp_path, monkeypatch):
     database.close_db()
 
 
-def test_completed_task_identifies_names_and_updates_files_and_database(archive, monkeypatch):
-    infer = AsyncMock(return_value=REPORT)
-    monkeypatch.setattr(identity, "infer_speaker_names", infer)
-    response = archive.client.post(f"/api/tasks/{archive.task.id}/speakers/identify")
-    assert response.status_code == 200
-    assert response.json()["mappings"] == REPORT["mappings"]
-    infer.assert_awaited_once()
-    assert infer.call_args.args == (SRT,)
-    context = infer.call_args.kwargs["context"]
-    assert context["title"] == "采访" and context["description"] == ""
-    assert context["analysis"]["content_type"] == "技术讲座"
-    assert context["summary"]["tldr"] == "张明主讲，Unknown-abcd介绍项目。"
-    assert context["speaker_activity"][0]["speaker"] == "Unknown-abcd"
-    assert context["speaker_activity"][0]["duration_seconds"] == pytest.approx(1)
-    assert context["speaker_activity"][0]["share"] == pytest.approx(1)
+def test_pre_summary_names_update_explicit_fields_and_artifact_mirrors(archive, monkeypatch):
+    changed = identity.persist_speaker_names(str(archive.task.id), archive.directory, REPORT)
     updated_srt = (archive.directory / "transcript_polished.srt").read_text(encoding="utf-8")
     assert updated_srt == SRT.replace("[Unknown-abcd]", "[张明]")
     markdown = (archive.directory / "transcript_polished.md").read_text(encoding="utf-8")
     assert "**[张明]**" in markdown
     assert (archive.directory / "summary.md").read_text(encoding="utf-8") == (
-        "张明建议继续；Unknown-abcd-extra 是独立标签。"
+        "Unknown-abcd建议继续；Unknown-abcd-extra 是独立标签。"
     )
     mapping = json.loads((archive.directory / "speaker_map.json").read_text(encoding="utf-8"))
     assert mapping["mappings"][0]["source_label"] == "SPEAKER_00"
     assert mapping["mappings"][0]["current_name"] == "张明"
     assert not mapping["confirmed"]
-    assert archive.store.get(archive.task.id).result["metadata"]["extra"]["speakers"] == ["张明"]
-    assert archive.store.get(archive.task.id).result["analysis"]["description"] == "张明介绍项目"
+    assert json.loads((archive.directory / "metadata.json").read_text(encoding="utf-8"))["extra"]["speakers"] == ["张明"]
     assert json.loads((archive.directory / "summary.json").read_text(encoding="utf-8"))["tldr"] == (
-        "张明主讲，张明介绍项目。"
+        "张明主讲，Unknown-abcd介绍项目。"
     )
-    for filename in response.json()["changed_files"]:
+    for filename in changed:
         assert archive.store.get_artifact(archive.task.id, filename)["content"] == (
             archive.directory / filename
         ).read_text(encoding="utf-8")
@@ -137,12 +123,8 @@ def test_completed_archive_uses_diarization_activity_and_preserves_other_speaker
     }
     for filename, content in files.items():
         artifacts.get_artifact_store().write(archive.task.id, archive.directory, filename, content)
-    infer = AsyncMock(return_value=REPORT)
-    monkeypatch.setattr(identity, "infer_speaker_names", infer)
-    response = archive.client.post(f"/api/tasks/{archive.task.id}/speakers/identify")
-    assert response.status_code == 200
-    context = infer.call_args.kwargs["context"]
-    activity = {item["speaker"]: item for item in context["speaker_activity"]}
+    activity = {item["speaker"]: item for item in identity.load_speaker_activity(archive.directory, source)}
+    identity.persist_speaker_names(str(archive.task.id), archive.directory, REPORT)
     assert activity["Unknown-abcd"]["duration_seconds"] == pytest.approx(90)
     assert activity["Unknown-abcd"]["share"] == pytest.approx(0.9)
     assert activity["Unknown-other"]["duration_seconds"] == pytest.approx(10)
@@ -181,22 +163,18 @@ def test_markdown_edits_are_preserved(archive):
     {"status": "failed", "mappings": [], "error": "模型请求失败"},
 ])
 def test_no_evidence_or_model_failure_preserves_transcripts(archive, monkeypatch, report):
-    monkeypatch.setattr(identity, "infer_speaker_names", AsyncMock(return_value=report))
-    response = archive.client.post(f"/api/tasks/{archive.task.id}/speakers/identify")
-    assert response.json()["status"] == report["status"]
+    identity.persist_speaker_names(str(archive.task.id), archive.directory, report)
     assert (archive.directory / "transcript_polished.srt").read_text(encoding="utf-8") == SRT
     assert (archive.directory / "speaker_identity.json").is_file()
 
 
 def test_concurrent_subtitle_edit_prevents_stale_name_write(archive, monkeypatch):
-    async def infer(*_args, **_kwargs):
-        (archive.directory / "transcript_polished.srt").write_text(
-            SRT.replace("[Unknown-abcd]", "[人工姓名]"), encoding="utf-8",
-        )
-        return REPORT
-
-    monkeypatch.setattr(identity, "infer_speaker_names", infer)
-    response = archive.client.post(f"/api/tasks/{archive.task.id}/speakers/identify")
+    (archive.directory / "transcript_polished.srt").write_text(
+        SRT.replace("[Unknown-abcd]", "[人工姓名]"), encoding="utf-8",
+    )
+    response = archive.client.patch(f"/api/tasks/{archive.task.id}/speakers", json={
+        "old_name": "Unknown-abcd", "new_name": "张明", "expected_srt": SRT,
+    })
     assert response.status_code == 409
     assert "人工姓名" in (archive.directory / "transcript_polished.srt").read_text(encoding="utf-8")
     assert (archive.directory / "transcript.srt").read_text(encoding="utf-8") == SRT
@@ -205,7 +183,8 @@ def test_concurrent_subtitle_edit_prevents_stale_name_write(archive, monkeypatch
 
 def test_missing_and_active_tasks_do_not_start_model(archive, monkeypatch):
     infer = AsyncMock()
-    monkeypatch.setattr(identity, "infer_speaker_names", infer)
+    from app.services.analysis import speaker_identity
+    monkeypatch.setattr(speaker_identity, "infer_speaker_names", infer)
     assert archive.client.post(f"/api/tasks/{uuid4()}/speakers/identify").status_code == 404
     archive.task.status = TaskStatus.PROCESSING
     archive.store.save(archive.task)

@@ -27,7 +27,13 @@ from typing import Any, Callable
 
 from app.core.paths import get_workspace_paths
 
-from app.core.network import runtime_proxy_url, urllib_urlopen
+from app.core.network import runtime_proxy_url
+from app.core.public_urls import public_urlopen as urllib_urlopen
+from app.services.ingestion.public_browser import (
+    fetch_browser_resource,
+    goto_public_page,
+    protect_browser_context,
+)
 from app.core.settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
@@ -200,6 +206,7 @@ def download_video(info: dict[str, Any], output_dir: Path) -> tuple[Path, Path]:
     result = subprocess.run(
         [
             "ffmpeg",
+            "-protocol_whitelist", "file,pipe,crypto,data",
             "-i",
             str(video_path),
             "-vn",
@@ -516,7 +523,7 @@ def _download_image_with_browser_request(
             context = _new_xhs_browser_context(browser)
             page = context.new_page()
             try:
-                page.goto(referer, wait_until="domcontentloaded", timeout=30000)
+                goto_public_page(page, referer, wait_until="domcontentloaded", timeout=30000)
                 page.wait_for_timeout(1200)
             except Exception:
                 pass
@@ -635,6 +642,7 @@ def _download_image_with_browser_interactive(
 
 def _new_xhs_browser_context(browser: Any) -> Any:
     context_kwargs: dict[str, Any] = {
+        "service_workers": "block",
         "locale": "zh-CN",
         "user_agent": _UA,
         "viewport": {"width": 1280, "height": 860},
@@ -642,7 +650,7 @@ def _new_xhs_browser_context(browser: Any) -> Any:
     storage_state = _storage_state_path()
     if storage_state.exists():
         context_kwargs["storage_state"] = str(storage_state)
-    return browser.new_context(**context_kwargs)
+    return protect_browser_context(browser.new_context(**context_kwargs))
 
 
 def _collect_xhs_browser_image_urls(
@@ -663,7 +671,7 @@ def _collect_xhs_browser_image_urls(
                     seen.add(_normalize_url(url))
 
     try:
-        page.goto(referer, wait_until="domcontentloaded", timeout=30000)
+        goto_public_page(page, referer, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(1200)
         for _ in range(5):
             _raise_if_image_download_cancelled(should_cancel)
@@ -754,20 +762,20 @@ def _download_image_via_browser_context(
             continue
         seen.add(url)
         try:
-            response = context.request.get(
-                url,
+            response = fetch_browser_resource(
+                context, url,
                 headers=_headers(referer),
                 timeout=20000,
             )
             attempts.append({
                 "url_redacted": _redact_url_for_log(url),
                 "host": urllib.parse.urlparse(url).hostname,
-                "status": response.status,
-                "ok": response.ok,
+                "status": response.status_code,
+                "ok": response.is_success,
                 "via": via,
             })
-            if response.ok:
-                body = response.body()
+            if response.is_success:
+                body = response.content
                 if body:
                     dest.write_bytes(body)
                     return True
@@ -810,16 +818,17 @@ def _download_failed_images_with_browser(
                 args=["--disable-blink-features=AutomationControlled"],
             )
             context_kwargs: dict[str, Any] = {
+                "service_workers": "block",
                 "locale": "zh-CN",
                 "user_agent": _UA,
                 "viewport": {"width": 1280, "height": 860},
             }
             if storage_state.exists():
                 context_kwargs["storage_state"] = str(storage_state)
-            context = browser.new_context(**context_kwargs)
+            context = protect_browser_context(browser.new_context(**context_kwargs))
             page = context.new_page()
             try:
-                page.goto(referer, wait_until="domcontentloaded", timeout=30000)
+                goto_public_page(page, referer, wait_until="domcontentloaded", timeout=30000)
                 page.wait_for_timeout(1500)
             except Exception:
                 pass
@@ -846,19 +855,19 @@ def _download_failed_images_with_browser(
                 for url in urls:
                     _raise_if_image_download_cancelled(should_cancel)
                     try:
-                        response = context.request.get(
-                            url,
+                        response = fetch_browser_resource(
+                            context, url,
                             headers=_headers(referer),
                             timeout=15000,
                         )
                         attempts.append({
                             "url": url,
-                            "status": response.status,
-                            "ok": response.ok,
+                            "status": response.status_code,
+                            "ok": response.is_success,
                             "via": "playwright_request",
                         })
-                        if response.ok:
-                            body = response.body()
+                        if response.is_success:
+                            body = response.content
                             if body:
                                 dest.write_bytes(body)
                                 records.append({

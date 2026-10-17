@@ -115,10 +115,25 @@ async def detect_transcript_language(
     if not samples:
         return "unknown"
 
+    # Language detection is deliberately sampled, including within unusually long cues.
+    samples = [part for sample in samples for part in _sample_segments_from_text(sample, 80)]
     prompt = _build_prompt(samples)
     try:
         llm = get_llm_service()
-        response = await llm._call(prompt)
+        from app.services.analysis.long_text import byte_size, is_context_overflow, prompt_budget
+        budget = prompt_budget()
+        while byte_size(prompt) > budget and max(map(len, samples)) > 8:
+            samples = [sample[:max(8, len(sample) // 2)] for sample in samples]
+            prompt = _build_prompt(samples)
+        for attempt in range(5):
+            try:
+                response = await llm._call(prompt)
+                break
+            except Exception as exc:
+                if not is_context_overflow(exc) or attempt == 4:
+                    raise
+                samples = [sample[:max(1, len(sample) // 2)] for sample in samples]
+                prompt = _build_prompt(samples)
     except Exception as e:
         log_event(logger, logging.WARNING, "language_detect.failed", error=e)
         return "unknown"

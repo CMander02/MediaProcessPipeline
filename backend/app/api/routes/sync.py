@@ -8,7 +8,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
@@ -117,12 +117,31 @@ def _portable_result(result: Any) -> dict[str, Any]:
 async def sync_changes(
     cursor: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
+    x_mpp_workspace_id: str | None = Header(default=None),
 ):
+    _check_workspace(x_mpp_workspace_id)
     return await run_in_thread(get_archive_sync_service().changes, cursor, limit)
 
 
+def _check_workspace(expected: str | None) -> None:
+    if expected is not None and unquote(expected) != str(Path(get_runtime_settings().data_root).resolve()):
+        raise HTTPException(409, "Workspace changed; restart synchronization")
+
+
+@router.get("/status")
+async def sync_status():
+    return await run_in_thread(get_archive_sync_service().index_status)
+
+
+@router.get('/library')
+async def sync_library():
+    from app.core.library import get_library_service
+    return await run_in_thread(get_library_service().sync_snapshot)
+
+
 @router.get("/archives/{archive_id}/manifest")
-async def sync_manifest(archive_id: str):
+async def sync_manifest(archive_id: str, x_mpp_workspace_id: str | None = Header(default=None)):
+    _check_workspace(x_mpp_workspace_id)
     manifest = await run_in_thread(get_archive_sync_service().manifest, archive_id)
     if manifest is None:
         raise HTTPException(404, "Archive not found")
@@ -134,7 +153,9 @@ async def sync_file(
     archive_id: str,
     relative_path: str,
     if_none_match: str | None = Header(default=None),
+    x_mpp_workspace_id: str | None = Header(default=None),
 ):
+    _check_workspace(x_mpp_workspace_id)
     resolved = await run_in_thread(
         get_archive_sync_service().resolve_declared_file,
         archive_id,
@@ -154,6 +175,7 @@ async def sync_file(
             "ETag": etag,
             "Cache-Control": "private, no-cache",
             "X-Content-SHA256": entry.sha256,
+            "X-MPP-Workspace-ID": quote(str(Path(get_runtime_settings().data_root).resolve()), safe=""),
         },
     )
 
@@ -226,26 +248,9 @@ async def import_completed_archive(
     if expected_sha256 and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
         raise HTTPException(400, "Invalid archive SHA-256")
 
-    from app.core.artifacts import get_artifact_store
-    artifacts = get_artifact_store()
     store = get_task_store()
     existing = store.get(task.id)
-    existing_sync = (existing.result or {}).get("remote_sync") if existing else None
-    if (
-        expected_sha256
-        and isinstance(existing_sync, dict)
-        and existing_sync.get("archive_sha256") == expected_sha256
-    ):
-        await archive.close()
-        output_dir = (existing.result or {}).get("output_dir")
-        repairs = artifacts.repair(task.id, output_dir) if output_dir else []
-        return {
-            "artifacts": repairs,
-            "ok": True,
-            "task_id": str(task.id),
-            "already_synced": True,
-            "sync": existing_sync,
-        }
+    _require_importable(task.id, existing)
 
     data_root = Path(get_runtime_settings().data_root).resolve()
     data_root.mkdir(parents=True, exist_ok=True)
@@ -263,50 +268,118 @@ async def import_completed_archive(
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
-        metadata["task_id"] = str(task.id)
-        metadata.setdefault("archive_id", str(task.id))
-        artifacts.write(None, extracted_root, "metadata.json",
-                        json.dumps(metadata, ensure_ascii=False, indent=2))
-        destination = _destination_for(data_root, archive_name, str(task.id))
-        publish_archive(extracted_root, destination, data_root)
-
-        sync_info = {
-            "worker_id": worker_id.strip(),
-            "archive_sha256": upload_sha256,
-            "archive_size": upload_size,
-            "synced_at": datetime.now().astimezone().isoformat(),
-        }
-        result = _portable_result(task.result)
-        result["output_dir"] = str(destination)
-        result["archive"] = {
-            "output_dir": str(destination),
-            "files": archive_file_manifest(destination),
-        }
-        result["remote_sync"] = sync_info
-        task.result = result
-        task.status = TaskStatus.COMPLETED
-        task.progress = 1.0
-        task.message = "处理完成，已从本地同步"
-        task.error = None
-        task.updated_at = datetime.now()
-        task.completed_at = task.completed_at or datetime.now()
-        store.save(task)
-        repairs = artifacts.repair(task.id, destination)
-        artifacts._changed(destination)
-        store.add_event(
-            task.id,
-            "remote_archive_imported",
-            stage="sync",
-            message="本地归档已同步到服务器",
-            data={"worker_id": worker_id.strip(), "archive_sha256": upload_sha256},
-        )
-        get_archive_sync_service().flush_changes()
-        return {
-            "ok": True,
-            "task_id": str(task.id),
-            "already_synced": False,
-            "artifacts": repairs,
-            "sync": sync_info,
-        }
+        # No await inside the commit: queue commands on this event loop cannot
+        # read the old task and then enqueue it halfway through replacement.
+        return _commit_import(task, extracted_root, metadata, data_root, archive_name,
+                              upload_sha256, upload_size, worker_id.strip())
     finally:
+        await archive.close()
         await run_in_thread(shutil.rmtree, staging_dir, True)
+
+
+def _require_importable(task_id: UUID, existing: Task | None) -> None:
+    from app.core.queue import get_task_queue
+
+    queue = get_task_queue()
+    if (existing and existing.status in {
+        TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.PROCESSING, TaskStatus.PAUSED,
+    }) or task_id in queue.active_task_ids or task_id in queue._running_tasks:
+        raise HTTPException(409, "Task is active; stop it before importing its archive")
+
+
+def _commit_import(task, extracted_root, metadata, data_root, archive_name,
+                   upload_sha256, upload_size, worker_id):
+    from app.core.artifacts import _write_lock, get_artifact_store
+    from app.core.database import _save_task_row, task_write_transaction
+    from app.services.archiving.archive import get_archive_service
+
+    artifacts = get_artifact_store()
+    service = get_archive_sync_service()
+    store = get_task_store()
+    publication = None
+    # Lock ordering matches indexing then artifact writes then database writes.
+    with service._reconcile_lock, _write_lock:
+        try:
+            with task_write_transaction() as conn:
+                existing = store.get(task.id)
+                _require_importable(task.id, existing)
+                from app.core.content_identity import archive_content_key, task_content_key
+                deleting = {row[0] for row in conn.execute("SELECT content_key FROM library_deletions")}
+                task_keys = {task_content_key(existing or task)}
+                if deleting:
+                    for row in conn.execute("SELECT archive_id,snapshot FROM archive_sync_index WHERE task_id=? AND deleted=0",
+                                            (str(task.id),)):
+                        item = {**json.loads(row["snapshot"]), "archive_id": row["archive_id"]}
+                        task_keys.add(archive_content_key(item, existing or task))
+                if task_keys & deleting:
+                    raise HTTPException(409, "Task content is being deleted")
+                existing_sync = (existing.result or {}).get("remote_sync") if existing else None
+                if isinstance(existing_sync, dict) and existing_sync.get("archive_sha256") == upload_sha256:
+                    output_dir = (existing.result or {}).get("output_dir")
+                    if output_dir and Path(output_dir).is_dir():
+                        repairs = artifacts.import_mirrors(conn, task.id, Path(output_dir))
+                        return {"ok": True, "task_id": str(task.id), "already_synced": True,
+                                "artifacts": repairs, "sync": existing_sync}
+
+                destination = _destination_for(data_root, archive_name, str(task.id))
+                archive_id = str(task.id)
+                if destination.exists():
+                    try:
+                        archive_id = str(UUID(str(_read_metadata(destination).get("archive_id"))))
+                    except ValueError:
+                        pass
+                row = conn.execute("SELECT archive_path FROM archive_sync_index WHERE archive_id=? AND deleted=0",
+                                   (archive_id,)).fetchone()
+                if row and (data_root / row["archive_path"]).resolve() != destination.resolve():
+                    archive_id = str(uuid4())
+                metadata.update(task_id=str(task.id), archive_id=archive_id, status="completed")
+                artifacts.write(None, extracted_root, "metadata.json",
+                                json.dumps(metadata, ensure_ascii=False, indent=2), notify_index=False)
+                sync_info = {"worker_id": worker_id, "archive_sha256": upload_sha256,
+                             "archive_size": upload_size, "import_id": str(uuid4()),
+                             "synced_at": datetime.now().astimezone().isoformat()}
+                publication = publish_archive(extracted_root, destination, data_root,
+                                              task_id=task.id, import_id=sync_info["import_id"])
+                task.result = {**_portable_result(task.result), "output_dir": str(destination),
+                               "archive": {"output_dir": str(destination),
+                                           "files": archive_file_manifest(destination)},
+                               "remote_sync": sync_info}
+                task.status, task.progress, task.error = TaskStatus.COMPLETED, 1.0, None
+                task.message = "处理完成，已从本地同步"
+                task.updated_at = datetime.now()
+                task.completed_at = task.completed_at or datetime.now()
+                if existing:
+                    task.created_at = existing.created_at
+                _save_task_row(conn, task)
+                repairs = artifacts.import_mirrors(conn, task.id, destination)
+                conn.execute(
+                    "INSERT INTO task_events (task_id,event_type,stage,message,data,timestamp) "
+                    "VALUES (?, 'remote_archive_imported', 'sync', ?, ?, ?)",
+                    (str(task.id), "本地归档已同步到服务器", json.dumps({"worker_id": worker_id,
+                     "archive_sha256": upload_sha256}), task.updated_at.isoformat()),
+                )
+                archive_service = get_archive_service()
+                item = archive_service._archive_item(destination, {
+                    archive_service._path_key(destination): {
+                        "id": str(task.id), "created_at": task.created_at.isoformat(),
+                        "status": task.status, "error": None,
+                    },
+                }, lite=True)
+                if item is None:
+                    raise ValueError("Imported archive cannot be indexed")
+                service._upsert_if_changed(archive_id, destination, service._file_state(destination),
+                                           item, transaction=conn)
+        except BaseException:
+            if publication is not None:
+                current = store.get(task.id)
+                committed = ((current.result or {}).get("remote_sync") or {}) if current else {}
+                if committed.get("import_id") == sync_info["import_id"]:
+                    # An interruption immediately after SQLite commit must not
+                    # restore old files over the now committed task and mirrors.
+                    publication.finish()
+                else:
+                    publication.rollback()
+            raise
+        publication.finish()
+    return {"ok": True, "task_id": str(task.id), "already_synced": False,
+            "artifacts": repairs, "sync": sync_info}

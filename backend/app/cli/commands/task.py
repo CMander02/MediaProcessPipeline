@@ -263,10 +263,10 @@ def resume(refs: list[str] = typer.Argument(...)):
 def rerun(
     ref: str = typer.Argument(...),
     checkpoint: bool = typer.Option(False, "--checkpoint", help="在原任务上复用 checkpoint"),
-    full: bool = typer.Option(False, "--full", help="创建新任务完整运行"),
+    full: bool = typer.Option(False, "--full", help="在原文件夹完整运行"),
     wait: bool = typer.Option(False, "--wait"),
 ):
-    """执行 checkpoint 重跑或创建新任务完整重跑。"""
+    """在原文件夹执行 checkpoint 重跑或完整重跑。"""
     if checkpoint and full:
         from app.cli.output import emit_error
 
@@ -274,15 +274,8 @@ def rerun(
     api = client()
     task_id = api_call(lambda: resolve_task_ref(ref, api))
     if full:
-        original = api_call(lambda: api.get_task(task_id))
-        result = api_call(
-            lambda: api.create_task(
-                str(original.get("source", "")),
-                original.get("options") or {},
-                original.get("webhook_url"),
-            )
-        )
-        rerun_id = str(result["id"])
+        result = api_call(lambda: api.full_rerun_task(task_id))
+        rerun_id = task_id
     else:
         result = api_call(lambda: api.checkpoint_rerun_task(task_id))
         rerun_id = task_id

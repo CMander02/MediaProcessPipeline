@@ -15,6 +15,8 @@ import { cn } from "@/lib/utils"
 interface AppShellProps {
   activePage: Route["page"]
   toolbar?: ReactNode
+  crumbs?: ReactNode
+  trailing?: ReactNode
   children: ReactNode
   runtimeControls?: boolean
 }
@@ -52,7 +54,7 @@ function useTitleBarColors(header: RefObject<HTMLElement | null>) {
   }, [header])
 }
 
-export function AppShell({ activePage, toolbar, children, runtimeControls = true }: AppShellProps) {
+export function AppShell({ activePage, toolbar, crumbs, trailing, children, runtimeControls = true }: AppShellProps) {
   const settingsActive = activePage === "settings"
   const header = useRef<HTMLElement>(null)
   useTitleBarColors(header)
@@ -70,12 +72,13 @@ export function AppShell({ activePage, toolbar, children, runtimeControls = true
             )}
             style={desktopApp ? DESKTOP_TITLE_BAR : undefined}
           >
-            {desktopApp && <HistoryButtons className="hidden md:flex" />}
+            <HistoryButtons className="hidden md:flex" />
             <DesktopHeader activePage={activePage} />
+            {crumbs && <div className="hidden min-w-0 max-w-72 md:block">{crumbs}</div>}
 
             <div className="flex min-w-0 flex-1 items-center gap-2 md:hidden" data-mobile-header>
               <img src="/favicon.svg" className="size-5 shrink-0" alt="" aria-hidden="true" />
-              <h1 className="truncate text-base font-semibold tracking-tight">{PAGE_TITLES[activePage]}</h1>
+              {crumbs ?? <h1 className="truncate text-base font-semibold tracking-tight">{PAGE_TITLES[activePage]}</h1>}
             </div>
 
             {toolbar ? (
@@ -87,6 +90,7 @@ export function AppShell({ activePage, toolbar, children, runtimeControls = true
             )}
 
             <div className="ml-auto flex shrink-0 items-center gap-1">
+              {trailing}
               {/* Phones only; on desktop Ctrl+K opens the same search. */}
               {runtimeControls && (
                 <button

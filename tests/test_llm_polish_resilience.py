@@ -11,7 +11,9 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.services.analysis import llm as llm_module  # noqa: E402
 from app.services.analysis.llm import LLMService  # noqa: E402
-from app.services.analysis.prompts.polish import get_polish_prompt  # noqa: E402
+from app.services.analysis.transcript_outputs import (  # noqa: E402
+    _polish_response_needs_punctuation,
+)
 
 
 def _srt_segment(index: int, text: str) -> dict[str, object]:
@@ -28,6 +30,25 @@ def _srt(segments: list[dict[str, object]]) -> str:
         f"{segment['index']}\n{segment['timestamp']}\n{segment['text']}"
         for segment in segments
     )
+
+
+@pytest.mark.parametrize("suffix, needs_retry", [
+    ("、甲、乙、丙", True),
+    (" GPT4.5 self.warming", True),
+    ("，", True),
+    ("，。", False),
+])
+def test_polish_punctuation_coverage_counts_clause_and_sentence_boundaries(suffix, needs_retry):
+    original = [_srt_segment(1, "这" * 160)]
+    response = [{**original[0], "text": original[0]["text"] + suffix}]
+
+    assert _polish_response_needs_punctuation(response, original) is needs_retry
+
+
+def test_empty_polish_response_is_a_coverage_issue():
+    original = [_srt_segment(1, "这" * 160)]
+
+    assert _polish_response_needs_punctuation([], original) is False
 
 
 def test_polish_constraints_restore_cue_fields_and_prevent_speaker_invention():
@@ -215,7 +236,10 @@ async def test_long_summary_maps_each_source_chapter_before_reduce(monkeypatch):
     monkeypatch.setattr(service, "_call", fake_call)
     result = await service.summarize(long_srt, source_context=source_context)
 
-    assert len(calls) == 3
+    # Large chapters may need several bounded excerpts before the final reduce.
+    assert len(calls) >= 3
+    assert any("甲" in prompt for prompt in calls)
+    assert any("乙" in prompt for prompt in calls)
     assert [(item["start"], item["title"]) for item in result["timeline"]] == [
         (0, "开场"),
         (60, "第一章"),
@@ -354,7 +378,7 @@ async def test_parallel_polish_does_not_duplicate_an_overlap_only_tail(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_parallel_polish_keeps_original_chunk_after_retry_is_exhausted(monkeypatch):
+async def test_parallel_polish_reports_failure_after_retry_is_exhausted(monkeypatch):
     service = LLMService()
     segments = [_srt_segment(index, f"cue-{index}") for index in range(1, 5)]
     calls = 0
@@ -375,16 +399,157 @@ async def test_parallel_polish_keeps_original_chunk_after_retry_is_exhausted(mon
 
     monkeypatch.setattr(service, "_call", fake_call)
 
-    polished = await service.polish_with_context_parallel(
-        _srt(segments),
-        {},
-        chunk_size=2,
-        overlap=0,
-        max_concurrency=1,
-    )
+    with pytest.raises(RuntimeError, match="字幕润色第 2 批重试失败"):
+        await service.polish_with_context_parallel(
+            _srt(segments),
+            {},
+            chunk_size=2,
+            overlap=0,
+            max_concurrency=1,
+        )
 
     assert calls == 2
-    assert all(polished.count(f"cue-{index}") == 1 for index in range(1, 5))
+
+
+@pytest.mark.asyncio
+async def test_parallel_polish_repairs_duplicates_and_empty_bodies(monkeypatch):
+    service = LLMService()
+    segments = [_srt_segment(index, f"cue-{index}.") for index in range(1, 5)]
+    requests = []
+    monkeypatch.setattr(service, "_effective_provider", lambda _override="": "deepseek")
+    monkeypatch.setattr(
+        llm_module, "get_runtime_settings", lambda: SimpleNamespace(llm_polish_concurrency=1),
+    )
+
+    async def fake_call(prompt, **_kwargs):
+        batch = service._parse_srt(
+            prompt.split("## 待润色的字幕片段\n", 1)[1].split("\n\n请直接", 1)[0]
+        )
+        requests.append([segment["index"] for segment in batch])
+        if len(requests) == 1:
+            return json.dumps([
+                segments[0], segments[0],
+                {**segments[2], "text": "[Guest]"},
+                {**segments[3], "text": ""},
+            ])
+        assert "补修字幕" in prompt
+        assert "每个原始 index 必须完整、唯一地出现一次" in prompt
+        assert "禁止空字符串或仅说话人标签" in prompt
+        return json.dumps(batch)
+
+    monkeypatch.setattr(service, "_call", fake_call)
+    polished = await service.polish_with_context_parallel(_srt(segments), {})
+
+    assert requests == [[1, 2, 3, 4], [1, 2, 3, 4]]
+    assert all(polished.count(f"cue-{index}.") == 1 for index in range(1, 5))
+
+
+@pytest.mark.asyncio
+async def test_parallel_polish_retries_only_missing_cues_in_small_batches(monkeypatch):
+    service = LLMService()
+    segments = [_srt_segment(index, f"cue-{index}.") for index in range(1, 20)]
+    requests = []
+    monkeypatch.setattr(service, "_effective_provider", lambda _override="": "deepseek")
+    monkeypatch.setattr(
+        llm_module, "get_runtime_settings", lambda: SimpleNamespace(llm_polish_concurrency=1),
+    )
+
+    async def fake_call(prompt, **_kwargs):
+        batch = service._parse_srt(
+            prompt.split("## 待润色的字幕片段\n", 1)[1].split("\n\n请直接", 1)[0]
+        )
+        requests.append([segment["index"] for segment in batch])
+        return json.dumps(batch[:1] if len(requests) == 1 else batch)
+
+    monkeypatch.setattr(service, "_call", fake_call)
+    polished = await service.polish_with_context_parallel(_srt(segments), {})
+
+    assert requests[1:] == [list(range(2, 10)), list(range(10, 18)), [18, 19]]
+    assert all(polished.count(f"cue-{index}.") == 1 for index in range(1, 20))
+
+
+@pytest.mark.asyncio
+async def test_parallel_polish_preserves_original_after_incomplete_repair(monkeypatch):
+    service = LLMService()
+    segments = [_srt_segment(index, f"cue-{index}.") for index in range(1, 3)]
+    monkeypatch.setattr(service, "_effective_provider", lambda _override="": "deepseek")
+    monkeypatch.setattr(
+        llm_module, "get_runtime_settings", lambda: SimpleNamespace(llm_polish_concurrency=1),
+    )
+
+    async def fake_call(_prompt, **_kwargs):
+        return json.dumps([segments[0]])
+
+    monkeypatch.setattr(service, "_call", fake_call)
+    polished = await service.polish_with_context_parallel(_srt(segments), {})
+
+    assert [segment["text"] for segment in service._parse_srt(polished)] == [
+        "cue-1.", "cue-2.",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_parallel_polish_keeps_body_when_punctuation_repair_is_incomplete(monkeypatch):
+    service = LLMService()
+    segments = [_srt_segment(index, f"这是第{index}条完整的字幕正文") for index in range(1, 25)]
+    requests = []
+    monkeypatch.setattr(service, "_effective_provider", lambda _override="": "deepseek")
+    monkeypatch.setattr(
+        llm_module, "get_runtime_settings", lambda: SimpleNamespace(llm_polish_concurrency=1),
+    )
+
+    async def fake_call(prompt, **_kwargs):
+        batch = service._parse_srt(
+            prompt.split("## 待润色的字幕片段\n", 1)[1].split("\n\n请直接", 1)[0]
+        )
+        requests.append([segment["index"] for segment in batch])
+        if len(requests) == 1:
+            return json.dumps(batch[:8], ensure_ascii=False)
+        if "本次只补充" in prompt:
+            return "[]"
+        return json.dumps(batch, ensure_ascii=False)
+
+    monkeypatch.setattr(service, "_call", fake_call)
+    polished = await service.polish_with_context_parallel(
+        _srt(segments), {}, chunk_size=24, overlap=0,
+    )
+
+    assert requests == [
+        list(range(1, 25)), list(range(9, 17)), list(range(17, 25)), list(range(1, 25)),
+    ]
+    assert [segment["text"] for segment in service._parse_srt(polished)] == [
+        segment["text"] for segment in segments
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text, expected_calls", [("短字幕", 1), ("这是需要补充标点的完整中文内容" * 3, 2)],
+)
+async def test_parallel_polish_retries_long_unpunctuated_chinese_batches(
+    monkeypatch, text, expected_calls,
+):
+    service = LLMService()
+    segments = [_srt_segment(index, text) for index in range(1, 3)]
+    calls = 0
+    monkeypatch.setattr(service, "_effective_provider", lambda _override="": "deepseek")
+    monkeypatch.setattr(
+        llm_module, "get_runtime_settings", lambda: SimpleNamespace(llm_polish_concurrency=1),
+    )
+
+    async def fake_call(_prompt, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return json.dumps([
+            {**segment, "text": segment["text"] + ("。" if calls > 1 else "")}
+            for segment in segments
+        ], ensure_ascii=False)
+
+    monkeypatch.setattr(service, "_call", fake_call)
+    polished = await service.polish_with_context_parallel(_srt(segments), {})
+
+    assert calls == expected_calls
+    assert ("。" in polished) == (expected_calls > 1)
 
 
 @pytest.mark.asyncio
@@ -397,7 +562,9 @@ async def test_parallel_polish_keeps_original_chunk_after_retry_is_exhausted(mon
     ("kimi-oauth", "", 2, 4, 4),
     ("codex-oauth", "", 2, 8, 8),
 ])
-async def test_polish_obeys_configured_concurrency(monkeypatch, provider, engine, slots, configured, expected):
+async def test_polish_obeys_configured_concurrency(
+    monkeypatch, provider, engine, slots, configured, expected,
+):
     import asyncio
 
     service = LLMService()

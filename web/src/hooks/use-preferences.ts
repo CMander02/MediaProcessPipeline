@@ -16,6 +16,8 @@ interface Preferences {
   speakerPanelCollapsed: boolean
   /** Say when a task finishes or fails (toast; system notification while in the background) */
   taskNotifications: boolean
+  /** Library opens with folders, or with every item in one list */
+  libraryScope: "folders" | "all"
 }
 
 const STORAGE_KEY = "mpp-preferences"
@@ -38,6 +40,7 @@ function defaults(): Preferences {
     clipboardDetect: true,
     speakerPanelCollapsed: false,
     taskNotifications: true,
+    libraryScope: "folders",
   }
 }
 

@@ -22,11 +22,13 @@ describe("parseHash", () => {
 
 describe("library state in the URL", () => {
   const defaults = {
-    search: "", media: [], sources: [], statuses: [], duplicates: false, sort: "created_desc" as const, page: 1,
+    search: "", media: [], sources: [], statuses: [], duplicates: false, sort: "processed_desc" as const, page: 1,
+    view: "grid" as const, scope: "folders" as const, folder: undefined, item: undefined, attempt: undefined, viewerTask: undefined, generation: undefined,
   }
 
   it("round-trips search, several values per filter, the duplicates switch, sort and page", () => {
     const state = {
+      ...defaults,
       search: "Ryan Greenblatt",
       media: ["video" as const, "audio" as const],
       sources: ["bilibili" as const, "youtube" as const],
@@ -51,5 +53,16 @@ describe("library state in the URL", () => {
 
   it("opens old status=duplicates links with the duplicates switch on", () => {
     expect(libraryStateFromParams({ status: "duplicates" })).toEqual({ ...defaults, duplicates: true })
+  })
+  it("restores the folder, view and content key with filters", () => {
+    const state = { ...defaults, view: "browse" as const, folder: "folder-1", item: "bilibili:BV123:p2", search: "课程" }
+    expect(libraryStateFromParams(parseHash(libraryHashFromState(state)).params)).toEqual(state)
+  })
+
+  it("lists everything without a folder in the all scope", () => {
+    const state = { ...defaults, scope: "all" as const, page: 2 }
+    expect(libraryHashFromState(state)).toBe("#/files?page=2&scope=all")
+    expect(libraryStateFromParams(parseHash(libraryHashFromState({ ...state, folder: "folder-1" })).params)).toEqual(state)
+    expect(libraryStateFromParams({ scope: "all", folder: "folder-1" }).folder).toBeUndefined()
   })
 })

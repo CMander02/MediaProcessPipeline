@@ -8,6 +8,7 @@ from typing import Any
 from app.core.logging_setup import log_event
 
 logger = logging.getLogger(__name__)
+UNKNOWN_SPEAKER = "unknown"
 
 _SPEAKER_PREFIX_RE = re.compile(r"^\s*\[([^\]]+)\]\s*(.*)$", re.DOTALL)
 
@@ -241,6 +242,7 @@ def merge_consecutive_speaker_segments(
     max_duration: float = 30.0,
     max_sentences: int = 3,
     max_gap: float = 2.0,
+    lineage: list[dict] | None = None,
 ) -> str:
     """Merge adjacent SRT cues by speaker, then split into readable turns.
 
@@ -256,7 +258,11 @@ def merge_consecutive_speaker_segments(
 
     events: list[dict[str, Any]] = []
     for seg in segments:
-        events.extend(_segment_to_readable_events(seg, max_chars=max_chars))
+        source_events = _segment_to_readable_events(seg, max_chars=max_chars)
+        for event in source_events:
+            event["source_indexes"] = [seg["index"]]
+            event["estimated_timing"] = len(source_events) > 1
+        events.extend(source_events)
     if not events:
         return srt_content
     events.sort(
@@ -286,7 +292,7 @@ def merge_consecutive_speaker_segments(
 
     for event in events:
         speaker = event.get("speaker")
-        if not speaker:
+        if not speaker or speaker.casefold() == UNKNOWN_SPEAKER:
             flush_current()
             readable.append(event)
             continue
@@ -321,6 +327,8 @@ def merge_consecutive_speaker_segments(
                 "end_s": event.get("end_s"),
                 "text": str(event["text"]).strip(),
                 "sentences": _sentence_count(str(event["text"])),
+                "source_indexes": list(event["source_indexes"]),
+                "estimated_timing": event["estimated_timing"],
             }
         else:
             current["end"] = event["end"]
@@ -329,6 +337,8 @@ def merge_consecutive_speaker_segments(
                 str(current["text"]),
                 str(event["text"]),
             )
+            current["source_indexes"] = sorted(set(current["source_indexes"] + event["source_indexes"]))
+            current["estimated_timing"] = current["estimated_timing"] or event["estimated_timing"]
             current["sentences"] = int(current.get("sentences", 0)) + _sentence_count(
                 str(event["text"])
             )
@@ -350,6 +360,9 @@ def merge_consecutive_speaker_segments(
 
     output_segments: list[dict[str, Any]] = []
     for index, item in enumerate(readable, 1):
+        if lineage is not None:
+            lineage.append({"output_index": index, "source_indexes": item["source_indexes"],
+                            "estimated_timing": item["estimated_timing"]})
         speaker = item.get("speaker")
         text = str(item["text"]).strip()
         if speaker:
@@ -471,6 +484,60 @@ def _parse_polish_response(response: str, fallback_segments: list[dict]) -> list
     return []
 
 
+def _polish_response_needs_punctuation(polished: list[dict], original: list[dict]) -> bool:
+    """Require sparse grammatical punctuation across a long Chinese batch."""
+    if not polished:
+        return False
+    source = "".join(
+        _split_speaker_prefix(str(segment.get("text") or ""))[1] for segment in original
+    )
+    chinese_chars = len(re.findall(r"[\u3400-\u9fff]", source))
+    if chinese_chars < 80:
+        return False
+    bodies = [
+        _split_speaker_prefix(str(segment.get("text") or ""))[1] for segment in polished
+    ]
+    # Enumeration commas and periods inside decimals/words do not restore
+    # clause or sentence boundaries in the resulting reading transcript.
+    punctuation_count = sum(
+        len(re.findall(r"[，。！？；,!?;]|(?<!\d)\.(?=\s|$)", body)) for body in bodies
+    )
+    return punctuation_count < chinese_chars // 80
+
+
+def _valid_polished_segments(polished: list[dict], original: list[dict]) -> list[dict]:
+    """Return uniquely matched cues whose response retains a usable body."""
+    from collections import Counter
+
+    index_counts = Counter(segment.get("index") for segment in polished)
+    timestamp_counts = Counter(segment.get("timestamp") for segment in original)
+    by_ts = {
+        segment["timestamp"]: segment
+        for segment in original
+        if timestamp_counts[segment["timestamp"]] == 1
+    }
+    by_idx = {segment["index"]: segment for segment in original}
+    accepted: dict[int, dict] = {}
+    ambiguous: set[int] = set()
+    for segment in polished:
+        if index_counts[segment.get("index")] != 1:
+            continue
+        source = by_ts.get(segment.get("timestamp")) or by_idx.get(segment.get("index"))
+        if source is None:
+            continue
+        index = source["index"]
+        if index in accepted or index in ambiguous:
+            accepted.pop(index, None)
+            ambiguous.add(index)
+            continue
+        _, source_body = _split_speaker_prefix(str(source.get("text") or ""))
+        _, output_body = _split_speaker_prefix(str(segment.get("text") or ""))
+        if source_body and not output_body:
+            continue
+        accepted[index] = {**source, "text": str(segment.get("text") or "").strip()}
+    return [accepted[source["index"]] for source in original if source["index"] in accepted]
+
+
 def _align_polished_to_input(polished: list[dict], original: list[dict]) -> list[dict]:
     """Align polished segments back to the original cue list.
 
@@ -480,11 +547,10 @@ def _align_polished_to_input(polished: list[dict], original: list[dict]) -> list
     back to the original text. This way we never lose cues even if the
     LLM dropped or duplicated some.
     """
-    by_ts = {seg.get("timestamp"): seg for seg in polished if seg.get("timestamp")}
-    by_idx = {seg.get("index"): seg for seg in polished if seg.get("index") is not None}
+    by_idx = {seg["index"]: seg for seg in _valid_polished_segments(polished, original)}
     aligned: list[dict] = []
     for orig in original:
-        match = by_ts.get(orig["timestamp"]) or by_idx.get(orig["index"])
+        match = by_idx.get(orig["index"])
         if match and match.get("text"):
             aligned.append(
                 {

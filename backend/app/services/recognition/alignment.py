@@ -1,4 +1,4 @@
-"""Optional Qwen3 ForcedAligner post-processing for sherpa transcripts."""
+"""Qwen3 ForcedAligner post-processing for local ASR transcripts."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ class QwenForcedAlignerRuntime:
         )
         if not results:
             return []
-        return [
+        units = [
             {
                 "text": str(item.text),
                 "start": float(item.start_time),
@@ -73,6 +73,8 @@ class QwenForcedAlignerRuntime:
             }
             for item in results[0]
         ]
+        return _restore_source_text(units, text)
+
 
     def _get(self, model_path: str | Path, device: str) -> Any:
         resolved = Path(model_path).expanduser().resolve()
@@ -131,6 +133,28 @@ class QwenForcedAlignerRuntime:
 
 
 _runtime = QwenForcedAlignerRuntime()
+
+
+def _restore_source_text(units: list[dict[str, Any]], text: str) -> list[dict[str, Any]]:
+    """Restore punctuation removed by the aligner's word tokenizer.
+
+    Keep acoustic boundaries while retaining ASR sentence endings for cue merging.
+    """
+    positions = [i for i, char in enumerate(text) if char.isalnum() or char == "'"]
+    normalized = "".join(text[i] for i in positions)
+    tokens = ["".join(c for c in unit["text"] if c.isalnum() or c == "'") for unit in units]
+    if "".join(tokens) != normalized:
+        raise RuntimeError("Forced alignment tokens do not match the source transcript")
+    restored = []
+    cursor = 0
+    for unit, token in zip(units, tokens):
+        if not token:
+            continue
+        start = 0 if cursor == 0 else positions[cursor]
+        cursor += len(token)
+        end = positions[cursor] if cursor < len(positions) else len(text)
+        restored.append({**unit, "text": text[start:end].strip()})
+    return restored
 
 
 def get_qwen_forced_aligner() -> QwenForcedAlignerRuntime:

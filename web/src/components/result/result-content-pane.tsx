@@ -116,6 +116,25 @@ function ContentActions({ view }: { view: ReturnType<typeof useResultViewer> }) 
   )
 }
 
+/** Summary and mind map written before the latest name changes, with the way to rewrite them. */
+function StaleNotice({ view, what, floating = false }: { view: ReturnType<typeof useResultViewer>; what: string; floating?: boolean }) {
+  const { derivedContentStale, isProcessing, online, resolvedTaskId, regenerating, handleRegenerateDerived } = view
+  if (!derivedContentStale || isProcessing || !online || !resolvedTaskId) return null
+  return (
+    <div className={cn(
+      "flex items-center gap-2 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-900 dark:text-amber-200",
+      floating ? "absolute left-2 top-2 z-10 max-w-[calc(100%-1rem)] rounded-md border border-amber-500/20 bg-background/95 shadow-sm backdrop-blur" : "shrink-0 rounded-t-md border-b",
+    )} role="status">
+      <span className="min-w-0 flex-1">人物改过了，这份{what}还是按原来的名字写的。</span>
+      <Button type="button" size="sm" variant="outline" className="h-6 shrink-0 gap-1 bg-background px-2 text-xs"
+        disabled={regenerating} onClick={() => void handleRegenerateDerived()}>
+        {regenerating && <HugeiconsIcon icon={Loading03Icon} className="size-3.5 animate-spin" />}
+        更新摘要和导图
+      </Button>
+    </div>
+  )
+}
+
 export function ResultContentPane({ view }: { view: ReturnType<typeof useResultViewer> }) {
   const {
     isPortraitLayout,
@@ -205,7 +224,9 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
         </div>
 
         <TabsContent value="summary" className="mt-3 relative flex-1">
-          <div className="absolute inset-0 rounded-md border">
+          <div className="absolute inset-0 flex flex-col rounded-md border">
+            <StaleNotice view={view} what="摘要" />
+            <div className="relative min-h-0 flex-1">
             {summary ? (
               <SummaryTab content={summary} />
             ) : isProcessing ? (
@@ -218,6 +239,7 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
                 暂无摘要
               </div>
             )}
+            </div>
           </div>
         </TabsContent>
 
@@ -277,6 +299,7 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
                   {subtitles.length > 0 ? (
                     <TranscriptTab
                       subtitles={subtitles}
+                      baselineContent={transcript}
                       currentSegmentIndex={currentSegmentIndex}
                       autoScroll={autoScroll}
                       onSegmentClick={(sub) => seekTo(sub.startTime)}
@@ -319,6 +342,7 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
 
         {(mindmap || isProcessing) && (
           <TabsContent value="mindmap" className="mt-3 relative flex-1 min-h-0">
+            {mindmap && <StaleNotice view={view} what="导图" floating />}
             {mindmap ? (
               <MindmapViewer
                 markdown={mindmap}

@@ -1,6 +1,9 @@
 import asyncio
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
@@ -10,6 +13,11 @@ from app.services.analysis.llm import (  # noqa: E402
     LLMService,
     mindmap_markdown_to_timed_tree,
     mindmap_markdown_without_timestamps,
+)
+from app.services.analysis.mindmap_outputs import (  # noqa: E402
+    _chapter_key,
+    _compose_chapter_mindmap,
+    _split_segments_by_chapters,
 )
 from app.services.analysis.prompts.mindmap import get_mindmap_prompt  # noqa: E402
 from app.services.analysis.text_locale import normalize_chinese_script  # noqa: E402
@@ -31,9 +39,7 @@ def test_mindmap_output_is_normalized_to_simplified_chinese():
     text = "- 人類大腦的優勢與局限\n  - 幫助祖先創造文明\n  - OpenAI 推動數學進步"
 
     assert normalize_chinese_script(text, "zh-CN") == (
-        "- 人类大脑的优势与局限\n"
-        "  - 帮助祖先创造文明\n"
-        "  - OpenAI 推动数学进步"
+        "- 人类大脑的优势与局限\n  - 帮助祖先创造文明\n  - OpenAI 推动数学进步"
     )
 
 
@@ -50,15 +56,28 @@ def test_mindmap_service_normalizes_model_output(monkeypatch):
     service = LLMService()
 
     async def fake_call(*args, **kwargs):
-        return "- 人類大腦的優勢與局限\n  - 幫助祖先創造文明"
+        return '{"points":[{"title":"人類大腦使用工具創造文明","evidence_ids":[1],"quote":"人类大脑使用工具创造文明"}]}'
 
     monkeypatch.setattr(service, "_call", fake_call)
 
-    result = asyncio.run(
-        service.mindmap("人类大脑使用工具创造文明。", user_language="zh-CN")
-    )
+    result = asyncio.run(service.mindmap("人类大脑使用工具创造文明。", user_language="zh-CN"))
 
-    assert result == "- 人类大脑的优势与局限\n  - 帮助祖先创造文明"
+    assert result == "- 人类大脑使用工具创造文明"
+
+
+@pytest.mark.asyncio
+async def test_short_clip_anchors_are_calculated_from_source_cues(monkeypatch):
+    service = LLMService()
+    async def call(prompt, **kwargs):
+        return '{"points":[{"title":"开场说明实验目的","evidence_ids":[1],"quote":"今天说明实验目的"},{"title":"实验保留条件限制","evidence_ids":[2],"quote":"结果只适用于当前样本"}]}'
+    monkeypatch.setattr(service, "_call", call)
+    result = await service.mindmap(
+        "1\n00:00:03,217 --> 00:00:05,684\n今天说明实验目的。\n\n"
+        "2\n00:00:10,371 --> 00:00:14,019\n结果只适用于当前样本。",
+        user_language="zh-CN",
+    )
+    assert "[00:00:03,217 - 00:00:05,684]" in result
+    assert "[00:00:10,371 - 00:00:14,019]" in result
 
 
 def test_mindmap_markdown_export_removes_inline_timestamps():
@@ -67,9 +86,12 @@ def test_mindmap_markdown_export_removes_inline_timestamps():
     - OpenAI Podcast 访谈 [00:00:03 - 00:01:12]
 """
 
-    assert mindmap_markdown_without_timestamps(markdown) == """## AI 破解 80 年数学难题
+    assert (
+        mindmap_markdown_without_timestamps(markdown)
+        == """## AI 破解 80 年数学难题
 ### 背景
 #### OpenAI Podcast 访谈"""
+    )
 
 
 def test_heading_mindmap_can_be_reloaded_without_losing_hierarchy():
@@ -123,3 +145,52 @@ def test_source_chapters_are_immutable_mindmap_top_level_nodes():
         "开场与嘉宾介绍",
         "第一章",
     ]
+
+
+def test_duplicate_titles_keep_distinct_chapter_content_and_fractional_times() -> None:
+    chapters = [
+        {"title": "导言", "start_time": 0},
+        {"title": "导言", "start_time": 28.3},
+    ]
+    segments = [
+        {"timestamp": "00:00:01,000 --> 00:00:02,000", "text": "第一章正文"},
+        {"timestamp": "00:00:29,000 --> 00:00:30,000", "text": "第二章正文"},
+    ]
+    blocks = _split_segments_by_chapters(segments, chapters)
+    result = _compose_chapter_mindmap(
+        chapters,
+        {
+            _chapter_key(chapters[0], 0): "- 第一章要点",
+            _chapter_key(chapters[1], 1): "- 第二章要点",
+        },
+    )
+
+    assert blocks[_chapter_key(chapters[0], 0)] == "[00:00:01,000 --> 00:00:02,000] 第一章正文"
+    assert blocks[_chapter_key(chapters[1], 1)] == "[00:00:29,000 --> 00:00:30,000] 第二章正文"
+    assert "- 导言 [00:00:00]" in result
+    assert "- 导言 [00:00:28,300]" in result
+    assert "第一章要点" in result and "第二章要点" in result
+
+
+@pytest.mark.asyncio
+async def test_plain_long_text_with_chapters_uses_auto_map_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = LLMService()
+    auto_map = AsyncMock(return_value="- auto map")
+    chapter_map = AsyncMock(return_value="- chapter map")
+    monkeypatch.setattr(service, "_mindmap_map_reduce_auto", auto_map)
+    monkeypatch.setattr(service, "_mindmap_map_reduce", chapter_map)
+    monkeypatch.setattr(
+        service, "_organize_mindmap", AsyncMock(side_effect=lambda value, *_: value)
+    )
+
+    text = "正文段落。" * 4000
+    result = await service.mindmap(
+        text,
+        metadata={"chapters": [{"title": "导言", "start_time": 28.3}]},
+    )
+
+    assert result == "- auto map"
+    auto_map.assert_awaited_once()
+    chapter_map.assert_not_awaited()

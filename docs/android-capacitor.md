@@ -54,6 +54,18 @@ Debug 构建允许 localhost 与局域网 HTTP，Release 构建要求 HTTPS。�
 - 主题支持跟随系统、浅色和深色；状态栏、导航栏与 Web UI 同步。
 - Android 端保留 URL 提交、任务控制、归档阅读和媒体播放，界面隐藏本地路径、目录浏览、上传和归档修改。
 
+## 离线资料库隔离
+
+服务器地址和服务端 `workspace_id` 共同确定离线资料库。不同组合使用独立 SQLite 数据库、文件目录和同步 cursor。切换服务器或资料库会停止旧同步。切回已连接的组合会恢复该组合的离线资料。
+
+同步先读取 `/api/sync/status`。索引、清单和文件请求携带 `X-MPP-Workspace-ID`（URI 编码）。服务器切库后会拒绝旧标识。旧服务器缺少该接口时，不会继续向未知资料库同步。离线启动只读取该服务器最近确认的资料库。
+
+新布局位于 App 私有目录：`databases/offline_archives_<UUID>.db` 和 `files/offline_workspaces/<UUID>/`。`shared_prefs/offline_workspaces.xml` 保存服务器、资料库与 UUID 的对应关系。清空离线资料只清空当前组合。
+
+升级前的 `databases/offline_archives.db`、`files/offline_archives/` 和 `files/offline_tmp/` 原样保留。旧缓存没有来源标识，不能安全地自动归入当前资料库，因此新版本不会显示它。连接原服务器后重新同步即可恢复阅读。若原服务器已不可用，恢复时需保留这三个旧路径并先核对来源；不要卸载 App 或清除 App 数据。
+
+`node scripts/android-gradle.mjs testDebugUnitTest` 使用 Robolectric 运行真实 SQLite、文件目录和本机 HTTP 同步回归，覆盖切服、同服切库、切回恢复、迟到响应和旧缓存保留。它不代替真机网络与生命周期检查。
+
 ## Release 签名
 
 Release 构建链从环境变量读取签名配置：

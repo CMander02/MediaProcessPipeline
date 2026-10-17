@@ -104,7 +104,7 @@ async def _update_step_progress(
     public_step_ids = {pipeline_step["id"] for pipeline_step in PIPELINE_STEPS}
     total_steps = len(public_step_ids)
     completed_count = len(public_step_ids.intersection(task.completed_steps))
-    task.progress = (completed_count + normalized) / total_steps if total_steps else 0.0
+    task.progress = min(1.0, (completed_count + normalized) / total_steps) if total_steps else 0.0
     task.updated_at = datetime.now()
 
     log_event(

@@ -123,6 +123,7 @@ class MossCppASRService:
     def _probe_duration(audio_path: str) -> float:
         command = [
             "ffprobe",
+            "-protocol_whitelist", "file,pipe,crypto,data",
             "-v",
             "error",
             "-show_entries",
@@ -170,6 +171,7 @@ class MossCppASRService:
         wav_path = temp_dir / f"moss-input-{chunk_index:04d}.wav"
         command = [
             "ffmpeg",
+            "-protocol_whitelist", "file,pipe,crypto,data",
             "-y",
             "-hide_banner",
             "-loglevel",

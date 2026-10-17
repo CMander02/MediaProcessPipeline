@@ -5,14 +5,11 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
 from uuid import UUID
 
 from app.core.artifacts import get_artifact_store
-from app.core.database import get_task_store
 from app.core.workspace_lifecycle import uses_workspace
-from app.models import TaskStatus
-from app.services.analysis.speaker_identity import apply_speaker_names, infer_speaker_names
+from app.services.analysis.speaker_identity import apply_speaker_names
 from app.services.analysis.transcript_outputs import srt_to_markdown
 
 
@@ -36,33 +33,74 @@ def load_speaker_activity(output_dir: Path | str, fallback_srt: str) -> list[dic
     return activity or build_speaker_activity(fallback_srt)
 
 
-def _replace_references(value: Any, names: dict[str, str]) -> Any:
-    """Replace whole placeholder references in derived analysis, preserving IDs."""
-    if isinstance(value, str):
-        pattern = r"(?<![A-Za-z0-9_-])(" + "|".join(map(re.escape, names)) + r")(?![A-Za-z0-9_-])"
-        return re.sub(pattern, lambda match: names[match[1]], value)
-    if isinstance(value, list):
-        return [_replace_references(item, names) for item in value]
-    if isinstance(value, dict):
-        return {
-            key: item if key in {"source_label", "id", "person_id", "task_id"}
-            else _replace_references(item, names)
-            for key, item in value.items()
-        }
-    return value
+def voice_suggestions(task_id: str, output_dir: Path | str, srt: str, renames: dict[str, str] | None = None) -> list[dict]:
+    """Anonymous voices that sound like another voice of the same task: a likely split of one person.
+
+    Uses the task's stored voiceprints; similar enough to suggest, not enough to merge on its own.
+    """
+    import numpy as np
+
+    from app.core.settings import get_runtime_settings
+    from app.services.analysis.speaker_identity import is_placeholder_speaker
+    from app.services.analysis.speaker_quality import speaker_labels
+    from app.services.voiceprint import get_voiceprint_store
+
+    current = set(speaker_labels(srt))
+    if not any(is_placeholder_speaker(label) for label in current):
+        return []
+    names = {
+        row["source_label"]: row.get("current_name") or row["source_label"]
+        for row in _read_json(Path(output_dir) / "speaker_map.json").get("mappings", [])
+        if isinstance(row, dict) and row.get("source_label")
+    }
+    store = get_voiceprint_store()
+    speakers = store.list_task_speakers(str(task_id))
+    vectors = store.sample_embeddings([row["sample_id"] for row in speakers])
+    voices: dict[str, list] = {}
+    for row in speakers:
+        name = names.get(row["speaker_label"], row.get("person_name") or row["speaker_label"])
+        name = (renames or {}).get(name, name)
+        if name in current and row["sample_id"] in vectors:
+            vector = vectors[row["sample_id"]]
+            voices.setdefault(name, []).append(vector / (np.linalg.norm(vector) or 1))
+    threshold = float(getattr(get_runtime_settings(), "voiceprint_suggest_threshold", 0.60))
+    suggestions = []
+    for name, own in voices.items():
+        if not is_placeholder_speaker(name):
+            continue
+        scored = [(max(float(np.dot(a, b)) for a in own for b in other), target)
+                  for target, other in voices.items() if target != name]
+        if not scored:
+            continue
+        similarity, target = max(scored)
+        if similarity >= threshold:
+            suggestions.append({"source_label": name, "current_name": target, "similarity": round(similarity, 3),
+                                "reason": f"声音相似度 {similarity:.2f}"})
+    return suggestions
+
+
+def identity_hints(report: dict, labels: set[str] | list[str]) -> dict:
+    """What the result page shows next to names: why a name was inferred, and voices that may be one person."""
+    mappings = report.get("mappings", []) if report.get("status") in {"completed", "partial"} else []
+    sources = {item["current_name"]: item.get("reason", "") for item in mappings if item.get("basis") == "source_participants"}
+    suggestions = [row for row in report.get("suggestions", []) if row.get("source_label") in set(labels)]
+    participants = [row["name"] for row in report.get("participants", []) if isinstance(row, dict) and row.get("name")]
+    return {"speaker_name_sources": sources, "speaker_suggestions": suggestions, "speaker_participants": participants}
 
 
 def persist_speaker_names(task_id: str, output_dir: Path | str, report: dict) -> list[str]:
     """Write names and evidence through the existing file/SQLite artifact store."""
     directory = Path(output_dir)
     artifacts = get_artifact_store()
-    mappings = report.get("mappings", []) if report["status"] == "completed" else []
+    mappings = report.get("mappings", []) if report["status"] in {"completed", "partial"} else []
     names = {item["source_label"]: item["current_name"] for item in mappings}
     pending: dict[str, str] = {}
     metadata = _read_json(directory / "metadata.json")
 
     if names:
         for filename in ("transcript.srt", "transcript_polished.srt"):
+            if filename == "transcript.srt" and (report.get("preserve_raw") or report.get("raw_input_labeled") is False):
+                continue
             path = directory / filename
             if not path.is_file():
                 continue
@@ -89,22 +127,6 @@ def persist_speaker_names(task_id: str, output_dir: Path | str, report: dict) ->
             else:
                 pending[md_name] = srt_to_markdown(updated, title)
 
-        for filename in (
-            "analysis.json", "summary.json", "summary.md", "mindmap.json",
-            "mindmap.md", "detail.md",
-        ):
-            path = directory / filename
-            if not path.is_file():
-                continue
-            original = path.read_text(encoding="utf-8")
-            value = json.loads(original) if path.suffix == ".json" else original
-            updated_value = _replace_references(value, names)
-            if updated_value != value:
-                pending[filename] = (
-                    json.dumps(updated_value, ensure_ascii=False, indent=2)
-                    if path.suffix == ".json" else updated_value
-                )
-
         speaker_map = _read_json(directory / "speaker_map.json") or {
             "version": 1, "mappings": [], "confirmed": False,
         }
@@ -119,7 +141,8 @@ def persist_speaker_names(task_id: str, output_dir: Path | str, report: dict) ->
                 speaker_map["mappings"].extend(matches)
             for item in matches:
                 item.update({
-                    "current_name": mapping["current_name"], "status": "text_inferred",
+                    "current_name": mapping["current_name"],
+                    "status": "source_inferred" if mapping.get("basis") == "source_participants" else "text_inferred",
                     "evidence_indexes": mapping["evidence_indexes"], "reason": mapping["reason"],
                 })
         speaker_map["confirmed"] = False
@@ -134,6 +157,8 @@ def persist_speaker_names(task_id: str, output_dir: Path | str, report: dict) ->
         extra["speaker_identity"] = {
             "status": report["status"], "names_identified": len(mappings),
         }
+        labels = {name for name in (names.get(label, label) for label in report.get("input_labels") or [])}
+        extra.update(identity_hints(report, labels | set(names)))
         pending["metadata.json"] = json.dumps(metadata, ensure_ascii=False, indent=2)
 
     pending["speaker_identity.json"] = json.dumps(report, ensure_ascii=False, indent=2)
@@ -149,54 +174,5 @@ def persist_speaker_names(task_id: str, output_dir: Path | str, report: dict) ->
 
 @uses_workspace
 async def identify_task_speakers(task_id: UUID) -> dict:
-    """Identify names in a completed task without repeating recognition or polish."""
-    store = get_task_store()
-    task = store.get(task_id)
-    if task is None:
-        raise FileNotFoundError("任务不存在")
-    if task.status != TaskStatus.COMPLETED:
-        raise ValueError("请在任务处理完成后识别说话人姓名")
-    result = task.result or {}
-    archive = result.get("archive") or {}
-    output_dir = result.get("output_dir") or archive.get("output_dir")
-    if not output_dir or not Path(output_dir).is_dir():
-        raise FileNotFoundError("任务归档目录不存在")
-    directory = Path(output_dir)
-    source = next((directory / name for name in (
-        "transcript_polished.srt", "transcript.srt",
-    ) if (directory / name).is_file()), None)
-    if source is None:
-        raise FileNotFoundError("任务没有可识别姓名的字幕文件")
-    original = source.read_text(encoding="utf-8")
-    metadata = _read_json(directory / "metadata.json") or result.get("metadata", {})
-    context = {
-        **_read_json(directory / "source_context.json"),
-        "title": metadata.get("title", ""),
-        "description": metadata.get("description", ""),
-        "analysis": _read_json(directory / "analysis.json") or result.get("analysis", {}),
-        "summary": _read_json(directory / "summary.json"),
-        "speaker_activity": load_speaker_activity(directory, original),
-    }
-    report = await infer_speaker_names(original, context=context)
-    current = store.get(task_id)
-    if (
-        current is None or current.status != TaskStatus.COMPLETED
-        or not source.is_file() or source.read_text(encoding="utf-8") != original
-    ):
-        raise ValueError("识别期间字幕或任务状态已更新，请重新识别")
-    changed = persist_speaker_names(str(task_id), directory, report)
-    current.result = dict(current.result or {})
-    if (directory / "metadata.json").exists():
-        saved_metadata = _read_json(directory / "metadata.json")
-        saved_metadata.pop("status", None)
-        current.result["metadata"] = saved_metadata
-    if (directory / "analysis.json").exists():
-        current.result["analysis"] = _read_json(directory / "analysis.json")
-    store.save(current)
-    from app.core.pipeline_steps.artifacts import _emit_file_ready, _schedule_kb_index
-
-    for filename in changed:
-        await _emit_file_ready(current, filename, str(directory / filename))
-    if report.get("mappings"):
-        _schedule_kb_index(str(task_id), str(directory))
-    return {**report, "changed_files": changed}
+    """Kept for callers that need a clear migration error."""
+    raise ValueError("人物自动识别在润色前完成；已有结果请手动编辑人物名称")

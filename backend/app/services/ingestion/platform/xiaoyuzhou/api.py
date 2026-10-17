@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from app.core.network import urllib_urlopen
+from app.core.public_urls import public_urlopen as urllib_urlopen
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +152,7 @@ def download_audio(info: dict[str, Any], output_dir: Path) -> tuple[Path, Path |
         result = subprocess.run(
             [
                 "ffmpeg",
+                "-protocol_whitelist", "file,pipe,crypto,data",
                 "-i",
                 str(source_path),
                 "-vn",

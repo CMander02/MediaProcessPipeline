@@ -183,6 +183,7 @@ def _extract_audio_from_video(video_path: Path, output_path: Path) -> Path:
     # misinterpreted as ffmpeg options.
     cmd = [
         "ffmpeg",
+        "-protocol_whitelist", "file,pipe,crypto,data",
         "-y",
         "-i",
         str(video_path.resolve()),

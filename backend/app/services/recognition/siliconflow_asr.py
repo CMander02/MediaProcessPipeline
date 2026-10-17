@@ -144,6 +144,7 @@ class SiliconFlowASRService:
         """Return media duration in seconds via ffprobe."""
         cmd = [
             "ffprobe",
+            "-protocol_whitelist", "file,pipe,crypto,data",
             "-v",
             "error",
             "-show_entries",
@@ -153,7 +154,7 @@ class SiliconFlowASRService:
             str(audio_path),
         ]
         try:
-            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
             return float(result.stdout.strip())
         except FileNotFoundError as e:
             raise RuntimeError(
@@ -185,6 +186,7 @@ class SiliconFlowASRService:
         duration = max(0.0, float(chunk["end"]) - float(chunk["start"]))
         cmd = [
             "ffmpeg",
+            "-protocol_whitelist", "file,pipe,crypto,data",
             "-y",
             "-hide_banner",
             "-loglevel",

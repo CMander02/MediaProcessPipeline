@@ -4,9 +4,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
+const net = require('node:net');
 const { spawn } = require('node:child_process');
 const { setTimeout: delay } = require('node:timers/promises');
-const { _electron: electron } = require('playwright-core');
+const { _electron: electron, chromium } = require('playwright-core');
 const { inspectServer, SERVER_URL, request } = require('../backend.cjs');
 const { argumentValue } = require('../project.cjs');
 
@@ -91,6 +92,42 @@ async function sse() {
   });
 }
 
+async function startupCrash() {
+  const reservation = net.createServer();
+  await new Promise((resolve) => reservation.listen(0, 'localhost', resolve));
+  const port = reservation.address().port;
+  await new Promise((resolve) => reservation.close(resolve));
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  const child = spawn(executable, [path.join(desktop, 'test/fixtures/startup-crash.cjs'),
+    `--user-data-dir=${userData}`, '--project', project, `--remote-debugging-port=${port}`],
+  { env, cwd: desktop, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  let outputText = '';
+  child.stdout.on('data', (data) => { outputText += data; });
+  child.stderr.on('data', (data) => fs.appendFileSync(path.join(output, 'crash-stderr.log'), data));
+  let browser;
+  try {
+    // Attach after recovery: Playwright cannot attach to a target crashing during its first load.
+    await waitUntil(() => outputText.includes('MPP_STARTUP_CRASH_RECOVERED'));
+    browser = await chromium.connectOverCDP(`http://localhost:${port}`);
+    const page = browser.contexts()[0].pages()[0];
+    await page.getByRole('heading', { name: '暂时无法启动' }).waitFor();
+    assert.match(await page.locator('#message').textContent(), /页面进程已退出/);
+    assert.equal((await inspectServer()).state, 'offline');
+    await page.screenshot({ path: path.join(output, 'startup-crash-recovered.png') });
+    await page.getByRole('button', { name: '重试', exact: true }).click();
+    await ready(page);
+    pass('renderer crash during first load recovers to retry without aborting startup');
+    await page.close();
+    await exited;
+    assert.equal((await inspectServer()).state, 'offline');
+  } finally {
+    await browser?.close().catch(() => {});
+    if (child.exitCode === null) await killTree(child.pid);
+  }
+}
+
 async function main() {
   assert.equal(process.platform, 'win32', 'Windows smoke test');
   assert.equal((await inspectServer()).state, 'offline', 'Port 18000 must be free; leave existing daemon untouched.');
@@ -106,6 +143,11 @@ async function main() {
     data_root: path.join(project, 'library'), asr_provider: 'siliconflow',
     ytdlp_auto_update: false, enable_diarization: false, enable_voiceprint: false,
   }));
+  if (process.argv.includes('--startup-crash-only')) {
+    assert.ok(!packaged, 'Crash injection uses the source entry.');
+    await startupCrash();
+    return;
+  }
 
   let { application, page } = await launch(path.join(output, 'missing-project'));
   await page.getByRole('heading', { name: '暂时无法启动' }).waitFor();
@@ -222,7 +264,7 @@ async function main() {
   await waitUntil(async () => (await inspectServer()).state === 'offline');
 
   foreign = http.createServer((_req, response) => response.end('another service'));
-  await new Promise((resolve) => foreign.listen(18000, 'localhost', resolve));
+  await new Promise((resolve) => foreign.listen(18000, '127.0.0.1', resolve));
   ({ application, page } = await launch());
   await page.getByRole('heading', { name: '暂时无法启动' }).waitFor();
   assert.match(await page.locator('#message').textContent(), /其他服务/);
@@ -241,6 +283,7 @@ async function main() {
   await quit(application);
   assert.equal((await inspectServer()).state, 'offline');
   pass('final cleanup leaves port free');
+  if (!packaged) await startupCrash();
 }
 
 main().catch((error) => { console.error(error); process.exitCode = 1; }).finally(async () => {

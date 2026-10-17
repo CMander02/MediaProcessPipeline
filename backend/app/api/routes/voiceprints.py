@@ -56,6 +56,16 @@ class SpeakerRenameRequest(BaseModel):
     #   "merge" — merge current speaker's person into the existing one
     #   "new"   — keep as a separate person with a disambiguated name
     on_conflict: Literal["ask", "merge", "new"] = "ask"
+    expected_srt: str | None = None
+
+
+class SpeakerRepairRequest(BaseModel):
+    # auto: decide pending lines and name anonymous voices on the finished transcript, applied directly.
+    mode: Literal["failed", "all", "auto"]
+
+
+class SpeakerReconcileRequest(BaseModel):
+    expected_srt: str
 
 
 class SpeakerRenameResponse(BaseModel):
@@ -153,16 +163,52 @@ async def get_sample_clip(sample_id: str):
 
 # ---- Task speaker rename (voiceprint-aware) ----
 
+@router.post("/tasks/{task_id}/speakers/repair")
+async def repair_task_speakers(task_id: UUID, req: SpeakerRepairRequest):
+    from app.core.queue import get_task_queue
+    try:
+        queued = await get_task_queue().repair_speakers(task_id, req.mode)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not queued:
+        raise HTTPException(status_code=409, detail="任务完成后才能补全人物" if req.mode == "auto" else "当前任务状态不能启动人物复核")
+    message = ("将补全待定字幕和人物姓名，你改过的名字保持不变" if req.mode == "auto"
+               else "将生成候选清单，已有字幕需手动确认修改")
+    return {"status": "queued", "mode": req.mode, "message": message}
+
+
+@router.get("/tasks/{task_id}/speakers/repair-preview")
+async def speaker_repair_preview(task_id: UUID):
+    from app.services.analysis.speaker_repair import repair_directory
+    task = get_task_store().get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    path = repair_directory(task) / "speaker_repair.preview.json"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="人物复核候选尚未生成")
+    preview = json.loads(path.read_text(encoding="utf-8"))
+    return {key: value for key, value in preview.items() if key not in {"baseline_srt", "input_srt"}}
+
+
+@router.post("/tasks/{task_id}/speakers/reconcile")
+async def reconcile_task_speakers(task_id: UUID, req: SpeakerReconcileRequest):
+    from app.services.analysis.speaker_reconciliation import reconcile_speakers
+    from app.core.events import get_event_bus, TaskEvent
+    task = get_task_store().get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    try:
+        result = reconcile_speakers(task, req.expected_srt)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await get_event_bus().publish(TaskEvent(task_id, "file_ready", {"file": "metadata.json"}))
+    return result
+
 @router.post("/tasks/{task_id}/speakers/identify")
 async def identify_task_speaker_names(task_id: UUID):
-    from app.services.analysis.speaker_identity_artifacts import identify_task_speakers
-
-    try:
-        return await identify_task_speakers(task_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if get_task_store().get(task_id) is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    raise HTTPException(status_code=409, detail="人物自动识别在润色前完成；已有结果请手动编辑人物名称")
 
 
 @router.patch("/tasks/{task_id}/speakers", response_model=SpeakerRenameResponse)
@@ -178,10 +224,25 @@ async def rename_task_speaker(task_id: UUID, req: SpeakerRenameRequest):
          - conflict + on_conflict == "merge" → merge current person into existing
          - conflict + on_conflict == "new"   → disambiguate current name with suffix
     """
-    store = get_voiceprint_store()
     new_name = req.new_name.strip()
-    if not new_name:
-        raise HTTPException(status_code=400, detail="new_name is empty")
+    if not new_name or any(ord(c) < 32 or c in "[]<>" for c in new_name):
+        raise HTTPException(status_code=400, detail="人物名称为空或含有无效字符")
+    if req.old_name.strip().casefold() == "unknown" or new_name.casefold() == "unknown":
+        raise HTTPException(status_code=409, detail="归属待定的片段不能作为同一个人整体改名")
+    task = get_task_store().get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if getattr(task, "status", "completed") != "completed":
+        raise HTTPException(status_code=409, detail="请等待任务完成后编辑人物")
+    result = task.result or {}
+    output_dir = result.get("output_dir") or (result.get("archive") or {}).get("output_dir")
+    if req.expected_srt is not None:
+        directory = Path(output_dir) if output_dir else None
+        source = next((directory / name for name in ("transcript_polished.srt", "transcript.srt")
+                       if (directory / name).is_file()), None) if directory else None
+        if source is None or source.read_text(encoding="utf-8") != req.expected_srt:
+            raise HTTPException(status_code=409, detail="字幕已更新，请刷新后重试，当前编辑没有保存")
+    store = get_voiceprint_store()
 
     def sync_artifacts(final_name: str) -> None:
         task = get_task_store().get(task_id)

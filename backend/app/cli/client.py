@@ -285,7 +285,7 @@ class MppClient:
         return self.request("GET", f"/api/tasks/{task_id}/timeline", params={"limit": limit})
 
     def task_action(self, task_id: str, action: str) -> dict[str, Any]:
-        if action not in {"cancel", "pause", "resume", "checkpoint-rerun"}:
+        if action not in {"cancel", "pause", "resume", "checkpoint-rerun", "full-rerun"}:
             raise ValueError(f"Unsupported task action: {action}")
         return self.request("POST", f"/api/tasks/{task_id}/{action}", json_body={})
 
@@ -300,6 +300,9 @@ class MppClient:
 
     def checkpoint_rerun_task(self, task_id: str) -> dict[str, Any]:
         return self.task_action(task_id, "checkpoint-rerun")
+
+    def full_rerun_task(self, task_id: str) -> dict[str, Any]:
+        return self.task_action(task_id, "full-rerun")
 
     def delete_task(self, task_id: str) -> dict[str, Any]:
         return self.request("DELETE", f"/api/tasks/{task_id}", json_body={})

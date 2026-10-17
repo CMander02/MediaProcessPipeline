@@ -49,6 +49,7 @@ interface TranscriptTabProps {
   tocNodes?: TranscriptTocNode[] | null
   /** Path to the SRT file for saving edits */
   srtPath?: string
+  baselineContent?: string | null
   /** Called when subtitles are modified */
   onSubtitlesChange?: (subtitles: Subtitle[]) => void
   onEditingChange?: (editing: boolean) => void
@@ -158,6 +159,7 @@ export function TranscriptTab({
   onTocSeek,
   tocNodes,
   srtPath,
+  baselineContent,
   onSubtitlesChange,
   onEditingChange,
   onSaved,
@@ -322,17 +324,17 @@ export function TranscriptTab({
       setSavingCount((count) => count + 1)
       setSaveError(null)
       try {
-        const result = await api.filesystem.write(srtPath, srt)
+        const result = await api.filesystem.write(srtPath, srt, baselineContent ?? undefined)
         if (!result.success) throw new Error(result.error || "文件保存失败")
         onSaved?.(srt)
       } catch (err) {
         console.warn("Failed to save SRT:", err)
-        setSaveError("字幕尚未保存，请重新编辑并保存。")
+        setSaveError(err instanceof Error ? err.message : "字幕尚未保存，请重新读取后再保存。")
       } finally {
         setSavingCount((count) => count - 1)
       }
     }
-  }, [srtPath, onSubtitlesChange, onSaved])
+  }, [srtPath, baselineContent, onSubtitlesChange, onSaved])
 
   const handleEdit = useCallback((index: number, changes: Partial<Subtitle>) => {
     const updated = subtitles.map((sub, i) => (i === index ? { ...sub, ...changes } : sub))
@@ -522,7 +524,7 @@ export function TranscriptTab({
         )}
       >
         <ScrollArea className="min-h-0" onScrollCapture={handleScroll}>
-          <div ref={scrollRef} inert={editingDisabled} className="flex flex-col gap-0.5 pb-3">
+          <div ref={scrollRef} inert={editingDisabled || savingCount > 0} className="flex flex-col gap-0.5 pb-3">
             {subtitles.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">无字幕数据</p>
             ) : (

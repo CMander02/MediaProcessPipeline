@@ -4,8 +4,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
-from typing import Any
+from typing import Any, Callable
 
 os.environ.setdefault("LITELLM_LOG", "WARNING")
 
@@ -30,7 +31,6 @@ from app.services.analysis.prompts import (
     SUMMARY_SYSTEM_PROMPT,
     get_analyze_prompt,
     get_detail_prompt,
-    get_mindmap_map_prompt,
     get_mindmap_prompt,
     get_mindmap_reduce_prompt,
     get_polish_prompt,
@@ -324,6 +324,8 @@ class LLMService:
             with torch.inference_mode():
                 out = model.generate(**inputs, **gen_kwargs)
             new_tokens = out[0][input_len:]
+            if len(new_tokens) >= max_new_tokens and int(new_tokens[-1]) != tokenizer.eos_token_id:
+                raise RuntimeError("本地模型输出被截断，请缩小输入窗口。")
             return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
         async with infer_lock:
@@ -334,6 +336,9 @@ class LLMService:
         prompt: str,
         binding: Any,
         system_prompt: str = "",
+        *,
+        stage: str = "",
+        response_schema: dict | None = None,
     ) -> str:
         """Call a managed local llama.cpp OpenAI-compatible endpoint."""
         import httpx
@@ -341,9 +346,8 @@ class LLMService:
         from app.services.analysis._openai_client import make_async_openai_client
         from app.services.analysis.local_llm_runtime import get_local_llm_runtime
 
-        loop = asyncio.get_running_loop()
-        base_url = await loop.run_in_executor(
-            None,
+        stage = stage or binding.stage
+        base_url = await asyncio.to_thread(
             get_local_llm_runtime().ensure,
             binding.request_kwargs,
         )
@@ -364,6 +368,19 @@ class LLMService:
             "messages": messages,
             "max_tokens": int(binding.request_kwargs.get("max_new_tokens") or 4096),
         }
+        from app.services.analysis.prompts.speaker_identity import (
+            LECTURE_IDENTITY_SYSTEM_PROMPT, SPEAKER_IDENTITY_SYSTEM_PROMPT,
+        )
+        if response_schema is not None:
+            request["response_format"] = {"type": "json_object", "schema": response_schema}
+        elif stage == "speaker_review":
+            request["response_format"] = {
+                "type": "json_object", "schema": {"type": "array", "items": {"type": "object"}},
+            }
+        elif stage == "subtitle_speakers" or system_prompt in {
+            SPEAKER_IDENTITY_SYSTEM_PROMPT, LECTURE_IDENTITY_SYSTEM_PROMPT,
+        }:
+            request["response_format"] = {"type": "json_object"}
         temperature = self._static_settings.temperature
         if temperature > 0:
             request["temperature"] = temperature
@@ -383,7 +400,7 @@ class LLMService:
             logger,
             logging.INFO,
             "llm.local.call_completed",
-            stage=binding.stage,
+            stage=stage,
             model=binding.model,
             finish_reason=choice.finish_reason,
             chars=len(content),
@@ -407,6 +424,7 @@ class LLMService:
         provider_override: str = "",
         stage: str = "polish",
         system_prompt: str = "",
+        response_schema: dict | None = None,
     ) -> str:
         from app.core.model_router import resolve_llm_binding
 
@@ -421,12 +439,17 @@ class LLMService:
         # Local HF path — unchanged, no LiteLLM involved
         if provider == "local":
             if rt.local_llm_model_path:
-                log_event(logger, logging.INFO, "llm.local.call_started")
+                log_event(
+                    logger, logging.INFO, "llm.local.call_started",
+                    stage=stage, model=binding.model,
+                )
                 if binding.transport == "llama_cpp":
                     return await self._call_local_llama_cpp(
                         prompt,
                         binding,
                         system_prompt=system_prompt,
+                        stage=stage,
+                        response_schema=response_schema,
                     )
                 return await self._call_local(prompt, system_prompt=system_prompt)
             log_event(logger, logging.WARNING, "llm.local.fallback", reason="model_path_empty")
@@ -519,6 +542,8 @@ class LLMService:
                 )
             else:
                 response = await litellm.acompletion(**params)
+                if getattr(response.choices[0], "finish_reason", None) == "length":
+                    raise RuntimeError("模型输出被截断，请缩小输入窗口。")
                 content = response.choices[0].message.content or ""
             log_event(
                 logger,
@@ -593,6 +618,8 @@ class LLMService:
         async with client:
             try:
                 response = await client.chat.completions.create(**request)
+                if getattr(response.choices[0], "finish_reason", None) == "length":
+                    raise RuntimeError("模型输出被截断，请缩小输入窗口。")
                 content = response.choices[0].message.content or ""
                 log_event(
                     logger,
@@ -646,19 +673,11 @@ class LLMService:
         tags = metadata.get("tags") if metadata else None
         chapters = metadata.get("chapters") if metadata else None
 
-        prompt = get_analyze_prompt(
-            title=title,
-            text=truncated,
-            uploader=uploader,
-            description=description,
-            tags=tags,
-            chapters=chapters,
-        )
-        resp = await self._call(
-            prompt,
-            provider_override=provider_override,
-            stage="analyze",
-            system_prompt=ANALYZE_SYSTEM_PROMPT,
+        evidence = json.dumps({"title": title, "uploader": uploader, "description": description,
+                               "tags": tags, "chapters": chapters, "transcript": truncated}, ensure_ascii=False)
+        resp = await self._generate_long_text(
+            evidence, lambda value: get_analyze_prompt(title="", text=value),
+            provider_override=provider_override, stage="analyze", system_prompt=ANALYZE_SYSTEM_PROMPT,
         )
 
         try:
@@ -731,6 +750,7 @@ class LLMService:
         max_duration: float = 30.0,
         max_sentences: int = 3,
         max_gap: float = 2.0,
+        lineage: list[dict] | None = None,
     ) -> str:
         return _transcript_outputs.merge_consecutive_speaker_segments(
             srt_content,
@@ -738,6 +758,7 @@ class LLMService:
             max_duration=max_duration,
             max_sentences=max_sentences,
             max_gap=max_gap,
+            lineage=lineage,
         )
 
     def _parse_polish_response(self, response: str, fallback_segments: list[dict]) -> list[dict]:
@@ -782,6 +803,9 @@ class LLMService:
             max_concurrency: Maximum parallel LLM calls (default 8)
             provider_override: If non-empty, use this provider instead of global llm_provider
         """
+        from app.services.analysis.long_text import compact_metadata, prompt_budget
+        caller_context = context
+        context = compact_metadata(context, max(512, prompt_budget(provider_override, "polish", POLISH_SYSTEM_PROMPT) // 3))
         rt = get_runtime_settings()
         effective_provider = self._effective_provider(provider_override)
         configured = int(getattr(rt, "llm_polish_concurrency", 4))
@@ -805,13 +829,7 @@ class LLMService:
         segments = self._parse_srt(srt_content)
         if not segments:
             # Fallback to simple polish if not valid SRT
-            prompt = get_simple_polish_prompt(srt_content)
-            return await self._call(
-                prompt,
-                provider_override=provider_override,
-                stage="polish",
-                system_prompt=POLISH_SYSTEM_PROMPT,
-            )
+            return await self._polish_plain(srt_content, provider_override)
 
         # Generate all chunks with overlap
         chunks: list[tuple[int, int, list[dict]]] = []
@@ -871,81 +889,176 @@ class LLMService:
                     }
                 )
 
-                # Build prompt with context
-                prompt = get_polish_prompt(
-                    text=chunk_srt,
-                    language=context.get("language", "unknown"),
-                    content_type=context.get("content_type", "unknown"),
-                    main_topics=context.get("main_topics"),
-                    keywords=context.get("keywords"),
-                    proper_nouns=context.get("proper_nouns"),
-                    entities=context.get("entities"),
-                    speaker_ids=speaker_ids,
-                    timeline_context=self._polish_timeline_context(context, chunk_segments),
-                )
-
-                # Retry once when the response omits any requested cues.
-                # Keep the best partial result if the retry itself fails.
-                polished_segs: list[dict] = []
-                minimum_coverage = len(chunk_segments)
-                for response_attempt in range(2):
-                    try:
-                        polished_chunk = await self._call(
-                            prompt,
-                            provider_override=provider_override,
-                            stage="polish",
-                            system_prompt=POLISH_SYSTEM_PROMPT,
+                async def polish_batch(
+                    batch: list[dict], *, retry: bool = False, punctuation_only: bool = False,
+                ) -> list[dict]:
+                    def build_prompt(rows, visible):
+                        return get_polish_prompt(
+                            text=self._segments_to_srt(rows),
+                            language=context.get("language", "unknown"),
+                            content_type=context.get("content_type", "unknown"),
+                            main_topics=context.get("main_topics"),
+                            keywords=context.get("keywords"),
+                            proper_nouns=context.get("proper_nouns"),
+                            entities=context.get("entities"),
+                            speaker_ids=speaker_ids,
+                            timeline_context=self._polish_timeline_context(context, rows),
                         )
-                    except Exception as retry_error:
-                        if response_attempt > 0 and polished_segs:
-                            log_event(
-                                logger,
-                                logging.WARNING,
-                                "llm.polish.incomplete_retry_failed",
-                                chunk=idx,
-                                retained_segments=len(polished_segs),
-                                error=retry_error,
+                    suffix = ""
+                    if retry:
+                        suffix += (
+                            "\n\n本批是上一轮缺失或正文无效的补修字幕。"
+                            "只输出本批输入的条目，每个原始 index 必须完整、唯一地出现一次。"
+                            "每条必须保留非空正文，禁止空字符串或仅说话人标签；"
+                            "整条短回应、语气词或起句片段保留自然表达。"
+                            "字幕将拼成阅读稿，分句停顿加逗号，完整陈述和疑问句加句号或问号，"
+                            "恢复跨条目的语法标点；短片段可不加句号。"
+                            "保持原 timestamp 和说话人，直接输出完整 JSON 数组。"
+                        )
+                    if punctuation_only:
+                        suffix += (
+                            "\n\n本批正文已经完整，本次只补充跨字幕的逗号、句号和问号。"
+                            "保留每条现有文字、原 index、timestamp 和说话人标签，"
+                            "每条保持非空，直接输出完整 JSON 数组。"
+                        )
+                    from app.services.analysis.long_text import prompt_budget, record_windows, restore_boundary_space
+
+                    async def call(prompt):
+                        return await self._call(prompt, provider_override=provider_override,
+                                                stage="polish", system_prompt=POLISH_SYSTEM_PROMPT)
+
+                    valid_parts = {}
+                    source_parts = {}
+                    parsed = []
+                    async for rows, visible, response in record_windows(
+                        batch, lambda rows, visible: build_prompt(rows, visible) + suffix, call,
+                        budget=prompt_budget(provider_override, "polish", POLISH_SYSTEM_PROMPT),
+                        chunk_size=len(batch), overlap=0,
+                    ):
+                        result = self._parse_polish_response(response, rows)
+                        parsed.extend(result)
+                        valid_rows = {row["index"]: row for row in _transcript_outputs._valid_polished_segments(result, rows)}
+                        for row in rows:
+                            valid_parts.setdefault(row["index"], []).append(valid_rows.get(row["index"]))
+                            source_parts.setdefault(row["index"], []).append(row["text"])
+                    valid = []
+                    for original in batch:
+                        parts = valid_parts.get(original["index"], [])
+                        if not parts or any(part is None for part in parts):
+                            continue
+                        if len(parts) == 1:
+                            valid.append(parts[0])
+                        else:
+                            speaker, _ = self._split_speaker_prefix(original["text"])
+                            body = "".join(
+                                restore_boundary_space(
+                                    re.sub(r"^\[[^\]\r\n]+\][ \t]?", "", source),
+                                    self._split_speaker_prefix(part["text"])[1],
+                                ) for source, part in zip(source_parts[original["index"]], parts, strict=True)
                             )
-                            break
-                        raise
-
-                    candidate_segs = self._parse_polish_response(polished_chunk, chunk_segments)
-                    if len(candidate_segs) > len(polished_segs):
-                        polished_segs = candidate_segs
-                    if len(candidate_segs) >= minimum_coverage:
-                        break
-                    if response_attempt == 0:
-                        log_event(
-                            logger,
-                            logging.WARNING,
-                            "llm.polish.incomplete_retry_started",
-                            chunk=idx,
-                            input_segments=len(chunk_segments),
-                            output_segments=len(candidate_segs),
-                            minimum_segments=minimum_coverage,
-                        )
-
-                if len(polished_segs) != len(chunk_segments):
-                    log_event(
-                        logger,
-                        logging.WARNING,
-                        "llm.polish.chunk_mismatch",
-                        chunk=idx,
-                        input_segments=len(chunk_segments),
-                        output_segments=len(polished_segs),
+                            valid.append({**original, "text": f"[{speaker}] {body}" if speaker else body})
+                    repair_type = (
+                        "punctuation" if punctuation_only else "missing" if retry else "initial"
                     )
-                    polished_segs = self._align_polished_to_input(polished_segs, chunk_segments)
-                else:
                     log_event(
                         logger,
                         logging.INFO,
-                        "llm.polish.chunk_completed",
+                        "llm.polish.response_validated",
+                        chunk=idx,
+                        input_segments=len(batch),
+                        parsed_segments=len(parsed),
+                        valid_segments=len(valid),
+                        repair=repair_type,
+                    )
+                    return valid
+
+                # Count actual cue coverage: duplicates and speaker-only responses
+                # cannot stand in for missing dialogue. Retry only affected cues.
+                polished_segs = await polish_batch(chunk_segments)
+                recovered = {segment["index"]: segment for segment in polished_segs}
+                missing = [
+                    segment for segment in chunk_segments if segment["index"] not in recovered
+                ]
+                if missing:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "llm.polish.incomplete_retry_started",
                         chunk=idx,
                         input_segments=len(chunk_segments),
                         output_segments=len(polished_segs),
-                        duration_ms=round((time.perf_counter() - chunk_t0) * 1000),
+                        missing_segments=",".join(str(segment["index"]) for segment in missing),
+                        retry_batch_size=8,
                     )
-
+                    for offset in range(0, len(missing), 8):
+                        repaired = await polish_batch(missing[offset : offset + 8], retry=True)
+                        recovered.update((segment["index"], segment) for segment in repaired)
+                missing_indexes = [
+                    segment["index"]
+                    for segment in chunk_segments
+                    if segment["index"] not in recovered
+                ]
+                polished_segs = [
+                    recovered.get(segment["index"], dict(segment))
+                    for segment in chunk_segments
+                ]
+                if _transcript_outputs._polish_response_needs_punctuation(
+                    polished_segs, chunk_segments,
+                ):
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "llm.polish.punctuation_missing",
+                        chunk=idx,
+                        valid_segments=len(recovered),
+                    )
+                    try:
+                        punctuated = await polish_batch(
+                            polished_segs, punctuation_only=True,
+                        )
+                    except Exception as repair_error:
+                        log_event(
+                            logger,
+                            logging.WARNING,
+                            "llm.polish.punctuation_repair_failed",
+                            chunk=idx,
+                            error=repair_error,
+                        )
+                    else:
+                        if len(punctuated) == len(chunk_segments) and not (
+                            _transcript_outputs._polish_response_needs_punctuation(
+                                punctuated, chunk_segments,
+                            )
+                        ):
+                            polished_segs = punctuated
+                            missing_indexes = []
+                        else:
+                            log_event(
+                                logger,
+                                logging.WARNING,
+                                "llm.polish.punctuation_repair_incomplete",
+                                chunk=idx,
+                                valid_segments=len(punctuated),
+                                input_segments=len(chunk_segments),
+                            )
+                if missing_indexes:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "llm.polish.original_cues_preserved",
+                        chunk=idx,
+                        indexes=",".join(map(str, missing_indexes)),
+                    )
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "llm.polish.chunk_completed",
+                    chunk=idx,
+                    input_segments=len(chunk_segments),
+                    output_segments=len(polished_segs),
+                    preserved_original=len(missing_indexes),
+                    duration_ms=round((time.perf_counter() - chunk_t0) * 1000),
+                )
                 polished_segs = self._enforce_polish_constraints(
                     polished_segs,
                     chunk_segments,
@@ -1003,11 +1116,13 @@ class LLMService:
                     log_event(
                         logger,
                         logging.ERROR,
-                        "llm.polish.chunk_fallback_original",
+                        "llm.polish.chunk_retry_failed",
                         chunk=idx,
                         error=retry_error,
                     )
-                    results.append((idx, [dict(segment) for segment in segs]))
+                    raise RuntimeError(
+                        f"字幕润色第 {idx + 1} 批重试失败：{retry_error}"
+                    ) from retry_error
 
         # Sort by chunk index to maintain order
         results.sort(key=lambda x: x[0])
@@ -1023,10 +1138,6 @@ class LLMService:
                 skip = overlap if len(polished_segs) > overlap else 0
                 polished_segments.extend(polished_segs[skip:])
 
-        # Re-index segments
-        for idx, seg in enumerate(polished_segments, 1):
-            seg["index"] = idx
-
         log_event(
             logger,
             logging.INFO,
@@ -1034,9 +1145,12 @@ class LLMService:
             input_segments=len(segments),
             output_segments=len(polished_segments),
         )
+        lineage = []
         merged_srt = self.merge_consecutive_speaker_segments(
-            self._segments_to_srt(polished_segments)
+            self._segments_to_srt(polished_segments), lineage=lineage,
         )
+        caller_context["_speaker_lineage"] = {"version": 1, "input_srt": srt_content,
+                                               "output_srt": merged_srt, "rows": lineage}
         merged_count = len(self._parse_srt(merged_srt))
         log_event(
             logger,
@@ -1058,22 +1172,60 @@ class LLMService:
         """
         rt = get_runtime_settings()
         provider_override = rt.polish_provider
-        if not context:
+        if context is None:
             context = {}
-        if len(self._parse_srt(text)) >= 2:
+        if self._parse_srt(text):
             return await self.polish_with_context_parallel(
                 text, context, provider_override=provider_override
             )
-        prompt = get_simple_polish_prompt(text)
-        return await self._call(
-            prompt,
-            provider_override=provider_override,
-            stage="polish",
-            system_prompt=POLISH_SYSTEM_PROMPT,
-        )
+        return await self._polish_plain(text, provider_override)
+
+    async def _polish_plain(self, text: str, provider_override: str = "") -> str:
+        from app.services.analysis.long_text import prompt_budget, record_windows, restore_boundary_space
+
+        async def call(prompt):
+            return await self._call(prompt, provider_override=provider_override,
+                                    stage="polish", system_prompt=POLISH_SYSTEM_PROMPT)
+
+        output = []
+        async for rows, _, response in record_windows(
+            [{"index": 0, "text": text}],
+            lambda rows, visible: get_simple_polish_prompt(rows[0]["text"]), call,
+            budget=prompt_budget(provider_override, "polish", POLISH_SYSTEM_PROMPT),
+            chunk_size=1, overlap=0,
+        ):
+            output.append(restore_boundary_space(rows[0]["text"], response))
+        return "".join(output)
 
     def srt_to_markdown(self, srt_content: str, title: str = "") -> str:
         return _transcript_outputs.srt_to_markdown(srt_content, title)
+
+    async def _generate_long_text(
+        self, text: str, build_prompt: Callable[[str], str], *,
+        provider_override: str = "", stage: str, system_prompt: str,
+        build_digest_prompt: Callable[[str], str] | None = None,
+    ) -> str:
+        from app.core.model_router import resolve_llm_binding
+        from app.services.analysis.long_text import generate_bounded
+
+        binding = resolve_llm_binding(
+            get_runtime_settings(), provider_override=provider_override, stage=stage,
+        )
+        params = binding.request_kwargs
+        context_size = max(2048, int(params.get("ctx") or 32768))
+        output_tokens = int(params.get("max_new_tokens") or 4096)
+
+        async def call(prompt: str, *, system_prompt: str) -> str:
+            return await self._call(
+                prompt, provider_override=provider_override, stage=stage,
+                system_prompt=system_prompt,
+            )
+
+        return await generate_bounded(
+            text, build_prompt, call, system_prompt=system_prompt,
+            context_size=context_size, output_tokens=output_tokens,
+            build_digest_prompt=build_digest_prompt,
+        )
 
     async def summarize(
         self,
@@ -1097,16 +1249,25 @@ class LLMService:
                 source_context=source_context,
             )
 
-        prompt = get_summarize_prompt(
-            text,
-            user_language=user_language,
-            source_context=source_context,
+        from app.services.analysis.long_text import compact_metadata, prompt_budget
+        prompt_context = compact_metadata(
+            {**(source_context or {}), "timeline": []},
+            max(512, prompt_budget(provider_override, "summary", SUMMARY_SYSTEM_PROMPT) // 3),
         )
-        resp = await self._call(
-            prompt,
+        # Plain-text reductions cannot align every source chapter. Repeating the
+        # entire timeline in each intermediate JSON defeats bounded compression;
+        # chapter anchors/summaries are restored deterministically below.
+        prompt_context = {**prompt_context, "timeline": []}
+        from app.services.analysis.prompts.summarize import get_summary_digest_prompt
+        resp = await self._generate_long_text(
+            text,
+            lambda part: get_summarize_prompt(
+                part, user_language=user_language, source_context=prompt_context,
+            ),
             provider_override=provider_override,
             stage="summary",
             system_prompt=SUMMARY_SYSTEM_PROMPT,
+            build_digest_prompt=lambda part: get_summary_digest_prompt(part, user_language),
         )
         try:
             start, end = resp.find("{"), resp.rfind("}") + 1
@@ -1122,7 +1283,8 @@ class LLMService:
                     result["timeline"] = [
                         {
                             **item,
-                            "summary": generated_by_start.get(float(item.get("start") or 0), ""),
+                            "summary": generated_by_start.get(float(item.get("start") or 0), "")
+                            or str(item.get("summary") or ""),
                         }
                         for item in source_context["timeline"]
                     ]
@@ -1150,6 +1312,7 @@ class LLMService:
     ) -> dict[str, Any]:
         """Summarize long SRT chapter by chapter before a compact final reduce."""
         from app.services.analysis.source_context import canonicalize_json
+        from app.services.analysis.mindmap_outputs import _chapter_key
 
         timeline = [
             item
@@ -1162,9 +1325,12 @@ class LLMService:
         blocks = self._split_segments_by_chapters(self._parse_srt(text), chapters)
         semaphore = asyncio.Semaphore(6)
 
-        async def summarize_chapter(item: dict[str, Any]) -> dict[str, Any]:
-            chapter_context = {**source_context, "timeline": [item]}
-            chapter_text = blocks.get(str(item["title"]), "")
+        from app.services.analysis.long_text import compact_metadata, prompt_budget
+        prompt_context = compact_metadata(source_context, max(512, prompt_budget(provider_override, "summary", SUMMARY_SYSTEM_PROMPT) // 3))
+
+        async def summarize_chapter(index: int, item: dict[str, Any]) -> dict[str, Any]:
+            chapter_context = {**prompt_context, "timeline": [item]}
+            chapter_text = blocks.get(_chapter_key(item, index), "")
             if not chapter_text.strip():
                 return {
                     "tldr": "",
@@ -1173,14 +1339,15 @@ class LLMService:
                     "topics": [],
                 }
             async with semaphore:
-                response = await self._call(
-                    get_summarize_prompt(
-                        chapter_text,
+                response = await self._generate_long_text(
+                    chapter_text,
+                    lambda part: get_summarize_prompt(
+                        part,
                         user_language=user_language,
                         source_context=chapter_context,
                     ),
                     provider_override=provider_override,
-                    stage="analyze",
+                    stage="summary",
                     system_prompt=SUMMARY_SYSTEM_PROMPT,
                 )
             parsed = self._parse_summary_json(response)
@@ -1193,18 +1360,21 @@ class LLMService:
                 }
             return canonicalize_json(parsed, source_context)
 
-        chapter_results = await asyncio.gather(*(summarize_chapter(item) for item in timeline))
+        chapter_results = await asyncio.gather(
+            *(summarize_chapter(index, item) for index, item in enumerate(timeline))
+        )
         digest_lines = []
         for item, result in zip(timeline, chapter_results, strict=True):
             digest_lines.append(
                 f"[{float(item.get('start') or 0):g}s] {item['title']}: "
-                f"{str(result.get('tldr') or '').strip()}"
+                f"{json.dumps(result, ensure_ascii=False)}"
             )
-        reduce_response = await self._call(
-            get_summarize_prompt(
-                "\n".join(digest_lines),
+        reduce_response = await self._generate_long_text(
+            "\n".join(digest_lines),
+            lambda part: get_summarize_prompt(
+                part,
                 user_language=user_language,
-                source_context=source_context,
+                source_context=prompt_context,
             ),
             provider_override=provider_override,
             stage="summary",
@@ -1244,9 +1414,8 @@ class LLMService:
         provider_override: str = "",
     ) -> str:
         """Generate optional detailed video outline (`detail.md`)."""
-        prompt = get_detail_prompt(text, user_language=user_language)
-        resp = await self._call(
-            prompt,
+        resp = await self._generate_long_text(
+            text, lambda part: get_detail_prompt(part, user_language=user_language),
             provider_override=provider_override,
             stage="summary",
             system_prompt=SUMMARY_SYSTEM_PROMPT,
@@ -1263,7 +1432,7 @@ class LLMService:
         """Generate mindmap, auto-selecting single-pass or map-reduce based on length."""
         if metadata:
             chapters = metadata.get("chapters")
-            if chapters:
+            if chapters and self._parse_srt(text):
                 result = await self._mindmap_map_reduce(
                     text,
                     metadata,
@@ -1271,35 +1440,61 @@ class LLMService:
                     user_language=user_language,
                     provider_override=provider_override,
                 )
+                result = await self._organize_mindmap(result, user_language, provider_override)
                 return normalize_chinese_script(
                     result,
                     user_language,
                     source_text=text,
                 )
         # Rough threshold: ~15k chars ≈ 30min of Chinese transcript
-        if len(text) > 15000 and metadata:
+        if len(text) > 15000:
             # No source chapters: split by segment count.
             result = await self._mindmap_map_reduce_auto(
                 text,
-                metadata,
+                metadata or {},
                 user_language=user_language,
                 provider_override=provider_override,
             )
         else:
-            # Short content: single-pass
-            prompt = get_mindmap_prompt(text, user_language=user_language)
-            resp = await self._call(
-                prompt,
-                provider_override=provider_override,
-                stage="mindmap",
-                system_prompt=MINDMAP_SYSTEM_PROMPT,
+            # Short clips need the same source-derived timestamps as long ones.
+            # A compact list of grounded points is enough until there are enough
+            # distinct points for the global organizer to add topic parents.
+            from app.services.analysis.grounded_outline import (
+                GROUNDED_OUTLINE_SCHEMA, SYSTEM_PROMPT, grounded_chapter_outline,
             )
-            result = self._filter_mindmap_lines(resp)
+            from app.services.analysis.long_text import prompt_budget
+
+            async def call(prompt, *, system_prompt):
+                return await self._call(
+                    prompt, system_prompt=system_prompt,
+                    provider_override=provider_override, stage="mindmap",
+                    response_schema=GROUNDED_OUTLINE_SCHEMA,
+                )
+
+            result = await grounded_chapter_outline(
+                (metadata or {}).get("title") or "内容要点", text, call,
+                budget=max(1024, prompt_budget(provider_override, "mindmap", SYSTEM_PROMPT) - 512),
+            )
+        result = await self._organize_mindmap(result, user_language, provider_override)
         return normalize_chinese_script(
             result,
             user_language,
             source_text=text,
         )
+
+    async def _organize_mindmap(self, markdown: str, language: str | None, provider: str) -> str:
+        from app.services.analysis.long_text import prompt_budget
+        from app.services.analysis.outline_organization import GROUPING_SCHEMA, SYSTEM_PROMPT, organize_outline
+
+        async def call(prompt: str, *, system_prompt: str) -> str:
+            return await self._call(prompt, provider_override=provider, stage="mindmap", system_prompt=system_prompt, response_schema=GROUPING_SCHEMA)
+
+        result, report = await organize_outline(
+            markdown, call, language=language,
+            budget=max(512, prompt_budget(provider, "mindmap", SYSTEM_PROMPT) - 512),
+        )
+        log_event(logger, logging.INFO, "llm.mindmap.organization", **report)
+        return result
 
     async def _mindmap_map_reduce(
         self,
@@ -1310,7 +1505,7 @@ class LLMService:
         provider_override: str = "",
     ) -> str:
         """Map-reduce mindmap using chapter markers to split transcript."""
-        segments = self._parse_srt(text) if "\n-->" in text else None
+        segments = self._parse_srt(text)
 
         # Build chapter text blocks
         if segments:
@@ -1319,7 +1514,6 @@ class LLMService:
             # Plain text — split by rough char position proportional to chapter times
             chapter_texts = self._split_plain_by_chapters(text, chapters)
 
-        global_context = self._build_global_context(metadata, chapters)
 
         # --- Map phase: parallel ---
         log_event(
@@ -1328,26 +1522,33 @@ class LLMService:
         map_concurrency = 1 if self._effective_provider(provider_override) == "local" else 8
         semaphore = asyncio.Semaphore(map_concurrency)
 
-        async def map_one(title: str, content: str) -> tuple[str, str]:
+        from app.services.analysis.mindmap_outputs import _chapter_key
+
+        async def map_one(index: int, title: str, content: str) -> tuple[tuple[int, float], str]:
             async with semaphore:
-                prompt = get_mindmap_map_prompt(
-                    title,
-                    content,
-                    global_context,
-                    user_language=user_language,
+                from app.services.analysis.grounded_outline import (
+                    GROUNDED_OUTLINE_SCHEMA, SYSTEM_PROMPT, grounded_chapter_outline,
                 )
-                resp = await self._call(
-                    prompt,
-                    provider_override=provider_override,
-                    stage="mindmap",
-                    system_prompt=MINDMAP_SYSTEM_PROMPT,
+                from app.services.analysis.long_text import prompt_budget
+
+                async def call(prompt, *, system_prompt):
+                    return await self._call(
+                        prompt, system_prompt=system_prompt,
+                        provider_override=provider_override, stage="mindmap",
+                        response_schema=GROUNDED_OUTLINE_SCHEMA,
+                    )
+
+                resp = await grounded_chapter_outline(
+                    title, content, call,
+                    budget=max(1024, prompt_budget(provider_override, "mindmap", SYSTEM_PROMPT) - 512),
                 )
-                return title, resp
+                return _chapter_key(chapters[index], index), resp
 
         map_results = await asyncio.gather(
             *[
-                map_one(title, content)
-                for title, content in chapter_texts.items()
+                map_one(index, str(chapter.get("title") or ""), content)
+                for index, chapter in enumerate(chapters)
+                for content in [chapter_texts.get(_chapter_key(chapter, index), "")]
                 if content.strip()
             ]
         )
@@ -1365,7 +1566,7 @@ class LLMService:
     def _compose_chapter_mindmap(
         self,
         chapters: list[dict],
-        chapter_summaries: dict[str, str],
+        chapter_summaries: dict[tuple[int, float], str],
     ) -> str:
         return _mindmap_outputs._compose_chapter_mindmap(chapters, chapter_summaries)
 
@@ -1377,26 +1578,28 @@ class LLMService:
         provider_override: str = "",
     ) -> str:
         """Map-reduce for long text without chapter markers — auto-split."""
-        segments = self._parse_srt(text) if "\n-->" in text else None
+        segments = self._parse_srt(text)
 
         if segments:
             # Split into groups of ~120 segments
             chunk_size = min(120, max(80, len(segments) // 8))
             chapter_texts = {}
-            for i in range(0, len(segments), chunk_size):
+            stride = chunk_size - 4
+            for i in range(0, len(segments), stride):
                 batch = segments[i : i + chunk_size]
                 label = (
-                    f"Part {i // chunk_size + 1} ({batch[0]['timestamp'].split('-->')[0].strip()})"
+                    f"Part {i // stride + 1} ({batch[0]['timestamp'].split('-->')[0].strip()})"
                 )
-                chapter_texts[label] = "\n".join(seg["text"] for seg in batch)
+                chapter_texts[label] = self._segments_to_srt(batch)
+                if i + chunk_size >= len(segments):
+                    break
         else:
-            # Plain text — split by char count
-            chunk_chars = max(10000, len(text) // 10)
-            chapter_texts = {}
-            for i in range(0, len(text), chunk_chars):
-                chapter_texts[f"Part {i // chunk_chars + 1}"] = text[i : i + chunk_chars]
+            from app.services.analysis.long_text import split_overlapping
+            chapter_texts = {
+                f"Part {i + 1}": part
+                for i, part in enumerate(split_overlapping(text, 10000, 384))
+            }
 
-        global_context = self._build_global_context(metadata, [])
 
         log_event(
             logger, logging.INFO, "llm.mindmap.auto_map_reduce_started", chunks=len(chapter_texts)
@@ -1406,17 +1609,21 @@ class LLMService:
 
         async def map_one(title: str, content: str) -> tuple[str, str]:
             async with semaphore:
-                prompt = get_mindmap_map_prompt(
-                    title,
-                    content,
-                    global_context,
-                    user_language=user_language,
+                from app.services.analysis.grounded_outline import (
+                    GROUNDED_OUTLINE_SCHEMA, SYSTEM_PROMPT, grounded_chapter_outline,
                 )
-                resp = await self._call(
-                    prompt,
-                    provider_override=provider_override,
-                    stage="mindmap",
-                    system_prompt=MINDMAP_SYSTEM_PROMPT,
+                from app.services.analysis.long_text import prompt_budget
+
+                async def call(prompt, *, system_prompt):
+                    return await self._call(
+                        prompt, system_prompt=system_prompt,
+                        provider_override=provider_override, stage="mindmap",
+                        response_schema=GROUNDED_OUTLINE_SCHEMA,
+                    )
+
+                resp = await grounded_chapter_outline(
+                    title, content, call,
+                    budget=max(1024, prompt_budget(provider_override, "mindmap", SYSTEM_PROMPT) - 512),
                 )
                 return title, resp
 
@@ -1425,11 +1632,8 @@ class LLMService:
         )
         chapter_summaries = dict(map_results)
 
-        return await self._mindmap_reduce(
-            chapter_summaries,
-            user_language=user_language,
-            provider_override=provider_override,
-        )
+        # Keep source-grounded points intact; the global organizer adds parents.
+        return "\n".join(chapter_summaries.values())
 
     async def _mindmap_reduce(
         self,
@@ -1438,6 +1642,7 @@ class LLMService:
         provider_override: str = "",
     ) -> str:
         """Reduce chapter summaries into final mindmap, batching to fit output limits."""
+        from app.services.analysis.long_text import compact_metadata
         names = list(chapter_summaries.keys())
 
         # Group chapters into batches of 3-4 to keep each reduce output under 8k tokens
@@ -1465,13 +1670,11 @@ class LLMService:
                 summaries = ""
                 for name in batch_names:
                     summaries += f"\n### {name}\n{chapter_summaries[name]}\n"
-                prompt = get_mindmap_reduce_prompt(
-                    label,
+                resp = await self._generate_long_text(
                     summaries,
-                    user_language=user_language,
-                )
-                resp = await self._call(
-                    prompt,
+                    lambda part: get_mindmap_reduce_prompt(
+                        compact_metadata(label, 512), part, user_language=user_language,
+                    ),
                     provider_override=provider_override,
                     stage="mindmap",
                     system_prompt=MINDMAP_SYSTEM_PROMPT,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -11,6 +12,7 @@ import shutil
 import stat
 import threading
 import zipfile
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -122,7 +124,7 @@ class ArchiveSyncService:
             owner = get_task_store().find_task_by_output_dir(archive_dir)
             task_map = {service._path_key(archive_dir): {
                 "id": str(owner.id), "created_at": owner.created_at.isoformat(),
-                "status": owner.status,
+                "status": owner.status, "error": owner.error,
             }} if owner else {}
         item = service._archive_item(archive_dir, task_map, lite=True)
         root = Path(get_runtime_settings().data_root).resolve()
@@ -196,23 +198,31 @@ class ArchiveSyncService:
 
     @uses_workspace
     def list_page(self, *, page=1, page_size=28, search="", media="all", source="all",
-                  sort="created_desc", status="all", duplicates=False) -> dict:
+                  sort="processed_desc", status="all", duplicates=False, folder_id=None, unclassified=False, offset=None,
+                  include_folders=False) -> dict:
         from app.core.archive_index import query_library
 
         self.flush_changes()
-        result = query_library(_get_conn(), page=page, page_size=page_size, search=search,
-                               media=media, source=source, sort=sort, status=status,
-                               duplicates=duplicates)
+        with _db_lock:
+            result = query_library(_get_conn(), page=page, page_size=page_size, search=search,
+                                   media=media, source=source, sort=sort, status=status,
+                                   duplicates=duplicates, folder_id=folder_id, unclassified=unclassified, offset=offset,
+                                   include_folders=include_folders)
         root = Path(get_runtime_settings().data_root).resolve()
         archives = []
         for row in result["rows"]:
             item = self.decode_snapshot(json.loads(row["snapshot"]), root)
+            item['content_key'] = result['content_keys'][row['archive_id']]
+            item['folder_id'] = result['folder_map'].get(item['content_key'])
+            item['last_processed_at'] = result['processed_at'][row['archive_id']]
             attempts = result["attempts"].get(row["archive_id"])
             if attempts and not result["duplicates"]:
                 item["attempts"] = attempts
             archives.append(item)
         return {"archives": archives, "total": result["total"], "page": result["page"],
-                "page_size": page_size, "facets": result["facets"], **self.index_status()}
+                "page_size": page_size, "facets": result["facets"],
+                "archive_total": result['archive_total'], "folders": result['folders'], "entries": result['entries'],
+                'library_revision': result['library_revision'], **self.index_status()}
 
     def _snapshots(self, archive_ids) -> list[dict]:
         rows = _get_conn().execute(
@@ -270,6 +280,7 @@ class ArchiveSyncService:
 
     @uses_workspace
     def changes(self, cursor: int, limit: int) -> dict[str, Any]:
+        from app.core.library import revision
         self.flush_changes()
         conn = _get_conn()
         rows = conn.execute(
@@ -298,10 +309,12 @@ class ArchiveSyncService:
             changes.append(change)
         next_cursor = int(page[-1]["revision"]) if page else cursor
         return {
+            "workspace_id": str(Path(get_runtime_settings().data_root).resolve()),
             "changes": changes,
             "next_cursor": next_cursor,
             "has_more": has_more,
             "server_revision": self.current_revision(),
+            'library_revision': revision(conn),
         }
 
     @uses_workspace
@@ -317,6 +330,7 @@ class ArchiveSyncService:
             return None
         files = [entry.as_dict() for entry in self._iter_sync_files(archive_dir, with_hash=True)]
         return {
+            "workspace_id": str(Path(get_runtime_settings().data_root).resolve()),
             "archive_id": archive_id,
             "revision": int(record["revision"]),
             "files": files,
@@ -414,8 +428,10 @@ class ArchiveSyncService:
         archive_dir: Path,
         file_state: str,
         item: dict[str, Any],
+        *,
+        transaction=None,
     ) -> None:
-        conn = _get_conn()
+        conn = transaction if transaction is not None else _get_conn()
         row = conn.execute(
             "SELECT archive_path, revision, file_state, snapshot, deleted "
             "FROM archive_sync_index WHERE archive_id = ?",
@@ -439,7 +455,7 @@ class ArchiveSyncService:
             return
 
         now = datetime.now().astimezone().isoformat()
-        with _db_lock, conn:
+        with (nullcontext() if transaction is not None else _db_lock), (nullcontext() if transaction is not None else conn):
             revision = self._next_revision_locked(conn)
             encoded["revision"] = revision
             snapshot_json = json.dumps(encoded, ensure_ascii=False)
@@ -473,7 +489,8 @@ class ArchiveSyncService:
                 """,
                 (revision, archive_id, snapshot_json, now),
             )
-            conn.commit()
+            if transaction is None:
+                conn.commit()
 
     def _record_delete(self, archive_id: str) -> None:
         conn = _get_conn()
@@ -745,29 +762,100 @@ def safe_extract_zip(zip_path: Path, extraction_dir: Path) -> Path:
         raise
 
 
-def publish_archive(extracted_root: Path, destination: Path, data_root: Path) -> None:
-    """Atomically publish a synchronized archive under data_root."""
+@dataclass
+class ArchivePublication:
+    """Keep the whole previous directory until the SQLite import commits."""
+
+    target: Path
+    journal_dir: Path
+    had_existing: bool
+
+    @property
+    def backup(self) -> Path:
+        return self.journal_dir / "previous"
+
+    def rollback(self) -> None:
+        if self.backup.exists():
+            if self.target.exists():
+                shutil.rmtree(self.target)
+            os.replace(self.backup, self.target)
+        elif not self.had_existing and self.target.exists():
+            shutil.rmtree(self.target)
+        shutil.rmtree(self.journal_dir)
+
+    def finish(self) -> None:
+        # A cleanup failure after commit must not report a failed import. The
+        # journal survives and startup retries this idempotent cleanup.
+        try:
+            if self.backup.exists():
+                shutil.rmtree(self.backup)
+            (self.journal_dir / "journal.json").unlink(missing_ok=True)
+            self.journal_dir.rmdir()
+        except OSError:
+            logging.getLogger(__name__).warning(
+                "Committed import backup cleanup deferred: %s", self.journal_dir,
+                exc_info=True,
+            )
+
+
+def publish_archive(
+    extracted_root: Path, destination: Path, data_root: Path, *, task_id, import_id: str,
+) -> ArchivePublication:
+    """Swap directories with a durable recovery record; caller commits or rolls back."""
+    from app.core.atomic_file import atomic_write_text
+    from app.core.paths import archive_directory, get_workspace_paths
+
     root = data_root.resolve()
-    target = destination.resolve()
-    target.relative_to(root)
-    if target == root:
-        raise ValueError("archive destination cannot be data_root")
-    backup = target.parent / f".{target.name}.sync-backup-{uuid4().hex}"
-    moved_existing = False
+    target = archive_directory(destination, root)
+    journal_dir = get_workspace_paths(root).backups / "sync-imports" / str(UUID(import_id))
+    journal_dir.mkdir(parents=True, exist_ok=False)
+    publication = ArchivePublication(target, journal_dir, target.exists())
+    atomic_write_text(journal_dir / "journal.json", json.dumps({
+        "task_id": str(task_id), "import_id": import_id,
+        "destination": target.relative_to(root).as_posix(),
+        "had_existing": publication.had_existing,
+    }))
     try:
-        if target.exists():
-            os.replace(target, backup)
-            moved_existing = True
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if publication.had_existing:
+            os.replace(target, publication.backup)
         os.replace(extracted_root, target)
-    except Exception:
-        if target.exists() and not moved_existing:
-            shutil.rmtree(target, ignore_errors=True)
-        if moved_existing and backup.exists() and not target.exists():
-            os.replace(backup, target)
+    except BaseException:
+        publication.rollback()
         raise
-    else:
-        if backup.exists():
-            shutil.rmtree(backup, ignore_errors=True)
+    return publication
+
+
+def recover_archive_imports(data_root: Path | str) -> None:
+    """Recover interrupted imports before indexing or starting queue workers.
+
+    SQLite commits task, mirrors, event and index together. Its import_id is the
+    commit marker; uncommitted file swaps restore the complete old directory.
+    The caller owns workspace access: startup uses run_in_thread, while a
+    library switch already holds workspace_change's exclusive reservation.
+    This covers process termination, not filesystem corruption or power-loss
+    durability beyond the host filesystem's rename and SQLite guarantees.
+    """
+    from app.core.database import get_task_store
+    from app.core.paths import archive_directory, get_workspace_paths, managed_child
+
+    root = Path(data_root).resolve()
+    journal_root = get_workspace_paths(root).backups / "sync-imports"
+    if not journal_root.exists():
+        return
+    for journal in sorted(journal_root.glob("*/journal.json")):
+        managed_child(journal, root)
+        record = json.loads(journal.read_text(encoding="utf-8"))
+        if str(UUID(record["import_id"])) != journal.parent.name:
+            raise ValueError(f"Invalid import journal: {journal}")
+        target = archive_directory(root / record["destination"], root)
+        publication = ArchivePublication(target, journal.parent, record["had_existing"])
+        task = get_task_store().get(UUID(record["task_id"]))
+        synced = (task.result or {}).get("remote_sync", {}) if task else {}
+        if synced.get("import_id") == record["import_id"]:
+            publication.finish()
+        else:
+            publication.rollback()
 
 
 def archive_file_manifest(archive_dir: Path) -> dict[str, str]:

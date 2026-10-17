@@ -1,11 +1,13 @@
 """Filesystem browsing routes for file/folder selection."""
 
+import asyncio
 import logging
 import mimetypes
 import os
 import subprocess
 import sys
 from email.utils import formatdate
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
@@ -20,6 +22,7 @@ from app.core.atomic_file import atomic_write_text
 from app.core.paths import managed_child, task_output_paths
 from app.core.database import get_task_store
 from app.core.settings import get_runtime_settings
+from app.core.workspace_lifecycle import run_in_thread
 
 router = APIRouter(prefix="/filesystem", tags=["filesystem"])
 
@@ -28,6 +31,7 @@ class WriteFileRequest(BaseModel):
     path: str
     content: str
     task_id: UUID | None = None
+    expected_content: str | None = None
 
 
 class OpenFolderRequest(BaseModel):
@@ -195,11 +199,13 @@ async def write_file(req: WriteFileRequest):
         owner = None
         if file_path.suffix.lower() in TEXT_SUFFIXES:
             owner, directory, filename = _artifact_owner(file_path, req.task_id)
-            get_artifact_store().write(owner, directory, filename, req.content)
+            get_artifact_store().write(owner, directory, filename, req.content, expected_content=req.expected_content)
         else:
             atomic_write_text(file_path, req.content)
         return {"success": True, "path": str(file_path), "file_saved": True,
                 "mirror_saved": owner is not None}
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ArtifactMirrorError as exc:
         return {"success": False, "error": str(exc), "path": str(exc.path),
                 "file_saved": True, "mirror_saved": False, "repair_needed": True}
@@ -245,6 +251,25 @@ async def repair_artifacts(req: RepairArtifactsRequest):
     return {"success": all(item["state"] == "synced" for item in report), "artifacts": report}
 
 
+@lru_cache(maxsize=128)
+def _browser_cache_matches(
+    source: str, source_mtime: int, source_size: int,
+    cache: str, cache_mtime: int, cache_size: int,
+) -> bool:
+    """Probe once per file revision, including caches made by older converters."""
+    if cache_size <= 0 or cache_mtime < source_mtime:
+        return False
+    from app.services.recognition.chunking import ASRChunker
+
+    try:
+        chunker = ASRChunker()
+        source_duration = chunker.probe_duration(source)
+        cache_duration = chunker.probe_duration(cache)
+        return source_duration > 0 and abs(source_duration - cache_duration) <= 2.0
+    except (OSError, RuntimeError):
+        return False
+
+
 def _ensure_browser_playable(file_path: Path) -> tuple[Path, str]:
     """If the file is an m4a/ogg/etc. that Chrome may choke on, return a
     transcoded mp3 copy (cached next to the original).  Otherwise return the
@@ -256,26 +281,60 @@ def _ensure_browser_playable(file_path: Path) -> tuple[Path, str]:
         return file_path, ct or "application/octet-stream"
 
     mp3_path = file_path.with_suffix(".browser.mp3")
-    if mp3_path.exists() and mp3_path.stat().st_size > 0:
-        return mp3_path, "audio/mpeg"
+    if mp3_path.exists():
+        source_stat, cache_stat = file_path.stat(), mp3_path.stat()
+        if _browser_cache_matches(
+            str(file_path), source_stat.st_mtime_ns, source_stat.st_size,
+            str(mp3_path), cache_stat.st_mtime_ns, cache_stat.st_size,
+        ):
+            return mp3_path, "audio/mpeg"
 
     # Transcode once, cache the result
     import subprocess, logging
     logger = logging.getLogger(__name__)
     logger.info(f"Transcoding for browser playback: {file_path.name} → .browser.mp3")
+    import tempfile
+    fd, temporary = tempfile.mkstemp(prefix=".browser-", suffix=".tmp", dir=file_path.parent)
+    os.close(fd)
+    temporary_path = Path(temporary)
     try:
         subprocess.run(
-            ["ffmpeg", "-y", "-i", str(file_path),
-             "-c:a", "libmp3lame", "-q:a", "2",
-             str(mp3_path)],
+            ["ffmpeg", "-y", "-protocol_whitelist", "file,pipe,crypto,data", "-i", str(file_path),
+             "-c:a", "libmp3lame", "-q:a", "2", "-f", "mp3",
+             str(temporary_path)],
             capture_output=True, check=True, timeout=300,
         )
+        temporary_path.replace(mp3_path)
     except Exception as e:
         logger.warning(f"Transcode failed: {e}")
         ct, _ = mimetypes.guess_type(str(file_path))
         return file_path, ct or "application/octet-stream"
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
     return mp3_path, "audio/mpeg"
+
+
+_media_preparations: dict[Path, asyncio.Task[tuple[Path, str]]] = {}
+
+
+async def _prepare_browser_media(file_path: Path) -> tuple[Path, str]:
+    """Keep probes/conversion off the event loop and share in-flight work."""
+    pending = _media_preparations.get(file_path)
+    if pending is None:
+        pending = asyncio.create_task(run_in_thread(_ensure_browser_playable, file_path))
+        _media_preparations[file_path] = pending
+
+        def finished(task: asyncio.Task) -> None:
+            if _media_preparations.get(file_path) is task:
+                del _media_preparations[file_path]
+            # A disconnected request must not leave an unobserved exception.
+            if not task.cancelled():
+                task.exception()
+
+        pending.add_done_callback(finished)
+    # Disconnecting one viewer must not cancel conversion for the other viewers.
+    return await asyncio.shield(pending)
 
 
 def _parse_range_header(range_header: str | None, file_size: int) -> tuple[int, int] | None:
@@ -331,6 +390,7 @@ def _media_headers(file_path: Path, content_length: int) -> dict[str, str]:
         "Accept-Ranges": "bytes",
         "Content-Length": str(content_length),
         "Last-Modified": formatdate(stat.st_mtime, usegmt=True),
+        "Cache-Control": "no-cache",
         # Keep media responses inline. Attachment disposition can confuse
         # browser media controls and is not useful for an embedded player.
         "Content-Disposition": "inline",
@@ -370,7 +430,7 @@ async def serve_media(
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
 
-    serve_path, content_type = _ensure_browser_playable(file_path)
+    serve_path, content_type = await _prepare_browser_media(file_path)
     file_size = serve_path.stat().st_size
     byte_range = _parse_range_header(request.headers.get("range"), file_size)
 

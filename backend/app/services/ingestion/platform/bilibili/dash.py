@@ -26,7 +26,10 @@ from typing import Any
 
 import httpx
 
-from app.core.network import httpx_client_kwargs, urllib_urlopen
+from app.core.public_urls import (
+    public_httpx_client_kwargs as httpx_client_kwargs,
+    public_urlopen as urllib_urlopen,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,10 +104,11 @@ def _try_download_with_backup(
         try:
             _download_stream(url, dest, title, referer, cookie)
             return
-        except (urllib.error.URLError, ssl.SSLError, http.client.HTTPException,
+        except (urllib.error.URLError, ssl.SSLError, http.client.HTTPException, httpx.HTTPError,
                 ConnectionError, TimeoutError, RuntimeError) as exc:
             last_err = exc
-        # A separate HTTP transport can recover urllib TLS/proxy EOF failures.
+        # public_urlopen can also raise httpx errors while reading the body.
+        # A fresh request can recover transient TLS or incomplete-body failures.
         # Keep the configured proxy and certificate verification in both clients.
         try:
             _download_stream_httpx(url, dest, referer, cookie)
@@ -283,7 +287,7 @@ def download_video(
                 play_data, 16, output_dir, title, referer, "", temporary)
         command = ["ffmpeg", "-nostdin", "-y"]
         for source in inputs:
-            command.extend(["-i", str(source)])
+            command.extend(["-protocol_whitelist", "file,pipe,crypto,data", "-i", str(source)])
         command.extend(["-c", "copy", str(mp4_path)])
         result = subprocess.run(command, capture_output=True, timeout=600)
         if result.returncode != 0:
@@ -334,6 +338,7 @@ def extract_audio(video_path: Path, audio_path: Path) -> None:
     subprocess.run(
         [
             "ffmpeg",
+            "-protocol_whitelist", "file,pipe,crypto,data",
             "-i", str(video_path),
             "-vn",
             "-acodec", "pcm_s16le",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import datetime
 from pathlib import Path
 
 from app.core.atomic_file import atomic_write_text
@@ -63,10 +64,14 @@ class ArtifactStore:
 
     @uses_workspace
     def write(self, task_id, output_dir: Path | str, filename: str, content: str,
-              *, notify_index: bool = True) -> Path:
+              *, notify_index: bool = True, expected_content: str | None = None) -> Path:
         target = self._path(output_dir, filename)
         self._validate(target, content)
         with _write_lock:
+            if expected_content is not None and (
+                not target.is_file() or target.read_text(encoding="utf-8") != expected_content
+            ):
+                raise FileExistsError("文件已更新，请重新读取后保存，当前编辑没有覆盖已有内容")
             atomic_write_text(target, content)
             if notify_index:
                 self._changed(output_dir)
@@ -142,6 +147,32 @@ class ArtifactStore:
                 )
                 item["state"] = "synced"
             return report
+
+    def import_mirrors(self, conn, task_id, output_dir: Path) -> list[dict]:
+        """Mirror a portable archive inside its caller's database transaction.
+
+        Missing local-only mirrors remain available. Invalid incoming text fails
+        the entire import instead of accepting a partly mirrored archive.
+        """
+        report = []
+        now = datetime.now().isoformat()
+        for path in sorted(output_dir.rglob("*")):
+            if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
+                continue
+            filename = path.relative_to(output_dir).as_posix()
+            target = self._path(output_dir, filename)
+            content = target.read_text(encoding="utf-8")
+            self._validate(target, content)
+            conn.execute(
+                "INSERT INTO task_artifacts "
+                "(task_id, filename, content_type, content, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(task_id, filename) DO UPDATE SET "
+                "content_type=excluded.content_type, content=excluded.content, "
+                "updated_at=excluded.updated_at",
+                (str(task_id), filename, artifact_content_type(filename), content, now, now),
+            )
+            report.append({"filename": filename, "state": "synced"})
+        return report
 
     @uses_workspace
     def restore_file(self, task_id, output_dir: Path | str, filename: str) -> Path:

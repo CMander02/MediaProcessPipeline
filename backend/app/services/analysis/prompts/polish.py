@@ -5,10 +5,15 @@ from typing import Any
 POLISH_SYSTEM_PROMPT = """You are a constrained subtitle copy editor.
 Actively remove non-semantic fillers, stutters, and abandoned false starts while
 preserving meaningful short replies, emphasis, negation, and factual details. Correct
-recognition errors and punctuation. Subtitle
+recognition errors. These cues will be concatenated into readable transcript paragraphs:
+restore grammatical punctuation across cue boundaries, including commas at clause pauses
+and periods or question marks at complete statements or questions. A short unfinished
+fragment may remain without final punctuation. Subtitle
 index, timestamp, speaker identity, and canonical entity spelling are read-only fields.
-Never add a speaker label when the input cue has none. Return only the requested JSON
-array."""
+Never add a speaker label when the input cue has none. Every nonempty input cue must
+retain a nonempty body. Preserve a natural expression for a cue consisting only of a
+short reply, filler, or sentence fragment; never return an empty string or a speaker
+label alone. Return only the requested JSON array."""
 
 
 def get_polish_prompt(
@@ -68,7 +73,9 @@ def get_polish_prompt(
 
 ## 润色要求
 1. 修正语音识别错误和错别字
-2. 添加适当的标点符号
+2. 字幕还将拼成阅读稿，必须结合连续条目的完整语义恢复跨条目的逗号、句号和问号：
+   分句停顿标逗号，完整陈述和疑问句按语义结束；短片段可不加句号。
+   请主动完成断句和标点恢复，让相邻正文拼接后可以自然阅读
 3. 主动整理语气词和卡顿：删去没有语义作用的“呃、那个、就是说”等填充词；
    合并口吃、起句卡顿和无意义的连续重复；说话人立即自我纠正时保留纠正后的完整意思
    例如“我我觉得，呃，明天，不，后天交付”整理为“我觉得后天交付”。结合语义识别被放弃的起句和立即纠正，保留最终确定的信息
@@ -79,7 +86,21 @@ def get_polish_prompt(
 8. 实体表中的 canonical 拼写必须保持一致
 9. 保留有意义的短回答（如“嗯、对、是、不是”）、强调性重复、否定、数量和条件。
    “然后、就是、那个”等承担逻辑关系或指代时保留，结合上下文判断
-10. 输出自然、简洁的短语或句子字幕，保持原信息完整
+10. 输出自然、简洁的短语或句子字幕，保持原信息完整。每条非空输入必须保留非空正文，
+    禁止输出空字符串或仅说话人标签；整条仅包含短回应、语气词或起句片段时，保留其自然表达，
+    不补造内容，也不要删成空白
+
+## 连续短字幕的标点示例（仅演示，条目边界保持不变）
+输入：
+1 | 00:00:00,000 --> 00:00:02,000 | 如果模型记住所有细节
+2 | 00:00:02,000 --> 00:00:04,000 | 它就不会忘记错误
+3 | 00:00:04,000 --> 00:00:06,000 | 那遗忘是不是反而更好
+对应输出：
+[
+  {{"index": 1, "timestamp": "00:00:00,000 --> 00:00:02,000", "text": "如果模型记住所有细节，"}},
+  {{"index": 2, "timestamp": "00:00:02,000 --> 00:00:04,000", "text": "它就不会忘记错误。"}},
+  {{"index": 3, "timestamp": "00:00:04,000 --> 00:00:06,000", "text": "那遗忘是不是反而更好？"}}
+]
 
 ## 输出格式（严格遵守）
 直接输出 JSON 数组，**不要**任何前后解释/markdown 代码块/废话引导句。

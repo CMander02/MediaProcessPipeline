@@ -60,7 +60,8 @@ def test_assign_speakers_uses_largest_global_turn_overlap():
     mapped = DiarizationService.assign_speakers(segments, turns)
 
     assert mapped[0]["speaker"] == "SPEAKER_00"
-    assert mapped[1]["speaker"] == "SPEAKER_01"
+    assert mapped[1]["speaker"] == "unknown"
+    assert mapped[1]["speaker_assignment"]["status"] == "mixed"
     assert "speaker" not in mapped[2]
     assert "speaker" not in segments[0]
 
@@ -76,23 +77,22 @@ def test_assign_speakers_preserves_words_when_a_cue_crosses_speaker_turns():
 
     assert len(mapped) == 1
     assert [(item["start"], item["end"], item["speaker"]) for item in mapped] == [
-        (0.0, 10.0, "SPEAKER_01"),
+        (0.0, 10.0, "unknown"),
     ]
     assert "".join(item["text"] for item in mapped) == "前半段内容后半段内容"
 
 
 def test_assign_speakers_sums_overlap_and_ignores_brief_interjections():
     original = [{"start": 0.0, "end": 5.0, "text": "没关系，然后我们继续。"}]
-    mapped = DiarizationService.assign_speakers(
-        original,
-        [
-            {"start": 0.0, "end": 2.0, "speaker": "SPEAKER_00"},
-            {"start": 2.0, "end": 2.2, "speaker": "SPEAKER_01"},
-            {"start": 2.2, "end": 5.0, "speaker": "SPEAKER_00"},
-            {"start": 0.4, "end": 3.4, "speaker": "SPEAKER_02"},
-        ],
-    )
-    assert mapped == [{**original[0], "speaker": "SPEAKER_00"}]
+    mapped = DiarizationService.assign_speakers(original, [
+        {"start": 0.0, "end": 2.0, "speaker": "SPEAKER_00"},
+        {"start": 2.0, "end": 2.2, "speaker": "SPEAKER_01"},
+        {"start": 2.2, "end": 5.0, "speaker": "SPEAKER_00"},
+        {"start": 0.4, "end": 3.4, "speaker": "SPEAKER_02"},
+    ])
+    assert mapped[0]["speaker"] == "unknown"
+    assert mapped[0]["text"] == original[0]["text"]
+    assert set(mapped[0]["speaker_assignment"]["candidates"]) == {"SPEAKER_00", "SPEAKER_01", "SPEAKER_02"}
 
 
 def test_annotation_to_turns_supports_pyannote_3_annotation():
@@ -272,3 +272,38 @@ async def test_transcribe_audio_runs_global_diarization_on_original_audio(
     assert [item["progress"] for item in updates] == pytest.approx(
         [0.55, 0.55, 0.675, 0.8, 0.8, 0.8, 0.9, 1.0]
     )
+
+
+def test_m4a_diarization_uses_ffmpeg_when_soundfile_cannot_decode(tmp_path, monkeypatch):
+    import numpy as np
+    import soundfile as sf
+    import subprocess
+    def unsupported(*a, **kw):
+        raise sf.LibsndfileError(1)
+    monkeypatch.setattr(sf, 'read', unsupported)
+    samples = np.array([.1, .2, .3], dtype=np.float32)
+    def decode(args, **kwargs):
+        assert args[args.index('-ar') + 1] == '16000'
+        assert args[args.index('-ac') + 1] == '1'
+        return SimpleNamespace(returncode=0, stdout=samples.tobytes(), stderr=b'')
+    monkeypatch.setattr(subprocess, 'run', decode)
+    result = DiarizationService._load_audio(tmp_path / '录音.m4a')
+    assert result['sample_rate'] == 16000
+    np.testing.assert_allclose(result['waveform'].numpy(), samples[None, :])
+
+
+
+def test_known_count_preserves_main_voices_and_absorbs_small_outliers():
+    import numpy as np
+    from app.services.recognition.speaker_clustering import merge_to_known_count
+    vectors = np.array([[1., 0., 0.]] * 90 + [[0., 1., 0.]] * 40
+                       + [[0.8, 0.1, 0.4]] * 3 + [[0.1, 0.8, -0.4]] * 2)
+    labels = np.array([0] * 90 + [1] * 40 + [2] * 3 + [3] * 2)
+    original = vectors.copy()
+    assigned = merge_to_known_count(vectors, labels, 2)
+    assert len(set(assigned)) == 2
+    assert len(set(assigned[:90])) == len(set(assigned[90:130])) == 1
+    assert assigned[0] != assigned[90]
+    assert set(assigned[130:133]) == {assigned[0]}
+    assert set(assigned[133:]) == {assigned[90]}
+    np.testing.assert_equal(vectors, original)

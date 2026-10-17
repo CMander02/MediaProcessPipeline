@@ -11,6 +11,38 @@ export interface Subtitle {
   speaker?: string
 }
 
+export interface SpeakerSuggestion { source_label: string; current_name: string; reason?: string }
+
+/** Why a name was inferred, voices that may be one person, and names the source mentions. */
+export interface SpeakerHints {
+  nameSources: Record<string, string>
+  suggestions: SpeakerSuggestion[]
+  participants: string[]
+}
+
+export interface SpeakerQuality {
+  status?: string
+  target_count?: number | null
+  observed_count?: number
+  unassigned_segments?: number
+  failed_chunks?: number
+  reason?: string
+  unassigned_ranges?: { source_index: number; start: number; end: number }[]
+}
+
+/** Coverage of overlapping cues, counted once per person. */
+export function subtitleCoverageMs(subtitles: Subtitle[]): number {
+  const intervals = subtitles.filter((cue) => cue.endTime > cue.startTime)
+    .map((cue) => [cue.startTime, cue.endTime]).sort((a, b) => a[0] - b[0])
+  let total = 0
+  let end = -Infinity
+  for (const [start, nextEnd] of intervals) {
+    total += Math.max(0, nextEnd - Math.max(start, end))
+    end = Math.max(end, nextEnd)
+  }
+  return total
+}
+
 export interface TranscriptMarkdownHeader {
   title: string
   source_url?: string | null
@@ -33,7 +65,7 @@ function normalizeSRTLineEndings(content: string): string {
 /**
  * Parse SRT content into Subtitle array
  */
-export function parseSRT(content: string): Subtitle[] {
+export function parseSRT(content: string, options: { speakerLabels?: boolean } = {}): Subtitle[] {
   const subtitles: Subtitle[] = []
   const blocks = normalizeSRTLineEndings(content).trim().split(/\n\s*\n+/)
 
@@ -65,7 +97,7 @@ export function parseSRT(content: string): Subtitle[] {
       let speaker: string | undefined
 
       // Extract speaker tag [SPEAKER_XX]
-      const speakerMatch = text.match(/^\[([^\]]+)\]\s*/)
+      const speakerMatch = options.speakerLabels === false ? null : text.match(/^\[([^\]]+)\]\s*/)
       if (speakerMatch) {
         speaker = speakerMatch[1]
         text = text.substring(speakerMatch[0].length)
@@ -268,7 +300,7 @@ export function findSubtitleIndexAtTime(
 export function extractSpeakers(subtitles: Subtitle[]): string[] {
   const set = new Set<string>()
   for (const sub of subtitles) {
-    if (sub.speaker) set.add(sub.speaker)
+    if (sub.speaker && sub.speaker.toLowerCase() !== "unknown") set.add(sub.speaker)
   }
   return Array.from(set)
 }
@@ -304,6 +336,8 @@ export function getSpeakerColor(speaker: string, speakers?: readonly string[]): 
  * Format speaker label for display: SPEAKER_00 → S0, SPEAKER_02 → S2
  */
 export function formatSpeakerLabel(speaker: string): string {
+  if (speaker.toLowerCase() === "unknown") return "归属待定"
+  if (/^unknown[-_]/i.test(speaker)) return `匿名声音 ${speaker.slice(8)}`
   const m = speaker.match(/^SPEAKER_0*(\d+)$/)
   if (m) return `S${m[1]}`
   return speaker

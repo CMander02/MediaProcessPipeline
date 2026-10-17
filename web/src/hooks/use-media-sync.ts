@@ -18,6 +18,7 @@ export function useMediaSync({ subtitles, initialTime, onTimeUpdate }: UseMediaS
   const [autoScroll, setAutoScroll] = useState(true)
   const autoScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const initialTimeApplied = useRef(false)
+  const currentTimeRef = useRef(0)
 
   const currentSegmentIndex = useMemo(() => {
     if (subtitles.length === 0) return -1
@@ -37,19 +38,27 @@ export function useMediaSync({ subtitles, initialTime, onTimeUpdate }: UseMediaS
 
   // Bind media element events
   const bindMedia = useCallback((el: HTMLMediaElement | null) => {
+    const previous = mediaRef.current
+    const restoreTime = previous ? previous.currentTime : currentTimeRef.current || initialTimeRef.current
+    if (previous && previous !== el) {
+      previous.pause()
+      onTimeUpdateCbRef.current?.(previous.currentTime)
+    }
     mediaRef.current = el
     if (!el) return
+    initialTimeApplied.current = false
 
     const handleTimeUpdate = () => {
       setCurrentTime(el.currentTime)
+      currentTimeRef.current = el.currentTime
       onTimeUpdateCbRef.current?.(el.currentTime)
     }
     const handleDurationChange = () => {
       setDuration(el.duration || 0)
       // Apply initial time once media is ready
-      if (!initialTimeApplied.current && initialTimeRef.current && initialTimeRef.current > 0 && el.duration > 0) {
+      if (!initialTimeApplied.current && restoreTime && restoreTime > 0 && el.duration > 0) {
         initialTimeApplied.current = true
-        el.currentTime = Math.min(initialTimeRef.current, el.duration - 1)
+        el.currentTime = Math.max(0, Math.min(restoreTime, el.duration - 0.1))
       }
     }
     const onPlay = () => setIsPlaying(true)
@@ -65,13 +74,16 @@ export function useMediaSync({ subtitles, initialTime, onTimeUpdate }: UseMediaS
     // Initialize
     if (el.duration) {
       setDuration(el.duration)
-      if (!initialTimeApplied.current && initialTimeRef.current && initialTimeRef.current > 0) {
+      if (!initialTimeApplied.current && restoreTime && restoreTime > 0) {
         initialTimeApplied.current = true
-        el.currentTime = Math.min(initialTimeRef.current, el.duration - 1)
+        el.currentTime = Math.max(0, Math.min(restoreTime, el.duration - 0.1))
       }
     }
 
     return () => {
+      currentTimeRef.current = el.currentTime
+      onTimeUpdateCbRef.current?.(el.currentTime)
+      el.pause()
       el.removeEventListener("timeupdate", handleTimeUpdate)
       el.removeEventListener("durationchange", handleDurationChange)
       el.removeEventListener("play", onPlay)

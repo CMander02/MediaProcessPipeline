@@ -37,6 +37,7 @@ async def _run_subtitle_fast_path(
     task_dir: Path,
     platform_subtitle: dict,
     metadata: "MediaMetadata",
+    video_ready: asyncio.Event | None = None,
 ) -> dict:
     """Run subtitle processing + LLM analysis — no GPU needed.
 
@@ -54,6 +55,12 @@ async def _run_subtitle_fast_path(
         srt_to_markdown,
         summarize_text,
     )
+    from app.services.analysis import summary_source as summary_source_module
+    from app.services.analysis.content_selection import (
+        CONTENT_SELECTION_RESPONSE_SCHEMA,
+        CONTENT_SELECTION_SYSTEM_PROMPT,
+    )
+    from app.services.analysis.llm import get_llm_service
     from app.services.analysis.source_context import (
         canonicalize_text,
         merge_analysis_with_source,
@@ -167,26 +174,28 @@ async def _run_subtitle_fast_path(
         recognition_segments=recognition_segments,
         done=set(task.completed_steps or []),
     )
+    if video_ready is not None:
+        await video_ready.wait()
+        await _raise_if_cancelled(task.id)
     await review_transcript_speakers(caption_context)
+    await identify_transcript_speakers(caption_context)
     await _update_step(task, PipelineStep.POLISH)
     polished = await polish_text(
         caption_context.reviewed_srt or srt, context=caption_context.analysis
     )
+    if lineage := caption_context.analysis.pop("_speaker_lineage", None):
+        import json
+        await _write_text_artifact(task, task_dir, "transcript_lineage.json", json.dumps(lineage, ensure_ascii=False, indent=2))
     await _raise_if_cancelled(task.id)
     if polished:
+        from app.services.analysis.speaker_quality import finalize_speaker_quality
+        finalize_speaker_quality(metadata.extra, polished, task.options.get("num_speakers"))
         polished_md = srt_to_markdown(polished, metadata.title)
         await _write_text_artifact(task, task_dir, "transcript_polished.srt", polished)
         await _write_text_artifact(task, task_dir, "transcript_polished.md", polished_md)
-    from app.services.analysis.transcript_outputs import _parse_srt, _split_speaker_prefix
-
-    speakers = sorted(
-        {
-            speaker
-            for cue in _parse_srt(polished or caption_context.reviewed_srt or srt)
-            if (speaker := _split_speaker_prefix(cue["text"])[0])
-        }
-    )
-    metadata.extra.update(speakers=speakers, speaker_count=len(speakers))
+    from app.services.analysis.speaker_quality import finalize_speaker_quality
+    finalize_speaker_quality(metadata.extra, polished or caption_context.reviewed_srt or srt, task.options.get("num_speakers"))
+    speakers = metadata.extra["speakers"]
     await _update_step(task, PipelineStep.POLISH, completed=True)
     await _raise_if_cancelled(task.id)
 
@@ -206,7 +215,33 @@ async def _run_subtitle_fast_path(
         else None,
         "source_context": source_context,
     }
-    source_timeline = list(source_context.get("timeline") or [])
+    analysis_text = _plain_text_from_srt(polished) if polished else transcript
+    downstream_source = polished or srt or transcript
+
+    async def select_call(prompt: str) -> str:
+        return await get_llm_service()._call(
+            prompt,
+            stage="analyze",
+            system_prompt=CONTENT_SELECTION_SYSTEM_PROMPT,
+            response_schema=CONTENT_SELECTION_RESPONSE_SCHEMA,
+        )
+
+    selected_source = await summary_source_module.prepare_summary_source(
+        downstream_source,
+        {"title": metadata.title, **video_metadata},
+        source_context,
+        select_call,
+    )
+    import json as _json
+
+    await _write_text_artifact(
+        task,
+        task_dir,
+        "content_selection.json",
+        _json.dumps(selected_source["selection"], ensure_ascii=False, indent=2),
+    )
+    summary_context = selected_source["source_context"]
+    source_timeline = list(summary_context.get("timeline") or [])
     mindmap_metadata = {
         "title": metadata.title,
         "uploader": metadata.uploader,
@@ -214,15 +249,12 @@ async def _run_subtitle_fast_path(
         "chapters": (
             [{"title": item["title"], "start_time": item["start"]} for item in source_timeline]
             if source_timeline
-            else [{"title": ch.title, "start_time": ch.start_time} for ch in metadata.chapters]
-            if metadata.chapters
             else None
         ),
-        "source_context": source_context,
+        "source_context": summary_context,
     }
 
-    analysis_text = _plain_text_from_srt(polished) if polished else transcript
-    mindmap_text = polished or srt or transcript
+    mindmap_text = selected_source["text"]
     rt = get_runtime_settings()
 
     analysis = await analyze_content(analysis_text, metadata.title, metadata=video_metadata)
@@ -232,27 +264,17 @@ async def _run_subtitle_fast_path(
     user_language = _user_language_hint(analysis)
 
     # Write analysis first so the frontend can surface language/topics early
-    import json as _json
-
     if analysis:
         await _write_text_artifact(
             task, task_dir, "analysis.json", _json.dumps(analysis, indent=2, ensure_ascii=False)
         )
 
-    tasks = [
-        summarize_text(
-            analysis_text,
-            user_language=user_language,
-            source_context=source_context,
-        ),
-        generate_mindmap(mindmap_text, metadata=mindmap_metadata, user_language=user_language),
-    ]
+    tasks = [generate_mindmap(mindmap_text, metadata=mindmap_metadata, user_language=user_language)]
     if rt.generate_video_detail:
         tasks.append(generate_detail(mindmap_text, user_language=user_language))
     results = await asyncio.gather(*tasks)
-    summary = results[0]
-    mindmap = results[1]
-    mindmap = canonicalize_text(mindmap, source_context)
+    mindmap = results[0]
+    mindmap = canonicalize_text(mindmap, summary_context)
     from app.services.analysis.text_locale import normalize_chinese_script
 
     mindmap = normalize_chinese_script(
@@ -260,7 +282,14 @@ async def _run_subtitle_fast_path(
         user_language,
         source_text=mindmap_text,
     )
-    detail = canonicalize_text(results[2], source_context) if len(results) > 2 else ""
+    detail = canonicalize_text(results[1], summary_context) if len(results) > 1 else ""
+    summary_context = summary_source_module.outline_guided_context(summary_context, mindmap)
+    summary_text = _plain_text_from_srt(mindmap_text) if polished or srt else mindmap_text
+    summary = await summarize_text(
+        summary_text,
+        user_language=user_language,
+        source_context=summary_context,
+    )
     await _raise_if_cancelled(task.id)
 
     if summary:
@@ -269,6 +298,9 @@ async def _run_subtitle_fast_path(
         await _write_mindmap_files(task, task_dir, mindmap)
     if detail:
         await _write_detail_file(task, task_dir, detail)
+    # The new summary and mind map were written from the current speaker names.
+    metadata.extra.pop("derived_content_stale", None)
+    metadata.extra.pop("derived_content_stale_reason", None)
 
     await _update_step(task, PipelineStep.ANALYZE, completed=True)
 
@@ -277,7 +309,6 @@ async def _run_subtitle_fast_path(
     caption_context.summary = summary
     caption_context.mindmap = mindmap
     caption_context.detail = detail
-    await identify_transcript_speakers(caption_context)
     srt = caption_context.srt
     polished = caption_context.polished or polished
     polished_md = caption_context.polished_md or polished_md

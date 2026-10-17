@@ -1,12 +1,13 @@
 import { usePlatform } from "@/platform/use-platform"
-import { notifyError } from "@/lib/notify"
+import { notifyError, notifySuccess } from "@/lib/notify"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createArchiveRepository } from "@/repositories/archive-repository"
 import { useAppAccess } from "@/hooks/use-app-access-context"
 import { useArchives, type ArchiveItem } from "@/hooks/use-archives"
 import { usePreferences } from "@/hooks/use-preferences"
+import { libraryChanged } from "@/hooks/use-library-directory"
 import { type TranscriptTocNode } from "@/components/result/transcript-tab"
-import { parseSRT, subtitlesToMarkdown, subtitlesToPlainText, subtitlesToSRT, type Subtitle } from "@/lib/srt"
+import { parseSRT, subtitlesToMarkdown, subtitlesToPlainText, subtitlesToSRT, type Subtitle, type SpeakerHints, type SpeakerQuality } from "@/lib/srt"
 import { createZip, downloadBytes, safeFileName, type ZipEntry } from "@/lib/zip"
 import { type ImageDescription } from "@/components/result/image-note-viewer"
 import { api, type Task, type TaskFlowSnapshot, type TaskTimelineEvent } from "@/lib/api"
@@ -36,18 +37,29 @@ import {
 import { usePortraitResultLayout, useMobileResultLayout } from "./use-result-layout"
 
 
+const EMPTY_SPEAKER_HINTS: SpeakerHints = { nameSources: {}, suggestions: [], participants: [] }
+
 export interface ResultViewerProps {
   archivePath: string
+  embedded?: boolean
+  layoutWidth?: number
+  onTarget?: (path: string | null, taskId?: string | null) => void
   taskId?: string | null
   /** Open the transcript at this second instead of where it was last left */
   startAt?: number
 }
 
-export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: ResultViewerProps) {
+export function useResultViewer({ archivePath, taskId: taskIdProp, startAt, embedded, layoutWidth, onTarget }: ResultViewerProps) {
   const platformAdapter = usePlatform()
+  const [scopeRevision, setScopeRevision] = useState(0)
+  useEffect(() => {
+    const changed = () => setScopeRevision((value) => value + 1)
+    window.addEventListener("mpp:offline-scope-change", changed)
+    return () => window.removeEventListener("mpp:offline-scope-change", changed)
+  }, [])
   const archiveRepository = useMemo(() => createArchiveRepository(platformAdapter), [platformAdapter])
   const { capabilities, online } = useAppAccess()
-  const { archives, refresh: refreshArchives } = useArchives()
+  const { archives, refresh: refreshArchives } = useArchives(true, !embedded)
   const { prefs, update: updatePrefs } = usePreferences()
   const [archive, setArchive] = useState<ArchiveItem | null>(null)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
@@ -82,6 +94,15 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
   const [secondaryTrackLang, setSecondaryTrackLang] = useState<string | null>(null)
   const [secondarySubtitles, setSecondarySubtitles] = useState<Subtitle[] | null>(null)
   const primarySubtitles = useRef<Subtitle[]>([])
+  const [speakerSubtitles, setSpeakerSubtitles] = useState<Subtitle[]>([])
+  const [speakerQuality, setSpeakerQuality] = useState<SpeakerQuality | null>(null)
+  const [derivedContentStale, setDerivedContentStale] = useState(false)
+  const [speakerHints, setSpeakerHints] = useState<SpeakerHints>(EMPTY_SPEAKER_HINTS)
+  /** Outcome of the last "补全人物" run, from the task record */
+  const [speakerAutoFill, setSpeakerAutoFill] = useState<{ status: string; error?: string } | null>(null)
+  const [autoFilling, setAutoFilling] = useState(false)
+  const [regenerating, setRegenerating] = useState(false)
+  const speakerLabelsKnown = useRef(false)
   const [subtitleSourceType, setSubtitleSourceType] = useState<"platform" | "asr" | null>(null)
   const [sourceUrl, setSourceUrl] = useState<string | null>(null)
   const [platform, setPlatform] = useState<string | null>(null)
@@ -100,8 +121,10 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
 
   // Media URL state — may change when source/ is deleted after completion
   const [mediaUrl, setMediaUrl] = useState<string | null>(null)
+  const viewerGeneration = useRef(0)
 
   useEffect(() => {
+    viewerGeneration.current += 1
     setArchive(null)
     setResolvedTaskId(taskIdProp !== undefined ? taskIdProp : undefined)
     setSummary(null)
@@ -113,6 +136,13 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
     setSummaryChapterNodes(null)
     setDetail(null)
     setSubtitles([])
+    setSpeakerSubtitles([])
+    setSpeakerQuality(null)
+    setDerivedContentStale(false)
+    setSpeakerHints(EMPTY_SPEAKER_HINTS)
+    setSpeakerAutoFill(null)
+    speakerLabelsKnown.current = false
+    primarySubtitles.current = []
     setTranscriptEditing(false)
     setRenamingSpeaker(false)
     speakerWritePending.current = false
@@ -134,13 +164,16 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
     setTaskFlow(null)
     setTimelineEvents([])
     setMediaUrl(null)
-  }, [archivePath, taskIdProp])
+    return () => { viewerGeneration.current += 1 }
+  }, [archivePath, taskIdProp, scopeRevision])
 
   const transcriptChanged = useMemo(
-    () => subtitlesToSRT(subtitles) !== subtitlesToSRT(parseSRT(transcript ?? "")),
-    [subtitles, transcript],
+    () => subtitlesToSRT(subtitles) !== subtitlesToSRT(parseSRT(transcript ?? "", { speakerLabels: isPolished || speakerLabelsKnown.current })),
+    [subtitles, transcript, isPolished],
   )
   const hasUnsavedTranscript = transcriptEditing || transcriptChanged
+  const unsavedTranscriptRef = useRef(hasUnsavedTranscript)
+  unsavedTranscriptRef.current = hasUnsavedTranscript
 
   // Persist and restore viewing position
   const { updateMediaTime, updateActiveTab, getSavedPosition } = useViewPosition(archivePath)
@@ -185,24 +218,27 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
   const [mergeInfo, setMergeInfo] = useState<SpeakerMergeInfo | null>(null)
 
   const applyRenameLocally = useCallback(
-    async (oldName: string, newName: string) => {
+    async (oldName: string, newName: string, persist = true) => {
       const updated = subtitles.map((sub) =>
         sub.speaker === oldName ? { ...sub, speaker: newName } : sub,
       )
-      setSubtitles(updated)
       const srtPath = archivePath + sep + (isPolished ? "transcript_polished.srt" : "transcript.srt")
-      try {
-        const content = subtitlesToSRT(updated)
-        const saved = await api.filesystem.write(srtPath, content)
-        if (saved.success) setTranscript(content)
-      } catch (err) {
-        console.warn("Failed to save SRT after speaker rename:", err)
+      const content = subtitlesToSRT(updated)
+      if (persist) {
+        const saved = await api.filesystem.write(srtPath, content, transcript ?? undefined)
+        if (!saved.success) throw new Error("字幕保存失败")
       }
+      setSubtitles(updated)
+      setSpeakerSubtitles(updated)
+      primarySubtitles.current = updated
+      setTranscript(content)
+      setDerivedContentStale(true)
     },
-    [subtitles, archivePath, sep, isPolished],
+    [subtitles, archivePath, sep, isPolished, transcript],
   )
 
   const handleRenameSpeaker = async (oldName: string, newName: string) => {
+    if (oldName.toLowerCase() === "unknown") return
     if (speakerWritePending.current || hasUnsavedTranscript || mergeInfo) return
     const request = speakerEditVersion.current
     speakerWritePending.current = true
@@ -212,7 +248,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
         await applyRenameLocally(oldName, newName)
         return
       }
-      const res = await api.voiceprints.renameTaskSpeaker(resolvedTaskId, oldName, newName, "ask")
+      const res = await api.voiceprints.renameTaskSpeaker(resolvedTaskId, oldName, newName, "ask", transcript ?? undefined)
       if (request !== speakerEditVersion.current) return
       if (res.status === "conflict") {
         setMergeInfo({
@@ -226,11 +262,10 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
       }
       // renamed or merged — both mean local SRT should reflect the resolved name
       const appliedName = res.person_name ?? newName
-      await applyRenameLocally(oldName, appliedName)
+      await applyRenameLocally(oldName, appliedName, false)
     } catch (err) {
       if (request !== speakerEditVersion.current) return
-      console.warn("renameTaskSpeaker failed, falling back to local rename:", err)
-      await applyRenameLocally(oldName, newName)
+      notifyError("改名失败，请刷新字幕后重试", err)
     } finally {
       if (request === speakerEditVersion.current) {
         speakerWritePending.current = false
@@ -258,10 +293,11 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
         mergeInfo.oldName,
         mergeInfo.newName,
         choice,
+        transcript ?? undefined,
       )
       if (request !== speakerEditVersion.current) return
       const appliedName = res.person_name ?? mergeInfo.newName
-      await applyRenameLocally(mergeInfo.oldName, appliedName)
+      await applyRenameLocally(mergeInfo.oldName, appliedName, false)
     } catch (err) {
       console.warn("Conflict resolution failed:", err)
     } finally {
@@ -281,17 +317,36 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
     setNoteText((metadata.description as string | null) ?? null)
 
     const extra = asRecord(metadata.extra)
+    setSpeakerQuality((asRecord(extra?.speaker_quality) as SpeakerQuality | null) ?? { status: "needs_review", reason: "旧档人物标签待核对" })
+    setDerivedContentStale(extra?.derived_content_stale === true)
+    setSpeakerHints({
+      nameSources: (asRecord(extra?.speaker_name_sources) as Record<string, string> | null) ?? {},
+      suggestions: Array.isArray(extra?.speaker_suggestions) ? extra.speaker_suggestions as SpeakerHints["suggestions"] : [],
+      participants: [
+        ...(Array.isArray(extra?.speaker_participants) ? extra.speaker_participants as string[] : []),
+        ...(typeof metadata.uploader === "string" && metadata.uploader ? [metadata.uploader] : []),
+      ].filter((name, index, names) => names.indexOf(name) === index),
+    })
+    speakerLabelsKnown.current = extra?.raw_speaker_label_contract === 1 || extra?.subtitle_source === "asr" || metadata.subtitle_source === "asr"
     const tracks = (extra?.subtitle_tracks as SubtitleTrackInfo[] | undefined) ?? []
     setSubtitleTracks(tracks)
     const polished = tracks.find((t) => t.polished)
     setPolishedLang(polished?.lang ?? null)
     if (polished) setActiveTrackLang((current) => current ?? polished.lang)
-    if (tracks.some((t) => t.type === "asr")) setSubtitleSourceType("asr")
-    else if (tracks.length > 0) setSubtitleSourceType("platform")
+    const actualSource = extra?.subtitle_source ?? metadata.subtitle_source
+    if (actualSource === "asr" || actualSource === "platform") setSubtitleSourceType(actualSource)
+    else if (extra?.speaker_source === "subtitle_inference") setSubtitleSourceType("platform")
+    else if (polished?.type === "asr") setSubtitleSourceType("asr")
+    else if (polished) setSubtitleSourceType("platform")
+    else if (tracks.length && tracks.every((t) => t.type !== "asr")) setSubtitleSourceType("platform")
+    else setSubtitleSourceType(null)
   }, [])
 
   const applyTaskSnapshot = useCallback((task: Task) => {
     setTaskStatus(task.status)
+    const repair = asRecord(asRecord(task.result)?.speaker_repair)
+    setSpeakerAutoFill(repair && typeof repair.status === "string"
+      ? { status: repair.status, error: typeof repair.error === "string" ? repair.error : undefined } : null)
     setCompletedSteps(task.completed_steps ?? [])
     setTaskError(task.error)
     setTaskFlow(task.flow ?? null)
@@ -322,9 +377,10 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
   }, [applyMetadataState, taskIdProp])
 
   const refreshArchiveDetail = useCallback(async (silent = false) => {
+    const generation = viewerGeneration.current
     try {
       const item = await archiveRepository.get(archivePath)
-      if (!item) return null
+      if (!item || generation !== viewerGeneration.current) return null
       applyArchiveSnapshot(item)
       return item
     } catch (error) {
@@ -346,10 +402,11 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
     return () => {
       cancelled = true
     }
-  }, [archivePath, applyArchiveSnapshot, archiveRepository])
+  }, [archivePath, applyArchiveSnapshot, archiveRepository, scopeRevision])
 
   // Find archive from list
   useEffect(() => {
+    if (embedded) return
     const found = archives.find((a) => a.path === archivePath)
     if (found) {
       if (!archive || archive.path !== archivePath) {
@@ -366,7 +423,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
         setTaskStatus("completed")
       }
     }
-  }, [archives, archive, archivePath, taskIdProp, resolvedTaskId, applyMetadataState])
+  }, [archives, archive, archivePath, taskIdProp, resolvedTaskId, applyMetadataState, embedded])
 
   // Resolve media URL
   const resolveMediaUrl = useCallback((arch: ArchiveItem | null) => {
@@ -387,8 +444,10 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
 
   // --- Progressive file loading ---
   const readFilePath = useCallback(async (path: string): Promise<string> => {
+    const generation = viewerGeneration.current
     try {
-      return await archiveRepository.readFile(path)
+      const content = await archiveRepository.readFile(path)
+      return generation === viewerGeneration.current ? content : ""
     } catch {
       return ""
     }
@@ -400,15 +459,20 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
   }, [archivePath, readFilePath])
 
   const applyTranscriptContent = useCallback((content: string, polished: boolean) => {
-    const parsed = parseSRT(content)
+    if (unsavedTranscriptRef.current) {
+      notifyError("字幕已有新版本，当前草稿已保留。请复制草稿后刷新。")
+      return
+    }
+    const parsed = parseSRT(content, { speakerLabels: polished || speakerLabelsKnown.current })
     primarySubtitles.current = parsed
+    setSpeakerSubtitles(parsed)
     setTranscript(content)
     setIsPolished(polished)
     setSubtitles(parsed)
-    setSubtitleSourceType((prev) => prev ?? (polished ? "platform" : "asr"))
   }, [])
 
   const loadGeneratedContent = useCallback(async (basePath = archivePath) => {
+    const generation = viewerGeneration.current
     const [
       summaryMd,
       mindmapMd,
@@ -431,6 +495,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
       loadFile("transcript.srt", basePath),
     ])
 
+    if (generation !== viewerGeneration.current) return
     if (summaryMd) setSummary(summaryMd)
     if (mindmapMd) setMindmap(mindmapMd)
     if (mindmapJson) {
@@ -455,8 +520,10 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
 
   const refreshTaskSnapshot = useCallback(async () => {
     if (!resolvedTaskId || !online) return null
+    const generation = viewerGeneration.current
     try {
       const task = await api.tasks.get(resolvedTaskId)
+      if (generation !== viewerGeneration.current) return null
       applyTaskSnapshot(task)
       return task
     } catch {
@@ -485,6 +552,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
   // Load image descriptions for image_note content type
   const loadImageDescriptions = useCallback(async () => {
     if (!archivePath) return
+    const generation = viewerGeneration.current
     const resultDescriptions: ImageDescription[] = []
     if (archive?.offline) {
       const files = archiveRepository.listFiles(archive, "images")
@@ -501,7 +569,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
           text,
         })
       }
-      if (resultDescriptions.length > 0) {
+      if (generation === viewerGeneration.current && resultDescriptions.length > 0) {
         setImageDescriptions(resultDescriptions)
         setActiveImageIdx(resultDescriptions[0].index)
       }
@@ -571,7 +639,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
       } catch { break }
     }
     const merged = descs.length > 0 ? descs : resultDescriptions
-    if (merged.length > 0) {
+    if (generation === viewerGeneration.current && merged.length > 0) {
       const sorted = [...merged].sort((a, b) => a.index - b.index)
       setImageDescriptions(sorted)
       setActiveImageIdx((current) => sorted.some((item) => item.index === current) ? current : sorted[0].index)
@@ -586,7 +654,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
   // Load files independently on mount
   useEffect(() => {
     loadGeneratedContent()
-  }, [archivePath, loadGeneratedContent])
+  }, [archivePath, loadGeneratedContent, scopeRevision])
 
   // --- SSE subscription for in-progress tasks ---
   useTaskSSE(online ? resolvedTaskId : null, {
@@ -654,8 +722,10 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
       }
     },
     async onCompleted(data) {
+      const generation = viewerGeneration.current
       setTaskStatus("completed")
       const task = await refreshTaskSnapshot()
+      if (generation !== viewerGeneration.current) return
       const outputDir =
         data.output_dir ??
         (task?.result?.output_dir as string | undefined) ??
@@ -667,9 +737,11 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
         loadGeneratedContent(outputDir || archivePath),
       ])
 
+      if (generation !== viewerGeneration.current) return
       if (outputDir && normalizeArchivePath(outputDir) !== normalizeArchivePath(archivePath)) {
         const tid = resolvedTaskId ? `&taskId=${encodeURIComponent(resolvedTaskId)}` : ""
-        navigate(`#/result/archive?path=${encodeURIComponent(outputDir)}${tid}`, { replace: true })
+        if (onTarget) onTarget(outputDir, resolvedTaskId)
+        else navigate(`#/result/archive?path=${encodeURIComponent(outputDir)}${tid}`, { replace: true })
       }
     },
     onFailed(data) {
@@ -697,8 +769,9 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
       const polished = await loadFile("transcript_polished.srt")
       const content = polished || await loadFile("transcript.srt")
       if (!content) return
-      const parsed = parseSRT(content)
+      const parsed = parseSRT(content, { speakerLabels: Boolean(polished) || speakerLabelsKnown.current })
       primarySubtitles.current = parsed
+      setSpeakerSubtitles(parsed)
       setActiveTrackLang(null)
       setTranscript(content)
       setIsPolished(Boolean(polished))
@@ -712,6 +785,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
       if (!content) return
       const parsed = parseSRT(content)
       primarySubtitles.current = parsed
+      setSpeakerSubtitles(parsed)
       setActiveTrackLang(lang)
       setTranscript(content)
       setIsPolished(true)
@@ -855,6 +929,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
     }
     try {
       await api.archives.rename(archivePath, trimmed)
+      libraryChanged()
       setDisplayTitle(trimmed)
       await Promise.all([
         refreshArchives(true),
@@ -981,13 +1056,45 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
         await api.tasks.checkpointRerun(resolvedTaskId)
       }
       await refreshArchives()
-      navigate(`#/result/task/${resolvedTaskId}`)
+      if (onTarget) onTarget(null, resolvedTaskId)
+      else navigate(`#/result/task/${resolvedTaskId}`)
     } catch (error) {
       notifyError("加入队列失败", error)
     } finally {
       setResuming(false)
     }
-  }, [refreshArchives, resolvedTaskId, resuming])
+  }, [refreshArchives, resolvedTaskId, resuming, onTarget])
+
+  /** Decide pending lines and name anonymous voices in the background; names set by hand stay. */
+  const handleAutoFillSpeakers = useCallback(async () => {
+    if (!resolvedTaskId || autoFilling) return
+    setAutoFilling(true)
+    try {
+      const result = await api.voiceprints.repairTaskSpeakers(resolvedTaskId, "auto")
+      setTaskStatus("queued")
+      setSpeakerAutoFill({ status: "queued" })
+      notifySuccess("已开始补全人物", result.message)
+    } catch (error) {
+      notifyError("补全人物没有开始", error)
+    } finally {
+      setAutoFilling(false)
+    }
+  }, [autoFilling, resolvedTaskId])
+
+  /** Rewrite summary and mind map with the current names, staying on this page. */
+  const handleRegenerateDerived = useCallback(async () => {
+    if (!resolvedTaskId || regenerating) return
+    setRegenerating(true)
+    try {
+      await api.tasks.checkpointRerun(resolvedTaskId)
+      setTaskStatus("queued")
+      notifySuccess("正在更新摘要和导图", "字幕和人物保持不变，完成后自动刷新。")
+    } catch (error) {
+      notifyError("更新摘要和导图失败", error)
+    } finally {
+      setRegenerating(false)
+    }
+  }, [regenerating, resolvedTaskId])
 
   const handleFullRerun = useCallback(async () => {
     if (rerunning) return
@@ -999,13 +1106,14 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
       }
       await api.tasks.fullRerun(resolvedTaskId)
       await refreshArchives()
-      navigate(`#/result/task/${resolvedTaskId}`)
+      if (onTarget) onTarget(null, resolvedTaskId)
+      else navigate(`#/result/task/${resolvedTaskId}`)
     } catch (error) {
       notifyError("重新处理失败", error)
     } finally {
       setRerunning(false)
     }
-  }, [refreshArchives, resolvedTaskId, rerunning])
+  }, [refreshArchives, resolvedTaskId, rerunning, onTarget])
 
   const handleOpenLocalFolder = useCallback(async () => {
     if (openingFolder) return
@@ -1019,8 +1127,10 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
     }
   }, [archivePath, openingFolder])
 
-  const isPortraitLayout = usePortraitResultLayout()
-  const isMobileLayout = useMobileResultLayout()
+  const portraitWindow = usePortraitResultLayout()
+  const mobileWindow = useMobileResultLayout()
+  const isPortraitLayout = layoutWidth === undefined ? portraitWindow : layoutWidth >= 560 && layoutWidth < 900
+  const isMobileLayout = layoutWidth === undefined ? mobileWindow : layoutWidth < 560
   const videoLoop = Boolean(prefs.videoLoop)
   const toggleVideoLoop = useCallback(() => {
     updatePrefs({ videoLoop: !videoLoop })
@@ -1052,6 +1162,15 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt }: Re
     isTextNote,
     isNoteContent,
     subtitles,
+    speakerSubtitles: isPrimaryTrack ? subtitles : speakerSubtitles,
+    speakerQuality,
+    derivedContentStale,
+    speakerHints,
+    speakerAutoFill,
+    autoFilling,
+    handleAutoFillSpeakers,
+    regenerating,
+    handleRegenerateDerived,
     duration,
     currentTime,
     seekTo,

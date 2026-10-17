@@ -38,7 +38,7 @@ function timelineToLog(event: TaskTimelineEvent): LogEntry {
   }
 }
 
-export function ResultPageLive({ taskId }: { taskId: string }) {
+export function ResultPageLive({ taskId, embedded, onTarget }: { taskId: string; embedded?: boolean; onTarget?: (path: string, taskId?: string | null) => void }) {
   const pipelineSteps = usePipelineSteps()
   const [task, setTask] = useState<Task | null>(null)
   const [flow, setFlow] = useState<TaskFlowSnapshot | null>(null)
@@ -122,11 +122,12 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
     if (task?.status === "completed" && task.result?.output_dir) {
       const outputDir = String(task.result.output_dir)
       const timer = setTimeout(() => {
-        navigate(`#/result/archive?path=${encodeURIComponent(outputDir)}`, { replace: true })
+        if (onTarget) onTarget(outputDir, taskId)
+        else navigate(`#/result/archive?path=${encodeURIComponent(outputDir)}`, { replace: true })
       }, 1500)
       return () => clearTimeout(timer)
     }
-  }, [task?.status, task?.result])
+  }, [task?.status, task?.result, onTarget, taskId])
 
   const handleCancel = async () => {
     setActionBusy("cancel")
@@ -195,10 +196,10 @@ export function ResultPageLive({ taskId }: { taskId: string }) {
       <div className="w-full max-w-3xl space-y-5 p-4 md:space-y-6 md:p-6">
         {/* Header */}
         <div className="flex flex-wrap items-center gap-3">
-          <Button className="h-11 md:h-8" variant="ghost" size="sm" onClick={() => navigate(libraryHash())}>
+          {!embedded && <Button className="h-11 md:h-8" variant="ghost" size="sm" onClick={() => navigate(libraryHash())}>
             <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4 mr-1" />
             返回
-          </Button>
+          </Button>}
           <div className="flex-1 min-w-0">
             <h2 className="text-lg font-semibold truncate">
               {task?.source ? task.source.split(/[/\\]/).pop() : `任务 ${taskId.slice(0, 8)}`}

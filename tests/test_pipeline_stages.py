@@ -237,6 +237,90 @@ async def test_caption_inference_resumes_before_polish_with_raw_srt_preserved(ru
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("resume_failed", [False, True], ids=["new-partial", "saved-partial"])
+async def test_partial_caption_report_finishes_archive(runtime, monkeypatch, resume_failed):
+    from app.core.pipeline_steps import speaker_review as stage
+    from app.services.analysis.transcript_outputs import _parse_srt
+    from app.services.recognition import subtitle_processor
+
+    source = (
+        "1\n00:00:00,000 --> 00:00:02,000\n我来介绍这个研究问题。\n\n"
+        "2\n00:00:02,000 --> 00:00:04,000\n这部分证据还需要进一步验证。\n\n"
+        "3\n00:00:04,000 --> 00:00:06,000\n[原标签] 后续讨论仍然完整保留。\n"
+    )
+    report = {
+        "status": "partial", "source": "subtitle_inference", "input_segments": 3,
+        "speakers": [{"id": "SPEAKER_00", "name": "讲者"}],
+        "assignments": [{"index": 1, "speaker": "SPEAKER_00"}],
+        "unassigned_segments": 2,
+        "failed_chunks": [{"chunk": 2, "error": "invalid JSON"}],
+    }
+    directory = runtime.root / "archives" / "partial-caption"
+    (directory / "subtitles").mkdir(parents=True)
+    (directory / "subtitles" / "zh.srt").write_text(source, encoding="utf-8")
+    (directory / "metadata.json").write_text(json.dumps({
+        "title": "partial-caption", "media_type": "video", "platform": "youtube",
+        "duration_seconds": 6,
+    }), encoding="utf-8")
+    completed_steps = ["download"]
+    if resume_failed:
+        (directory / "transcript.srt").write_text(source, encoding="utf-8")
+        (directory / "subtitle_speakers.json").write_text(
+            json.dumps(report, ensure_ascii=False), encoding="utf-8",
+        )
+        completed_steps += ["separate", "transcribe", "voiceprint"]
+    infer = AsyncMock(return_value=report)
+    event = AsyncMock()
+    subtitles = AsyncMock(return_value={"srt": source, "segments": [
+        {"start": index * 2, "end": (index + 1) * 2, "text": cue["text"]}
+        for index, cue in enumerate(_parse_srt(source))
+    ]})
+    monkeypatch.setattr(stage, "infer_subtitle_speakers", infer)
+    monkeypatch.setattr(stage, "_emit_timeline_event", event)
+    monkeypatch.setattr(subtitle_processor, "process_subtitles", subtitles)
+    runtime.polish.side_effect = lambda text, **kwargs: text
+    task = create_task(
+        "https://www.youtube.com/watch?v=fixture", completed_steps=completed_steps,
+        result={"output_dir": str(directory), "subtitle_source": "platform"},
+    )
+    store = database.get_task_store()
+    if resume_failed:
+        store.update_status(task.id, TaskStatus.FAILED, error="字幕说话人推断有批次失败")
+
+    await pipeline.process_task(task.id)
+
+    saved = store.get(task.id)
+    assert saved.status == TaskStatus.COMPLETED
+    assert saved.error is None
+    assert {"speaker_review", "polish", "analyze", "archive"} <= set(saved.completed_steps)
+    if resume_failed:
+        infer.assert_awaited_once()
+        subtitles.assert_not_awaited()
+    else:
+        infer.assert_awaited_once()
+        subtitles.assert_awaited_once()
+    runtime.asr.assert_not_awaited()
+    runtime.polish.assert_awaited_once()
+    runtime.summarize.assert_awaited_once()
+    runtime.mindmap.assert_awaited_once()
+    original = _parse_srt(source)
+    assert _parse_srt((directory / "transcript.srt").read_text(encoding="utf-8")) == original
+    reviewed = _parse_srt((directory / "transcript_polished.srt").read_text(encoding="utf-8"))
+    assert reviewed == [
+        {**original[0], "text": "[讲者] " + original[0]["text"]},
+        {**original[1], "text": "[unknown] " + original[1]["text"]},
+        original[2],
+    ]
+    assert json.loads((directory / "subtitle_speakers.json").read_text(encoding="utf-8")) == report
+    assert saved.result["metadata"]["extra"]["speaker_inference"]["status"] == "partial"
+    event.assert_awaited_once()
+    assert event.await_args.kwargs["level"] == "warning"
+    for filename in ("summary.md", "mindmap.md", "mindmap.json"):
+        assert (directory / filename).read_text(encoding="utf-8").strip()
+    assert json.loads((directory / "metadata.json").read_text(encoding="utf-8"))["status"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_subtitle_fast_path_infers_speakers_before_polish(runtime, monkeypatch):
     from app.core.pipeline_steps import speaker_review as stage
     from app.core.pipeline_steps import subtitle_fast_path as fast
@@ -270,7 +354,7 @@ async def test_subtitle_fast_path_infers_speakers_before_polish(runtime, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_postprocess_identifies_after_summary_and_archives_names(runtime, monkeypatch):
+async def test_postprocess_identifies_before_polish_and_archives_names(runtime, monkeypatch):
     from app.core.pipeline_steps import speaker_review as stage
 
     source = (
@@ -293,40 +377,40 @@ async def test_postprocess_identifies_after_summary_and_archives_names(runtime, 
 
     def polish(*args, **kwargs):
         calls.append("polish")
-        return polished
+        assert "[张三]" in args[0]
+        return args[0].replace("今天分享", "今天介绍")
 
     def identify(srt, **kwargs):
         calls.append("identify")
-        assert srt == polished
-        assert {"summary", "mindmap", "detail"} <= set(calls[:-1])
-        assert kwargs["context"]["analysis"]["content_type"] == "技术讲座"
-        assert kwargs["context"]["summary"]["tldr"] == "张三主讲，SPEAKER_00介绍项目。"
+        assert srt.strip() == source.strip()
+        assert calls == ["identify"]
+        assert "summary" not in kwargs["context"]
         assert kwargs["context"]["speaker_activity"]
         return {"status": "completed", "mappings": [{
             "source_label": "SPEAKER_00", "current_name": "张三",
-            "evidence_indexes": [1], "reason": "摘要明确主讲人，声学标签时长占比显著",
+            "evidence_indexes": [1], "reason": "已验证的身份映射夹具",
         }]}
 
     def analyze(text, *args, **kwargs):
         calls.append("analyze")
-        assert "[SPEAKER_00]" in text
+        assert "[张三]" in text
         assert "今天介绍我的项目" in text
         return {
             "language": "zh", "proper_nouns": [], "content_type": "技术讲座",
-            "main_topics": ["SPEAKER_00 的项目"],
+            "main_topics": ["张三 的项目"],
         }
 
     def summarize(*args, **kwargs):
         calls.append("summary")
-        return {"tldr": "张三主讲，SPEAKER_00介绍项目。", "key_facts": ["SPEAKER_00建议实践。"]}
+        return {"tldr": "张三主讲，张三介绍项目。", "key_facts": ["张三建议实践。"]}
 
     def mindmap(*args, **kwargs):
         calls.append("mindmap")
-        return "# 项目分享\n- SPEAKER_00 的实践"
+        return "# 项目分享\n- 张三 的实践"
 
     def detail(*args, **kwargs):
         calls.append("detail")
-        return "SPEAKER_00介绍实现细节。"
+        return "张三介绍实现细节。"
 
     runtime.polish.side_effect = polish
     runtime.identify.side_effect = identify
@@ -337,11 +421,12 @@ async def test_postprocess_identifies_after_summary_and_archives_names(runtime, 
     task = create_task(runtime.source)
     await pipeline.run_pipeline(task)
 
-    assert calls[:2] == ["polish", "analyze"]
-    assert calls[-1] == "identify"
+    assert calls[:3] == ["identify", "polish", "analyze"]
+    assert calls.count("identify") == 1
     directory = Path(task.result["output_dir"])
+    assert (directory / "transcript.srt").read_text(encoding="utf-8").strip() == source.strip()
     for filename in (
-        "transcript.srt", "transcript_polished.srt", "transcript_polished.md",
+        "transcript_polished.srt", "transcript_polished.md",
         "analysis.json", "summary.json", "summary.md", "mindmap.md", "mindmap.json", "detail.md",
     ):
         content = (directory / filename).read_text(encoding="utf-8")
@@ -350,7 +435,7 @@ async def test_postprocess_identifies_after_summary_and_archives_names(runtime, 
         assert database.get_task_store().get_artifact(task.id, filename)["content"] == content
     identity = json.loads((directory / "speaker_identity.json").read_text(encoding="utf-8"))
     assert identity["mappings"][0]["current_name"] == "张三"
-    assert identity["context_stage"] == "analyzed"
+    assert identity["context_stage"] == "pre_summary_v2"
     assert set(task.result["metadata"]["extra"]["speakers"]) == {"张三", "SPEAKER_01"}
     assert task.result["analysis"]["main_topics"] == ["张三 的项目"]
     assert "[SPEAKER_01] 谢谢分享。" in (
@@ -359,7 +444,7 @@ async def test_postprocess_identifies_after_summary_and_archives_names(runtime, 
 
 
 @pytest.mark.asyncio
-async def test_subtitle_fast_path_identifies_names_after_summary(runtime, monkeypatch):
+async def test_subtitle_fast_path_identifies_names_before_summary(runtime, monkeypatch):
     from app.core.pipeline_steps import speaker_review as stage
     from app.core.pipeline_steps import subtitle_fast_path as fast
     from app.models import MediaMetadata
@@ -381,13 +466,12 @@ async def test_subtitle_fast_path_identifies_names_after_summary(runtime, monkey
     runtime.summarize.return_value = {"tldr": "张三主讲本次项目分享。", "key_facts": []}
 
     def identify(srt, **kwargs):
-        assert runtime.polish.await_count == 1
-        assert runtime.analyze.await_count == 1
-        assert runtime.summarize.await_count == 1
-        assert runtime.mindmap.await_count == 1
-        assert "[SPEAKER_00]" in srt and "今天介绍我的项目" in srt
-        assert kwargs["context"]["summary"]["tldr"] == "张三主讲本次项目分享。"
-        assert kwargs["context"]["analysis"]["language"] == "zh"
+        assert runtime.polish.await_count == 0
+        assert runtime.analyze.await_count == 0
+        assert runtime.summarize.await_count == 0
+        assert runtime.mindmap.await_count == 0
+        assert "[SPEAKER_00]" in srt and "今天分享我的项目" in srt
+        assert "summary" not in kwargs["context"]
         candidate = kwargs["context"]["speaker_candidates"][0]
         assert candidate["name"] == "张三" and candidate["evidence"] == "嘉宾介绍"
         return {"status": "completed", "mappings": [{
@@ -406,7 +490,7 @@ async def test_subtitle_fast_path_identifies_names_after_summary(runtime, monkey
 
     runtime.identify.assert_awaited_once()
     analyzed = runtime.analyze.call_args.args[0]
-    assert "[SPEAKER_00]" in analyzed and "今天介绍我的项目" in analyzed
+    assert "[张三]" in analyzed and "今天介绍我的项目" in analyzed
     assert "[张三]" in result["polished"]
     assert "张三" in result["polished_md"]
     for filename in ("transcript_polished.srt", "transcript_polished.md"):
@@ -486,7 +570,8 @@ async def test_pausing_during_asr_releases_semaphore_and_keeps_checkpoint(runtim
     assert saved.status == status
     assert "download" in saved.completed_steps
     assert runtime.queue.gpu_semaphore._value == 1
-    assert runtime.released == [True]
+    # Release the previous ASR model before metadata tagging, then release on pause.
+    assert runtime.released == [True, True]
     assert json.loads((directory / "metadata.json").read_text())["status"] == str(status)
 
 
@@ -591,3 +676,16 @@ async def test_uvr_failure_releases_model_before_asr_fallback(runtime, monkeypat
     await pipeline.run_pipeline(task)
     assert order == ["uvr", "release", "asr"]
     assert runtime.queue.gpu_semaphore._value == 1
+
+
+@pytest.mark.asyncio
+async def test_metadata_speaker_count_is_ready_before_first_asr_pass(runtime, monkeypatch):
+    prepared = AsyncMock(return_value={"title": "fixture", "speaker_count_hint": {
+        "exact": 2, "min": 2, "max": 2, "confidence": 1, "evidence": "complete roster"}})
+    monkeypatch.setattr(transcription, "_prepare_source_context", prepared)
+    task = create_task(runtime.source)
+    await pipeline.run_pipeline(task, _stop_after_transcribe=True)
+    assert prepared.call_args.kwargs["enrich"] is True
+    assert runtime.asr.call_args.kwargs["num_speakers"] is None
+    assert runtime.asr.call_args.kwargs["max_speakers"] is None
+    runtime.polish.assert_not_awaited()

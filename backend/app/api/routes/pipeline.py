@@ -18,7 +18,6 @@ _WIN_RESERVED = re.compile(
     r'^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(\..+)?$', re.IGNORECASE
 )
 
-import ipaddress
 from urllib.parse import urlparse
 
 from app.core.paths import get_workspace_paths
@@ -28,7 +27,11 @@ from app.core.workspace_lifecycle import run_in_thread
 from app.core.settings import get_runtime_settings
 from app.core.pipeline import pipeline_steps_schema
 from app.core.source_normalization import normalize_source_input
-from app.core.network import urllib_urlopen
+from app.core.public_urls import (
+    UnsafeURLError,
+    public_urlopen as urllib_urlopen,
+    validate_public_http_url,
+)
 from app.core.security import require_filesystem_access
 from app.services.archiving.thumbnails import (
     create_image_thumbnail,
@@ -41,30 +44,10 @@ logger = logging.getLogger(__name__)
 
 
 def _validate_url(url: str) -> None:
-    """Validate URL to prevent SSRF — reject file://, internal IPs, localhost."""
-    parsed = urlparse(url)
-
-    # Only allow http(s)
-    if parsed.scheme not in ("http", "https"):
-        raise HTTPException(400, f"Unsupported URL scheme: {parsed.scheme!r} — only http/https allowed")
-
-    hostname = parsed.hostname or ""
-
-    # Reject localhost variants
-    if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
-        raise HTTPException(400, "URL pointing to localhost is not allowed")
-
-    # Reject private/reserved IP ranges
     try:
-        addr = ipaddress.ip_address(hostname)
-        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
-            raise HTTPException(400, "URL pointing to private/reserved IP is not allowed")
-    except ValueError:
-        pass  # hostname is a domain name, not an IP — that's fine
-
-    # Reject cloud metadata endpoints
-    if hostname in ("169.254.169.254", "metadata.google.internal"):
-        raise HTTPException(400, "URL pointing to cloud metadata endpoint is not allowed")
+        validate_public_http_url(url)
+    except UnsafeURLError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 
@@ -274,7 +257,7 @@ def sweep_stale_staging(max_age_hours: float = 24.0) -> int:
 async def probe_url(url: str):
     """Extract metadata from a URL without downloading (for hotword suggestions)."""
     url = normalize_source_input(url)
-    _validate_url(url)
+    await run_in_thread(_validate_url, url)
 
     def _probe(url: str) -> dict[str, Any]:
         from app.services.ingestion.ytdlp import get_ytdlp_service
@@ -310,7 +293,7 @@ async def inspect_bilibili_collection_url(url: str):
         bvid_match = re.search(r"\bBV[0-9A-Za-z]{10}\b", url)
         if bvid_match:
             url = f"https://www.bilibili.com/video/{bvid_match.group(0)}"
-    _validate_url(url)
+    await run_in_thread(_validate_url, url)
     from app.services.ingestion.platform.bilibili.collection import inspect_bilibili_collection
 
     try:
@@ -323,7 +306,7 @@ async def inspect_bilibili_collection_url(url: str):
 @router.post("/download")
 async def download(req: DownloadRequest):
     """Download media from URL."""
-    _validate_url(req.url)
+    await run_in_thread(_validate_url, req.url)
     from app.services.ingestion import download_media
     return await download_media(req.url)
 
@@ -387,19 +370,26 @@ async def archives(
     search: str = "",
     media: str = Query("all", description="all, or comma-separated video,audio,image"),
     source: str = Query("all", description="all, or comma-separated source keys"),
-    sort: Literal["created_desc", "created_asc", "published_desc", "title_asc"] = "created_desc",
+    sort: Literal["processed_desc", "created_desc", "created_asc", "published_desc", "title_asc"] = "processed_desc",
     status: str = Query("all", description="all, or comma-separated processing,paused,failed,completed"),
     duplicates: bool = Query(False, description="List every run of sources processed more than once"),
+    folder_id: str | None = None,
+    unclassified: bool = False,
+    offset: int | None = Query(None, ge=0),
+    include_folders: bool = False,
 ):
     """List archived content (all, sorted by mtime desc)."""
     from app.services.archiving import list_archives
-    if page is not None:
+    if page is not None or folder_id or unclassified or include_folders:
         from app.core.archive_sync import get_archive_sync_service
         try:
-            return await run_in_thread(get_archive_sync_service().list_page, page=page,
+            return await run_in_thread(get_archive_sync_service().list_page, page=page or 1,
                                        page_size=page_size, search=search, media=media,
                                        source=source, sort=sort, status=status,
-                                       duplicates=duplicates)
+                                       duplicates=duplicates, folder_id=folder_id, unclassified=unclassified, offset=offset,
+                                       include_folders=include_folders)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
     return {"archives": await list_archives(lite=lite)}
@@ -437,12 +427,11 @@ class ArchiveLookupRequest(BaseModel):
 
 @router.post("/archives/lookup")
 async def lookup_archives(req: ArchiveLookupRequest):
-    """Archives already made from each submitted link."""
-    from app.core.archive_sync import get_archive_sync_service
+    """Archives and current tasks already made from each submitted link."""
+    from app.core.task_import import lookup_import_sources
     if len(req.sources) > 200:
         raise HTTPException(400, "Too many sources")
-    matches = await run_in_thread(get_archive_sync_service().lookup_sources, req.sources)
-    return {"matches": matches}
+    return await run_in_thread(lookup_import_sources, req.sources)
 
 
 @router.get("/archives/index")
@@ -478,6 +467,8 @@ async def archive_detail(path: str):
     archive = await get_archive(str(archive_dir), lite=False)
     if not archive:
         raise HTTPException(404, "Archive not found")
+    from app.core.library import get_library_service
+    archive = await run_in_thread(get_library_service().decorate, archive)
     return {"archive": archive}
 
 

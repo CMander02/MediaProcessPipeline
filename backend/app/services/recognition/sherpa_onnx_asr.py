@@ -110,6 +110,7 @@ def _merge_timed_units(
     offset: float = 0.0,
     max_segment_sec: float = 12.0,
     token_stream: bool = False,
+    end_bound: float | None = None,
 ) -> list[dict[str, Any]]:
     segments: list[dict[str, Any]] = []
     current_text = ""
@@ -129,7 +130,9 @@ def _merge_timed_units(
             token_stream=token_stream,
         )
         current_end = end
-        if _SENTENCE_END.search(text.strip()) or current_end - current_start >= max_segment_sec:
+        if current_end > current_start and (
+            _SENTENCE_END.search(text.strip()) or current_end - current_start >= max_segment_sec
+        ):
             segments.append(
                 {
                     "start": round(current_start, 3),
@@ -140,6 +143,16 @@ def _merge_timed_units(
             current_text = ""
             current_start = None
     if current_start is not None and current_text.strip():
+        if current_end <= current_start:
+            if segments:
+                segments[-1]["text"] = _append_token(segments[-1]["text"], current_text)
+                segments[-1]["end"] = max(segments[-1]["end"], round(current_end, 3))
+                return segments
+            if end_bound is not None and end_bound > offset:
+                # Very short acknowledgements can collapse to one aligner point.
+                # Preserve their text using the enclosing acoustic chunk bounds.
+                current_start, current_end = offset, end_bound
+                logger.info("Using acoustic chunk bounds for a zero-duration aligned utterance")
         segments.append(
             {
                 "start": round(current_start, 3),
@@ -392,7 +405,9 @@ class SherpaOnnxASRService:
                     model_path=aligner_path,
                     device=aligner_device,
                 )
-                return result, "qwen_forced", _merge_timed_units(units, offset=chunk.start)
+                return result, "qwen_forced", _merge_timed_units(
+                    units, offset=chunk.start, end_bound=chunk.end
+                )
 
             native = self._native_segments(result, chunk.start)
             if native and timestamp_mode in {"auto", "native"}:

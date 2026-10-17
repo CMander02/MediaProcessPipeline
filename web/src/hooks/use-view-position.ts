@@ -31,21 +31,19 @@ function saveAll(data: Record<string, ViewPosition>) {
     const toRemove = keys.slice(0, keys.length - MAX_ENTRIES)
     for (const k of toRemove) delete data[k]
   }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)) } catch { /* Browser storage may be unavailable. */ }
 }
 
 export function useViewPosition(archivePath: string) {
-  const posRef = useRef<ViewPosition>({ mediaTime: 0, activeTab: "summary" })
+  const posRef = useRef<ViewPosition | null>(null)
+  if (posRef.current === null) posRef.current = loadAll()[archivePath] ?? { mediaTime: 0, activeTab: "summary" }
   const lastSaveRef = useRef(0)
   const dirtyRef = useRef(false)
 
   // Load saved position on mount
   useEffect(() => {
     const all = loadAll()
-    const saved = all[archivePath]
-    if (saved) {
-      posRef.current = { ...posRef.current, ...saved }
-    }
+    posRef.current = all[archivePath] ?? { mediaTime: 0, activeTab: "summary" }
   }, [archivePath])
 
   // Flush on unmount / page hide
@@ -53,7 +51,7 @@ export function useViewPosition(archivePath: string) {
     const flush = () => {
       if (!dirtyRef.current) return
       const all = loadAll()
-      all[archivePath] = posRef.current
+      all[archivePath] = posRef.current!
       saveAll(all)
       dirtyRef.current = false
     }
@@ -72,27 +70,27 @@ export function useViewPosition(archivePath: string) {
 
   /** Call on every timeupdate — throttled internally */
   const updateMediaTime = useCallback((time: number) => {
-    posRef.current.mediaTime = time
+    posRef.current!.mediaTime = time
     dirtyRef.current = true
 
     const now = Date.now()
     if (now - lastSaveRef.current > SAVE_INTERVAL) {
       lastSaveRef.current = now
       const all = loadAll()
-      all[archivePath] = posRef.current
+      all[archivePath] = posRef.current!
       saveAll(all)
       dirtyRef.current = false
     }
   }, [archivePath])
 
   const updateActiveTab = useCallback((tab: string) => {
-    posRef.current.activeTab = tab
+    posRef.current!.activeTab = tab
     dirtyRef.current = true
   }, [])
 
   /** Get the initial saved position (call once after mount) */
   const getSavedPosition = useCallback((): ViewPosition => {
-    return { ...posRef.current }
+    return { ...posRef.current! }
   }, [])
 
   return { updateMediaTime, updateActiveTab, getSavedPosition }

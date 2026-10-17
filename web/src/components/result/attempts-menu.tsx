@@ -31,7 +31,7 @@ const samePath = (left: string, right: string) =>
   left.replace(/[\\/]+/g, "/").toLowerCase() === right.replace(/[\\/]+/g, "/").toLowerCase()
 
 /** "×3" next to the title when the same link was processed several times; lists every run. */
-export function AttemptsMenu({ source, currentPath }: { source: string | null | undefined; currentPath: string }) {
+export function AttemptsMenu({ source, currentPath, onTarget }: { source: string | null | undefined; currentPath: string; onTarget?: (path: string, taskId?: string | null) => void }) {
   const [attempts, setAttempts] = useState<{ source: string; matches: LibraryMatch[] } | null>(null)
 
   useEffect(() => {
@@ -67,7 +67,7 @@ export function AttemptsMenu({ source, currentPath }: { source: string | null | 
             <DropdownMenuItem
               key={match.path}
               disabled={current}
-              onClick={() => navigate(`#/result/archive?path=${encodeURIComponent(match.path)}${match.task_id ? `&taskId=${encodeURIComponent(match.task_id)}` : ""}`)}
+              onClick={() => onTarget ? onTarget(match.path, match.task_id) : navigate(`#/result/archive?path=${encodeURIComponent(match.path)}${match.task_id ? `&taskId=${encodeURIComponent(match.task_id)}` : ""}`)}
             >
               <span className={cn("size-2 shrink-0 rounded-full", status.dot)} />
               <span className="flex-1 tabular-nums">{status.label} · {shortTime(match.created_at)}</span>

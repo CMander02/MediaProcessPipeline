@@ -47,7 +47,7 @@ async function main() {
     ytdlp_auto_update: false, enable_diarization: false, enable_voiceprint: false,
   }));
   const exe = path.join(project, 'MPP-Desktop-Portable.exe');
-  fs.copyFileSync(path.join(root, 'desktop/dist/MPP-Desktop-Portable.exe'), exe);
+  fs.copyFileSync(path.join(root, 'MPP.exe'), exe);
   const inspectorPort = await freePort();
   const browserPort = await freePort();
   child = spawn(exe, [

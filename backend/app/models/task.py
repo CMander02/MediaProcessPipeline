@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -75,11 +75,19 @@ class TaskCreate(BaseModel):
     webhook_url: str | None = None
 
 
+class CollectionFolderImport(BaseModel):
+    source: str
+    create_folder: bool = False
+
+
 class TaskBatchCreate(BaseModel):
     task_type: TaskType = TaskType.PIPELINE
     sources: list[str] = Field(min_length=1, max_length=100)
     options: dict[str, Any] = Field(default_factory=dict)
     webhook_url: str | None = None
+    folder_id: str | None = None
+    move_existing: bool = False
+    collection_folders: list[CollectionFolderImport] = Field(default_factory=list, max_length=100)
 
 
 class Task(BaseModel):
@@ -106,3 +114,20 @@ class Task(BaseModel):
     platform: str | None = None
     uploader_id: str | None = None
     content_subtype: str | None = None
+
+
+class TaskImportItem(BaseModel):
+    source: str
+    content_key: str | None = None
+    outcome: Literal["created", "reused", "skipped", "failed"]
+    task: Task | None = None
+    match: dict[str, Any] | None = None
+    reason: str | None = None
+    error: str | None = None
+    folder_id: str | None = None
+    folder_outcome: str | None = None
+    folder_error: str | None = None
+
+
+class TaskImportResponse(BaseModel):
+    items: list[TaskImportItem]
