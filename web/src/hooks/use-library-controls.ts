@@ -143,6 +143,22 @@ export function useLibraryControls() {
     setDuplicates: useCallback((duplicates: boolean) => update({ duplicates }), [update]),
     setSort: useCallback((sort: ArchiveSort) => update({ sort }), [update]),
     setPage: useCallback((page: number) => update({ page }), [update]),
+    returnToList: useCallback(() => {
+      const current = parseHash(window.location.hash)
+      const previous = previousHash()
+      if (current.page === "result") {
+        if (previous === libraryHash()) goLibraryHistory("back")
+        else navigate(libraryHash(), { replace: true })
+        return
+      }
+      const previousRoute = previous ? parseHash(previous) : null
+      if (previousRoute?.page === "files" && libraryStateFromParams(previousRoute.params).view === "split" && !previousRoute.params.item) {
+        goLibraryHistory("back")
+      } else {
+        const state = libraryStateFromParams(current.params)
+        navigate(libraryHashFromState({ ...state, item: undefined, attempt: undefined, viewerTask: undefined, generation: undefined }), { replace: true })
+      }
+    }, []),
     setLocation: useCallback((patch: Pick<Partial<LibraryState>, "folder" | "view" | "item">, push = true) => {
       const current = libraryStateFromParams(currentParams())
       const next: LibraryState = {

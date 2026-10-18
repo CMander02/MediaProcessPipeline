@@ -1,9 +1,10 @@
-import { useEffect, useRef, type RefCallback } from "react"
+import { useEffect, useRef, useState, type RefCallback } from "react"
 import Artplayer from "artplayer"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { RepeatIcon } from "@hugeicons/core-free-icons"
+import { Backward02Icon, Forward02Icon, MusicNote01Icon, PauseIcon, PlayIcon, RepeatIcon } from "@hugeicons/core-free-icons"
 import { srtToVTT } from "@/lib/srt"
 import { cn } from "@/lib/utils"
+import { formatDuration } from "@/lib/format"
 
 interface MediaPlayerProps {
   src: string
@@ -13,13 +14,17 @@ interface MediaPlayerProps {
   subtitleSrt?: string
   loop?: boolean
   onLoopChange?: (loop: boolean) => void
+  mobile?: boolean
+  poster?: string
+  title?: string
+  autoPlay?: boolean
 }
 
-export function MediaPlayer({ src, type, bindMedia, subtitleSrt, loop = false, onLoopChange }: MediaPlayerProps) {
+export function MediaPlayer({ src, type, bindMedia, subtitleSrt, loop = false, onLoopChange, mobile = false, poster, title, autoPlay = false }: MediaPlayerProps) {
   if (type === "audio") {
-    return <AudioPlayer src={src} bindMedia={bindMedia} loop={loop} onLoopChange={onLoopChange} />
+    return <AudioPlayer src={src} bindMedia={bindMedia} loop={loop} onLoopChange={onLoopChange} mobile={mobile} poster={poster} title={title} autoPlay={autoPlay} />
   }
-  return <VideoPlayer src={src} bindMedia={bindMedia} subtitleSrt={subtitleSrt} loop={loop} onLoopChange={onLoopChange} />
+  return <VideoPlayer src={src} bindMedia={bindMedia} subtitleSrt={subtitleSrt} loop={loop} onLoopChange={onLoopChange} mobile={mobile} poster={poster} autoPlay={autoPlay} />
 }
 
 function VideoPlayer({
@@ -28,22 +33,30 @@ function VideoPlayer({
   subtitleSrt,
   loop,
   onLoopChange,
+  mobile,
+  poster,
+  autoPlay,
 }: {
   src: string
   bindMedia: RefCallback<HTMLMediaElement>
   subtitleSrt?: string
   loop: boolean
   onLoopChange?: (loop: boolean) => void
+  mobile: boolean
+  poster?: string
+  autoPlay: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const artRef = useRef<Artplayer | null>(null)
   const cleanupRef = useRef<(() => void) | null>(null)
   const onLoopChangeRef = useRef(onLoopChange)
   const subtitleUpdateRef = useRef<Promise<void>>(Promise.resolve())
+  const setupRef = useRef({ mobile, poster, autoPlay })
 
   useEffect(() => {
     onLoopChangeRef.current = onLoopChange
-  }, [onLoopChange])
+    setupRef.current = { mobile, poster, autoPlay }
+  }, [onLoopChange, mobile, poster, autoPlay])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -57,6 +70,10 @@ function VideoPlayer({
       mutex: true,
       backdrop: true,
       fullscreen: true,
+      fullscreenWeb: setupRef.current.mobile,
+      autoOrientation: setupRef.current.mobile,
+      playsInline: true,
+      poster: setupRef.current.poster,
       // pip: true,  // 小窗 — 暂时关闭，未来可能加回
       setting: true,
       playbackRate: true,
@@ -97,6 +114,7 @@ function VideoPlayer({
         if (typeof ret === "function") {
           cleanupRef.current = ret
         }
+        if (setupRef.current.autoPlay) void art.play().catch(() => {})
       }
     })
 
@@ -107,6 +125,7 @@ function VideoPlayer({
       }
       bindMedia(null)
       if (artRef.current) {
+        if (artRef.current.fullscreenWeb) artRef.current.fullscreenWeb = false
         artRef.current.video.pause()
         artRef.current.video.removeAttribute("src")
         artRef.current.video.load()
@@ -168,19 +187,28 @@ function VideoPlayer({
   }, [src, bindMedia, subtitleSrt])
 
   return (
-    <div className="w-full rounded-lg overflow-hidden bg-black">
+    <div className={cn("w-full overflow-hidden bg-black", !mobile && "rounded-lg")}>
       <div ref={containerRef} className="w-full aspect-video" />
     </div>
   )
 }
 
-function AudioPlayer({ src, bindMedia, loop, onLoopChange }: {
+function AudioPlayer({ src, bindMedia, loop, onLoopChange, mobile, poster, title, autoPlay }: {
   src: string
   bindMedia: RefCallback<HTMLMediaElement>
   loop: boolean
   onLoopChange?: (loop: boolean) => void
+  mobile: boolean
+  poster?: string
+  title?: string
+  autoPlay: boolean
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const [playing, setPlaying] = useState(false)
+  const [time, setTime] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const [rate, setRate] = useState(1)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     const el = audioRef.current
@@ -193,6 +221,10 @@ function AudioPlayer({ src, bindMedia, loop, onLoopChange }: {
   }, [bindMedia, src])
 
   useEffect(() => {
+    if (autoPlay && audioRef.current) void audioRef.current.play().catch(() => {})
+  }, [autoPlay, src])
+
+  useEffect(() => {
     return () => {
       const el = audioRef.current
       if (el) {
@@ -203,17 +235,61 @@ function AudioPlayer({ src, bindMedia, loop, onLoopChange }: {
     }
   }, [])
 
+  const seek = (next: number) => {
+    const audio = audioRef.current
+    if (!audio || !Number.isFinite(audio.duration)) return
+    audio.currentTime = Math.max(0, Math.min(next, audio.duration))
+    setTime(audio.currentTime)
+  }
+  const toggle = () => {
+    const audio = audioRef.current
+    if (!audio) return
+    if (!audio.paused) audio.pause()
+    else {
+      setError(null)
+      void audio.play().catch(() => setError("暂时无法播放，请再试一次。"))
+    }
+  }
+
   return (
-    <div className="flex w-full items-center gap-3 overflow-hidden rounded-lg bg-muted p-6">
+    <div className={cn("w-full overflow-hidden", mobile ? "bg-zinc-950 px-4 pb-3 pt-14 text-white" : "flex items-center gap-3 rounded-lg bg-muted p-6")}>
       <audio
         ref={(el) => { audioRef.current = el }}
         src={src}
-        className="min-w-0 flex-1"
+        className={mobile ? "hidden" : "min-w-0 flex-1"}
         preload="metadata"
         loop={loop}
-        controls
+        controls={!mobile}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+        onTimeUpdate={(event) => setTime(event.currentTarget.currentTime)}
+        onDurationChange={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
+        onRateChange={(event) => setRate(event.currentTarget.playbackRate)}
+        onError={() => setError("音频暂不可用，请检查媒体文件。")}
       />
-      {onLoopChange && (
+      {mobile && <>
+        <div className="mb-3 flex min-w-0 items-center gap-3">
+          <div className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded bg-white/10">{poster ? <img src={poster} alt="" className="size-full object-cover" /> : <HugeiconsIcon icon={MusicNote01Icon} className="size-7 text-white/65" />}</div>
+          <div className="min-w-0"><p className="line-clamp-2 text-sm leading-6">{title || "音频播放"}</p><p className="mt-1 text-xs text-white/55">{playing ? "正在播放" : "音频"}</p></div>
+        </div>
+        <div className="flex items-center gap-2 text-[11px] tabular-nums text-white/65">
+          <span>{formatDuration(time)}</span>
+          <input aria-label="音频播放进度" type="range" min={0} max={duration || 1} step={0.1} value={Math.min(time, duration || 0)} disabled={!duration} onChange={(event) => seek(Number(event.target.value))} className="h-8 min-w-0 flex-1 accent-white" />
+          <span>{formatDuration(duration)}</span>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <select aria-label="播放速度" value={rate} onChange={(event) => { const next = Number(event.target.value); setRate(next); if (audioRef.current) audioRef.current.playbackRate = next }} className="h-11 w-14 rounded bg-transparent text-xs text-white [&>option]:text-black">
+            {[0.75, 1, 1.25, 1.5, 2].map((value) => <option key={value} value={value}>{value}×</option>)}
+          </select>
+          <button type="button" aria-label="快退15秒" onClick={() => seek(time - 15)} className="flex size-11 flex-col items-center justify-center"><HugeiconsIcon icon={Backward02Icon} className="size-5" /><span className="text-[10px]">15</span></button>
+          <button type="button" aria-label={playing ? "暂停音频" : "播放音频"} onClick={toggle} className="flex size-14 shrink-0 items-center justify-center rounded-full bg-white text-zinc-950"><HugeiconsIcon icon={playing ? PauseIcon : PlayIcon} className="size-7" /></button>
+          <button type="button" aria-label="快进15秒" onClick={() => seek(time + 15)} className="flex size-11 flex-col items-center justify-center"><HugeiconsIcon icon={Forward02Icon} className="size-5" /><span className="text-[10px]">15</span></button>
+          <button type="button" aria-label={loop ? "关闭循环播放" : "开启循环播放"} aria-pressed={loop} onClick={() => onLoopChange?.(!loop)} className={cn("flex size-11 items-center justify-center rounded", loop ? "bg-white/15 text-white" : "text-white/50")}><HugeiconsIcon icon={RepeatIcon} className="size-5" /></button>
+        </div>
+        {error && <p role="alert" className="pt-2 text-xs text-red-300">{error}</p>}
+      </>}
+      {!mobile && onLoopChange && (
         <button
           type="button"
           onClick={() => onLoopChange(!loop)}

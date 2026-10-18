@@ -12,7 +12,7 @@ import { createArchiveRepository } from "@/repositories/archive-repository"
 import type { ArchiveItem } from "@/repositories/archive-types"
 import type { LibraryFilters } from "@/lib/archive-filters"
 import { api } from "@/lib/api"
-import { buildHash, goLibraryHistory, navigate, parseHash, previousHash, useRoute } from "@/lib/router"
+import { buildHash, navigate, parseHash, useRoute } from "@/lib/router"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { EmptyState, LoadingState } from "@/components/ui/page-state"
@@ -144,15 +144,6 @@ function FilesSplitView({ filters, onOpen }: { filters: LibraryFilters; onOpen: 
   const first = useCallback((item: ArchiveItem) => {
     if (!narrow && !selectedItem && autoSelect) setLocation({ item: item.content_key || item.path }, false)
   }, [narrow, selectedItem, setLocation, autoSelect])
-  const returnToList = () => {
-    const previous = previousHash()
-    const route = previous ? parseHash(previous) : null
-    if (route?.page === "files" && libraryStateFromParams(route.params).view === "split" && !route.params.item) {
-      goLibraryHistory("back")
-    } else {
-      setLocation({ item: undefined }, false)
-    }
-  }
   return <div className="relative flex h-full min-w-0">
       <aside aria-label="文件列表" hidden={narrow && !!library.item} className={cn("flex h-full shrink-0 flex-col overflow-hidden bg-background p-2", narrow ? "w-full" : "w-[21.333rem] border-r", narrow && !!library.item && "hidden")}>
         <div className="min-h-0 flex-1 overflow-y-auto">
@@ -178,7 +169,7 @@ function FilesSplitView({ filters, onOpen }: { filters: LibraryFilters; onOpen: 
         </div>}
       </aside>
     {(!narrow || library.item) && <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {narrow && <div className="shrink-0 border-b px-2 py-1"><Button size="sm" variant="ghost" className="h-11" onClick={returnToList}><HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />返回列表</Button></div>}
+      {narrow && <div className="hidden shrink-0 border-b px-2 py-1 md:block"><Button size="sm" variant="ghost" className="h-11" onClick={library.returnToList}><HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />返回列表</Button></div>}
       <div className="min-h-0 flex-1"><Suspense fallback={<LoadingState title="正在打开内容" className="h-full" />}><SplitViewResult contentKey={library.item} /></Suspense></div>
     </div>}
     {moveKeys?.length ? <MoveContentsDialog contentKeys={moveKeys} onClose={() => setMoveKeys(null)} onMoved={onMoved} /> : null}

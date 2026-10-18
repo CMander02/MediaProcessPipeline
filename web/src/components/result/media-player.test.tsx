@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { act, cleanup, render } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { MediaPlayer } from "./media-player"
 
@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => {
     static instances: Player[] = []
     video = document.createElement("video")
     settings = new Map<string, MockSetting>()
+    fullscreenWeb = false
     destroy = vi.fn(() => this.video.remove())
     subtitle = { show: true, switch: vi.fn<(url: string, options?: unknown) => Promise<string>>(async () => "blob:loaded") }
     setting = {
@@ -70,6 +71,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 
@@ -185,6 +187,7 @@ describe("video playback while editing", () => {
     const bindMedia = vi.fn(() => cleanupBinding)
     const view = render(<MediaPlayer src="/first.mp4" type="video" bindMedia={bindMedia} subtitleSrt={originalSrt} loop />)
     const first = mocks.Player.instances[0]
+    first.fullscreenWeb = true
     await act(async () => {})
     expect(mocks.revokeObjectURL).toHaveBeenCalledWith("blob:subtitle-1")
 
@@ -192,6 +195,7 @@ describe("video playback while editing", () => {
     await act(async () => {})
     const second = mocks.Player.instances[1]
     expect(first.destroy).toHaveBeenCalledOnce()
+    expect(first.fullscreenWeb).toBe(false)
     expect(cleanupBinding).toHaveBeenCalledOnce()
     expect(bindMedia).toHaveBeenCalledWith(null)
     expect(second.video.src).toContain("/second.mp4")
@@ -202,5 +206,59 @@ describe("video playback while editing", () => {
     view.unmount()
     expect(second.destroy).toHaveBeenCalledOnce()
     expect(cleanupBinding).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe("mobile audio playback", () => {
+  beforeEach(() => {
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {})
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(async function (this: HTMLMediaElement) {
+      Object.defineProperty(this, "paused", { configurable: true, value: false })
+      fireEvent.play(this)
+    })
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(function (this: HTMLMediaElement) {
+      Object.defineProperty(this, "paused", { configurable: true, value: true })
+      fireEvent.pause(this)
+    })
+  })
+
+  it("plays, pauses, seeks and changes speed without replacing the audio element", async () => {
+    const bindMedia = vi.fn()
+    const { container, rerender } = render(<MediaPlayer src="/audio.mp3" type="audio" mobile bindMedia={bindMedia} title="播客" />)
+    const audio = container.querySelector("audio")!
+    Object.defineProperty(audio, "duration", { configurable: true, value: 60 })
+    fireEvent.durationChange(audio)
+    fireEvent.click(screen.getByRole("button", { name: "播放音频" }))
+    expect(audio.play).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole("button", { name: "暂停音频" }))
+    expect(audio.pause).toHaveBeenCalledOnce()
+
+    audio.currentTime = 55
+    fireEvent.timeUpdate(audio)
+    fireEvent.click(screen.getByRole("button", { name: "快进15秒" }))
+    expect(audio.currentTime).toBe(60)
+    fireEvent.click(screen.getByRole("button", { name: "快退15秒" }))
+    expect(audio.currentTime).toBe(45)
+    fireEvent.change(screen.getByRole("slider", { name: "音频播放进度" }), { target: { value: "10" } })
+    expect(audio.currentTime).toBe(10)
+    fireEvent.change(screen.getByRole("combobox", { name: "播放速度" }), { target: { value: "1.5" } })
+    expect(audio.playbackRate).toBe(1.5)
+    expect((screen.getByRole("combobox", { name: "播放速度" }) as HTMLSelectElement).value).toBe("1.5")
+
+    rerender(<MediaPlayer src="/audio.mp3" type="audio" mobile bindMedia={bindMedia} title="改后的标题" loop />)
+    expect(container.querySelector("audio")).toBe(audio)
+    expect(audio.currentTime).toBe(10)
+    expect(audio.loop).toBe(true)
+    expect(bindMedia).toHaveBeenCalledOnce()
+  })
+
+  it("reports a rejected play request and offers loop control", async () => {
+    vi.mocked(HTMLMediaElement.prototype.play).mockRejectedValueOnce(new Error("blocked"))
+    const loop = vi.fn()
+    render(<MediaPlayer src="/audio.mp3" type="audio" mobile bindMedia={vi.fn()} onLoopChange={loop} />)
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "播放音频" })))
+    expect(screen.getByRole("alert").textContent).toContain("暂时无法播放")
+    fireEvent.click(screen.getByRole("button", { name: "开启循环播放" }))
+    expect(loop).toHaveBeenCalledWith(true)
   })
 })

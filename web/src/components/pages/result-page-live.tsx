@@ -192,7 +192,7 @@ export function ResultPageLive({ taskId, embedded, onTarget }: { taskId: string;
 
   return (
     <>
-    <div className="flex h-full items-start justify-center overflow-y-auto">
+    <div className="flex h-full items-start justify-center overflow-y-auto pt-12 md:pt-0">
       <div className="w-full max-w-3xl space-y-5 p-4 md:space-y-6 md:p-6">
         {/* Header */}
         <div className="flex flex-wrap items-center gap-3">

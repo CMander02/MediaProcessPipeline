@@ -1,3 +1,4 @@
+import type { ReactNode } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -56,6 +57,7 @@ export function ResultSourcePane({ view }: { view: ReturnType<typeof useResultVi
 /** 复制 and 导出 act on the tab that is open, so they sit in the tab row. */
 function ContentActions({ view }: { view: ReturnType<typeof useResultViewer> }) {
   const { getTabContent, handleCopy, copied, handleExport, canExportZip, hasExportableContent, subtitles } = view
+  const mobileMedia = view.isMobileLayout && !view.isNoteContent
   const tabContent = getTabContent()
   return (
     <>
@@ -65,11 +67,11 @@ function ContentActions({ view }: { view: ReturnType<typeof useResultViewer> }) 
         variant="ghost"
         size="sm"
         onClick={handleCopy}
-        className="h-7 shrink-0 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+        className={cn("shrink-0 gap-1 text-xs text-muted-foreground hover:text-foreground", mobileMedia ? "size-11 p-0" : "h-7 px-2")}
         title={`复制「${tabContent.suffix}」的全部内容`}
       >
         <HugeiconsIcon icon={copied ? Tick02Icon : Copy01Icon} className={cn("size-3.5", copied && "text-emerald-500")} />
-        {copied ? "已复制" : "复制"}
+        <span className={mobileMedia ? "sr-only" : undefined}>{copied ? "已复制" : "复制"}</span>
       </Button>
     )}
     {hasExportableContent && (
@@ -79,11 +81,11 @@ function ContentActions({ view }: { view: ReturnType<typeof useResultViewer> }) 
             type="button"
             variant="ghost"
             size="sm"
-            className="h-7 shrink-0 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+            className={cn("shrink-0 gap-1 text-xs text-muted-foreground hover:text-foreground", mobileMedia ? "size-11 p-0" : "h-7 px-2")}
           >
             <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
-            导出
-            <HugeiconsIcon icon={ArrowDown01Icon} className="size-3" />
+            <span className={mobileMedia ? "sr-only" : undefined}>导出</span>
+            {!mobileMedia && <HugeiconsIcon icon={ArrowDown01Icon} className="size-3" />}
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-52">
@@ -135,7 +137,7 @@ function StaleNotice({ view, what, floating = false }: { view: ReturnType<typeof
   )
 }
 
-export function ResultContentPane({ view }: { view: ReturnType<typeof useResultViewer> }) {
+export function ResultContentPane({ view, mobileOverview, mobileSpeakers }: { view: ReturnType<typeof useResultViewer>; mobileOverview?: ReactNode; mobileSpeakers?: ReactNode }) {
   const {
     isPortraitLayout,
     isMobileLayout,
@@ -185,6 +187,7 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
     displayTitle,
     setMindmapFit,
   } = view
+  const mobileMedia = isMobileLayout && !isNoteContent
   const renderSourceTab = () => <ResultSourcePane view={view} />
 
 
@@ -194,11 +197,11 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
       isPortraitLayout || isMobileLayout ? "p-0" : "p-4",
     )}>
       <Tabs value={activeTab} onValueChange={(value) => { setActiveTab(value); updateActiveTab(value) }} className="flex flex-col flex-1 min-h-0">
-        <div className="shrink-0 flex min-w-0 items-center gap-1.5">
-          <div className="min-w-0 flex-1 overflow-x-auto pb-1">
-          <TabsList className="w-max">
-            <TabsTrigger value="summary">摘要</TabsTrigger>
-            {showSourceTab && <TabsTrigger value="source">{sourceTabLabel}</TabsTrigger>}
+        <div className={cn("shrink-0 flex min-w-0 items-center gap-1.5", mobileMedia && "border-b px-3")}>
+          <div className={cn("min-w-0 flex-1 overflow-x-auto", mobileMedia ? "py-1" : "pb-1")}>
+          <TabsList variant={mobileMedia ? "line" : "default"} className={cn("w-max", mobileMedia && "h-11! gap-5 [&>button]:min-w-10 [&>button]:px-0")}>
+            <TabsTrigger value="summary">{mobileMedia ? "简介" : "摘要"}</TabsTrigger>
+            {showSourceTab && <TabsTrigger value="source">{mobileMedia && sourceTabLabel === "简介" ? "原始简介" : sourceTabLabel}</TabsTrigger>}
             {!isPureWebpage && !isLongArticle && (
               <TabsTrigger value="transcript">
                 {isImageNote ? "图片" : isTextNote ? "正文" : "字幕"}
@@ -223,7 +226,8 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
           <ContentActions view={view} />
         </div>
 
-        <TabsContent value="summary" className="mt-3 relative flex-1">
+        <TabsContent value="summary" className={cn("relative flex-1", mobileMedia ? "mt-0" : "mt-3")}>
+          {mobileOverview ? <div className="absolute inset-0"><ScrollArea className="h-full overscroll-contain">{mobileOverview}</ScrollArea></div> : (
           <div className="absolute inset-0 flex flex-col rounded-md border">
             <StaleNotice view={view} what="摘要" />
             <div className="relative min-h-0 flex-1">
@@ -241,13 +245,14 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
             )}
             </div>
           </div>
+          )}
         </TabsContent>
 
         {showSourceTab ? renderSourceTab() : null}
 
         {!isPureWebpage && !isLongArticle && (
-          <TabsContent value="transcript" className="mt-3 relative flex-1">
-            <div className="absolute inset-0 rounded-md border flex flex-col">
+          <TabsContent value="transcript" className={cn("relative flex-1", mobileMedia ? "mt-0" : "mt-3")}>
+            <div className={cn("absolute inset-0 flex flex-col", !mobileMedia && "rounded-md border")}>
               {isImageNote ? (
                 imageDescriptions.length > 0 ? (
                   <div className="overflow-y-auto flex-1 p-3 space-y-3">
@@ -296,7 +301,9 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
                 )
               ) : (
                 <>
+                  {mobileSpeakers && <div className="shrink-0 border-b px-3 py-2">{mobileSpeakers}</div>}
                   {subtitles.length > 0 ? (
+                    <div className="min-h-0 flex-1">
                     <TranscriptTab
                       subtitles={subtitles}
                       baselineContent={transcript}
@@ -324,6 +331,7 @@ export function ResultContentPane({ view }: { view: ReturnType<typeof useResultV
                       onSaved={setTranscript}
                       editingDisabled={renamingSpeaker || Boolean(mergeInfo)}
                     />
+                    </div>
                   ) : isProcessing ? (
                     <div className="flex items-center justify-center h-full text-muted-foreground">
                       <HugeiconsIcon icon={Loading03Icon} className="h-4 w-4 animate-spin mr-2" />

@@ -43,6 +43,9 @@ import { SpeakerMergeDialog } from "@/components/speaker-merge-dialog"
 import { type ResultViewerProps, useResultViewer } from "../../hooks/use-result-viewer"
 import { ArticleNoteReader, NoteMarkdown } from "../result/note-content"
 import { ResultContentPane } from "../result/result-content-pane"
+import { MobileMediaOverview } from "../result/mobile-media-overview"
+import { api } from "@/lib/api"
+import { useRoute } from "@/lib/router"
 import { usePreferences } from "@/hooks/use-preferences"
 import {
   timelineEventKey,
@@ -52,6 +55,7 @@ import {
 } from "../../lib/result-timeline"
 
 export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, embedded, onTarget, onDeleted }: ResultViewerProps & { onDeleted?: () => void }) {
+  const route = useRoute()
   const container = useRef<HTMLDivElement>(null)
   const [layoutWidth, setLayoutWidth] = useState<number | undefined>(undefined)
   useLayoutEffect(() => {
@@ -180,9 +184,9 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
     ? latestStatusEvents.filter((event) => event.level !== "error")
     : latestStatusEvents
 
-
+  const phoneAvLayout = isMobileLayout && !isNoteContent
   const mediaPlayerBlock = mediaUrl ? (
-    <div className="sticky top-0 z-10 bg-background pb-2">
+    <div className={cn("sticky top-0 z-10 bg-background", !phoneAvLayout && "pb-2")}>
       <MediaPlayer
         src={mediaUrl}
         type={mediaType}
@@ -190,6 +194,10 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
         subtitleSrt={transcript ?? undefined}
         loop={videoLoop}
         onLoopChange={setVideoLoop}
+        mobile={phoneAvLayout}
+        poster={archive?.thumbnail_url ?? (archive?.has_thumbnail ? api.archives.thumbnailUrl(archivePath) : undefined)}
+        title={displayTitle ?? undefined}
+        autoPlay={route.params.play === "1"}
       />
     </div>
   ) : archive?.media_file && !online ? (
@@ -197,10 +205,6 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
       连接服务器后播放音视频；摘要、字幕、导图和图文资料可继续离线阅读。
     </div>
   ) : null
-
-  // Phones: player pinned on top, one row of speakers, then the tabs fill the rest. Only the tab body scrolls.
-  const phoneAvLayout = isMobileLayout && !isNoteContent
-
 
   const titleArea = editingTitle ? (
     <input
@@ -431,13 +435,16 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
       </div>
     </div>
   )
-  const contentPane = <ResultContentPane view={view} />
+  const contentPane = <ResultContentPane view={view}
+    mobileOverview={phoneAvLayout ? <MobileMediaOverview view={view} actions={moreMenu} /> : undefined}
+    mobileSpeakers={phoneAvLayout && subtitles.length > 0 ? <SpeakerPanel compact subtitles={speakerSubtitles} quality={speakerQuality} duration={duration} currentTime={currentTime} onSeek={seekTo} onRenameSpeaker={handleRenameSpeaker} renaming={renamingSpeaker} editingDisabled={hasUnsavedTranscript || Boolean(mergeInfo)} {...speakerTools} /> : undefined}
+  />
 
 
   return (
-    <div ref={container} className="flex h-full min-w-0 flex-col">
+    <div ref={container} className={cn("flex h-full min-w-0 flex-col", isMobileLayout && isNoteContent && "pt-12")}>
       {/* Title bar */}
-      {!embedded && <div className="flex shrink-0 items-center gap-2 border-b px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-2">
+      {!embedded && !phoneAvLayout && <div className="flex shrink-0 items-center gap-2 border-b px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-2">
         <Button className="h-11 md:h-8" variant="ghost" size="sm" onClick={() => navigate(libraryHash())}>
           <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4 mr-1" />
           返回
@@ -447,7 +454,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
         {moreMenu}
       </div>}
 
-      {!embedded && showFlowDiagnostics && (taskFlow || recentTimelineEvents.length > 0) && (
+      {!embedded && !phoneAvLayout && showFlowDiagnostics && (taskFlow || recentTimelineEvents.length > 0) && (
         <div className="shrink-0 border-b bg-background px-4 py-3">
           {taskFlow && (
             <>
@@ -524,7 +531,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
       )}
 
       {/* Error display */}
-      {!embedded && taskFailed && taskError && (
+      {!embedded && !phoneAvLayout && taskFailed && taskError && (
         <div role="alert" className="mx-4 mt-2 shrink-0 space-y-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
           <p className="font-medium text-destructive">处理失败{failedStepLabel ? `：${failedStepLabel}` : ""}</p>
           <p className={cn("whitespace-pre-wrap break-words text-destructive/90", !errorExpanded && "line-clamp-3")}>{taskError}</p>
@@ -557,9 +564,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
       <div className="flex-1 min-h-0 relative">
         {phoneAvLayout ? (
           <div className="absolute inset-0 flex flex-col">
-            <div className="shrink-0 bg-background px-3 pt-2">
-              {embedded && <div className="mb-2 flex min-w-0 items-center gap-2">{titleArea}{processingBadge}{moreMenu}</div>}
-              {embedded && taskError && <p role="alert" className="mb-2 text-xs text-destructive">{taskError}</p>}
+            <div className="shrink-0 bg-background" data-mobile-player>
               {mediaPlayerBlock ?? (isProcessing ? (
                 <div className="flex h-24 items-center justify-center rounded-lg bg-muted/50 text-xs text-muted-foreground">
                   <HugeiconsIcon icon={Loading03Icon} className="mr-2 h-4 w-4 animate-spin" />
@@ -567,23 +572,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
                 </div>
               ) : null)}
             </div>
-            {subtitles.length > 0 && (
-              <div className="shrink-0 border-b px-3 pb-2">
-                <SpeakerPanel
-                  compact
-                  subtitles={speakerSubtitles}
-                  quality={speakerQuality}
-                  duration={duration}
-                  currentTime={currentTime}
-                  onSeek={seekTo}
-                  onRenameSpeaker={handleRenameSpeaker}
-                  renaming={renamingSpeaker}
-                  editingDisabled={hasUnsavedTranscript || Boolean(mergeInfo)}
-                  {...speakerTools}
-                />
-              </div>
-            )}
-            <div className="min-h-0 flex-1 px-3 pt-2 pb-2">
+            <div className="min-h-0 flex-1">
               {contentPane}
             </div>
           </div>

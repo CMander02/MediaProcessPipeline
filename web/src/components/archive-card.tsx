@@ -229,7 +229,7 @@ export function ArchiveCard({
           >
             {/* Thumbnail */}
             <div className={cn(
-              compact ? "relative aspect-[535/304] w-full overflow-hidden rounded-lg bg-muted" : "relative aspect-video w-full overflow-hidden rounded-lg bg-muted",
+              compact ? "relative aspect-[535/304] w-full overflow-hidden rounded-lg bg-muted max-md:aspect-[4/3] max-md:rounded-md" : "relative aspect-video w-full overflow-hidden rounded-lg bg-muted",
               selected && "ring-2 ring-primary ring-offset-2 ring-offset-background",
             )}>
               {showThumbnail && thumbnailUrl ? (
@@ -290,17 +290,17 @@ export function ArchiveCard({
             </div>
 
             {/* Info */}
-            <div data-archive-info className={compact ? "flex flex-col gap-0 pt-[3px] px-0.5" : "flex flex-col gap-1 pt-2 px-0.5"}>
+            <div data-archive-info className={compact ? "flex flex-col gap-0 pt-[3px] px-0.5 max-md:pt-1.5" : "flex flex-col gap-1 pt-2 px-0.5"}>
               <h3
-                className={compact ? "line-clamp-2 min-h-[2lh] text-[13px] font-medium leading-[1.2] group-hover:text-primary transition-colors" : "line-clamp-2 min-h-[2lh] text-sm font-medium leading-snug group-hover:text-primary transition-colors"}
+                className={compact ? "line-clamp-2 min-h-[2lh] text-[13px] font-medium leading-[1.2] group-hover:text-primary transition-colors max-md:text-sm max-md:leading-[1.45]" : "line-clamp-2 min-h-[2lh] text-sm font-medium leading-snug group-hover:text-primary transition-colors"}
                 title={untitled ? `${title}（没有取到标题）` : title}
               >
                 {title}
                 {untitled && <span className="ml-1 text-xs font-normal text-muted-foreground">未取得标题</span>}
               </h3>
               {/* Fixed height: the page size is computed from one card, so every card must be as tall */}
-              <div className={compact ? "flex h-3.5 min-w-0 items-center gap-1.5 overflow-hidden text-[11px] leading-none text-muted-foreground" : "flex h-4 min-w-0 items-center gap-2 overflow-hidden text-xs leading-none text-muted-foreground"}>
-                <span className="shrink-0 tabular-nums">{formatArchiveTime(archive.created_at, archive.date)}</span>
+              <div className={compact ? "flex h-3.5 min-w-0 items-center gap-1.5 overflow-hidden text-[11px] leading-none text-muted-foreground max-md:h-5 max-md:text-xs" : "flex h-4 min-w-0 items-center gap-2 overflow-hidden text-xs leading-none text-muted-foreground"}>
+                <span className={cn("shrink-0 tabular-nums", uploader && "max-md:hidden")}>{formatArchiveTime(archive.created_at, archive.date)}</span>
                 <span className="flex shrink-0 items-center" title={mediaLabel}>
                   <HugeiconsIcon
                     icon={archive.has_video ? Video01Icon : isImageNote ? Image01Icon : isTextNote ? Note01Icon : MusicNote01Icon}

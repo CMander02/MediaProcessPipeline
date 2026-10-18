@@ -5,9 +5,10 @@ import { MarkdownRenderer } from "./markdown-renderer"
 
 interface SummaryTabProps {
   content: string
+  scrollable?: boolean
 }
 
-export function SummaryTab({ content }: SummaryTabProps) {
+export function SummaryTab({ content, scrollable = true }: SummaryTabProps) {
   const parsed = useMemo(() => parseSummaryMarkdown(content), [content])
   const displayContent = useMemo(() => {
     const keyFacts = parsed.keyFacts.map((fact) => `- ${fact}`).join("\n")
@@ -28,13 +29,12 @@ export function SummaryTab({ content }: SummaryTabProps) {
     )
   }
 
-  return (
-    <ScrollArea className="h-full">
+  const article = (
       <div className="p-4">
         <article className="prose prose-sm dark:prose-invert max-w-none">
           <MarkdownRenderer highlight>{displayContent}</MarkdownRenderer>
         </article>
       </div>
-    </ScrollArea>
   )
+  return scrollable ? <ScrollArea className="h-full">{article}</ScrollArea> : article
 }

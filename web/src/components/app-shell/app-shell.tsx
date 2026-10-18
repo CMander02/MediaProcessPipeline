@@ -1,5 +1,5 @@
-import { useEffect, useRef, type CSSProperties, type ReactNode, type RefObject } from "react"
-import { Search01Icon, Settings01Icon } from "@hugeicons/core-free-icons"
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react"
+import { ArrowLeft01Icon, Cancel01Icon, Menu01Icon, Search01Icon, Settings01Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 
 import { ActivityPanel } from "@/components/activity/activity-panel"
@@ -19,6 +19,9 @@ interface AppShellProps {
   trailing?: ReactNode
   children: ReactNode
   runtimeControls?: boolean
+  mobileDetail?: boolean
+  onMobileBack?: () => void
+  mobileBackLabel?: string
 }
 
 // In the desktop app the title bar is ours; the window buttons are drawn over its right end
@@ -54,15 +57,21 @@ function useTitleBarColors(header: RefObject<HTMLElement | null>) {
   }, [header])
 }
 
-export function AppShell({ activePage, toolbar, crumbs, trailing, children, runtimeControls = true }: AppShellProps) {
+export function AppShell({ activePage, toolbar, crumbs, trailing, children, runtimeControls = true, mobileDetail = false, onMobileBack, mobileBackLabel = "返回" }: AppShellProps) {
   const settingsActive = activePage === "settings"
+  const [mobileToolsLocation, setMobileToolsLocation] = useState<string | null>(null)
+  const mobileToolsOpen = mobileToolsLocation === window.location.hash
   const header = useRef<HTMLElement>(null)
   useTitleBarColors(header)
 
   return (
     <>
-      <div className="flex h-screen supports-[height:100dvh]:h-dvh flex-col overflow-hidden bg-background">
-        <header ref={header} className="shrink-0 border-b bg-card text-foreground pt-[var(--mpp-safe-top)]">
+      <div data-mobile-detail={mobileDetail || undefined} className="relative flex h-screen supports-[height:100dvh]:h-dvh flex-col overflow-hidden bg-background">
+        {mobileDetail && !mobileToolsOpen && <nav data-mobile-overlay aria-label="内容导航" className="pointer-events-none absolute inset-x-0 top-0 z-40 flex justify-between bg-gradient-to-b from-black/45 to-transparent px-2 pb-3 pt-[max(0.25rem,var(--mpp-safe-top))] text-white md:hidden">
+          <button type="button" aria-label={mobileBackLabel} onClick={onMobileBack} className="pointer-events-auto flex size-11 items-center justify-center rounded-full bg-black/25"><HugeiconsIcon icon={ArrowLeft01Icon} className="size-6" /></button>
+          <button type="button" aria-label="展开顶部工具栏" aria-expanded={false} onClick={() => setMobileToolsLocation(window.location.hash)} className="pointer-events-auto flex size-11 items-center justify-center rounded-full bg-black/25"><HugeiconsIcon icon={Menu01Icon} className="size-5" /></button>
+        </nav>}
+        <header ref={header} className={cn("shrink-0 border-b bg-card text-foreground pt-[var(--mpp-safe-top)]", mobileDetail && !mobileToolsOpen && "max-md:hidden")}>
           {/* One row on desktop (the window title bar in the desktop app); two rows on phones. */}
           <div
             className={cn(
@@ -73,6 +82,7 @@ export function AppShell({ activePage, toolbar, crumbs, trailing, children, runt
             style={desktopApp ? DESKTOP_TITLE_BAR : undefined}
           >
             <HistoryButtons className="hidden md:flex" />
+            {mobileDetail && <button type="button" aria-label="收起顶部工具栏" aria-expanded={mobileToolsOpen} onClick={() => setMobileToolsLocation(null)} className="flex size-11 shrink-0 items-center justify-center rounded-md md:hidden"><HugeiconsIcon icon={Cancel01Icon} className="size-5" /></button>}
             <DesktopHeader activePage={activePage} />
             {crumbs && <div className="hidden min-w-0 max-w-72 md:block">{crumbs}</div>}
 
@@ -92,7 +102,7 @@ export function AppShell({ activePage, toolbar, crumbs, trailing, children, runt
             <div className="ml-auto flex shrink-0 items-center gap-1">
               {trailing}
               {/* Phones only; on desktop Ctrl+K opens the same search. */}
-              {runtimeControls && (
+              {runtimeControls && !toolbar && (
                 <button
                   type="button"
                   onClick={openSearch}
@@ -125,11 +135,11 @@ export function AppShell({ activePage, toolbar, crumbs, trailing, children, runt
           </div>
         </header>
 
-        <main className="min-h-0 flex-1 overflow-hidden" id="main-content">
+        <main className={cn("min-h-0 flex-1 overflow-hidden", mobileDetail && "max-md:pt-[var(--mpp-safe-top)]")} id="main-content">
           {children}
         </main>
 
-        <MobileBottomNav activePage={activePage} />
+        <div className={mobileDetail ? "hidden md:contents" : "contents"}><MobileBottomNav activePage={activePage} /></div>
       </div>
     </>
   )

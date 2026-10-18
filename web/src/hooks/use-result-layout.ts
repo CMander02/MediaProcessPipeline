@@ -24,11 +24,11 @@ export function usePortraitResultLayout(): boolean {
 export function useMobileResultLayout(): boolean {
   const [mobile, setMobile] = useState(() => {
     if (typeof window === "undefined") return false
-    return window.matchMedia("(max-width: 767px)").matches
+    return window.matchMedia("(max-width: 767px), (pointer: coarse) and (max-height: 500px)").matches
   })
 
   useEffect(() => {
-    const query = window.matchMedia("(max-width: 767px)")
+    const query = window.matchMedia("(max-width: 767px), (pointer: coarse) and (max-height: 500px)")
     const update = () => setMobile(query.matches)
     update()
     query.addEventListener("change", update)

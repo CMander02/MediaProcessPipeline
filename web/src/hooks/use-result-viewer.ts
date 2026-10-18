@@ -1130,7 +1130,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt, embe
   const portraitWindow = usePortraitResultLayout()
   const mobileWindow = useMobileResultLayout()
   const isPortraitLayout = layoutWidth === undefined ? portraitWindow : layoutWidth >= 560 && layoutWidth < 900
-  const isMobileLayout = layoutWidth === undefined ? mobileWindow : layoutWidth < 560
+  const isMobileLayout = mobileWindow || (layoutWidth !== undefined && layoutWidth < 560)
   const videoLoop = Boolean(prefs.videoLoop)
   const toggleVideoLoop = useCallback(() => {
     updatePrefs({ videoLoop: !videoLoop })
