@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button"
 import { type LocalAsrModelsStatus } from "@/lib/api"
 import { type SharedSettingsProps, type LocalModelSettingsProps } from "./types"
 import { SelectSettingRow, SwitchSettingRow, AdvancedSettings, NumberSettingRow } from "./controls"
+import { workflowDefaults } from "@/lib/workflow"
 import { getRuntimeModelBindings } from "./registry-utils"
 
 export function AudioFlowControls({
@@ -12,7 +13,7 @@ export function AudioFlowControls({
   saved,
 }: SharedSettingsProps) {
   const flow = String(settings.audio_processing_flow ?? "asr")
-  const diarizationEnabled = Boolean(settings.enable_diarization ?? true)
+  const diarizationEnabled = workflowDefaults(settings).diarize
 
   return (
     <div>
@@ -38,7 +39,7 @@ export function AudioFlowControls({
           <SwitchSettingRow
             label="启用说话人分离"
             checked={diarizationEnabled}
-            onChange={(value) => updateSetting("enable_diarization", value)}
+            onChange={(value) => updateSetting("pipeline_workflow", { ...workflowDefaults(settings), diarize: value })}
           />
         </SettingsSection>
       ) : null}
