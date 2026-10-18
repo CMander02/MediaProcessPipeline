@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils"
 import { usePipelineSteps } from "@/lib/constants"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { Tick02Icon, Loading03Icon } from "@hugeicons/core-free-icons"
+import { Tick02Icon, Loading03Icon, Cancel01Icon } from "@hugeicons/core-free-icons"
 import type { Task } from "@/lib/api"
 
 export function StepProgress({ task }: { task: Task }) {
@@ -9,6 +9,10 @@ export function StepProgress({ task }: { task: Task }) {
   return (
     <div className="flex items-center gap-1">
       {steps.map((step, i) => {
+        const workflow = task.options?.workflow as Record<string, boolean> | undefined
+        const skipped = step.id === "analyze"
+          ? ["analyze", "summary", "mindmap", "detail"].every((key) => workflow?.[key] === false)
+          : workflow?.[step.id] === false
         const isCompleted = task.completed_steps.includes(step.id)
         const isCurrent = task.current_step === step.id
         return (
@@ -24,7 +28,9 @@ export function StepProgress({ task }: { task: Task }) {
                 !isCompleted && !isCurrent && "text-muted-foreground",
               )}
             >
-              {isCompleted ? (
+              {skipped ? (
+                <HugeiconsIcon icon={Cancel01Icon} className="h-3 w-3" />
+              ) : isCompleted ? (
                 <HugeiconsIcon icon={Tick02Icon} className="h-3 w-3" />
               ) : isCurrent ? (
                 <HugeiconsIcon icon={Loading03Icon} className="h-3 w-3 animate-spin" />
@@ -33,7 +39,7 @@ export function StepProgress({ task }: { task: Task }) {
                   <span className="h-1.5 w-1.5 rounded-full bg-current opacity-30" />
                 </span>
               )}
-              <span>{step.name}</span>
+              <span>{step.name}{skipped ? "（跳过）" : ""}</span>
             </div>
           </div>
         )

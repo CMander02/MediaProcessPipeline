@@ -76,6 +76,7 @@ export interface RuntimeModelBinding {
 }
 
 export interface RuntimeSettings {
+  pipeline_workflow?: import("./workflow").WorkflowConfig | null
   llm_provider?: LlmProvider | string
   asr_provider?: AsrProvider | string
   audio_processing_flow?: AudioProcessingFlow | string

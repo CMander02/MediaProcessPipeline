@@ -348,6 +348,8 @@ async def _update_step(
     completed: bool = False,
 ) -> None:
     """Update task step progress, persist to DB, and publish event."""
+    from app.core.workflow import step_skipped
+    skipped = step_skipped(task, str(step))
     task.current_step = step
     task.message = next(
         (s["name"] for s in PIPELINE_STEPS if s["id"] == step),
@@ -355,6 +357,8 @@ async def _update_step(
     )
     if completed and step not in task.completed_steps:
         task.completed_steps.append(step)
+    if skipped:
+        task.message = f"已跳过：{task.message}"
 
     public_step_ids = {step["id"] for step in PIPELINE_STEPS}
     total_steps = len(public_step_ids)
@@ -382,6 +386,7 @@ async def _update_step(
             {
                 "step": step,
                 "completed": completed,
+                "skipped": skipped,
                 "progress": task.progress,
                 "message": task.message,
             },

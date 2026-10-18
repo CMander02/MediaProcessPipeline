@@ -115,6 +115,9 @@ def _create_direct_task(source: str, options: dict):
     from app.models import Task, TaskStatus, TaskType
 
     clean_source = _clean_source_path(source)
+    from app.core.settings import get_runtime_settings
+    from app.core.workflow import snapshot_workflow
+    options = snapshot_workflow(options, get_runtime_settings())
     task = Task(
         task_type=TaskType.PIPELINE,
         source=clean_source,

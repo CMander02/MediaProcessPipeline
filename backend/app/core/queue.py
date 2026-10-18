@@ -192,6 +192,13 @@ class TaskQueue:
         task = store.get(task_id)
         if task and task_is_deleting(task):
             raise ValueError('content_deleting')
+        if task and task.task_type == TaskType.PIPELINE:
+            from app.core.settings import get_runtime_settings
+            from app.core.workflow import snapshot_workflow
+            options = snapshot_workflow(task.options, get_runtime_settings())
+            if options != task.options:
+                task.options = options
+                store.save(task)
         store.update_status(task_id, TaskStatus.QUEUED)
         await bus.publish(TaskEvent(task_id, "queued"))
         task = store.get(task_id)
@@ -625,6 +632,9 @@ class TaskQueue:
                 retained.add("speaker_review")
         if has_polished_transcript:
             retained.update({"speaker_review", "polish"})
+        if has_raw_transcript:
+            from app.core.workflow import step_skipped
+            retained.update(step for step in ("speaker_review", "polish") if step_skipped(task, step))
         return [step for step in ordered if step in retained]
 
     def _pipeline_order(self, task: Any) -> list[str]:

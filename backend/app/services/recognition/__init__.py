@@ -92,11 +92,14 @@ async def transcribe_audio(
     audio_processing_flow: str | None = None,
     diarization_audio_path: str | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    workflow: dict[str, bool] | None = None,
 ) -> dict[str, Any]:
     """Transcribe audio with the configured ASR provider and optionally write an SRT file."""
     from app.core.model_router import resolve_asr_binding
 
     options: dict[str, Any] = {}
+    if workflow is not None:
+        options["workflow"] = workflow
     if provider:
         options["asr_provider"] = provider
     if model:

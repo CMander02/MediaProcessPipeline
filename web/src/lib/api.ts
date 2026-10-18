@@ -528,7 +528,7 @@ async function readJson<T>(res: Response): Promise<T> {
   }
 }
 
-function dispatchApiEvent(name: "mpp:api-error" | "mpp:offline" | "mpp:capabilities-change" | "mpp:workspace-change", detail: Record<string, unknown>) {
+function dispatchApiEvent(name: "mpp:api-error" | "mpp:offline" | "mpp:capabilities-change" | "mpp:workspace-change" | "mpp:settings-change", detail: Record<string, unknown>) {
   if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(name, { detail }))
 }
 
@@ -664,6 +664,9 @@ export const api = {
       }
       if (typeof preparedUpdates.data_root === "string") {
         dispatchApiEvent("mpp:workspace-change", { workspace_id: updated.data_root })
+      }
+      if ("pipeline_workflow" in preparedUpdates || "generate_video_detail" in preparedUpdates) {
+        dispatchApiEvent("mpp:settings-change", {})
       }
       return updated
     },

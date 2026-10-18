@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.user_paths import default_data_root
+from app.core.workflow import WorkflowConfig
 
 
 class CustomLLMProfile(BaseModel):
@@ -74,6 +75,8 @@ class RuntimeModelBinding(BaseModel):
 
 class RuntimeSettings(BaseModel):
     """Settings that can be updated at runtime from frontend."""
+
+    pipeline_workflow: WorkflowConfig | None = None
 
     model_config = ConfigDict(extra="allow")
 

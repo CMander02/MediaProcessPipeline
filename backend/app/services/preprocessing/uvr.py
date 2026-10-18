@@ -210,6 +210,8 @@ class UVRService:
 
         try:
             from audio_separator.separator import Separator
+            from app.services.preprocessing.audio_merge import install_streaming_chunk_merger
+            install_streaming_chunk_merger()
 
             # Determine base model directory
             if model_dir:

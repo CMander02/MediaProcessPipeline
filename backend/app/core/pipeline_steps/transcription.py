@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.logging_setup import log_event
+from app.core.workflow import stage_enabled
 from app.core.pipeline_steps.artifacts import (
     _prepare_source_context,
     _write_speaker_map,
@@ -84,7 +85,7 @@ async def _run_voiceprint_step(
     from app.core.settings import get_runtime_settings
 
     rt = get_runtime_settings()
-    if not getattr(rt, "enable_voiceprint", True):
+    if not getattr(rt, "enable_voiceprint", True) or task.options.get("disable_voiceprint", False):
         return recognition_segments
     if not recognition_segments:
         return recognition_segments
@@ -240,14 +241,15 @@ async def transcribe(ctx: PipelineContext) -> None:
             else:
                 await _update_step(ctx.task, PipelineStep.SEPARATE)
                 skip_separation = (
-                    ctx.task.options.get("skip_separation", False)
+                    not stage_enabled(ctx.task, "separate")
+                    or ctx.task.options.get("skip_separation", False)
                     or ctx.task.options.get("api_flow", False)
                     or ctx.has_subtitle
                     or not ctx.source_flow.requires_uvr
                 )
                 if skip_separation:
                     ctx.vocals_path = ctx.audio_path
-                    if not ctx.has_subtitle:
+                    if not ctx.has_subtitle and stage_enabled(ctx.task, "separate"):
                         ctx.uvr_fallback_reason = "uvr.skipped"
                         await _emit_timeline_event(
                             ctx.task,
@@ -345,6 +347,7 @@ async def transcribe(ctx: PipelineContext) -> None:
                                 ctx.vocals_path,
                                 stage="UVR separation output",
                             )
+                            ctx.metadata.extra["uvr_vocals_file"] = Path(ctx.vocals_path).name
                             if preprocess.get("model_used") == "mock" or Path(
                                 ctx.vocals_path
                             ) == Path(source_audio):
@@ -551,13 +554,14 @@ async def transcribe(ctx: PipelineContext) -> None:
                                 max_speakers=max_speakers,
                                 provider=asr_provider,
                                 model=ctx.task.options.get("asr_model"),
-                                diarize=not ctx.task.options.get("disable_diarization", False),
+                                diarize=stage_enabled(ctx.task, "diarize") and not ctx.task.options.get("disable_diarization", False),
                                 chunk_strategy=ctx.task.options.get("asr_chunk_strategy"),
                                 timestamp_mode=ctx.task.options.get("asr_timestamp_mode"),
                                 hotwords=asr_hotwords,
                                 audio_processing_flow=ctx.task.options.get("audio_processing_flow"),
                                 diarization_audio_path=ctx.audio_path,
                                 progress_callback=_on_asr_progress,
+                                workflow=ctx.task.options.get("workflow"),
                             )
                             await asyncio.sleep(0)
                             return result
@@ -627,12 +631,13 @@ async def transcribe(ctx: PipelineContext) -> None:
                         ctx.recognition_segments,
                         ctx.source_context,
                     )
-                    ctx.recognition_segments = await _run_voiceprint_step(
-                        ctx.task,
-                        ctx.recognition_segments,
-                        ctx.task_dir,
-                        ctx.source_context,
-                    )
+                    if stage_enabled(ctx.task, "diarize"):
+                        ctx.recognition_segments = await _run_voiceprint_step(
+                            ctx.task,
+                            ctx.recognition_segments,
+                            ctx.task_dir,
+                            ctx.source_context,
+                        )
                     ctx.srt = _render_recognition_srt(ctx.recognition_segments)
                     ctx.metadata.extra["audio_processing"] = {
                         "flow": recognition.get("audio_processing_flow", "asr"),
@@ -681,7 +686,10 @@ async def transcribe(ctx: PipelineContext) -> None:
                     if ctx.srt:
                         try:
                             detected_lang = str(recognition.get("language") or "unknown")
-                            if not ctx.stop_after_transcribe and detected_lang == "unknown":
+                            if (
+                                not ctx.stop_after_transcribe and detected_lang == "unknown"
+                                and stage_enabled(ctx.task, "source_analysis")
+                            ):
                                 from app.services.analysis.language_detect import (
                                     detect_transcript_language,
                                 )

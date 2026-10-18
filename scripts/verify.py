@@ -2,7 +2,7 @@
 """Run the checks for the parts of the repo a change touches.
 
     python scripts/verify.py             areas changed in the working tree (vs HEAD)
-    python scripts/verify.py --staged    exactly what is staged, in a clean temporary worktree
+    python scripts/verify.py --staged    exactly what is staged, in a clean temporary copy
     python scripts/verify.py --all       every suite
     python scripts/verify.py --area web --area desktop
 
@@ -14,12 +14,14 @@ a failure. Exits 0 only when every selected check passed.
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import tarfile
 import time
 from pathlib import Path
 
@@ -139,22 +141,25 @@ def main() -> int:
     if not args.staged:
         return 0 if run_checks(areas, ROOT) else 1
 
-    # Clean worktree at HEAD plus exactly the staged diff; dependencies are linked in.
+    # Clean file copy at HEAD plus exactly the staged diff; dependencies are linked in.
     work = Path(tempfile.mkdtemp(prefix="mpp-verify-"))
     links = [work / "web" / "node_modules", work / "desktop" / "node_modules"]
     try:
-        git("worktree", "add", "--detach", str(work), "HEAD")
+        archive = subprocess.run(
+            ["git", "archive", "HEAD"], cwd=ROOT, check=True, capture_output=True,
+        ).stdout
+        with tarfile.open(fileobj=io.BytesIO(archive)) as source:
+            source.extractall(work, filter="data")
         patch = subprocess.run(["git", "diff", "--cached", "--binary"], cwd=ROOT, check=True,
                                capture_output=True).stdout
         if patch:
-            subprocess.run(["git", "apply", "--index", "--whitespace=nowarn"], cwd=work, input=patch, check=True)
+            subprocess.run(["git", "apply", "--whitespace=nowarn"], cwd=work, input=patch, check=True)
         for link in links:
             link_dir(link, ROOT / link.relative_to(work))
         return 0 if run_checks(areas, work) else 1
     finally:
         for link in links:
             unlink_dir(link)
-        subprocess.run(["git", "worktree", "remove", "--force", str(work)], cwd=ROOT, capture_output=True)
         shutil.rmtree(work, ignore_errors=True)
 
 

@@ -86,11 +86,19 @@ class PipelineContext:
         """Find audio/vocals files on disk. Returns True if usable paths found."""
         if self.task_dir is None:
             return False
-        # Vocals (post-UVR)
-        for candidate in self.task_dir.glob("vocals*.wav"):
-            self.vocals_path = str(candidate)
-            self.audio_path = self.vocals_path
-            return True
+        # Keep the selected vocals path independent of directory iteration order.
+        raw_path = self.metadata.extra.get("uvr_vocals_file") if self.metadata else None
+        if raw_path:
+            candidate = self.task_dir / Path(raw_path).name
+            if candidate.is_file():
+                self.vocals_path = str(candidate)
+                self.audio_path = self.vocals_path
+                return True
+        for candidate in self.task_dir.glob("*.wav"):
+            if candidate.name.lower().startswith("vocals") or "(vocals)" in candidate.name.lower():
+                self.vocals_path = str(candidate)
+                self.audio_path = self.vocals_path
+                return True
         # Raw extracted audio
         for candidate in self.task_dir.glob("*.wav"):
             self.audio_path = str(candidate)
@@ -163,6 +171,11 @@ class PipelineContext:
 
 
 async def create_context(task, rt, download_worker_call=False, stop_after_transcribe=False):
+    from app.core.workflow import snapshot_workflow
+    options = snapshot_workflow(task.options, rt)
+    if options != task.options:
+        task.options = options
+        get_task_store().save(task)
     from app.services.ingestion.ytdlp import (
         normalize_bilibili_source_url,
     )

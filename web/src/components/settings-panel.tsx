@@ -4,7 +4,6 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Label } from "@/components/ui/label"
-import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { api, type BilibiliAuthStatus, type Settings, type TwitterAuthStatus, type XiaohongshuAuthStatus, type YtdlpStatus } from "@/lib/api"
@@ -26,6 +25,8 @@ import { usePlatform } from "@/platform/use-platform"
 import { getThemePreference, setThemePreference, type ThemePreference } from "@/lib/theme"
 import { useAppAccess } from "@/hooks/use-app-access-context"
 import { mediaPolicies } from "@/lib/media-retention"
+import { workflowDefaults } from "@/lib/workflow"
+import { WorkflowControls } from "@/components/workflow-controls"
 import { buildHash, navigate, useRoute } from "@/lib/router"
 
 // --- Groups ---
@@ -64,8 +65,9 @@ const GROUPS: GroupDef[] = [
   {
     id: "pipeline",
     label: "处理流程",
-    description: "新任务按这个顺序处理：处理方式、人声分离、语音识别，再交给模型润色、分析和总结。每一步用哪个模型，在这里决定。",
+    description: "选择新任务默认执行的步骤，并配置各步骤的模型。提交任务时可以临时调整。",
     sections: [
+      { id: "workflow", title: "默认流程", mobile: true, keywords: "默认流程 步骤 勾选 跳过 人声分离 ASR 润色 摘要 导图" },
       { id: "audio-flow", title: "音频流程", keywords: "默认处理方式 标准语音识别 MOSS 一体化识别 说话人分离 SPEAKER" },
       { id: "uvr", title: "人声分离", keywords: "人声分离 UVR 背景音乐 默认模型 模型目录 运行设备 分段 检查本机 UVR" },
       { id: "asr", title: "语音识别", keywords: "语音识别 ASR 服务 llama.cpp Qwen3-ASR sherpa-onnx SiliconFlow 时间戳 VAD 强制对齐 ForcedAligner pyannote 说话人模型 分段并发 GGUF mmproj" },
@@ -557,6 +559,18 @@ export function SettingsPanel() {
             </CardContent>
           </Card>
         )
+      case "workflow":
+        return <Card>
+          <CardHeader>
+            <CardTitle>默认流程</CardTitle>
+            <p className="text-sm text-muted-foreground">仅影响之后提交的任务。已排队的任务保留提交时的流程。</p>
+          </CardHeader>
+          <CardContent>
+            <WorkflowControls value={workflowDefaults(settings)} disabled={saving.pipeline_workflow}
+              onChange={(value) => { void updateSetting("pipeline_workflow", value) }} />
+            {saveErrors.pipeline_workflow && <p role="alert" className="mt-2 text-sm text-destructive">{saveErrors.pipeline_workflow}</p>}
+          </CardContent>
+        </Card>
       case "audio-flow":
         return <LocalModelSection id="audio-flow" {...localModelProps} />
       case "uvr":
@@ -585,19 +599,6 @@ export function SettingsPanel() {
                 <Switch
                   checked={Boolean(settings.pipeline_overlap ?? true)}
                   onCheckedChange={(v) => updateSetting("pipeline_overlap", v)}
-                />
-              </div>
-              <Separator />
-              <div className="flex items-center justify-between">
-                <div>
-                  <Label>生成视频详情 detail.md</Label>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    开启后额外生成旧版深层树状 Markdown，作为“视频详情”展示和导出；默认导图保持浅层展示型结构。
-                  </p>
-                </div>
-                <Switch
-                  checked={Boolean(settings.generate_video_detail ?? true)}
-                  onCheckedChange={(v) => updateSetting("generate_video_detail", v)}
                 />
               </div>
             </CardContent>

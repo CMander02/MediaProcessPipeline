@@ -218,6 +218,9 @@ async def _prepare_source_context(
     """Build or restore the source-grounded context before ASR and polishing."""
     from app.services.analysis.source_context import load_or_build_source_context
 
+    from app.core.workflow import stage_enabled
+    enrich = enrich and stage_enabled(task, "source_analysis")
+
     context_filename = "source_context.json" if enrich else "source_context.asr.json"
     context_path = task_dir / context_filename
     context = await load_or_build_source_context(

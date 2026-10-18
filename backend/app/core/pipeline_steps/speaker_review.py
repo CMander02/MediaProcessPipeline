@@ -238,7 +238,9 @@ async def _apply_report(ctx: PipelineContext, report: dict, caption: bool) -> No
 
 async def review_transcript_speakers(ctx: PipelineContext) -> None:
     from app.core.pipeline_steps.participant_evidence import prepare_participant_evidence
-    await prepare_participant_evidence(ctx)
+    from app.core.workflow import stage_enabled
+    if stage_enabled(ctx.task, "source_analysis"):
+        await prepare_participant_evidence(ctx)
     caption = (
         ctx.has_subtitle
         or ctx.subtitle_source == "platform"

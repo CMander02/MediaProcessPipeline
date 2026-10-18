@@ -6,6 +6,7 @@ import asyncio
 import logging
 
 from app.core.logging_setup import log_event
+from app.core.workflow import stage_enabled
 from app.core.pipeline_steps.artifacts import (
     _emit_file_ready,
     _schedule_kb_index,
@@ -88,12 +89,17 @@ async def postprocess(ctx: PipelineContext) -> None:
         }
         return
 
-    await review_transcript_speakers(ctx)
-    await identify_transcript_speakers(ctx)
+    if stage_enabled(ctx.task, "speaker_review"):
+        await review_transcript_speakers(ctx)
+        await identify_transcript_speakers(ctx)
+    else:
+        await _update_step(ctx.task, PipelineStep.SPEAKER_REVIEW, completed=True)
 
     # Polish the reviewed speaker labels, then generate downstream analysis.
     polish_ran = False
-    if PipelineStep.POLISH in ctx.done:
+    if not stage_enabled(ctx.task, "polish"):
+        await _update_step(ctx.task, PipelineStep.POLISH, completed=True)
+    elif PipelineStep.POLISH in ctx.done:
         log_event(
             logger,
             logging.INFO,
@@ -157,7 +163,9 @@ async def postprocess(ctx: PipelineContext) -> None:
     # ── Step 5: Analyze + Summarize + Mindmap from polished text ─────────────
     # If an older interrupted task already completed ANALYZE before POLISH,
     # regenerate analysis outputs now so summary/mindmap reflect the polished SRT.
-    if PipelineStep.ANALYZE in ctx.done and not polish_ran:
+    if not any(stage_enabled(ctx.task, stage) for stage in ("analyze", "summary", "mindmap", "detail")):
+        await _update_step(ctx.task, PipelineStep.ANALYZE, completed=True)
+    elif PipelineStep.ANALYZE in ctx.done and not polish_ran:
         log_event(
             logger,
             logging.INFO,
@@ -194,10 +202,17 @@ async def postprocess(ctx: PipelineContext) -> None:
                 response_schema=CONTENT_SELECTION_RESPONSE_SCHEMA,
             )
 
-        selected_source = await prepare_summary_source(
-            ctx.polished or ctx.srt or ctx.transcript,
-            {"title": ctx.metadata.title, **video_metadata}, ctx.source_context, select_call,
-        )
+        if any(stage_enabled(ctx.task, stage) for stage in ("summary", "mindmap", "detail")):
+            selected_source = await prepare_summary_source(
+                ctx.polished or ctx.reviewed_srt or ctx.srt or ctx.transcript,
+                {"title": ctx.metadata.title, **video_metadata}, ctx.source_context, select_call,
+            )
+        else:
+            selected_source = {
+                "text": ctx.polished or ctx.reviewed_srt or ctx.srt or ctx.transcript,
+                "source_context": ctx.source_context,
+                "selection": {"status": "skipped"},
+            }
         import json as _json
 
         await _write_text_artifact(
@@ -230,9 +245,12 @@ async def postprocess(ctx: PipelineContext) -> None:
             merge_analysis_with_source,
         )
 
-        ctx.analysis = await analyze_content(
-            analysis_text, ctx.metadata.title, metadata=video_metadata
-        )
+        if stage_enabled(ctx.task, "analyze"):
+            ctx.analysis = await analyze_content(
+                analysis_text, ctx.metadata.title, metadata=video_metadata
+            )
+        elif ctx.metadata.extra.get("detected_language"):
+            ctx.analysis["language"] = ctx.metadata.extra["detected_language"]
         ctx.analysis = merge_analysis_with_source(ctx.analysis, ctx.source_context)
         if speakers:
             ctx.analysis["speakers_detected"] = len(speakers)
@@ -246,13 +264,17 @@ async def postprocess(ctx: PipelineContext) -> None:
                 _json.dumps(ctx.analysis, indent=2, ensure_ascii=False),
             )
 
-        tasks = [generate_mindmap(
-            mindmap_text, metadata=mindmap_metadata, user_language=user_language,
-        )]
-        if ctx.rt.generate_video_detail:
-            tasks.append(generate_detail(mindmap_text, user_language=user_language))
-        results = await asyncio.gather(*tasks)
-        ctx.mindmap = results[0]
+        tasks = {}
+        if stage_enabled(ctx.task, "mindmap"):
+            tasks["mindmap"] = generate_mindmap(
+                mindmap_text, metadata=mindmap_metadata, user_language=user_language,
+            )
+        if stage_enabled(ctx.task, "detail") and (
+            ctx.task.options.get("workflow") is not None or ctx.rt.generate_video_detail
+        ):
+            tasks["detail"] = generate_detail(mindmap_text, user_language=user_language)
+        results = dict(zip(tasks, await asyncio.gather(*tasks.values())))
+        ctx.mindmap = results.get("mindmap", "")
         ctx.mindmap = canonicalize_text(ctx.mindmap, ctx.source_context)
         from app.services.analysis.text_locale import normalize_chinese_script
 
@@ -261,12 +283,13 @@ async def postprocess(ctx: PipelineContext) -> None:
             user_language,
             source_text=mindmap_text,
         )
-        ctx.summary = await summarize_text(
-            _plain_text_from_srt(mindmap_text) if ctx.polished or ctx.srt else mindmap_text,
-            user_language=user_language,
-            source_context=outline_guided_context(summary_context, ctx.mindmap),
-        )
-        ctx.detail = canonicalize_text(results[1], ctx.source_context) if len(results) > 1 else ""
+        if stage_enabled(ctx.task, "summary"):
+            ctx.summary = await summarize_text(
+                _plain_text_from_srt(mindmap_text) if ctx.polished or ctx.srt else mindmap_text,
+                user_language=user_language,
+                source_context=outline_guided_context(summary_context, ctx.mindmap),
+            )
+        ctx.detail = canonicalize_text(results.get("detail", ""), ctx.source_context)
         await _raise_if_cancelled(ctx.task.id)
 
         if ctx.summary:

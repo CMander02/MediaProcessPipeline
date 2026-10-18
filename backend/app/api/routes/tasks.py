@@ -80,6 +80,12 @@ def _validate_public_http_url(url: str) -> None:
 def _prepare_task(task_create: TaskCreate, request: Request, source: str) -> tuple[Task, dict]:
     """Apply the same access checks and initial flow to every task entry point."""
     runtime = get_runtime_settings()
+    from app.core.workflow import snapshot_workflow
+    from pydantic import ValidationError
+    try:
+        options = snapshot_workflow(task_create.options, runtime)
+    except ValidationError as exc:
+        raise HTTPException(422, detail="Invalid workflow options") from exc
     if (
         _looks_like_local_path(source)
         and not filesystem_access_allowed(request, runtime)
@@ -89,7 +95,7 @@ def _prepare_task(task_create: TaskCreate, request: Request, source: str) -> tup
     task = Task(
         task_type=task_create.task_type,
         source=source,
-        options=task_create.options,
+        options=options,
         webhook_url=task_create.webhook_url,
         status=TaskStatus.QUEUED,
         current_step=PipelineStep.DOWNLOAD,

@@ -99,6 +99,54 @@ def create_task(source, **kwargs):
 
 
 @pytest.mark.asyncio
+async def test_workflow_asr_only_does_not_call_optional_models(runtime, monkeypatch):
+    from app.core.workflow import WorkflowConfig
+    from app.services import preprocessing
+    from app.core.pipeline_steps import postprocess as stage
+
+    task = create_task(runtime.source)
+    task.options = {"workflow": WorkflowConfig(**{key: False for key in WorkflowConfig.model_fields}).model_dump()}
+    separate = AsyncMock(side_effect=AssertionError("UVR must not run"))
+    review = AsyncMock(side_effect=AssertionError("Speaker review must not run"))
+    monkeypatch.setattr(preprocessing, "separate_vocals", separate)
+    monkeypatch.setattr(stage, "review_transcript_speakers", review)
+    database.get_task_store().save(task)
+    await pipeline.run_pipeline(task, _download_worker_call=True)
+    task = database.get_task_store().get(task.id)
+    task.source = "https://example.com/audio.mp3"
+    # An explicit workflow skip must keep the selected ASR provider.
+    def unexpected_fallback(_task):
+        raise AssertionError("A user-requested UVR skip must not select an API fallback")
+    monkeypatch.setattr(transcription, "_select_asr_provider_for_fallback", unexpected_fallback)
+    database.get_task_store().save(task)
+    await pipeline.run_pipeline(task)
+    runtime.asr.assert_awaited_once()
+    assert runtime.asr.call_args.kwargs["diarize"] is False
+    for model in (runtime.polish, runtime.analyze, runtime.identify, runtime.summarize, runtime.mindmap, runtime.detail):
+        model.assert_not_awaited()
+    assert {"transcribe", "separate", "polish", "speaker_review", "analyze", "archive"}.issubset(task.completed_steps)
+    output = Path(task.result["output_dir"])
+    assert (output / "transcript.srt").exists()
+    assert not (output / "summary.md").exists()
+    assert not (output / "mindmap.md").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", ["analyze", "summary", "mindmap", "detail"])
+async def test_workflow_enables_each_derived_output_independently(runtime, enabled):
+    from app.core.workflow import WorkflowConfig
+    task = create_task(runtime.source)
+    workflow = {key: False for key in WorkflowConfig.model_fields}
+    workflow[enabled] = True
+    task.options = {"workflow": workflow}
+    database.get_task_store().save(task)
+    await pipeline.run_pipeline(task)
+    for name, model in (("analyze", runtime.analyze), ("summary", runtime.summarize), ("mindmap", runtime.mindmap), ("detail", runtime.detail)):
+        assert model.await_count == int(name == enabled)
+    assert "archive" in task.completed_steps
+
+
+@pytest.mark.asyncio
 async def test_download_transcribe_postprocess_handoffs_restore_outputs(runtime):
     task = create_task(runtime.source)
     store = database.get_task_store()

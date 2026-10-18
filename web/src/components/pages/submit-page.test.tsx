@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import "@testing-library/jest-dom/vitest"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { SubmitPage } from "./submit-page"
+import { DEFAULT_WORKFLOW } from "@/lib/workflow"
 import { api, type BilibiliCollectionResult, type Task } from "@/lib/api"
 import { navigate } from "@/lib/router"
 import { notifySuccess } from "@/lib/notify"
@@ -20,7 +21,11 @@ vi.mock("@/hooks/use-app-access-context", () => ({ useAppAccess: () => ({
 
 const linkBox = () => screen.getByPlaceholderText(/粘贴视频或网页链接/)
 const enter = (value: string) => fireEvent.change(linkBox(), { target: { value } })
-const submit = () => fireEvent.click(screen.getByRole("button", { name: /^开始处理/ }))
+const submit = async () => {
+  const button = screen.getByRole("button", { name: /^开始处理/ })
+  await waitFor(() => expect(button).not.toBeDisabled())
+  fireEvent.click(button)
+}
 const task = (id: string) => ({ id, status: "queued" } as Task)
 let fixtureNumber = 0
 function collection(): BilibiliCollectionResult {
@@ -43,6 +48,7 @@ async function showCollection(data: BilibiliCollectionResult) {
 const openCollection = () => fireEvent.click(screen.getByRole("button", { name: /选择其他视频/ }))
 
 beforeEach(() => {
+  vi.spyOn(api.settings, "get").mockResolvedValue({} as never)
   vi.spyOn(api.tasks, "list").mockResolvedValue([])
   vi.spyOn(api.archives, "lookup").mockResolvedValue({ matches: {} })
   vi.spyOn(api.pipeline, "probe").mockRejectedValue(new Error("offline"))
@@ -54,12 +60,28 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.mocked(navigate).mockReset(); vi.mocked(notifySuccess).mockReset() })
 
 describe("collection selection", () => {
+  it("inherits global workflow, keeps ASR required and applies temporary overrides only to this submission", async () => {
+    vi.mocked(api.settings.get).mockResolvedValue({ pipeline_workflow: { ...DEFAULT_WORKFLOW, separate: false } } as never)
+    const patch = vi.spyOn(api.settings, "patch")
+    render(<SubmitPage />)
+    enter("https://example.com/workflow")
+    fireEvent.click(screen.getByText(/处理流程 ·/))
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "人声分离" })).not.toBeChecked())
+    expect(screen.getByRole("checkbox", { name: /ASR 语音识别/ })).toBeDisabled()
+    fireEvent.click(screen.getByRole("checkbox", { name: "字幕润色" }))
+    await submit()
+    await waitFor(() => expect(api.tasks.importSources).toHaveBeenCalledWith(["https://example.com/workflow"], {
+      force_asr: true, workflow: { ...DEFAULT_WORKFLOW, separate: false, polish: false },
+    }))
+    expect(patch).not.toHaveBeenCalled()
+  })
+
   it("submits only the current video without opening the selector", async () => {
     render(<SubmitPage />)
     const data = collection()
     await showCollection(data)
-    submit()
-    await waitFor(() => expect(api.tasks.importSources).toHaveBeenCalledWith([data.items[0].url], { force_asr: false }))
+    await submit()
+    await waitFor(() => expect(api.tasks.importSources).toHaveBeenCalledWith([data.items[0].url], { force_asr: true, workflow: DEFAULT_WORKFLOW }))
     expect(navigate).toHaveBeenCalledWith("#/result/task/task-0")
   })
 
@@ -78,8 +100,8 @@ describe("collection selection", () => {
     expect(screen.getByText("已选 2 项")).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "返回提交" }))
     expect(api.tasks.importSources).not.toHaveBeenCalled()
-    submit()
-    await waitFor(() => expect(api.tasks.importSources).toHaveBeenCalledWith(data.items.slice(0, 2).map((item) => item.url), { force_asr: false }))
+    await submit()
+    await waitFor(() => expect(api.tasks.importSources).toHaveBeenCalledWith(data.items.slice(0, 2).map((item) => item.url), { force_asr: true, workflow: DEFAULT_WORKFLOW }))
   })
 
   it("keeps other members available when the pasted video is already in the library", async () => {
@@ -94,8 +116,8 @@ describe("collection selection", () => {
     expect(screen.getByLabelText("选择 第一集")).not.toBeChecked()
     expect(screen.getByLabelText("选择 第二集")).toBeChecked()
     fireEvent.click(screen.getByRole("button", { name: "返回提交" }))
-    submit()
-    await waitFor(() => expect(api.tasks.importSources).toHaveBeenCalledWith(data.items.slice(1).map((item) => item.url), { force_asr: false }))
+    await submit()
+    await waitFor(() => expect(api.tasks.importSources).toHaveBeenCalledWith(data.items.slice(1).map((item) => item.url), { force_asr: true, workflow: DEFAULT_WORKFLOW }))
   })
 
   it("refreshes the directory and keeps only still-present selections", async () => {
@@ -128,8 +150,8 @@ describe("collection selection", () => {
     data.current_item_id = "missing"
     render(<SubmitPage />)
     await showCollection(data)
-    submit()
-    await waitFor(() => expect(api.tasks.importSources).toHaveBeenCalledWith([data.items[0].url], { force_asr: false }))
+    await submit()
+    await waitFor(() => expect(api.tasks.importSources).toHaveBeenCalledWith([data.items[0].url], { force_asr: true, workflow: DEFAULT_WORKFLOW }))
   })
 
   it("retries a failed directory request instead of caching the failure", async () => {
@@ -174,8 +196,8 @@ describe("submission", () => {
     const data = collection()
     await showCollection(data)
     fireEvent.click(screen.getByLabelText(`以「${data.title}」创建文件夹`))
-    submit()
-    await waitFor(() => expect(api.tasks.importSources).toHaveBeenCalledWith([data.items[0].url], { force_asr: false }, {
+    await submit()
+    await waitFor(() => expect(api.tasks.importSources).toHaveBeenCalledWith([data.items[0].url], { force_asr: true, workflow: DEFAULT_WORKFLOW }, {
       collection_folders: [{ source: data.items[0].url, create_folder: true }],
     }))
   })
@@ -184,15 +206,14 @@ describe("submission", () => {
     render(<SubmitPage />)
     enter("https://example.com/without-folder")
     fireEvent.change(screen.getByLabelText("导入到文件夹"), { target: { value: "none" } })
-    submit()
-    await waitFor(() => expect(api.tasks.importSources).toHaveBeenCalledWith(["https://example.com/without-folder"], { force_asr: false }, { folder_id: null }))
+    await submit()
+    await waitFor(() => expect(api.tasks.importSources).toHaveBeenCalledWith(["https://example.com/without-folder"], { force_asr: true, workflow: DEFAULT_WORKFLOW }, { folder_id: null }))
   })
   it("uses explicit ASR options for ordinary pasted links", async () => {
     render(<SubmitPage />)
     enter("https://youtu.be/aaaaaaaaaaa\nhttps://example.com/video")
-    fireEvent.click(screen.getByRole("radio", { name: "强制 ASR" }))
-    submit()
-    await waitFor(() => expect(api.tasks.importSources).toHaveBeenCalledWith(["https://youtu.be/aaaaaaaaaaa", "https://example.com/video"], { force_asr: true }))
+    await submit()
+    await waitFor(() => expect(api.tasks.importSources).toHaveBeenCalledWith(["https://youtu.be/aaaaaaaaaaa", "https://example.com/video"], { force_asr: true, workflow: DEFAULT_WORKFLOW }))
     expect(navigate).not.toHaveBeenCalled()
   })
 
@@ -200,7 +221,7 @@ describe("submission", () => {
     vi.mocked(api.tasks.importSources).mockImplementation(async (sources) => ({ items: sources.map((source) => ({ source, content_key: source, outcome: "reused", match: { path: "done", title: "已有视频", status: "completed", processing: false } })) }))
     render(<SubmitPage />)
     enter("https://example.com/done")
-    submit()
+    await submit()
     await waitFor(() => expect(notifySuccess).toHaveBeenCalledWith("新增 0 项，复用 1 项，处理中 0 项"))
     expect(navigate).not.toHaveBeenCalled()
   })
@@ -212,13 +233,13 @@ describe("submission", () => {
     render(<SubmitPage />)
     enter(sources.join("\n"))
     expect(screen.getByText(/将分 2 批提交/)).toBeInTheDocument()
-    submit()
+    await submit()
     await screen.findByText(/新增 100 项/)
-    expect(api.tasks.importSources).toHaveBeenNthCalledWith(1, sources.slice(0, 100), { force_asr: false })
-    expect(api.tasks.importSources).toHaveBeenNthCalledWith(2, sources.slice(100), { force_asr: false })
+    expect(api.tasks.importSources).toHaveBeenNthCalledWith(1, sources.slice(0, 100), { force_asr: true, workflow: DEFAULT_WORKFLOW })
+    expect(api.tasks.importSources).toHaveBeenNthCalledWith(2, sources.slice(100), { force_asr: true, workflow: DEFAULT_WORKFLOW })
     expect(navigate).not.toHaveBeenCalled()
-    submit()
-    await waitFor(() => expect(api.tasks.importSources).toHaveBeenNthCalledWith(3, sources.slice(100), { force_asr: false }))
+    await submit()
+    await waitFor(() => expect(api.tasks.importSources).toHaveBeenNthCalledWith(3, sources.slice(100), { force_asr: true, workflow: DEFAULT_WORKFLOW }))
   })
 
   it("uses full rerun for a single explicitly requested video", async () => {
@@ -237,7 +258,7 @@ describe("submission", () => {
     const rerun = vi.spyOn(api.tasks, "fullRerun")
     render(<SubmitPage />)
     enter("https://example.com/failed")
-    submit()
+    await submit()
     await screen.findByText(/待操作 1 项/)
     expect(linkBox()).toHaveValue("https://example.com/failed")
     expect(rerun).not.toHaveBeenCalled()
@@ -257,9 +278,9 @@ describe("submission", () => {
     enter("C:/media/local.mp3")
     fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [new File(["video"], "video.mp4", { type: "video/mp4" })] } })
     await waitFor(() => expect(screen.queryByText("上传中…")).not.toBeInTheDocument())
-    submit()
+    await submit()
     await screen.findByText(/新增 0 项 · 复用 0 项/)
-    expect(api.tasks.importSources).toHaveBeenCalledWith(["C:/media/local.mp3", "C:/staging/video.mp4"], { force_asr: false })
+    expect(api.tasks.importSources).toHaveBeenCalledWith(["C:/media/local.mp3", "C:/staging/video.mp4"], { force_asr: true, workflow: DEFAULT_WORKFLOW })
     expect(screen.getByText("video.mp4")).toBeInTheDocument()
     expect(linkBox()).toHaveValue("C:/media/local.mp3")
   })

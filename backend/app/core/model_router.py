@@ -789,6 +789,7 @@ def resolve_asr_binding(
     """Resolve the ASR provider selected by task options and runtime settings."""
 
     options = task_options or {}
+    diarization_enabled = (options.get("workflow") or {}).get("diarize", rt.enable_diarization)
     option_provider = _normalize_provider(options.get("asr_provider"))
     audio_flow = _normalize_provider(
         options.get("audio_processing_flow") or rt.audio_processing_flow
@@ -876,7 +877,7 @@ def resolve_asr_binding(
         reason = validate_llama_asr_config(config)
         return ASRBinding(
             provider=provider, source=source, model=model_path, language=language,
-            diarize=bool(rt.enable_diarization and rt.pyannote_model_path and not options.get("disable_diarization", False)),
+            diarize=bool(diarization_enabled and rt.pyannote_model_path and not options.get("disable_diarization", False)),
             num_speakers=num_speakers, chunk_strategy=chunk_strategy,
             configured=not reason, reason=reason, request_kwargs=config,
         )
@@ -903,7 +904,7 @@ def resolve_asr_binding(
             options.get("asr_chunk_strategy") or rt.sherpa_chunk_strategy
         )
         diarize = bool(
-            rt.enable_diarization
+            diarization_enabled
             and rt.pyannote_model_path
             and not options.get("disable_diarization", False)
         )
@@ -972,7 +973,7 @@ def resolve_asr_binding(
     binding_ready = provider_binding.configured if provider_binding else True
     configured = bool(binding_ready and api_base and api_key and model and endpoint)
     diarize = bool(
-        rt.enable_diarization
+        diarization_enabled
         and rt.pyannote_model_path
         and not options.get("disable_diarization", False)
     )

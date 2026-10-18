@@ -512,6 +512,7 @@ describe("SettingsPanel", () => {
 
     const sectionLinks = await screen.findByRole("navigation", { name: "处理流程的分区" })
     expect(within(sectionLinks).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "默认流程",
       "音频流程",
       "人声分离",
       "语音识别",

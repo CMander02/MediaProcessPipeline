@@ -21,6 +21,8 @@ import { PlatformIcon } from "@/components/platform-icon"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
+import { WorkflowControls } from "@/components/workflow-controls"
+import { DEFAULT_WORKFLOW, workflowDefaults, type WorkflowConfig } from "@/lib/workflow"
 
 interface QueuedFile {
   id: string
@@ -37,8 +39,6 @@ interface PartSelection {
   selectedIds: string[]
   fallbackSource?: boolean
 }
-
-type SubtitleStrategy = "auto" | "force_asr"
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
@@ -85,7 +85,11 @@ export function SourceComposer({ mode, onSubmitted, onCancel, onNavigate }: Sour
   const submitHistory = useSubmitHistory()
   const [text, setText] = useState("")
   const [files, setFiles] = useState<QueuedFile[]>([])
-  const [strategy, setStrategy] = useState<SubtitleStrategy>("auto")
+  const [defaultWorkflow, setDefaultWorkflow] = useState(DEFAULT_WORKFLOW)
+  const [workflowOverride, setWorkflowOverride] = useState<WorkflowConfig | null>(null)
+  const [workflowLoaded, setWorkflowLoaded] = useState(false)
+  const [workflowError, setWorkflowError] = useState(false)
+  const workflow = workflowOverride ?? defaultWorkflow
   const [numSpeakers, setNumSpeakers] = useState("")
   const [hotwords, setHotwords] = useState<string[]>([])
   const [hotwordInput, setHotwordInput] = useState("")
@@ -107,6 +111,23 @@ export function SourceComposer({ mode, onSubmitted, onCancel, onNavigate }: Sour
   const abortControllers = useRef<Map<string, AbortController>>(new Map())
   const metaRequested = useRef<Set<string>>(new Set())
   const libraryRequested = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    let active = true
+    const load = async () => {
+      try {
+        const settings = await api.settings.get()
+        if (active) { setDefaultWorkflow(workflowDefaults(settings ?? {})); setWorkflowError(false) }
+      } catch {
+        if (active) setWorkflowError(true)
+      } finally {
+        if (active) setWorkflowLoaded(true)
+      }
+    }
+    void load()
+    window.addEventListener("mpp:settings-change", load)
+    return () => { active = false; window.removeEventListener("mpp:settings-change", load) }
+  }, [])
 
   const { entries, unrecognized } = useMemo(
     () => parseSources(text, { allowPaths: capabilities.local_path_submission }),
@@ -264,11 +285,11 @@ export function SourceComposer({ mode, onSubmitted, onCancel, onNavigate }: Sour
     }
     return counts
   }, { fresh: 0, reused: 0, active: 0, needsAction: 0, unknown: 0 })
-  const canSubmit = online && total > 0 && !submitting && uploadingCount === 0
+  const canSubmit = online && workflowLoaded && total > 0 && !submitting && uploadingCount === 0
     && (entries.length === 0 || capabilities.url_submission)
 
   const buildOptions = () => {
-    const options: Record<string, unknown> = { force_asr: strategy === "force_asr" }
+    const options: Record<string, unknown> = { force_asr: true, workflow }
     const speakers = Number.parseInt(numSpeakers, 10)
     if (speakers > 0) options.num_speakers = speakers
     if (hotwords.length > 0) options.hotwords = hotwords
@@ -288,6 +309,7 @@ export function SourceComposer({ mode, onSubmitted, onCancel, onNavigate }: Sour
     setResults({})
     setSummary(null)
     setError("")
+    setWorkflowOverride(null)
   }
 
   const handleSubmit = async () => {
@@ -630,28 +652,21 @@ export function SourceComposer({ mode, onSubmitted, onCancel, onNavigate }: Sour
       )}
 
       {/* Options sit above the submit button so they are seen before starting */}
+      <details className="rounded-lg border p-3" open={workflowError || undefined}>
+        <summary className="cursor-pointer text-sm font-medium">
+          处理流程 · {workflowOverride ? "本次自定义" : "使用全局默认"}
+          <span className="ml-2 font-normal text-muted-foreground">ASR 必选 · {workflow.separate ? "分离人声" : "跳过人声分离"}</span>
+        </summary>
+        <div className="mt-4 flex flex-col gap-3">
+          {workflowError && <p className="text-sm text-muted-foreground">未能读取全局默认，将按下方已选步骤提交。</p>}
+          <WorkflowControls value={workflow} onChange={setWorkflowOverride} disabled={submitting || !workflowLoaded} />
+          {workflowOverride && <Button type="button" variant="ghost" size="sm" className="self-start"
+            onClick={() => setWorkflowOverride(null)}>恢复全局默认</Button>}
+          <p className="text-xs text-muted-foreground">这里的调整只影响本次提交{total > 1 ? `的 ${total} 项` : ""}。</p>
+        </div>
+      </details>
       <fieldset className="grid gap-x-4 gap-y-2 rounded-lg border bg-muted/30 px-3 py-2.5 sm:grid-cols-[auto_auto_minmax(0,1fr)]">
         <legend className="sr-only">处理选项</legend>
-        <div className="flex flex-col gap-1">
-          <span className="text-sm font-medium">字幕来源</span>
-          <div className="inline-flex rounded-md border bg-background p-0.5" role="radiogroup" aria-label="字幕来源">
-            {([["auto", "自动"], ["force_asr", "强制 ASR"]] as const).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                role="radio"
-                aria-checked={strategy === value}
-                onClick={() => setStrategy(value)}
-                className={cn(
-                  "h-7 rounded px-2.5 text-sm transition-colors",
-                  strategy === value ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
         <label className="flex flex-col gap-1">
           <span className="text-sm font-medium">说话人数</span>
           <Input
@@ -690,12 +705,6 @@ export function SourceComposer({ mode, onSubmitted, onCancel, onNavigate }: Sour
             />
           </div>
         </div>
-        <p className="text-sm text-muted-foreground sm:col-span-3">
-          {strategy === "auto"
-            ? "自动：平台有字幕就直接用，没有再转写；之后区分说话人、润色，生成摘要和导图。"
-            : "强制 ASR：忽略平台字幕，下载后自己转写（人声分离 → 识别 → 说话人 → 润色 → 摘要和导图）。"}
-          {total > 1 && ` 选项对全部 ${total} 项生效。`}
-        </p>
       </fieldset>
 
       {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
