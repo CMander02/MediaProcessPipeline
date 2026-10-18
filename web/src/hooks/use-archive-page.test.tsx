@@ -25,6 +25,41 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe("archive pagination requests", () => {
+  it("keeps empty archive and folder references stable while a page is loading", async () => {
+    let resolve!: (page: ArchivePage) => void
+    mocks.listPage.mockReturnValue(new Promise<ArchivePage>((done) => { resolve = done }))
+    const hook = renderHook(() => useArchivePage(query))
+    const { archives, folders } = hook.result.current
+    expect(hook.result.current.loading).toBe(true)
+    expect(archives).toEqual([])
+    expect(folders).toEqual([])
+
+    hook.rerender()
+
+    expect(hook.result.current.loading).toBe(true)
+    expect(hook.result.current.archives).toBe(archives)
+    expect(hook.result.current.folders).toBe(folders)
+    await act(async () => resolve(result()))
+    expect(hook.result.current.loading).toBe(false)
+  })
+
+  it("loads responses without folders and keeps the empty folder reference stable after rerender", async () => {
+    const page = result()
+    mocks.listPage.mockResolvedValue(page)
+    const hook = renderHook(() => useArchivePage(query))
+    await waitFor(() => expect(hook.result.current.loading).toBe(false))
+    const folders = hook.result.current.folders
+    expect(hook.result.current.archives).toBe(page.archives)
+    expect(folders).toEqual([])
+
+    hook.rerender()
+
+    expect(hook.result.current.archives).toBe(page.archives)
+    expect(hook.result.current.folders).toBe(folders)
+    expect(hook.result.current.loading).toBe(false)
+    expect(mocks.listPage).toHaveBeenCalledTimes(1)
+  })
+
   it("shares an in-flight page request between subscribers", async () => {
     let resolve!: (page: ArchivePage) => void
     mocks.listPage.mockReturnValue(new Promise<ArchivePage>((done) => { resolve = done }))

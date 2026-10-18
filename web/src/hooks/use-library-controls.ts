@@ -12,13 +12,13 @@ import {
   type MediaType,
   type SourceKey,
 } from "@/lib/archive-filters"
-import { buildHash, goLibraryHistory, navigate, navigateAbove, parseHash, previousHash, useRoute } from "@/lib/router"
+import { buildHash, goLibraryHistory, libraryHash, navigate, navigateAbove, parseHash, previousHash, useRoute } from "@/lib/router"
 
 export type LibraryScope = "folders" | "all"
 
 export interface LibraryState extends LibraryFilters {
   page: number
-  view?: "grid" | "browse"
+  view?: "grid" | "split"
   /** "all" lists every item by itself, ignoring folders. */
   scope?: LibraryScope
   folder?: string
@@ -48,7 +48,7 @@ export function libraryStateFromParams(params: Record<string, string>): LibraryS
     duplicates: params.dup === "1" || (params.status ?? "").split(",").includes("duplicates"),
     sort,
     page: Number.isFinite(page) && page > 1 ? page : 1,
-    view: params.view === "browse" ? "browse" : "grid",
+    view: params.view === "split" || params.view === "browse" ? "split" : "grid",
     scope: params.scope === "all" ? "all" : "folders",
     folder: params.scope === "all" ? undefined : params.folder || undefined,
     item: params.item || undefined,
@@ -67,7 +67,7 @@ export function libraryHashFromState(state: LibraryState): string {
     dup: state.duplicates ? 1 : null,
     sort: state.sort === DEFAULT_LIBRARY_FILTERS.sort ? null : state.sort,
     page: state.page > 1 ? state.page : null,
-    view: state.view === "browse" ? "browse" : null,
+    view: state.view === "split" ? "split" : null,
     scope: state.scope === "all" ? "all" : null,
     folder: state.scope === "all" ? undefined : state.folder,
     item: state.item,
@@ -90,8 +90,8 @@ export function archiveQueryFilters(filters: LibraryFilters) {
 }
 
 function currentParams(): Record<string, string> {
-  const hash = window.location.hash
-  return hash.includes("?") ? Object.fromEntries(new URLSearchParams(hash.slice(hash.indexOf("?") + 1))) : {}
+  const route = parseHash(window.location.hash)
+  return route.page === "files" ? route.params : parseHash(libraryHash()).params
 }
 
 /** The library state Back would return to, when this session recorded it. */
@@ -104,10 +104,10 @@ function previousLibraryState(): LibraryState | null {
 
 const FILTER_KEYS = ["search", "media", "sources", "statuses", "duplicates", "sort"] as const
 
-/** The same place in the library: scope, view, folder, filters, and in the browse view the open item. */
+/** The same place in the library: scope, view, folder, filters, and in the split view the open item. */
 export function sameLibraryLocation(a: LibraryState, b: LibraryState): boolean {
   if (a.scope !== b.scope || a.view !== b.view || (a.folder ?? "") !== (b.folder ?? "")) return false
-  if (a.view === "browse" && (a.item ?? "") !== (b.item ?? "")) return false
+  if (a.view === "split" && (a.item ?? "") !== (b.item ?? "")) return false
   return FILTER_KEYS.every((key) => JSON.stringify(a[key]) === JSON.stringify(b[key]))
 }
 
@@ -125,7 +125,7 @@ function returnsBack(next: LibraryState): boolean {
  */
 export function useLibraryControls() {
   const route = useRoute()
-  const state = libraryStateFromParams(route.page === "files" ? route.params : {})
+  const state = libraryStateFromParams(route.page === "files" ? route.params : parseHash(libraryHash()).params)
 
   const update = useCallback((patch: Partial<LibraryState>, push = false) => {
     const current = libraryStateFromParams(currentParams())
@@ -154,12 +154,17 @@ export function useLibraryControls() {
       if (push && returnsBack(next)) return
       navigate(libraryHashFromState(next), { replace: !push })
     }, []),
-    /** Grid or browse is how the place is shown, not a place: switching never adds a Back step. */
-    setView: useCallback((view: "grid" | "browse") => {
+    /** Grid or split is how the place is shown, not a place: switching never adds a Back step. */
+    setView: useCallback((view: "grid" | "split") => {
       const current = libraryStateFromParams(currentParams())
-      if (current.view === view) return
-      const next: LibraryState = { ...current, view }
-      // Closing the browse view returns to the grid it was opened from.
+      const inLibrary = parseHash(window.location.hash).page === "files"
+      if (inLibrary && current.view === view && (view !== "grid" || !(current.item || current.attempt || current.viewerTask || current.generation))) return
+      const next: LibraryState = {
+        ...current,
+        view,
+        ...(view === "grid" ? { item: undefined, attempt: undefined, viewerTask: undefined, generation: undefined } : {}),
+      }
+      // Closing the split view returns to the grid it was opened from.
       if (returnsBack(next)) return
       const root: LibraryState = { ...next, folder: undefined, item: undefined, page: 1 }
       const previous = previousLibraryState()
@@ -173,10 +178,15 @@ export function useLibraryControls() {
     /** Folders, or everything in one list regardless of folders. */
     setScope: useCallback((scope: LibraryScope) => {
       const current = libraryStateFromParams(currentParams())
-      if (current.scope === scope) return
+      if (current.scope === scope) {
+        if (parseHash(window.location.hash).page !== "files" && !returnsBack(current)) {
+          navigate(libraryHashFromState(current), { replace: true })
+        }
+        return
+      }
       navigate(libraryHashFromState({
         ...current, scope, folder: undefined, page: 1,
-        ...(current.view === "browse" ? {} : { item: undefined, attempt: undefined, viewerTask: undefined, generation: undefined }),
+        ...(current.view === "split" ? {} : { item: undefined, attempt: undefined, viewerTask: undefined, generation: undefined }),
       }), { replace: true })
     }, []),
     /** Clear search and every filter; the sort order stays. */

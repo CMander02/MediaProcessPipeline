@@ -55,8 +55,14 @@ describe("library state in the URL", () => {
     expect(libraryStateFromParams({ status: "duplicates" })).toEqual({ ...defaults, duplicates: true })
   })
   it("restores the folder, view and content key with filters", () => {
-    const state = { ...defaults, view: "browse" as const, folder: "folder-1", item: "bilibili:BV123:p2", search: "课程" }
+    const state = { ...defaults, view: "split" as const, folder: "folder-1", item: "bilibili:BV123:p2", search: "课程" }
     expect(libraryStateFromParams(parseHash(libraryHashFromState(state)).params)).toEqual(state)
+  })
+
+  it("opens old browse links in split view and writes the new view name", () => {
+    const state = libraryStateFromParams({ view: "browse", folder: "folder-1", item: "item-1", attempt: "attempt-1", viewerTask: "task-1", generation: "generation-1" })
+    expect(state).toEqual({ ...defaults, view: "split", folder: "folder-1", item: "item-1", attempt: "attempt-1", viewerTask: "task-1", generation: "generation-1" })
+    expect(libraryHashFromState(state)).toBe("#/files?view=split&folder=folder-1&item=item-1&attempt=attempt-1&viewerTask=task-1&generation=generation-1")
   })
 
   it("lists everything without a folder in the all scope", () => {

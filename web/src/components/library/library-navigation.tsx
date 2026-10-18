@@ -5,6 +5,7 @@ import { useLibraryControls, type LibraryScope } from "@/hooks/use-library-contr
 import { libraryChanged, useLibraryDirectory } from "@/hooks/use-library-directory"
 import { useAppAccess } from "@/hooks/use-app-access-context"
 import { usePreferences } from "@/hooks/use-preferences"
+import { useMediaQuery } from "@/hooks/use-media-query"
 import { api } from "@/lib/api"
 import { notifyError } from "@/lib/notify"
 import { cn } from "@/lib/utils"
@@ -23,8 +24,8 @@ export function LibraryScopeSwitch({ className }: { className?: string }) {
   const { update } = usePreferences()
   const choose = (scope: LibraryScope) => {
     update({ libraryScope: scope })
-    if (scope !== library.scope) library.setScope(scope)
-    else if (scope === "folders" && library.folder) library.setLocation({ folder: undefined, item: undefined })
+    if (scope === library.scope && scope === "folders" && library.folder) library.setLocation({ folder: undefined, item: undefined })
+    else library.setScope(scope)
   }
   return <div role="radiogroup" aria-label="文件范围" className={cn("shrink-0 items-center rounded-md bg-muted p-0.5", className)}>
     {SCOPES.map((scope) => {
@@ -57,6 +58,7 @@ export function LibraryCrumbs() {
 
 export function LibraryViewControls() {
   const library = useLibraryControls()
+  const narrow = useMediaQuery("(max-width: 1099px)")
   const { online, capabilities } = useAppAccess()
   const [open, setOpen] = useState(false)
   const [name, setName] = useState("")
@@ -68,9 +70,12 @@ export function LibraryViewControls() {
     finally { setBusy(false) }
   }
   return <div className="flex shrink-0 items-center gap-0.5">
-    {library.view === "browse" && <Button className="min-[1100px]:hidden" size="icon-sm" variant="ghost" aria-label="显示文件列表" onClick={() => window.dispatchEvent(new Event("mpp:library-tree-toggle"))}><HugeiconsIcon icon={Menu01Icon} className="size-4" /></Button>}
     {capabilities.archive_mutation && <Button size="icon-sm" variant="ghost" disabled={!online} aria-label="新建文件夹" title="新建文件夹" onClick={() => setOpen(true)}><HugeiconsIcon icon={FolderAddIcon} className="size-4" /></Button>}
-    {(["grid", "browse"] as const).map((view) => <Button key={view} size="icon-sm" variant={library.view === view ? "secondary" : "ghost"} aria-label={view === "grid" ? "网格视图" : "浏览视图"} title={view === "grid" ? "网格视图" : "浏览视图"} aria-pressed={library.view === view} onClick={() => library.setView(view)}><HugeiconsIcon icon={view === "grid" ? GridViewIcon : LayoutTwoColumnIcon} className="size-4" /></Button>)}
+    {(["grid", "split"] as const).map((view) => {
+      const label = view === "grid" ? "网格视图" : narrow ? "列表视图" : "分栏视图"
+      const icon = view === "grid" ? GridViewIcon : narrow ? Menu01Icon : LayoutTwoColumnIcon
+      return <Button key={view} size="icon-sm" variant={library.view === view ? "secondary" : "ghost"} aria-label={label} title={label} aria-pressed={library.view === view} onClick={() => library.setView(view)}><HugeiconsIcon icon={icon} className="size-4" /></Button>
+    })}
     <Dialog open={open} onOpenChange={setOpen}><DialogContent><DialogHeader><DialogTitle>新建文件夹</DialogTitle><DialogDescription>用文件夹整理内容。名称最多 120 个字符。</DialogDescription></DialogHeader><Input aria-label="文件夹名称" autoFocus maxLength={120} value={name} onChange={(event) => setName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && name.trim()) void create() }} /><DialogFooter><Button variant="ghost" disabled={busy} onClick={() => setOpen(false)}>取消</Button><Button disabled={busy || !name.trim()} onClick={() => void create()}>创建</Button></DialogFooter></DialogContent></Dialog>
   </div>
 }

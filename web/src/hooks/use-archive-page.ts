@@ -8,6 +8,8 @@ import { preloadThumbnails } from "@/hooks/use-archives"
 const pages = new Map<string, ArchivePage>()
 const requests = new Map<string, Promise<ArchivePage>>()
 const MAX_CACHED_PAGES = 80
+const EMPTY_ARCHIVES: ArchivePage["archives"] = []
+const EMPTY_FOLDERS: NonNullable<ArchivePage["folders"]> = []
 
 export function useArchivePage(query: ArchiveQuery) {
   const platform = usePlatform()
@@ -83,7 +85,7 @@ export function useArchivePage(query: ArchiveQuery) {
     void refresh(true)
   }, [platform.kind, refresh, server])
 
-  return { archives: data?.archives ?? [], folders: data?.folders ?? [], entries: data?.entries,
+  return { archives: data?.archives ?? EMPTY_ARCHIVES, folders: data?.folders ?? EMPTY_FOLDERS, entries: data?.entries,
     archiveTotal: data?.archive_total ?? data?.total ?? 0,
     total: data?.total ?? 0, page: data?.page ?? query.page,
     loading: !data && error?.key !== requestKey, error: error?.key === requestKey ? error.message : null,

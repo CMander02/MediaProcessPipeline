@@ -35,7 +35,8 @@ function AuthenticatedApp() {
   useAppStartup()
   useTaskNotifications()
 
-  const toolbar = route.page === "files" ? <PageToolbar library={library} /> : undefined
+  const showLibraryHeader = route.page === "files" || route.page === "result"
+  const toolbar = showLibraryHeader ? <PageToolbar library={library} /> : undefined
   const filters = useMemo(() => ({
     search: deferredSearch,
     media: library.media,
@@ -46,7 +47,7 @@ function AuthenticatedApp() {
   }), [deferredSearch, library.duplicates, library.media, library.sort, library.sources, library.statuses])
 
   return (
-    <AppShell activePage={route.page} toolbar={toolbar} crumbs={route.page === "files" ? <LibraryCrumbs /> : undefined} trailing={route.page === "files" ? <LibraryViewControls /> : undefined}>
+    <AppShell activePage={route.page === "result" ? "files" : route.page} toolbar={toolbar} crumbs={showLibraryHeader ? <LibraryCrumbs /> : undefined} trailing={showLibraryHeader ? <LibraryViewControls /> : undefined}>
       <AppOutlet
         route={route}
         library={{ filters, page: library.page, onPageChange: library.setPage }}

@@ -1,10 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { ArrowDown01Icon, ArrowRight01Icon, FolderOpenIcon, Cancel01Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons"
+import { ArrowDown01Icon, ArrowLeft01Icon, ArrowRight01Icon, FolderOpenIcon, MoreHorizontalIcon } from "@hugeicons/core-free-icons"
 import { FilesPage } from "./files-page"
 import { useArchivePage } from "@/hooks/use-archive-page"
 import { useActiveTasks } from "@/hooks/use-active-tasks"
-import { archiveQueryFilters, useLibraryControls } from "@/hooks/use-library-controls"
+import { archiveQueryFilters, libraryStateFromParams, useLibraryControls } from "@/hooks/use-library-controls"
 import { useLibraryDirectory } from "@/hooks/use-library-directory"
 import { useMediaQuery } from "@/hooks/use-media-query"
 import { usePlatform } from "@/platform/use-platform"
@@ -12,7 +12,7 @@ import { createArchiveRepository } from "@/repositories/archive-repository"
 import type { ArchiveItem } from "@/repositories/archive-types"
 import type { LibraryFilters } from "@/lib/archive-filters"
 import { api } from "@/lib/api"
-import { buildHash, navigate, parseHash, useRoute } from "@/lib/router"
+import { buildHash, goLibraryHistory, navigate, parseHash, previousHash, useRoute } from "@/lib/router"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { EmptyState, LoadingState } from "@/components/ui/page-state"
@@ -26,18 +26,19 @@ import { useAppAccess } from "@/hooks/use-app-access-context"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 
 interface Props { filters: LibraryFilters; page: number; onPageChange: (page: number) => void }
+const EMPTY_FOLDERS: LibraryFolder[] = []
 const ResultPageComplete = lazy(() => import("./result-page-complete").then((module) => ({ default: module.ResultPageComplete })))
 const ResultPageLive = lazy(() => import("./result-page-live").then((module) => ({ default: module.ResultPageLive })))
 export function LibraryPage(props: Props) {
   const library = useLibraryControls()
   const { folders } = useLibraryDirectory()
   const all = library.scope === "all"
-  const open = (archive: ArchiveItem) => library.setLocation({ view: "browse", folder: all ? undefined : archive.folder_id || undefined, item: archive.content_key || archive.path })
-  if (library.view !== "browse") return <FilesPage {...props} scope={library.scope} folderId={all ? undefined : library.folder} folders={folders} onFolderOpen={(folder) => library.setLocation({ folder, item: undefined })} onArchiveOpen={open} />
-  return <FilesBrowser filters={props.filters} onOpen={open} />
+  const open = (archive: ArchiveItem) => library.setLocation({ folder: all ? undefined : archive.folder_id || undefined, item: archive.content_key || archive.path })
+  if (library.view !== "split") return <FilesPage {...props} scope={library.scope} folderId={all ? undefined : library.folder} folders={folders} onFolderOpen={(folder) => library.setLocation({ folder, item: undefined })} />
+  return <FilesSplitView filters={props.filters} onOpen={open} />
 }
 
-function BrowserGroup({ folderId, all = false, filters, active, onOpen, onFirst, renderFolder, onMoved,
+function SplitViewGroup({ folderId, all = false, filters, active, onOpen, onFirst, renderFolder, onMoved,
   selectionMode, selected, onSelect, onDragging }: {
   folderId?: string; all?: boolean; filters: LibraryFilters; active?: string; onOpen: (item: ArchiveItem) => void; onFirst?: (item: ArchiveItem) => void
   renderFolder?: (folder: LibraryFolder) => ReactNode; onMoved: OnLibraryMoved;
@@ -47,7 +48,7 @@ function BrowserGroup({ folderId, all = false, filters, active, onOpen, onFirst,
   const { folders: directoryFolders } = useLibraryDirectory()
   const folderNames = new Map(directoryFolders.map((folder) => [folder.id, folder.name]))
   const scope = all ? {} : folderId ? { folder_id: folderId } : { unclassified: true, include_folders: !!renderFolder }
-  const { archives, folders = [], entries, total, loading, error, refresh, indexing } = useArchivePage({ page: 1, page_size: limit, ...archiveQueryFilters(filters), ...scope })
+  const { archives, folders = EMPTY_FOLDERS, entries, total, loading, error, refresh, indexing } = useArchivePage({ page: 1, page_size: limit, ...archiveQueryFilters(filters), ...scope })
   const { online, capabilities } = useAppAccess()
   const canMove = online && capabilities.archive_mutation
   const [moveKeys, setMoveKeys] = useState<string[] | null>(null)
@@ -108,7 +109,7 @@ function BrowserGroup({ folderId, all = false, filters, active, onOpen, onFirst,
   </div>
 }
 
-function FilesBrowser({ filters, onOpen }: { filters: LibraryFilters; onOpen: (item: ArchiveItem) => void }) {
+function FilesSplitView({ filters, onOpen }: { filters: LibraryFilters; onOpen: (item: ArchiveItem) => void }) {
   const library = useLibraryControls()
   const { online, capabilities } = useAppAccess()
   const [selectionMode, setSelectionMode] = useState(false)
@@ -133,36 +134,35 @@ function FilesBrowser({ filters, onOpen }: { filters: LibraryFilters; onOpen: (i
   const groupProps = { filters, active: library.item, onMoved, selectionMode, selected, onSelect, onDragging: setDragging }
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(library.folder ? [library.folder] : []))
   const [lastFolder, setLastFolder] = useState(library.folder)
-  const [drawer, setDrawer] = useState(!library.item)
   const [autoSelect, setAutoSelect] = useState(true)
   const narrow = useMediaQuery("(max-width: 1099px)")
   if (lastFolder !== library.folder) {
     setLastFolder(library.folder)
     if (library.folder) setExpanded(new Set([...expanded, library.folder]))
   }
-  useEffect(() => {
-    const toggle = () => setDrawer((current) => !current)
-    window.addEventListener("mpp:library-tree-toggle", toggle)
-    return () => window.removeEventListener("mpp:library-tree-toggle", toggle)
-  }, [])
   const { item: selectedItem, setLocation } = library
   const first = useCallback((item: ArchiveItem) => {
-    if (!selectedItem && autoSelect) setLocation({ item: item.content_key || item.path }, false)
-  }, [selectedItem, setLocation, autoSelect])
-  const select = (item: ArchiveItem) => { onOpen(item); setDrawer(false) }
+    if (!narrow && !selectedItem && autoSelect) setLocation({ item: item.content_key || item.path }, false)
+  }, [narrow, selectedItem, setLocation, autoSelect])
+  const returnToList = () => {
+    const previous = previousHash()
+    const route = previous ? parseHash(previous) : null
+    if (route?.page === "files" && libraryStateFromParams(route.params).view === "split" && !route.params.item) {
+      goLibraryHistory("back")
+    } else {
+      setLocation({ item: undefined }, false)
+    }
+  }
   return <div className="relative flex h-full min-w-0">
-    {(!narrow || drawer) && <>
-      {narrow && <button className="absolute inset-0 z-20 bg-black/30" aria-label="关闭文件列表" onClick={() => setDrawer(false)} />}
-      <aside aria-label="文件列表" className={cn("flex h-full w-64 shrink-0 flex-col overflow-hidden border-r bg-background p-2", narrow && "absolute inset-y-0 left-0 z-30 w-[min(20rem,85vw)] shadow-xl")}>
-        {narrow && <Button size="icon-sm" variant="ghost" aria-label="关闭文件列表" className="ml-auto flex" onClick={() => setDrawer(false)}><HugeiconsIcon icon={Cancel01Icon} className="size-4" /></Button>}
+      <aside aria-label="文件列表" hidden={narrow && !!library.item} className={cn("flex h-full shrink-0 flex-col overflow-hidden bg-background p-2", narrow ? "w-full" : "w-[21.333rem] border-r", narrow && !!library.item && "hidden")}>
         <div className="min-h-0 flex-1 overflow-y-auto">
-        {library.scope === "all" ? <BrowserGroup {...groupProps} all onOpen={select} onFirst={first} /> : <BrowserGroup {...groupProps} onOpen={select} onFirst={!library.folder ? first : undefined} renderFolder={(folder) => <section className="mb-1" data-folder-id={folder.id}>
+        {library.scope === "all" ? <SplitViewGroup {...groupProps} all onOpen={onOpen} onFirst={first} /> : <SplitViewGroup {...groupProps} onOpen={onOpen} onFirst={!library.folder ? first : undefined} renderFolder={(folder) => <section className="mb-1" data-folder-id={folder.id}>
           <LibraryDropTarget label={folder.name} disabled={moving} onDropContents={(keys) => void move(keys, folder.id)}>
             <button type="button" aria-expanded={expanded.has(folder.id)} aria-controls={`folder-${folder.id}`} className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-muted" onClick={() => setExpanded((current) => { const next = new Set(current); if (next.has(folder.id)) next.delete(folder.id); else next.add(folder.id); return next })}>
               <HugeiconsIcon icon={expanded.has(folder.id) ? ArrowDown01Icon : ArrowRight01Icon} className="size-3 shrink-0" /><HugeiconsIcon icon={FolderOpenIcon} className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate" title={folder.name}>{folder.name}</span><span className="text-xs text-muted-foreground">{folder.count}</span>
             </button>
           </LibraryDropTarget>
-          {expanded.has(folder.id) && <div id={`folder-${folder.id}`} className="ml-4 border-l pl-1"><BrowserGroup {...groupProps} folderId={folder.id} onOpen={select} onFirst={library.folder === folder.id ? first : undefined} /><LibraryBatchActions scope={{ type: "folder", folder_id: folder.id }} compact onCompleted={(keys, action, destination) => {
+          {expanded.has(folder.id) && <div id={`folder-${folder.id}`} className="ml-4 border-l pl-1"><SplitViewGroup {...groupProps} folderId={folder.id} onOpen={onOpen} onFirst={library.folder === folder.id ? first : undefined} /><LibraryBatchActions scope={{ type: "folder", folder_id: folder.id }} compact onCompleted={(keys, action, destination) => {
             if (action === "move" && destination !== undefined) onMoved(keys, destination)
             if (action === "delete" && library.item && keys.includes(library.item)) { setAutoSelect(false); setLocation({ item: undefined }, false) }
           }} /></div>}
@@ -177,15 +177,18 @@ function FilesBrowser({ filters, onOpen }: { filters: LibraryFilters; onOpen: (i
           </div> : <Button size="sm" variant="ghost" className="h-7 w-full text-xs" onClick={() => setSelectionMode(true)}>选择内容</Button>}
         </div>}
       </aside>
-    </>}
-    <div className="min-h-0 min-w-0 flex-1"><Suspense fallback={<LoadingState title="正在打开内容" className="h-full" />}><BrowserResult contentKey={library.item} /></Suspense></div>
+    {(!narrow || library.item) && <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {narrow && <div className="shrink-0 border-b px-2 py-1"><Button size="sm" variant="ghost" className="h-11" onClick={returnToList}><HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />返回列表</Button></div>}
+      <div className="min-h-0 flex-1"><Suspense fallback={<LoadingState title="正在打开内容" className="h-full" />}><SplitViewResult contentKey={library.item} /></Suspense></div>
+    </div>}
     {moveKeys?.length ? <MoveContentsDialog contentKeys={moveKeys} onClose={() => setMoveKeys(null)} onMoved={onMoved} /> : null}
   </div>
 }
 
-function BrowserResult({ contentKey }: { contentKey?: string }) {
+function SplitViewResult({ contentKey }: { contentKey?: string }) {
   const route = useRoute()
   const platform = usePlatform()
+  const narrow = useMediaQuery("(max-width: 1099px)")
   const [resolved, setResolved] = useState<{ key: string; archive: ArchiveItem | null; taskId: string | null; error?: string } | null>(null)
   useEffect(() => {
     if (!contentKey) return
@@ -205,10 +208,10 @@ function BrowserResult({ contentKey }: { contentKey?: string }) {
   const onTarget = useCallback((path: string | null, taskId?: string | null) => {
     if (!contentKey) return
     const current = parseHash(window.location.hash)
-    if (current.page !== "files" || current.params.item !== contentKey || current.params.view !== "browse") return
+    if (current.page !== "files" || current.params.item !== contentKey || libraryStateFromParams(current.params).view !== "split") return
     if (current.params.attempt !== route.params.attempt || current.params.generation !== route.params.generation) return
-    navigate(buildHash("files", { ...current.params, attempt: path || undefined, viewerTask: taskId || undefined, generation: Date.now() }))
-  }, [contentKey, route.params.attempt, route.params.generation])
+    navigate(buildHash("files", { ...current.params, attempt: path || undefined, viewerTask: taskId || undefined, generation: Date.now() }), { replace: narrow })
+  }, [contentKey, route.params.attempt, route.params.generation, narrow])
   if (!contentKey) return <EmptyState title="选择一个内容" description="从左侧文件列表选择视频或音频。" className="h-full" />
   if (!resolved || resolved.key !== contentKey) return <LoadingState title="正在打开内容" className="h-full" />
   const path = route.params.attempt ?? (route.params.viewerTask ? undefined : resolved.archive?.path)
