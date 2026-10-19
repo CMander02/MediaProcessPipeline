@@ -158,6 +158,8 @@ class RemoteArchiveUploadService:
         data_root = Path(settings.data_root).resolve()
         store = self._store_getter()
         for task in store.list(status=TaskStatus.COMPLETED, limit=10_000):
+            if task.options.get("_remote_origin"):
+                continue  # The task worker owns its fenced result upload.
             output_dir = self._archive_dir(task, data_root)
             if output_dir is None or self._already_uploaded(task, server_url):
                 continue
@@ -254,6 +256,7 @@ class RemoteArchiveUploadService:
                             "archive_name": output_dir.name,
                             "archive_sha256": archive_sha256,
                             "worker_id": worker_id,
+                            "execution_id": (task.options.get("_remote_origin") or {}).get("attempt", ""),
                         },
                         files={"archive": ("archive.zip", archive, "application/zip")},
                     )

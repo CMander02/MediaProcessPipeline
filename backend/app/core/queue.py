@@ -202,6 +202,9 @@ class TaskQueue:
         store.update_status(task_id, TaskStatus.QUEUED)
         await bus.publish(TaskEvent(task_id, "queued"))
         task = store.get(task_id)
+        from app.core.remote_execution import defer
+        if task is not None and defer(task):
+            return
         t_token = set_task_context(str(task_id))
         try:
             if task is not None and task.options.get("speaker_repair", {}).get("status") in {"queued", "running"}:
@@ -704,6 +707,11 @@ class TaskQueue:
         for task in stale:
             from app.core.library import task_is_deleting
             if task_is_deleting(task):
+                continue
+            if task.options.get("_remote_origin") and get_runtime_settings().remote_execution_worker_enabled:
+                continue  # Reconnect and validate ownership before restoring remote work.
+            from app.core.remote_execution import defer
+            if defer(task):
                 continue
             if task.status == TS.PROCESSING:
                 store.update_status(task.id, TS.QUEUED, message="已重新排队")

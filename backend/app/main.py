@@ -142,6 +142,9 @@ async def lifespan(app: FastAPI):
 
     remote_archive_upload = get_remote_archive_upload_service()
     await remote_archive_upload.start()
+    from app.services.remote_task_worker import get_remote_task_worker
+    remote_task_worker = get_remote_task_worker()
+    await remote_task_worker.start()
 
     # Sweep stale upload staging dirs (>24h old, never confirmed by user)
     try:
@@ -159,6 +162,7 @@ async def lifespan(app: FastAPI):
         # closing the database. The desktop process job remains the hard-stop
         # fallback for interrupted Windows exits.
         try:
+            await remote_task_worker.stop()
             await remote_archive_upload.stop()
             await queue.stop()
         finally:
@@ -247,6 +251,8 @@ app.include_router(voiceprints.router, prefix="/api")
 app.include_router(kb_router.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(sync.router, prefix="/api")
+from app.api.routes import execution
+app.include_router(execution.router, prefix="/api")
 app.include_router(logs.router, prefix="/api")
 app.include_router(system.router, prefix="/api")
 app.include_router(search.router, prefix="/api")

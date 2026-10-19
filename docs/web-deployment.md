@@ -91,6 +91,16 @@ cd web && npm ci && npm run build && cd ..
 sudo systemctl restart mpp-web
 ```
 
+## 优先使用桌面电脑处理任务
+
+服务器设置 `remote_execution_enabled=true`，并将 `remote_worker_id`、`remote_worker_name` 设为优先执行电脑的 ID 和名称。桌面电脑设置 `remote_execution_worker_enabled=true`，使用已有的 `remote_server_url`、`remote_api_token` 和相同的 `remote_worker_id`。两端重启服务后生效。电脑主动连接服务器，无需开放电脑的入站端口。
+
+新建的完整处理任务可转交执行，包括 URL 和资料库内的上传文件。电脑每 10 秒连接一次；空闲时领取一个任务，使用本机模型处理，再回传进度和包含媒体的归档。电脑忙碌时仍保持连接，后续任务继续等待。只完成下载的排队任务也可转交，电脑会重新下载 URL；服务器已开始转写或后处理的任务继续在服务器执行，保留已有进度。
+
+电脑离线时，新任务等待 `remote_execution_wait_sec`（默认 120 秒），之后由服务器执行。已领取的任务在断线后仍归原电脑所有，重连后继续；服务器不会自动再执行一份。需要转移这类任务时，先暂停或取消旧任务，再重试。旧执行轮次不能提交结果。暂停、取消和删除操作会在电脑下次连接时生效。
+
+桌面 MPP 服务必须保持运行。电脑关机、退出登录或停止服务后，电脑不能领取任务。此机制只提供单台优先电脑、单任务领取、断线重连和云端兜底；尚未提供多节点资源调度和跨机器检查点迁移。
+
 ## HTTPS 反向代理
 
 远程 PWA 安装和会话 Cookie 推荐通过 HTTPS 域名访问。服务继续监听 `0.0.0.0:18000`，Caddy 或 Nginx 负责 TLS 与域名。

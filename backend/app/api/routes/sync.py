@@ -231,6 +231,7 @@ async def import_completed_archive(
     archive_name: str = Form(...),
     archive_sha256: str = Form(""),
     worker_id: str = Form(""),
+    execution_id: str = Form(""),
     archive: UploadFile = File(...),
 ):
     """Import a completed local task and its portable archive idempotently."""
@@ -250,7 +251,7 @@ async def import_completed_archive(
 
     store = get_task_store()
     existing = store.get(task.id)
-    _require_importable(task.id, existing)
+    _require_importable(task.id, existing, worker_id.strip(), execution_id.strip())
 
     data_root = Path(get_runtime_settings().data_root).resolve()
     data_root.mkdir(parents=True, exist_ok=True)
@@ -270,17 +271,24 @@ async def import_completed_archive(
 
         # No await inside the commit: queue commands on this event loop cannot
         # read the old task and then enqueue it halfway through replacement.
-        return _commit_import(task, extracted_root, metadata, data_root, archive_name,
-                              upload_sha256, upload_size, worker_id.strip())
+        outcome = _commit_import(task, extracted_root, metadata, data_root, archive_name,
+                                 upload_sha256, upload_size, worker_id.strip(), execution_id.strip())
+        if execution_id:
+            from app.core.events import TaskEvent, get_event_bus
+            await get_event_bus().publish(TaskEvent(task.id, "completed", {"progress": 1.0}))
+        return outcome
     finally:
         await archive.close()
         await run_in_thread(shutil.rmtree, staging_dir, True)
 
 
-def _require_importable(task_id: UUID, existing: Task | None) -> None:
+def _require_importable(task_id: UUID, existing: Task | None, worker_id="", execution_id="") -> None:
     from app.core.queue import get_task_queue
 
     queue = get_task_queue()
+    from app.core.remote_execution import require_owner
+    if require_owner(existing, worker_id, execution_id):
+        return
     if (existing and existing.status in {
         TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.PROCESSING, TaskStatus.PAUSED,
     }) or task_id in queue.active_task_ids or task_id in queue._running_tasks:
@@ -288,7 +296,7 @@ def _require_importable(task_id: UUID, existing: Task | None) -> None:
 
 
 def _commit_import(task, extracted_root, metadata, data_root, archive_name,
-                   upload_sha256, upload_size, worker_id):
+                   upload_sha256, upload_size, worker_id, execution_id=""):
     from app.core.artifacts import _write_lock, get_artifact_store
     from app.core.database import _save_task_row, task_write_transaction
     from app.services.archiving.archive import get_archive_service
@@ -302,7 +310,7 @@ def _commit_import(task, extracted_root, metadata, data_root, archive_name,
         try:
             with task_write_transaction() as conn:
                 existing = store.get(task.id)
-                _require_importable(task.id, existing)
+                _require_importable(task.id, existing, worker_id, execution_id)
                 from app.core.content_identity import archive_content_key, task_content_key
                 deleting = {row[0] for row in conn.execute("SELECT content_key FROM library_deletions")}
                 task_keys = {task_content_key(existing or task)}
@@ -350,6 +358,10 @@ def _commit_import(task, extracted_root, metadata, data_root, archive_name,
                 task.completed_at = task.completed_at or datetime.now()
                 if existing:
                     task.created_at = existing.created_at
+                    if execution_id:
+                        task.options = existing.options
+                        task.source = existing.source
+                        task.webhook_url = existing.webhook_url
                 _save_task_row(conn, task)
                 repairs = artifacts.import_mirrors(conn, task.id, destination)
                 conn.execute(

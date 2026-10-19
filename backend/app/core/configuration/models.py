@@ -357,6 +357,9 @@ class RuntimeSettings(BaseModel):
     remote_sync_upload_results: bool = True
     remote_sync_download_results: bool = True
     remote_sync_include_media: bool = False
+    remote_execution_enabled: bool = False  # Server: prefer the configured worker.
+    remote_execution_worker_enabled: bool = False  # Desktop: pull server tasks.
+    remote_execution_wait_sec: float = Field(default=120.0, ge=30.0)
 
     # Paths
     data_root: str = Field(default_factory=lambda: str(default_data_root()))
