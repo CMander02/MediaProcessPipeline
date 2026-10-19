@@ -69,6 +69,24 @@ def test_worker_presence_keeps_busy_worker_priority_and_offline_falls_back(setup
     assert execution.poll("desktop", capacity=True) == {}
 
 
+@pytest.mark.asyncio
+async def test_server_restart_allows_reconnection_before_cloud_fallback(setup, monkeypatch):
+    from app.services.remote_task_worker import RemoteTaskWorker
+    _, store, _ = setup
+    monkeypatch.setattr(execution.time, "time", lambda: 1000)
+    task = waiting(store)
+    monkeypatch.setattr(execution.time, "time", lambda: 1200)
+    service = RemoteTaskWorker()
+    await service.start()
+    try:
+        assert execution.fallbacks() == []
+        assert store.get(task.id).status == TaskStatus.QUEUED
+    finally:
+        await service.stop()
+    monkeypatch.setattr(execution.time, "time", lambda: 1330)
+    assert execution.fallbacks() == [task.id]
+
+
 def test_lost_heartbeat_never_starts_second_copy(setup, monkeypatch):
     _, store, _ = setup
     monkeypatch.setattr(execution.time, "time", lambda: 1000)

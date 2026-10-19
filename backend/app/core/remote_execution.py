@@ -14,6 +14,11 @@ ORIGIN = "_remote_origin"
 _last_seen = 0.0
 
 
+def server_started():
+    global _last_seen
+    _last_seen = time.time()  # Allow reconnection before evaluating old waiting tasks.
+
+
 def source_file(task):
     path = Path(task.source).resolve()
     root = Path(get_runtime_settings().data_root).resolve()
@@ -117,6 +122,7 @@ def fallbacks():
                 continue  # A lost heartbeat does not authorize duplicate execution.
             if now - max(_last_seen, marker.get("waiting_since", now)) >= settings.remote_execution_wait_sec:
                 task.options[KEY] = {**marker, "fallback": True}
+                task.message = "执行电脑离线，已转到云端处理"
                 _save_task_row(conn, task)
                 ready.append(task.id)
     return ready

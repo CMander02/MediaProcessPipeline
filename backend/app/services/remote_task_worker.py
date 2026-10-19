@@ -28,6 +28,7 @@ class RemoteTaskWorker:
 
     async def start(self):
         if self.runner is None:
+            execution.server_started()
             self.runner = asyncio.create_task(self.run(), name="remote-task-worker")
 
     async def stop(self):
