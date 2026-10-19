@@ -48,6 +48,13 @@ def test_claim_is_exclusive_and_oldest_first(setup):
         execution.poll("another", capacity=True)
 
 
+def test_remote_archive_name_fits_linux_utf8_component():
+    name = sync._safe_archive_name("长中文标题🎥" * 40)
+    assert len(name.encode("utf-8")) <= 200
+    assert name == ("长中文标题🎥" * 40)[:len(name)]
+    assert sync._safe_archive_name("a/b:c") == "a_b_c"
+
+
 def test_worker_presence_keeps_busy_worker_priority_and_offline_falls_back(setup, monkeypatch):
     _, store, _ = setup
     monkeypatch.setattr(execution.time, "time", lambda: 1000)
@@ -138,13 +145,14 @@ def test_result_import_fenced_preserves_server_identity(setup, tmp_path):
     attempt = claim["options"][execution.KEY]["attempt"]
     archive = tmp_path / "result"
     archive.mkdir()
-    (archive / "metadata.json").write_text(json.dumps({"title": "Result", "task_id": str(task.id)}))
+    title = "长中文标题🎥" * 40
+    (archive / "metadata.json").write_text(json.dumps({"title": title, "task_id": str(task.id)}))
     (archive / "summary.md").write_text("# Result")
     package = tmp_path / "result.zip"
     build_archive_zip(archive, package, include_media=True)
     completed = Task(id=task.id, task_type=TaskType.PIPELINE, source="C:/worker/private.mp4",
         status=TaskStatus.COMPLETED, options={execution.ORIGIN: {"attempt": attempt}})
-    data = {"task_json": completed.model_dump_json(), "archive_name": "Result", "worker_id": "desktop"}
+    data = {"task_json": completed.model_dump_json(), "archive_name": title, "worker_id": "desktop"}
     def upload():
         with package.open("rb") as f:
             return client.post("/api/sync/import", data=data, files={"archive": ("result.zip", f, "application/zip")})
@@ -159,6 +167,9 @@ def test_result_import_fenced_preserves_server_identity(setup, tmp_path):
     assert result.source == task.source
     assert result.options[execution.KEY]["attempt"] == attempt
     assert execution.ORIGIN not in result.options
+    destination = Path(result.result["output_dir"])
+    assert len(destination.name.encode("utf-8")) <= 200
+    assert json.loads((destination / "metadata.json").read_text(encoding="utf-8"))["title"] == title
     assert upload().status_code == 200
 
 

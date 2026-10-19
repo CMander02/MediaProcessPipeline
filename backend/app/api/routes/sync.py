@@ -49,7 +49,8 @@ _PORTABLE_RESULT_FIELDS = {
 
 def _safe_archive_name(raw_name: str) -> str:
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(raw_name or "")).strip(" .")
-    return (name[:120] or "remote-archive").strip(" .")
+    # Linux limits directory components by UTF-8 bytes, not character count.
+    return (name[:120].encode("utf-8")[:200].decode("utf-8", errors="ignore") or "remote-archive").strip(" .")
 
 
 def _read_metadata(archive_root: Path) -> dict[str, Any]:
