@@ -1,4 +1,4 @@
-"""Optional media stages. Transcription and saving are always required."""
+"""Optional media stages. Transcript acquisition and saving are always required."""
 
 from pydantic import BaseModel, ConfigDict, StrictBool
 
@@ -27,7 +27,11 @@ def snapshot_workflow(options: dict, settings) -> dict:
     if override is not None:
         base.update(WorkflowConfig.model_validate(override).model_dump(exclude_unset=True))
     workflow = WorkflowConfig.model_validate(base)
-    return {**options, "workflow": workflow.model_dump(), "force_asr": True}
+    return {
+        **options,
+        "workflow": workflow.model_dump(),
+        "force_asr": bool(options.get("force_asr", settings.force_asr)),
+    }
 
 
 def stage_enabled(task, stage: str) -> bool:

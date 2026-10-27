@@ -22,11 +22,10 @@ export function WorkflowControls({ value, onChange, disabled = false }: {
           </FieldContent>
         </Field>)}
       </FieldGroup>
-      {index === 0 && <Field orientation="horizontal" className="rounded-md border p-3" data-disabled>
-        <Checkbox id={`${id}-asr`} checked disabled />
+      {index === 0 && <Field orientation="horizontal" className="rounded-md border p-3">
         <FieldContent>
-          <FieldLabel htmlFor={`${id}-asr`}>ASR 语音识别 · 必选</FieldLabel>
-          <FieldDescription>音视频始终转写，并保存原始字幕。文字和图文按各自流程处理。</FieldDescription>
+          <FieldLabel>ASR 语音识别 · 自动</FieldLabel>
+          <FieldDescription>优先检查平台字幕，通过完整性校验后直接使用；没有可用字幕或校验未通过时，自动进行 ASR 识别。原始字幕会保存。</FieldDescription>
         </FieldContent>
       </Field>}
     </FieldSet>)}

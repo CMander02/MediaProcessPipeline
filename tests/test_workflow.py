@@ -14,7 +14,7 @@ def test_workflow_snapshot_merges_partial_override_and_survives_settings_change(
     options = snapshot_workflow({"workflow": {"polish": True}}, settings)
     assert options["workflow"]["separate"] is False
     assert options["workflow"]["polish"] is True
-    assert options["force_asr"] is True
+    assert options["force_asr"] is False
     settings.pipeline_workflow = WorkflowConfig()
     assert snapshot_workflow(options, settings) == options
 
@@ -22,6 +22,20 @@ def test_workflow_snapshot_merges_partial_override_and_survives_settings_change(
 def test_unconfigured_legacy_options_retain_subtitle_strategy():
     options = {"force_asr": False, "skip_separation": True}
     assert snapshot_workflow(options, RuntimeSettings()) == options
+
+
+@pytest.mark.parametrize("global_force,override,expected", [
+    (False, {}, False),
+    (True, {}, True),
+    (True, {"force_asr": False}, False),
+    (False, {"force_asr": True}, True),
+])
+def test_workflow_preserves_explicit_asr_strategy(global_force, override, expected):
+    settings = RuntimeSettings(pipeline_workflow={}, force_asr=global_force)
+    options = snapshot_workflow(override, settings)
+    assert options["force_asr"] is expected
+    settings.force_asr = not global_force
+    assert snapshot_workflow(options, settings) == options
 
 
 @pytest.mark.parametrize("invalid", [{"transcribe": False}, {"separate": "false"}, {"typo": True}])
@@ -48,7 +62,7 @@ def test_task_entry_point_freezes_global_workflow(tmp_path, monkeypatch):
         "https://example.com/video",
     )
     assert task.options["workflow"]["separate"] is False
-    assert task.options["force_asr"] is True
+    assert task.options["force_asr"] is False
 
 
 def test_checkpoint_restores_the_actual_vocals_file(tmp_path):

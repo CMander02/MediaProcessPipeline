@@ -176,7 +176,8 @@ async def test_download_transcribe_postprocess_handoffs_restore_outputs(runtime)
 
 
 @pytest.mark.asyncio
-async def test_platform_subtitle_checkpoint_skips_asr(runtime, monkeypatch):
+@pytest.mark.parametrize("with_workflow", [False, True])
+async def test_platform_subtitle_checkpoint_skips_asr(runtime, monkeypatch, with_workflow):
     from app.core.pipeline_steps import speaker_review as stage
     from app.services.recognition import subtitle_processor
 
@@ -206,6 +207,13 @@ async def test_platform_subtitle_checkpoint_skips_asr(runtime, monkeypatch):
         completed_steps=["download"],
         result={"output_dir": str(directory)},
     )
+    if with_workflow:
+        from app.core.workflow import snapshot_workflow
+
+        task.options = snapshot_workflow(
+            {**task.options, "workflow": {"separate": False, "detail": False}},
+            settings.get_runtime_settings(),
+        )
     await pipeline.run_pipeline(task)
     subtitles.assert_awaited_once()
     infer.assert_awaited_once()
@@ -215,7 +223,8 @@ async def test_platform_subtitle_checkpoint_skips_asr(runtime, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_incomplete_subtitle_checkpoint_falls_back_to_asr(runtime, monkeypatch):
+@pytest.mark.parametrize("with_workflow", [False, True])
+async def test_incomplete_subtitle_checkpoint_falls_back_to_asr(runtime, monkeypatch, with_workflow):
     import shutil
 
     from app.core.pipeline_steps import speaker_review as stage
@@ -235,6 +244,13 @@ async def test_incomplete_subtitle_checkpoint_falls_back_to_asr(runtime, monkeyp
         "https://www.youtube.com/watch?v=fixture", completed_steps=["download"],
         result={"output_dir": str(directory)},
     )
+    if with_workflow:
+        from app.core.workflow import snapshot_workflow
+
+        task.options = snapshot_workflow(
+            {**task.options, "workflow": {"separate": False, "detail": False}},
+            settings.get_runtime_settings(),
+        )
     await pipeline.run_pipeline(task)
     runtime.asr.assert_awaited_once()
     infer.assert_not_awaited()

@@ -289,7 +289,7 @@ export function SourceComposer({ mode, onSubmitted, onCancel, onNavigate }: Sour
     && (entries.length === 0 || capabilities.url_submission)
 
   const buildOptions = () => {
-    const options: Record<string, unknown> = { force_asr: true, workflow }
+    const options: Record<string, unknown> = { force_asr: false, workflow }
     const speakers = Number.parseInt(numSpeakers, 10)
     if (speakers > 0) options.num_speakers = speakers
     if (hotwords.length > 0) options.hotwords = hotwords
@@ -655,7 +655,7 @@ export function SourceComposer({ mode, onSubmitted, onCancel, onNavigate }: Sour
       <details className="rounded-lg border p-3" open={workflowError || undefined}>
         <summary className="cursor-pointer text-sm font-medium">
           处理流程 · {workflowOverride ? "本次自定义" : "使用全局默认"}
-          <span className="ml-2 font-normal text-muted-foreground">ASR 必选 · {workflow.separate ? "分离人声" : "跳过人声分离"}</span>
+          <span className="ml-2 font-normal text-muted-foreground">ASR 自动 · {workflow.separate ? "分离人声" : "跳过人声分离"}</span>
         </summary>
         <div className="mt-4 flex flex-col gap-3">
           {workflowError && <p className="text-sm text-muted-foreground">未能读取全局默认，将按下方已选步骤提交。</p>}
