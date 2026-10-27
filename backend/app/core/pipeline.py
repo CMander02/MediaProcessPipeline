@@ -259,6 +259,9 @@ async def process_task(
             uploader_id=task.uploader_id,
             content_subtype=task.content_subtype,
         )
+        from app.core.media_retention import cleanup_completed_task
+
+        cleanup_completed_task(task)
         await bus.publish(
             TaskEvent(
                 task_id,

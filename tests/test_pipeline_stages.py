@@ -753,3 +753,62 @@ async def test_metadata_speaker_count_is_ready_before_first_asr_pass(runtime, mo
     assert runtime.asr.call_args.kwargs["num_speakers"] is None
     assert runtime.asr.call_args.kwargs["max_speakers"] is None
     runtime.polish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["working", "separated", "segment"])
+async def test_completed_task_cleans_intermediate_audio_only_after_success(runtime, role):
+    from app.core.media_retention import record_media
+
+    directory = runtime.root / "archives" / "cleanup"
+    directory.mkdir(parents=True)
+    task = create_task(runtime.source, result={"output_dir": str(directory)})
+    separated = directory / "素材_(Vocals).wav"
+    separated.write_bytes(b"separated intermediate")
+    record_media(directory, separated, role, regenerate_from=runtime.source)
+    runtime.polish.side_effect = RuntimeError("temporary LLM failure")
+    await pipeline.process_task(task.id)
+    store = database.get_task_store()
+    assert store.get(task.id).status == TaskStatus.FAILED
+    assert separated.exists()
+    assert (directory / "transcript.srt").exists()
+    runtime.polish.reset_mock(side_effect=True)
+    runtime.polish.return_value = SRT
+    await pipeline.process_task(task.id)
+    saved = store.get(task.id)
+    assert saved.status == TaskStatus.COMPLETED
+    assert "archive" in saved.completed_steps
+    assert not separated.exists()
+    assert (directory / runtime.source.name).exists() and runtime.source.exists()
+    assert (directory / "transcript.srt").exists()
+    runtime.asr.assert_awaited_once()  # Resumed from the persisted transcription.
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_does_not_fail_completed_task(runtime, monkeypatch):
+    from app.core.media_retention import get_media_retention_service
+
+    def fail_cleanup(*args, **kwargs):
+        raise PermissionError("cleanup temporarily unavailable")
+
+    monkeypatch.setattr(get_media_retention_service(), "cleanup_intermediates", fail_cleanup)
+    task = create_task(runtime.source)
+    await pipeline.process_task(task.id)
+    saved = database.get_task_store().get(task.id)
+    assert saved.status == TaskStatus.COMPLETED
+    assert saved.error is None
+    assert (Path(saved.result["output_dir"]) / "summary.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_download_handoff_does_not_run_completed_cleanup(runtime, monkeypatch):
+    from unittest.mock import Mock
+
+    from app.core import media_retention
+
+    cleanup = Mock()
+    monkeypatch.setattr(media_retention, "cleanup_completed_task", cleanup)
+    task = create_task(runtime.source)
+    await pipeline.process_task(task.id, _download_worker_call=True)
+    cleanup.assert_not_called()
+    assert database.get_task_store().get(task.id).status == TaskStatus.PROCESSING

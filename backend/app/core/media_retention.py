@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Literal
 
 from app.core.paths import (
@@ -37,6 +38,7 @@ MEDIA_SUFFIXES = {
     ".aiff",
 }
 MANIFEST = "media_assets.json"
+INTERMEDIATE_ROLES = frozenset({"working", "separated", "segment"})
 _lock = threading.RLock()
 _uploads: dict[str, int] = {}
 
@@ -82,7 +84,7 @@ def record_media(
         if source and not source.startswith(("http://", "https://")):
             try:
                 source = Path(source).resolve().relative_to(directory).as_posix()
-            except ValueError:
+            except (OSError, ValueError, RuntimeError):
                 pass
         assets[relative] = {
             "role": role,
@@ -113,10 +115,10 @@ def _protected_reason(directory, metadata, tasks):
     if _uploads.get(_key(directory)):
         return "归档正在上传"
     if any(
-        task.status in ACTIVE_STATUSES and task_uses_directory(task, directory) for task in tasks
+        task.status in ACTIVE_STATUSES and _task_uses_directory(task, directory) for task in tasks
     ):
         return "活动或暂停任务仍需使用媒体"
-    owners = [task for task in tasks if task_uses_directory(task, directory)]
+    owners = [task for task in tasks if _task_uses_directory(task, directory)]
     if any(str(task.status) != "completed" for task in owners):
         return "关联任务尚未完成"
     if metadata.get("status") != "completed":
@@ -144,6 +146,46 @@ def _media_files(directory):
                 yield path
 
 
+def _reference_path(value, directory, *, foreign_basename=False):
+    """Interpret stored paths without treating a Windows path as a POSIX filename."""
+    if not isinstance(value, str) or not value or "\0" in value:
+        return None
+    windows = PureWindowsPath(value)
+    if os.name != "nt" and windows.is_absolute():
+        # Migrated metadata may still name its original Windows archive. A
+        # same-named local file is protected conservatively, never deletion proof.
+        return directory / windows.name if foreign_basename and windows.name else None
+    path = Path(value)
+    return path if path.is_absolute() else directory / path
+
+
+def _reference_key(value, directory, *, foreign_basename=False):
+    path = _reference_path(value, directory, foreign_basename=foreign_basename)
+    if path is None:
+        return None
+    try:
+        return _key(path)
+    except (OSError, ValueError, RuntimeError):
+        return None  # Invalid/obsolete metadata does not authorize deleting anything.
+
+
+def _task_uses_directory(task, directory):
+    try:
+        return task_uses_directory(task, directory)
+    except (OSError, ValueError, RuntimeError):
+        # A stale foreign task.source must not hide a valid output_dir owner.
+        result = task.result or {}
+        archive = result.get("archive")
+        values = [result.get("output_dir"), task.source]
+        if isinstance(archive, dict):
+            values.append(archive.get("output_dir"))
+        for value in values:
+            key = _reference_key(value, Path.cwd())
+            if key and (Path(key) == directory or directory in Path(key).parents):
+                return True
+        return False
+
+
 def _clear_removed_paths(value, directory, removed, *, key=""):
     if isinstance(value, dict):
         return {
@@ -155,10 +197,7 @@ def _clear_removed_paths(value, directory, removed, *, key=""):
     if isinstance(value, list):
         return [_clear_removed_paths(item, directory, removed, key=key) for item in value]
     if isinstance(value, str) and (key.endswith(("_path", "_file")) or key == "files"):
-        path = Path(value)
-        if not path.is_absolute():
-            path = directory / path
-        if _key(path) in removed:
+        if _reference_key(value, directory) in removed:
             return None
     return value
 
@@ -167,17 +206,204 @@ def _legacy_playback(directory, metadata):
     raw = metadata.get("file_path")
     if not isinstance(raw, str) or not raw:
         return None
-    path = Path(raw)
-    if not path.is_absolute():
-        path = directory / path
+    path = _reference_path(raw, directory, foreign_basename=True)
+    if path is None:
+        return None
     try:
         path = managed_child(path, directory)
-    except ValueError:
+        return path.relative_to(directory).as_posix() if path.is_file() else None
+    except (OSError, ValueError, RuntimeError):
         return None
-    return path.relative_to(directory).as_posix() if path.is_file() else None
+
+
+def _source_paths(directory, metadata, tasks):
+    """Original inputs remain protected even if an old manifest mislabels them."""
+    values = [metadata.get("file_path"), metadata.get("source_url")]
+    values.extend(task.source for task in tasks if _task_uses_directory(task, directory))
+    protected = set()
+    for value in values:
+        if not isinstance(value, str) or not value or value.startswith(("http://", "https://")):
+            continue
+        key = _reference_key(value, directory, foreign_basename=True)
+        if key:
+            protected.add(key)
+    return protected
+
+
+def _has_preserved_source(media, directory, asset, assets, sources, removing=frozenset()):
+    """Do not delete the last usable media if its original input disappeared."""
+    candidates = list(sources)
+    for relative, item in assets.items():
+        if item.get("role") in {"source", "working"} or item.get("playback"):
+            candidates.append(directory / relative)
+    source = asset.get("regenerate_from")
+    if isinstance(source, str) and source and not source.startswith(("http://", "https://")):
+        source = _reference_path(source, directory)
+        if source is not None:
+            candidates.append(source)
+    for candidate in candidates:
+        candidate = Path(candidate)
+        try:
+            if (
+                candidate.suffix.lower() not in MEDIA_SUFFIXES
+                or _key(candidate) == _key(media)
+                or _key(candidate) in removing
+                or not candidate.is_file()
+            ):
+                continue
+            try:
+                relative = candidate.resolve().relative_to(directory).as_posix()
+            except ValueError:
+                relative = None
+            if relative and assets.get(relative, {}).get("role") == "separated":
+                continue
+            if candidate.stat().st_size > 0:
+                return True
+        except (OSError, ValueError, RuntimeError):
+            continue
+    return False
+
+
+def _sync_removed_paths(directory, cleaned, errors, *, policy=None):
+    from app.core.archive_sync import get_archive_sync_service
+    from app.core.artifacts import get_artifact_store
+    from app.core.database import get_task_store
+
+    removed = {_key(directory / item["path"]) for item in cleaned}
+    metadata = _clear_removed_paths(_read(directory / "metadata.json"), directory, removed)
+    if policy is not None:
+        metadata["media_retention_policy"] = policy
+    metadata["media_removed"] = not any(_media_files(directory))
+    try:
+        get_artifact_store().write(
+            metadata.get("task_id"),
+            directory,
+            "metadata.json",
+            json.dumps(metadata, ensure_ascii=False, indent=2),
+        )
+    except OSError as exc:
+        errors.append({"path": "metadata.json", "error": str(exc)})
+    manifest = _read(directory / MANIFEST)
+    assets = manifest.get("assets", {})
+    remaining = {
+        name: asset
+        for name, asset in assets.items()
+        if _reference_key(name, directory) not in removed
+    }
+    if remaining != assets:
+        manifest["assets"] = remaining
+        try:
+            get_artifact_store().write(
+                metadata.get("task_id"),
+                directory,
+                MANIFEST,
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+            )
+        except OSError as exc:
+            errors.append({"path": MANIFEST, "error": str(exc)})
+    store = get_task_store()
+    for task in store.list(limit=-1):
+        if _task_uses_directory(task, directory):
+            result = _clear_removed_paths(task.result, directory, removed)
+            if result != task.result:
+                store.update_status(task.id, task.status, result=result)
+    get_archive_sync_service().flush_changes()
 
 
 class MediaRetentionService:
+    def cleanup_separated(self, path: str, *, dry_run: bool = True) -> dict:
+        """Compatibility entry point for cleaning only separated audio."""
+        return self.cleanup_intermediates(path, dry_run=dry_run, roles=frozenset({"separated"}))
+
+    @uses_workspace
+    def cleanup_intermediates(
+        self, path: str, *, dry_run: bool = True, roles: frozenset[str] = INTERMEDIATE_ROLES,
+    ) -> dict:
+        """Remove completed working audio, UVR stems and recognition segments.
+
+        The default preview also supports safe backfill of completed archives.
+        Failed/paused tasks keep their media for checkpoint recovery.
+        """
+        from app.core.database import get_task_store
+
+        with _lock:
+            preview = self.preview(path, "playback")
+            directory = Path(preview["path"])
+            metadata = _read(directory / "metadata.json")
+            tasks = get_task_store().list(limit=-1)
+            assets = _read(directory / MANIFEST).get("assets", {})
+            sources = _source_paths(directory, metadata, tasks)
+            protected = preview["protected_reason"]
+            if not any(
+                (directory / name).is_file() and (directory / name).stat().st_size > 0
+                for name in ("transcript.srt", "transcript_polished.srt")
+            ):
+                protected = protected or "转写结果尚未持久化"
+            entries = []
+            for item in preview["entries"]:
+                item = dict(item)
+                media = directory / item["path"]
+                asset = assets.get(item["path"], {})
+                known = item["role"] in INTERMEDIATE_ROLES & roles and media.suffix.lower() not in {
+                    ".mp4",
+                    ".mkv",
+                    ".avi",
+                    ".webm",
+                    ".mov",
+                    ".m4v",
+                }
+                reason = protected
+                if not known:
+                    reason = reason or "仅自动清理已确认的中间音频"
+                if asset.get("playback") or _reference_key(item["path"], directory) in sources:
+                    reason = reason or "保留播放文件和原始来源"
+                try:
+                    if media.is_symlink() or not managed_child(media, directory).is_file():
+                        raise ValueError("linked or unavailable file")
+                except (OSError, ValueError, RuntimeError):
+                    reason = reason or "链接或无法访问的文件"
+                item.update(delete=not reason, reason=reason or "完成后清理中间音频")
+                entries.append(item)
+            # Candidates must not justify deleting each other. A durable source
+            # must remain after the entire batch (not just the first unlink).
+            removing = {_key(directory / item["path"]) for item in entries if item["delete"]}
+            for item in entries:
+                if item["delete"] and not _has_preserved_source(
+                    directory / item["path"], directory, assets.get(item["path"], {}),
+                    assets, sources, removing,
+                ):
+                    item.update(delete=False, reason="原始媒体已缺失，保留现有音频")
+            result = {
+                "path": str(directory),
+                "policy": "separated" if roles == {"separated"} else "intermediates",
+                "entries": entries,
+                "protected_reason": protected,
+                "reclaimable_bytes": sum(item["bytes"] for item in entries if item["delete"]),
+                "cleaned": [],
+                "errors": [],
+                "reclaimed_bytes": 0,
+            }
+            if dry_run:
+                return result
+            for item in entries:
+                if not item["delete"]:
+                    continue
+                protected = _protected_reason(
+                    directory, _read(directory / "metadata.json"), get_task_store().list(limit=-1)
+                )
+                if protected:
+                    result["errors"].append({"path": item["path"], "error": protected})
+                    break
+                try:
+                    managed_child(directory / item["path"], directory).unlink()
+                    result["cleaned"].append(item)
+                    result["reclaimed_bytes"] += item["bytes"]
+                except (OSError, ValueError) as exc:
+                    result["errors"].append({"path": item["path"], "error": str(exc)})
+            if result["cleaned"]:
+                _sync_removed_paths(directory, result["cleaned"], result["errors"])
+            return result
+
     @uses_workspace
     def preview(self, path: str, policy: MediaPolicy | None = None) -> dict:
         from app.core.database import get_task_store
@@ -210,7 +436,7 @@ class MediaRetentionService:
                     if media.is_symlink() or not safe.is_file():
                         raise ValueError("linked file")
                     size = safe.stat().st_size
-                except (ValueError, OSError):
+                except (ValueError, OSError, RuntimeError):
                     entries.append(
                         {
                             "path": relative,
@@ -249,7 +475,7 @@ class MediaRetentionService:
             if isinstance(source, str) and Path(source).is_absolute():
                 try:
                     Path(source).resolve().relative_to(directory)
-                except ValueError:
+                except (OSError, ValueError, RuntimeError):
                     entries.append(
                         {
                             "path": source,
@@ -270,7 +496,6 @@ class MediaRetentionService:
 
     @uses_workspace
     def apply(self, path: str, policy: MediaPolicy | None = None, *, files: list[str]) -> dict:
-        from app.core.archive_sync import get_archive_sync_service
         from app.core.artifacts import get_artifact_store
         from app.core.database import get_task_store
 
@@ -308,35 +533,7 @@ class MediaRetentionService:
                 except (OSError, ValueError) as exc:
                     errors.append({"path": item["path"], "error": str(exc)})
             if cleaned:
-                removed = {_key(directory / item["path"]) for item in cleaned}
-                metadata = _clear_removed_paths(
-                    _read(directory / "metadata.json"), directory, removed
-                )
-                metadata["media_retention_policy"] = preview["policy"]
-                metadata["media_removed"] = not any(_media_files(directory))
-                media_path = metadata.get("file_path")
-                if media_path:
-                    candidate = Path(media_path)
-                    if not candidate.is_absolute():
-                        candidate = directory / candidate
-                    if not candidate.exists():
-                        metadata["file_path"] = None
-                try:
-                    get_artifact_store().write(
-                        metadata.get("task_id"),
-                        directory,
-                        "metadata.json",
-                        json.dumps(metadata, ensure_ascii=False, indent=2),
-                    )
-                except OSError as exc:
-                    errors.append({"path": "metadata.json", "error": str(exc)})
-                store = get_task_store()
-                for task in store.list(limit=-1):
-                    if task_uses_directory(task, directory):
-                        result = _clear_removed_paths(task.result, directory, removed)
-                        if result != task.result:
-                            store.update_status(task.id, task.status, result=result)
-                get_archive_sync_service().flush_changes()
+                _sync_removed_paths(directory, cleaned, errors, policy=preview["policy"])
             return {
                 **self.preview(path, policy),
                 "cleaned": cleaned,
@@ -350,3 +547,39 @@ _service = MediaRetentionService()
 
 def get_media_retention_service() -> MediaRetentionService:
     return _service
+
+
+def cleanup_completed_task(task) -> None:
+    """Space recovery is best-effort and must not undo a successful pipeline."""
+    from app.core.database import get_task_store
+    from app.core.logging_setup import log_event
+    from app.models import TaskStatus, TaskType
+
+    if (
+        task is None
+        or task.status != TaskStatus.COMPLETED
+        or task.task_type != TaskType.PIPELINE
+        or not (task.result or {}).get("output_dir")
+    ):
+        return
+    logger = logging.getLogger(__name__)
+
+    try:
+        result = get_media_retention_service().cleanup_intermediates(
+            task.result["output_dir"], dry_run=False
+        )
+        if result["cleaned"] or result["errors"]:
+            log_event(
+                logger,
+                logging.WARNING if result["errors"] else logging.INFO,
+                "task.intermediate_audio_cleanup",
+                removed_files=[item["path"] for item in result["cleaned"]],
+                reclaimed_bytes=result["reclaimed_bytes"],
+                errors=result["errors"],
+            )
+        # Cleanup updates persisted path references; do not expose stale paths.
+        saved = get_task_store().get(task.id)
+        if saved is not None:
+            task.result = saved.result
+    except Exception:
+        logger.warning("Completed task intermediate cleanup failed: %s", task.id, exc_info=True)
