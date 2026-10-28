@@ -10,6 +10,7 @@ import { navigate, type Route } from "@/lib/router"
 vi.mock("@/hooks/use-app-access", () => ({ AppAccessBoundary: ({ children }: { children: ReactNode }) => children }))
 vi.mock("@/hooks/use-app-startup", () => ({ useAppStartup: vi.fn() }))
 vi.mock("@/hooks/use-task-notifications", () => ({ useTaskNotifications: vi.fn() }))
+vi.mock("@/hooks/use-library-sync", () => ({ useLibrarySync: vi.fn() }))
 vi.mock("@/components/app-shell/app-shell", () => ({
   AppShell: ({ activePage, toolbar, crumbs, trailing, children }: { activePage: Route["page"]; toolbar?: ReactNode; crumbs?: ReactNode; trailing?: ReactNode; children: ReactNode }) => <>
     <header data-active-page={activePage}>{crumbs}{toolbar}{trailing}</header>

@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { api } from "@/lib/api"
 import { archiveServerKey, rememberArchiveWorkspace } from "@/lib/archive-cache-scope"
@@ -54,7 +54,28 @@ function nativePlatform(): PlatformAdapter {
   } as PlatformAdapter
 }
 
+afterEach(() => vi.restoreAllMocks())
+
 describe("Android ArchiveRepository", () => {
+  it("shows the live server catalog including work not downloaded to the phone", async () => {
+    const platform = nativePlatform()
+    vi.mocked(platform.getNetworkStatus).mockResolvedValue(true)
+    const page = { archives: [{ title: "云端新任务", processing: true }], folders: [{ id: "new-folder" }], total: 1 }
+    const request = vi.spyOn(api.archives, "page").mockResolvedValue(page as never)
+    const query = { page: 1, page_size: 12, search: "", source: "all", media: "all", sort: "created_desc" as const }
+    await expect(createArchiveRepository(platform).listPage(query)).resolves.toBe(page)
+    expect(request).toHaveBeenCalledWith(query)
+    expect(platform.listOfflineArchives).not.toHaveBeenCalled()
+  })
+
+  it("falls back to downloaded files when the network is up but the server is down", async () => {
+    const platform = nativePlatform()
+    vi.mocked(platform.getNetworkStatus).mockResolvedValue(true)
+    vi.spyOn(api.archives, "page").mockRejectedValue(new Error("unreachable"))
+    const result = await createArchiveRepository(platform).listPage({ page: 1, page_size: 12, search: "", source: "all", media: "all", sort: "created_desc" })
+    expect(result.workspace_id).toBe("offline")
+    expect(result.archives[0].title).toBe("离线归档")
+  })
   it("does not reuse a file URL from another workspace with the same archive ID", async () => {
     const server = archiveServerKey()
     const repository = createArchiveRepository(nativePlatform())

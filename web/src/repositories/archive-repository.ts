@@ -83,6 +83,13 @@ export function createArchiveRepository(platform: PlatformAdapter): ArchiveRepos
       return (await platform.listOfflineArchives()).map(normalize)
     },
     async listPage(query) {
+      // The server includes queued/failed work and folder changes which are not
+      // part of the downloaded archive cache. Use that catalog while connected.
+      try {
+        if (await platform.getNetworkStatus()) return await api.archives.page(query)
+      } catch {
+        // Preserve offline browsing when the server cannot be reached.
+      }
       const directory = libraryDirectorySnapshot()
       const items = (await platform.listOfflineArchives()).map(normalize).map((item) => ({ ...item,
         folder_id: item.content_key ? directory.members?.[item.content_key] ?? null : item.folder_id }))

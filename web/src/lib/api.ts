@@ -953,6 +953,7 @@ function subscribeEvents(path: string, onEvent: (event: TaskEventPayload) => voi
       withCredentials: apiClientConfig.credentials === "include",
     })
     eventSource.onmessage = (event) => emitSsePayload(event.data, onEvent)
+    eventSource.onopen = () => window.dispatchEvent(new Event("mpp:events-connected"))
     return () => eventSource.close()
   }
 
@@ -995,6 +996,7 @@ async function readAuthenticatedEventStream(
       throw error
     }
     if (!response.body) throw new Error("服务未返回事件流")
+    window.dispatchEvent(new Event("mpp:events-connected"))
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder()

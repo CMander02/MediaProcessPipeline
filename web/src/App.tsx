@@ -12,6 +12,7 @@ import { Toaster } from "@/components/ui/sonner"
 import { useAppStartup } from "@/hooks/use-app-startup"
 import { useLibraryControls } from "@/hooks/use-library-controls"
 import { useTaskNotifications } from "@/hooks/use-task-notifications"
+import { useLibrarySync } from "@/hooks/use-library-sync"
 import { AppAccessBoundary } from "@/hooks/use-app-access"
 import { useRoute } from "@/lib/router"
 
@@ -34,6 +35,7 @@ function AuthenticatedApp() {
 
   useAppStartup()
   useTaskNotifications()
+  useLibrarySync()
 
   const showLibraryHeader = route.page === "files" || route.page === "result"
   const mobileDetail = route.page === "result" || (route.page === "files" && library.view === "split" && !!library.item)

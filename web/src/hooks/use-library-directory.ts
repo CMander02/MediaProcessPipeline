@@ -8,7 +8,6 @@ const snapshots = new Map<string, LibraryDirectory>()
 const requests = new Map<string, Promise<void>>()
 const listeners = new Set<() => void>()
 const events = ["mpp:library-change", "mpp:workspace-change", "mpp:connection-change", "mpp:offline-scope-change", "mpp:app-resume"]
-let timer = 0
 let generation = 0
 const update = (event?: Event) => {
   if (event?.type === "mpp:workspace-change" || event?.type === "mpp:connection-change" || event?.type === "mpp:offline-scope-change") { generation++; requests.clear() }
@@ -18,12 +17,11 @@ const subscribe = (listener: () => void) => {
   listeners.add(listener)
   if (listeners.size === 1) {
     for (const event of events) window.addEventListener(event, update)
-    timer = window.setInterval(update, 15000)
     void refreshLibraryDirectory().catch(() => {})
   }
   return () => {
     listeners.delete(listener)
-    if (!listeners.size) { window.clearInterval(timer); for (const event of events) window.removeEventListener(event, update) }
+    if (!listeners.size) { for (const event of events) window.removeEventListener(event, update) }
   }
 }
 const publish = () => listeners.forEach((listener) => listener())

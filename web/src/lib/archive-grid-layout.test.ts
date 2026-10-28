@@ -15,6 +15,11 @@ describe("archiveGridLayout", () => {
     expect(archiveGridLayout(viewport - 32, 700, 48.1875, viewport).columns).toBe(columns)
   })
 
+  it("keeps tablet rows together instead of stretching the space between them", () => {
+    expect(archiveGridLayout(992, 676, 48.1875, 1024)).toMatchObject({ columns: 3, rowGap: 16 })
+    expect(archiveGridLayout(736, 932, 48.1875, 768).rowGap).toBe(16)
+  })
+
   it("fits complete rows without overflow across resizing and font changes", () => {
     for (const width of [390, 768, 1024, 1373, 1717, 2048]) {
       for (const infoHeight of [48.1875, 65]) {
@@ -25,7 +30,7 @@ describe("archiveGridLayout", () => {
           const cardWidth = (gridWidth - (layout.columns - 1) * (width >= 640 ? 20 : 12)) / layout.columns
           const used = rows * (cardWidth * 304 / 535 + infoHeight) + (rows - 1) * layout.rowGap
           expect(used).toBeLessThanOrEqual(height + 0.01)
-          if (rows > 1) expect(height - used).toBeLessThan(1)
+          if (rows > 1 && width >= 1280) expect(height - used).toBeLessThan(1)
         }
       }
     }

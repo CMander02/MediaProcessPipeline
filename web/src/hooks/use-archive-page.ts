@@ -66,6 +66,7 @@ export function useArchivePage(query: ArchiveQuery) {
     window.addEventListener("mpp:offline-scope-change", changed)
     window.addEventListener("mpp:offline-library-change", reload)
     window.addEventListener("mpp:library-change", reload)
+    window.addEventListener("mpp:library-refresh", reload)
     window.addEventListener("mpp:library-directory-change", reload)
     window.addEventListener("mpp:app-resume", resume)
     return () => {
@@ -74,6 +75,7 @@ export function useArchivePage(query: ArchiveQuery) {
       window.removeEventListener("mpp:offline-scope-change", changed)
       window.removeEventListener("mpp:offline-library-change", reload)
       window.removeEventListener("mpp:library-change", reload)
+      window.removeEventListener("mpp:library-refresh", reload)
       window.removeEventListener("mpp:library-directory-change", reload)
       window.removeEventListener("mpp:app-resume", resume)
     }

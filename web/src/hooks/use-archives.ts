@@ -115,6 +115,12 @@ export function useArchives(lite = true, enabled = true) {
   }, [])
 
   useEffect(() => {
+    const reload = () => void refresh(true)
+    window.addEventListener("mpp:library-refresh", reload)
+    return () => window.removeEventListener("mpp:library-refresh", reload)
+  }, [refresh])
+
+  useEffect(() => {
     if (!platform.isNative) return
     const reload = () => void refresh(true)
     const resume = () => {

@@ -84,18 +84,6 @@ html[data-platform="android"].keyboard-open [data-mobile-bottom-nav] {
   display: none !important;
 }
 
-html[data-platform="android"] [data-desktop-header] {
-  display: none !important;
-}
-
-html[data-platform="android"] [data-mobile-header] {
-  display: flex !important;
-}
-
-html[data-platform="android"] [data-mobile-bottom-nav] {
-  display: grid !important;
-}
-
 :root.dark {
   --background: #09090b;
   --foreground: #fafafa;

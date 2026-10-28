@@ -62,6 +62,40 @@ def directory(client):
     return client.get('/api/library/folders').json()
 
 
+def test_folder_changes_notify_other_clients_only_after_success(api, monkeypatch):
+    from unittest.mock import AsyncMock
+    from app.core.events import get_event_bus
+
+    client, _, _ = api
+    publish = AsyncMock()
+    monkeypatch.setattr(get_event_bus(), 'publish', publish)
+    folder_id = folder(client)
+    assert publish.await_count == 1
+    assert publish.call_args.args[0].event_type == 'library_changed'
+    assert publish.call_args.kwargs == {'persist': False}
+    assert client.patch(f'/api/library/folders/{folder_id}', json={'name': '远端改名'}).status_code == 200
+    assert client.put(f'/api/library/folders/{folder_id}/cover', json={'content_key': None}).status_code == 200
+    assert client.post('/api/library/folder-members/move', json={'content_keys': ['missing'], 'folder_id': folder_id}).status_code == 200
+    assert client.delete(f'/api/library/folders/{folder_id}').status_code == 200
+    assert publish.await_count == 5
+    assert client.patch('/api/library/folders/missing', json={'name': '错误'}).status_code == 404
+    assert publish.await_count == 5
+
+
+def test_folder_event_reaches_all_clients_without_a_fake_task_record(api, monkeypatch):
+    from app.core import events
+
+    client, _, _ = api
+    bus = events.EventBus()
+    monkeypatch.setattr(events, '_bus', bus)
+    first, second = bus.subscribe_global(), bus.subscribe_global()
+    target = folder(client)
+    assert first.get_nowait().event_type == 'library_changed'
+    assert second.get_nowait().event_type == 'library_changed'
+    assert directory(client)['folders'][0]['id'] == target
+    assert database._get_conn().execute('SELECT count(*) FROM task_events').fetchone()[0] == 0
+
+
 def test_folder_crud_move_scope_and_restart_preserve_media(api):
     client, root, sync = api
     item = imported(client, [VIDEO])[0]

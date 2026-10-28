@@ -28,6 +28,8 @@ export function archiveGridLayout(width: number, height: number, infoHeight: num
   return {
     columns: layout.columns,
     pageSize: layout.columns * layout.rows,
-    rowGap: layout.rows > 1 ? minRowGap + layout.remaining / (layout.rows - 1) : minRowGap,
+    // Tablet/landscape layouts often fit only two rows. Stretching their gap
+    // across the whole viewport leaves a large blank band between the cards.
+    rowGap: viewportWidth >= 1280 && layout.rows > 1 ? minRowGap + layout.remaining / (layout.rows - 1) : minRowGap,
   }
 }

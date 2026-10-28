@@ -28,6 +28,14 @@ async def _call(function, *args, **kwargs):
         raise HTTPException(409 if str(exc) == 'content_deleting' else 400, str(exc)) from exc
 
 
+async def _mutate(function, *args):
+    result = await _call(function, *args)
+    from app.core.events import TaskEvent, get_event_bus
+    # This invalidates a shared catalog; it has no task timeline to persist into.
+    await get_event_bus().publish(TaskEvent('library', 'library_changed'), persist=False)
+    return result
+
+
 @router.get('/folders')
 async def folders():
     return await _call(get_library_service().directory)
@@ -35,17 +43,17 @@ async def folders():
 
 @router.post('/folders')
 async def create_folder(body: FolderName):
-    return await _call(get_library_service().create, body.name)
+    return await _mutate(get_library_service().create, body.name)
 
 
 @router.patch('/folders/{folder_id}')
 async def rename_folder(folder_id: str, body: FolderName):
-    return await _call(get_library_service().rename, folder_id, body.name)
+    return await _mutate(get_library_service().rename, folder_id, body.name)
 
 
 @router.delete('/folders/{folder_id}')
 async def delete_folder(folder_id: str):
-    return await _call(get_library_service().delete, folder_id)
+    return await _mutate(get_library_service().delete, folder_id)
 
 
 class FolderCover(BaseModel):
@@ -54,7 +62,7 @@ class FolderCover(BaseModel):
 
 @router.put('/folders/{folder_id}/cover')
 async def set_folder_cover(folder_id: str, body: FolderCover):
-    return await _call(get_library_service().set_cover, folder_id, body.content_key)
+    return await _mutate(get_library_service().set_cover, folder_id, body.content_key)
 
 
 @router.get('/folders/{folder_id}/avatar')
@@ -66,7 +74,7 @@ async def folder_avatar(folder_id: str):
 
 @router.post('/folder-members/move')
 async def move_members(body: MemberMove):
-    return await _call(get_library_service().move, body.content_keys, body.folder_id)
+    return await _mutate(get_library_service().move, body.content_keys, body.folder_id)
 
 
 @router.get('/contents/resolve')

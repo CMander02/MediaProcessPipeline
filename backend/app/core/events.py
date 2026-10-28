@@ -53,9 +53,10 @@ class EventBus:
         """Return the last N events from the log buffer (newest last)."""
         return self._log_buffer[-n:]
 
-    async def publish(self, event: TaskEvent) -> None:
+    async def publish(self, event: TaskEvent, *, persist: bool = True) -> None:
         """Publish an event to all matching subscribers."""
-        self._persist_event(event)
+        if persist:
+            self._persist_event(event)
         async with self._lock:
             # Append to log buffer
             self._log_buffer.append(event)

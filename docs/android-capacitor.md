@@ -48,7 +48,9 @@ Debug 构建允许 localhost 与局域网 HTTP，Release 构建要求 HTTPS。�
 - Android 分享面板的文本和 URL 会进入“处理”页。
 - 摘要、字幕和导图文本下载到系统 `Downloads/MPP` 目录。
 - 原生 SQLite 保存归档索引、revision、文件清单和同步 cursor；正文和图片保存到 App 私有目录。
-- 首次连接、App 启动、回到前台和手动操作会执行增量同步；同步并发下载 3 个文件并逐个校验 SHA-256。
+- 联网时文件页直接读取服务器目录，包括新建文件夹、排队中、处理失败和已完成的内容；服务器不可达时回退到下载过的离线归档。
+- 前台通过共享 SSE 接收任务和文件夹变更通知，合并 300ms 内的事件后刷新。每 15 秒补查一次；回到前台、网络恢复和 SSE 重连时也刷新。进入后台后暂停定时同步。
+- 首次连接、App 启动、回到前台和目录刷新会执行增量同步；同步并发下载 3 个文件并逐个校验 SHA-256。
 - 离线状态可继续使用文件列表、搜索、筛选、摘要、字幕、导图、封面和图文图片；音视频保持在线播放。
 - 设置页提供立即同步、重建本地索引和清空离线资料。
 - 主题支持跟随系统、浅色和深色；状态栏、导航栏与 Web UI 同步。
@@ -80,3 +82,29 @@ npm run android:aab
 ```
 
 Keystore、密码和 APK/AAB 均保持在仓库外。Release 编译检查可独立运行；正式分发产物使用固定的长期签名密钥和上述环境变量构建。
+
+## GitHub 分发与手机更新
+
+建议使用 GitHub Releases 发布 APK，再用 [Obtainium](https://github.com/ImranR98/Obtainium) 在手机检查更新和接收新版本提醒。GitHub 保存安装包；Obtainium 从 Release 下载并调用 Android 安装流程。安装是否需要点确认取决于 Android 版本和安装权限。
+
+`.github/workflows/android-release.yml` 提供两个入口：
+
+- Actions → Android APK → Run workflow：检查前端、运行原生测试与 Lint、构建签名 APK，保存为工作流产物。
+- 发布 `vX.Y.Z` Release：构建同一标签的代码，检查标签与 `pyproject.toml` 一致，然后将 `MPP-android.apk` 上传到该 Release。上传失败时查看 Actions 日志；构建完成前 Release 中还没有 APK。
+
+首次需要在仓库 Settings → Secrets and variables → Actions 配置以下 Secrets：
+
+| Secret | 内容 |
+| --- | --- |
+| `MPP_ANDROID_KEYSTORE_BASE64` | 长期签名 keystore 文件的 Base64 |
+| `MPP_ANDROID_STORE_PASSWORD` | keystore 密码 |
+| `MPP_ANDROID_KEY_ALIAS` | 签名别名 |
+| `MPP_ANDROID_KEY_PASSWORD` | 签名密钥密码 |
+
+密钥应单独备份。不要将密钥或密码提交到仓库。不要在每次构建时生成新密钥。
+
+每次正式更新先增加 `pyproject.toml` 的版本号，再创建同名标签和 Release。当前 Android `versionCode` 按 `major * 10000 + minor * 100 + patch` 生成，minor 和 patch 应小于 100，新的 versionCode 必须递增。包名保持 `com.mpp.remote`。覆盖安装需要相同签名；现有 Debug APK 与新的正式签名 APK 通常不能互相覆盖。首次切换前先核对已安装 APK 的签名，保留需要的离线资料。
+
+手机安装 Obtainium 后添加仓库 `https://github.com/CMander02/MediaProcessPipeline`，APK 筛选设为 `^MPP-android\.apk$`，按需要启用后台检查和更新通知。正式用户默认排除预发布版本。
+
+云端内容同步不依赖 APK 更新。发布 APK 也不会更新云端服务：同步修复需将后端与 `web/dist` 一并部署到云端，安卓则安装包含新前端的 APK。
