@@ -125,6 +125,8 @@ from app.services.ingestion.ytdlp_options import (
     _YTDLP_NETWORK_ERROR_MARKERS as _YTDLP_NETWORK_ERROR_MARKERS,
 )
 from app.services.ingestion.ytdlp_options import YoutubeNetworkError as YoutubeNetworkError
+from app.services.ingestion.ytdlp_options import YoutubeAccessError as YoutubeAccessError
+from app.services.ingestion.ytdlp_options import raise_youtube_access_error
 from app.services.ingestion.ytdlp_options import _normalize_proxy_url as _normalize_proxy_url
 from app.services.ingestion.ytdlp_options import _youtube_network_error as _youtube_network_error
 from app.services.ingestion.ytdlp_options import _YtdlpLogger as _YtdlpLogger
@@ -254,6 +256,7 @@ class YtdlpService:
             with public_youtube_dl(video_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
         except Exception as e:
+            raise_youtube_access_error(e, url)
             if is_youtube_network_error(e, url):
                 raise _youtube_network_error(url, e) from e
             log_event(
@@ -278,6 +281,7 @@ class YtdlpService:
                 with public_youtube_dl(meta_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
             except Exception as e:
+                raise_youtube_access_error(e, url)
                 if _is_twitter_url(url):
                     return self._download_twitter_webpage_note(url, output_dir, e)
                 if is_youtube_network_error(e, url):
@@ -997,6 +1001,7 @@ class YtdlpService:
             with public_youtube_dl(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as e:
+            raise_youtube_access_error(e, url)
             if _is_twitter_url(url):
                 return self._fetch_twitter_webpage_note(url, fallback_error=e)
             if is_youtube_network_error(e, url):
@@ -1031,6 +1036,7 @@ class YtdlpService:
             with public_youtube_dl(ydl_opts) as ydl:
                 ydl.extract_info(url, download=True)
         except Exception as e:
+            raise_youtube_access_error(e, url)
             if is_youtube_network_error(e, url):
                 raise _youtube_network_error(url, e) from e
             raise

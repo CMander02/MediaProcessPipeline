@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
@@ -46,6 +48,54 @@ def test_youtube_rate_limit_errors_are_classified():
     error = RuntimeError("Unable to download webpage: HTTP Error 429: Too Many Requests")
 
     assert ytdlp.is_youtube_network_error(error, "https://www.youtube.com/watch?v=gQgKkUsx5q0")
+
+
+@pytest.mark.parametrize("apostrophe", ["'", "’"])
+def test_youtube_access_challenge_requires_user_action(apostrophe):
+    from app.services.ingestion.ytdlp_options import raise_youtube_access_error
+
+    error = RuntimeError(f"Sign in to confirm you{apostrophe}re not a bot")
+    with pytest.raises(ytdlp.YoutubeAccessError, match="人机验证"):
+        raise_youtube_access_error(error, "https://www.youtube.com/watch?v=ZAzWPE9CItg")
+    raise_youtube_access_error(error, "https://example.com/video")
+    raise_youtube_access_error(RuntimeError("No video formats found"), "https://youtu.be/ZAzWPE9CItg")
+
+
+@pytest.mark.parametrize("operation", ["video", "audio", "metadata", "subtitle_probe", "subtitle_download"])
+def test_access_challenge_stops_media_and_subtitle_fallbacks(monkeypatch, tmp_path, operation):
+    from unittest.mock import Mock
+
+    challenge = RuntimeError("ERROR: [youtube] ZAzWPE9CItg: Sign in to confirm you’re not a bot")
+    extract = Mock(side_effect=challenge)
+    if operation == "subtitle_download":
+        extract.side_effect = None
+        extract.return_value = {"subtitles": {"en": [{}]}, "automatic_captions": {"zh": [{}]}}
+    download_call = Mock(side_effect=challenge)
+
+    class FakeYoutubeDL:
+        extract_info = staticmethod(extract)
+        download = staticmethod(download_call)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr("app.services.ingestion.public_ytdlp.public_youtube_dl", lambda _opts: FakeYoutubeDL())
+    service = ytdlp.YtdlpService()
+    url = "https://www.youtube.com/watch?v=ZAzWPE9CItg"
+    with pytest.raises(ytdlp.YoutubeAccessError, match="下载已停止"):
+        if operation == "video":
+            service.download(url, tmp_path)
+        elif operation == "audio":
+            service._download_audio_only(url, tmp_path, "fixture")
+        elif operation == "metadata":
+            service.fetch_metadata(url)
+        else:
+            service.download_subtitles(url, tmp_path)
+    extract.assert_called_once()
+    assert download_call.call_count == (1 if operation == "subtitle_download" else 0)
 
 
 def test_ytdlp_base_opts_routes_output_to_logger(monkeypatch):

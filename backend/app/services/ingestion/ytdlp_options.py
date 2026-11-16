@@ -44,6 +44,21 @@ class YoutubeNetworkError(RuntimeError):
     """Raised when YouTube is unreachable after yt-dlp's bounded retries."""
 
 
+class YoutubeAccessError(RuntimeError):
+    """YouTube requires user action; media fallbacks must not retry the challenge."""
+
+
+def raise_youtube_access_error(error: BaseException, url: str) -> None:
+    if isinstance(error, YoutubeAccessError):
+        raise error
+    text = str(error).lower().replace("’", "'")
+    if _is_youtube_url(url) and "confirm you're not a bot" in text:
+        raise YoutubeAccessError(
+            "YouTube 要求人机验证，下载已停止。请在 YouTube 页面处理登录或验证，"
+            "或上传你已有且有权使用的视频文件。服务器不会自动获得浏览器中的验证状态。"
+        ) from error
+
+
 class _YtdlpLogger:
     """Route yt-dlp output through app logging instead of raw stderr."""
 

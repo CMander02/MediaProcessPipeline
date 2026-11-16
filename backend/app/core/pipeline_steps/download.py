@@ -57,6 +57,7 @@ async def prepare_download(ctx: PipelineContext) -> bool:
     from app.services.ingestion import download_media
     from app.services.ingestion.local import find_local_subtitle, parse_nfo
     from app.services.ingestion.ytdlp import (
+        YoutubeAccessError,
         YoutubeNetworkError,
         download_subtitles,
         ytdlp_auth_opts,
@@ -297,7 +298,7 @@ async def prepare_download(ctx: PipelineContext) -> bool:
                 # Probe: fetch metadata + subtitle (lightweight, no video download)
                 try:
                     probe_metadata = await fetch_ytdlp_metadata(ctx.source)
-                except YoutubeNetworkError:
+                except (YoutubeNetworkError, YoutubeAccessError):
                     raise
                 except Exception as e:
                     log_event(
@@ -329,7 +330,7 @@ async def prepare_download(ctx: PipelineContext) -> bool:
                             if sub_dir.exists() and not any(sub_dir.iterdir()):
                                 sub_dir.rmdir()
                     except Exception as e:
-                        if isinstance(e, YoutubeNetworkError):
+                        if isinstance(e, (YoutubeNetworkError, YoutubeAccessError)):
                             raise
                         log_event(logger, logging.WARNING, "subtitle.probe.failed", error=e)
                         probe_subtitle = None

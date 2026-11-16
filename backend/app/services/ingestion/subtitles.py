@@ -20,6 +20,7 @@ from app.services.ingestion.ytdlp_options import (
     _youtube_network_error,
     _YtdlpLogger,
     is_youtube_network_error,
+    raise_youtube_access_error,
     ytdlp_auth_opts,
     ytdlp_base_opts,
 )
@@ -225,6 +226,7 @@ def download_subtitles(
         with public_youtube_dl(metadata_opts) as ydl:
             info = ydl.extract_info(url, download=False)
     except Exception as e:
+        raise_youtube_access_error(e, url)
         if is_youtube_network_error(e, url):
             raise _youtube_network_error(url, e) from e
         log_event(logger, logging.WARNING, "ytdlp.subtitle.probe_failed", url=url, error=e)
@@ -277,6 +279,7 @@ def download_subtitles(
             with public_youtube_dl(ydl_opts) as ydl:
                 ydl.download([url])
         except Exception as e:
+            raise_youtube_access_error(e, url)
             if is_youtube_network_error(e, url):
                 subtitle_network_error = _youtube_network_error(url, e)
                 log_event(

@@ -812,3 +812,20 @@ async def test_download_handoff_does_not_run_completed_cleanup(runtime, monkeypa
     await pipeline.process_task(task.id, _download_worker_call=True)
     cleanup.assert_not_called()
     assert database.get_task_store().get(task.id).status == TaskStatus.PROCESSING
+
+
+@pytest.mark.asyncio
+async def test_youtube_access_challenge_does_not_retry_with_full_download(runtime, monkeypatch):
+    from app.services import ingestion
+    from app.services.ingestion import ytdlp
+
+    probe = AsyncMock(side_effect=ytdlp.YoutubeAccessError("YouTube 要求人机验证"))
+    download_media = AsyncMock()
+    monkeypatch.setattr(ytdlp, "fetch_metadata", probe)
+    monkeypatch.setattr(ingestion, "download_media", download_media)
+    task = create_task("https://www.youtube.com/watch?v=ZAzWPE9CItg")
+    with pytest.raises(ytdlp.YoutubeAccessError):
+        await pipeline.run_pipeline(task)
+    probe.assert_awaited_once()
+    download_media.assert_not_awaited()
+    runtime.asr.assert_not_awaited()
