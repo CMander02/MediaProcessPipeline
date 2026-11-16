@@ -94,16 +94,30 @@ uv sync --extra local-models
 cd web && npm install && npm run build && cd ..
 ```
 
-### VPS / API-only 配置
+### Linux 服务器配置（2c4g 受限内存算力节点与纯 API 模式）
 
-2c4g VPS 建议使用 API ASR 和固定 ffmpeg 切片，跳过本地语音模型、UVR 和浏览器运行时：
+2 核 4 GB 级别或仅能分配 2 至 3 GiB 可用内存（如 `CPUQuota=200%`、`MemoryMax=3G`、无 Swap）的 Linux 服务器，既可以作为多端协调与归档同步中枢，也可以直接运行轻量化本地 CPU 推理。在无 GPU 机器上启用本地模型前，将各阶段设备显式设为 `cpu` 并收紧并发与窗口参数：
 
 ```bash
 uv sync
-uv run python -m app.cli config asr_provider siliconflow
-uv run python -m app.cli config siliconflow_asr_chunk_strategy ffmpeg
-uv run python -m app.cli config enable_diarization false
-uv run python -m app.cli config enable_voiceprint false
+cd backend
+uv run python -m app.cli config set llama_asr_device cpu
+uv run python -m app.cli config set llama_asr_concurrency 1
+uv run python -m app.cli config set sherpa_device cpu
+uv run python -m app.cli config set sherpa_num_threads 2
+uv run python -m app.cli config set uvr_device cpu
+uv run python -m app.cli config set uvr_mdx_segment_size 64
+uv run python -m app.cli config set pyannote_device cpu
+uv run python -m app.cli config set local_llm_device cpu
+```
+
+如果不希望在服务器上加载任何本地语音模型，也可切换为纯云端 API ASR 与固定 FFmpeg 切片：
+
+```bash
+uv run python -m app.cli config set asr_provider siliconflow
+uv run python -m app.cli config set siliconflow_asr_chunk_strategy ffmpeg
+uv run python -m app.cli config set enable_diarization false
+uv run python -m app.cli config set enable_voiceprint false
 ```
 
 Playwright Python 包随 base 安装。小红书、知乎等浏览器抓取需要额外安装浏览器运行时：
@@ -114,17 +128,15 @@ uv run playwright install chromium
 
 ### 启动
 
-**桌面应用（Windows）**
+**桌面应用（Windows 与 macOS）**
 
-双击 `start-desktop.bat`，或执行：
+Windows 双击 `start-desktop.bat`，或执行：
 
 ```powershell
 .\scripts\start-desktop.ps1
 ```
 
-桌面应用自动连接或启动现有 Python 后端。最小化后任务继续运行；关闭窗口会退出应用并停止由它启动的后端。也可使用 Windows 安装包，首次打开时选择已经配置好的项目目录。安装、打包、日志与进程管理说明见 [MPP 桌面应用](docs/desktop.md)。
-
-本机免安装使用可在 `desktop/` 执行 `npm run portable`，随后双击 `desktop/dist/MPP-Desktop-Portable.exe`。程序自动识别附近的项目，也会记住手动选择的目录。
+macOS（Apple Silicon）可在 `desktop/` 执行 `npm run pack` 生成 `desktop/dist/mac-arm64/MPP Desktop.app`，或执行 `npm run dist` 生成 DMG。Windows 免安装单文件版在 `desktop/` 执行 `npm run portable`，生成仓库根目录下的 `MPP.exe`。安装、打包、日志与进程管理说明见 [MPP 桌面应用](docs/desktop.md)。
 
 **方式 1：本机 Web**
 
@@ -229,24 +241,23 @@ cd web && npm run dev              # :5173
 
 ## 处理流程
 
-1. **下载/导入** - 从 URL 下载或导入本地文件，自动尝试下载平台字幕
-2. **人声分离** - UVR5 分离人声（有平台字幕时跳过）
-3. **语音转录** - Qwen3-ASR 转录（有平台字幕时由 LLM 处理）
-4. **内容分析** - LLM 提取元数据、关键词、主题
-5. **文本润色** - LLM 滑动窗口修正转录错误、生成摘要和思维导图
-6. **归档输出** - 保存结构化文件到 `data/{title}/`
+1. **下载与导入**：从 URL 下载或导入本地音视频与图文，自动校验并优先复用合规的平台字幕。
+2. **人声分离**：可选运行 UVR5 分离人声与背景音乐，流式合并限制峰值内存。
+3. **语音识别与说话人分离**：支持 `llama.cpp`（Qwen3-ASR GGUF）、`sherpa-onnx`、SiliconFlow API 与 `moss`，可选 Pyannote 说话人聚类与声纹匹配。
+4. **文本润色与分析**：LLM 核对说话人姓名、滑动窗口润色字幕、提取结构化分析、生成摘要与思维导图，完成后自动清理中间提取音频。
+5. **归档与多端同步**：写入 `data_root/archives/{title}/` 与 SQLite 归档索引，向其他设备增量同步纯文本产物与封面。
 
 ## 输出文件
 
-每个任务在 `data/{title}/` 下生成：
+每个任务在资料库的 `archives/{title}/`（旧混合布局为 `data_root/{title}/`）下生成：
 
-- `source/` - 原始媒体文件
-- `metadata.json` - 媒体元数据
-- `analysis.json` - LLM 分析结果
-- `transcript.srt` - 原始转录 SRT
-- `transcript_polished.srt` - 润色后 SRT
-- `transcript_polished.md` - 干净的 Markdown 文稿
-- `summary.md` - 摘要和思维导图
+- `metadata.json`：媒体与来源元数据、归档 ID
+- `analysis.json`：LLM 结构化分析结果
+- `transcript.srt`：原始识别字幕
+- `transcript_polished.srt` 与 `transcript_polished.md`：润色后字幕与文稿
+- `summary.md` 与 `mindmap.md`：结构化摘要与思维导图
+- `cover.*`、`images/`、`descriptions/`：封面图与图文关键帧说明
+- `media_assets.json`：媒体文件用途记录，供空间回收策略按需清理
 
 ## 配置
 
@@ -254,24 +265,22 @@ cd web && npm run dev              # :5173
 
 在前端设置页面或根目录 `config.json` 中配置：
 
-- **LLM**: Provider (OpenAI / Anthropic / DeepSeek 等 OpenAI 兼容), 模型, API 密钥
-- **ASR**: Qwen3-ASR 模型路径、对齐器路径、设备
-- **UVR**: 模型选择, 模型目录
-- **路径**: 数据目录
+- **LLM**：Provider（OpenAI、Anthropic、DeepSeek、OpenAI 兼容端点、本地 `llama.cpp` / Transformers、OAuth CLI）与阶段模型绑定
+- **ASR 与说话人**：`llama.cpp`、`sherpa-onnx`、SiliconFlow 或 `moss` 模型路径，非手机端均可选 CPU 或 GPU 运行设备
+- **UVR**：模型选择、模型目录与 CPU/GPU 运行设备
+- **多端协同**：远程服务器地址、API Token、优先执行节点与归档同步策略，详见[多设备协同与计算架构](docs/multi-device-architecture.md)
 
 ## 技术栈
 
 - **Backend**: Python 3.11+, FastAPI, SQLite, uv
 - **Frontend**: React 19, Vite, shadcn/ui, Tailwind CSS 4
-- **Android**: Capacitor WebView、原生 SQLite/Keystore、Android Gradle Plugin
-- **AI**: Qwen3-ASR, pyannote-audio, UVR5 (audio-separator), OpenAI SDK（Anthropic / OpenAI / DeepSeek v4 / OpenAI-compatible）
-- **下载**: yt-dlp, FFmpeg
+- **Desktop & Mobile**: Electron 桌面端（Windows / macOS）、Capacitor Android 原生离线资料库
+- **AI**: llama.cpp (Qwen3-ASR / Local GGUF LLM), sherpa-onnx, pyannote-audio, UVR5 (audio-separator), OpenAI SDK
+- **下载与处理**: yt-dlp, Playwright, FFmpeg
 
-## 已知问题 / 待办
+## 演进路线与待办
 
-- **导图节点聚焦交互未完全解决**: 当前已实现“点击节点后按局部子树重新取景”的一版近似方案，但对于右侧长文本节点，镜头中心、缩放范围、以及“局部节点先布局再把其他节点拼接回来”的效果仍不稳定，和预期交互还有差距。
-- **LLM API 总结链路需要切换到本地模型**: 目前总结/导图相关能力仍主要依赖远程 LLM API，后续需要支持使用本地模型完成总结与知识树生成。
-- **知识树总结会误把多个章节并在一起**: 典型案例是“翁家翌”相关内容，多个章节会在知识树摘要阶段被合并，导致章节边界和主题拆分不准确。
+架构目标见 [多设备协同与计算架构](docs/multi-device-architecture.md)，具体待办事项与发版里程碑统一在 [GitHub Issues](https://github.com/CMander02/MediaProcessPipeline/issues) 中跟踪。
 
 ## License
 

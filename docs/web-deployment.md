@@ -91,15 +91,41 @@ cd web && npm ci && npm run build && cd ..
 sudo systemctl restart mpp-web
 ```
 
+## Linux 2c4g 受限预算服务器作为算力节点
+
+2 核 4 GB 级别或与其他服务共享宿主机的 Linux 服务器（例如 `CPUQuota=200%`、`MemoryMax=3G`、`TasksMax=256`、无 Swap），除了承担多端协调与文本归档中心，也可以直接运行受限内存的本地 CPU 推理与云端 LLM 后处理。
+
+当前版本在无 CUDA 的 Linux 服务器上启用本地推理前，需显式将本地阶段的运行设备设为 `cpu`，避免默认 `cuda` 配置报错：
+
+```bash
+cd backend
+uv run python -m app.cli config set uvr_device cpu
+uv run python -m app.cli config set uvr_mdx_segment_size 64
+uv run python -m app.cli config set llama_asr_device cpu
+uv run python -m app.cli config set llama_asr_concurrency 1
+uv run python -m app.cli config set sherpa_device cpu
+uv run python -m app.cli config set sherpa_num_threads 2
+uv run python -m app.cli config set pyannote_device cpu
+uv run python -m app.cli config set local_llm_device cpu
+```
+
+在 2 至 3 GiB 可用内存且无 Swap 的环境中运行时的资源控制要点：
+
+- 优先开启平台字幕快路径，命中合规字幕时无需启动 UVR 和 ASR。
+- 关闭任务重叠（`allow_pipeline_overlap=false`），单下载 Worker 加单处理 Worker 串行执行。
+- 本地 ASR 使用单并发 `llama_cpp` Qwen3-ASR 0.6B Q8（推理线程设为 2，转写结束后立即释放进程）或 `sherpa_onnx` INT8（`sherpa_num_threads=2`）。
+- 日常默认关闭 `separate` 与 `diarize`；确需在服务器上运行 CPU UVR 时必须将 `uvr_mdx_segment_size` 设为 `64`（默认窗口 `256` 峰值接近 3 GiB 会触发 OOM）。
+- 使用 OAuth CLI（如 Codex CLI）执行后处理时须限制单进程并发，避免子进程线程数触及 systemd `TasksMax` 上限。
+
 ## 优先使用桌面电脑处理任务
 
 服务器设置 `remote_execution_enabled=true`，并将 `remote_worker_id`、`remote_worker_name` 设为优先执行电脑的 ID 和名称。桌面电脑设置 `remote_execution_worker_enabled=true`，使用已有的 `remote_server_url`、`remote_api_token` 和相同的 `remote_worker_id`。两端重启服务后生效。电脑主动连接服务器，无需开放电脑的入站端口。
 
-新建的完整处理任务可转交执行，包括 URL 和资料库内的上传文件。电脑每 10 秒连接一次；空闲时领取一个任务，使用本机模型处理，再回传进度和包含媒体的归档。电脑忙碌时仍保持连接，后续任务继续等待。只完成下载的排队任务也可转交，电脑会重新下载 URL；服务器已开始转写或后处理的任务继续在服务器执行，保留已有进度。
+新建的完整处理任务可转交执行，包括 URL 和资料库内的上传文件。电脑每 10 秒连接一次。空闲时领取一个任务，使用本机模型处理，再回传进度和归档。电脑忙碌时仍保持连接，后续任务继续等待。只完成下载的排队任务也可转交，电脑会重新下载 URL。服务器已开始转写或后处理的任务继续在服务器执行，保留已有进度。
 
-电脑离线时，新任务等待 `remote_execution_wait_sec`（默认 120 秒），之后由服务器执行。已领取的任务在断线后仍归原电脑所有，重连后继续；服务器不会自动再执行一份。需要转移这类任务时，先暂停或取消旧任务，再重试。旧执行轮次不能提交结果。暂停、取消和删除操作会在电脑下次连接时生效。
+电脑离线时，新任务等待 `remote_execution_wait_sec`（默认 120 秒），之后转由服务器本机队列执行（例如由上述 2c4g 级受限预算服务器直接兜底完成）。已领取的任务在断线后仍归原电脑所有，重连后继续，服务器不会重复执行。需要转移这类任务时，先暂停或取消旧任务，再重试。旧执行轮次不能提交结果。暂停、取消和删除操作会在电脑下次连接时生效。
 
-桌面 MPP 服务必须保持运行。电脑关机、退出登录或停止服务后，电脑不能领取任务。此机制只提供单台优先电脑、单任务领取、断线重连和云端兜底；尚未提供多节点资源调度和跨机器检查点迁移。
+桌面 MPP 服务必须保持运行。电脑关机、退出登录或停止服务后，电脑不能领取任务。现行代码仅支持单台优先电脑，且远程 Worker 回传时固定携带媒体；多算力节点注册、默认纯文本同步及桌面端自动拉取的改造方案见[多设备协同与计算架构](multi-device-architecture.md)。
 
 ## HTTPS 反向代理
 

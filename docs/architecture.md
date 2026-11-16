@@ -33,7 +33,7 @@ workspace_lifecycle 协调目录切换与文件/数据库操作。切换时检�
 
 HTTP 路由调用核心与服务模块。任务事件通过全局 /api/tasks/events 和单任务 /api/tasks/{id}/events SSE 推送；单任务 GET 查询保留兼容。
 
-归档同步维护归档索引、revision、变更记录和删除记录。manifest 提供可传输文件清单；导入复用归档 ID。远程上传服务按配置发送已完成归档，并处理离线退避。完整性校验字段属于传输协议。
+归档同步由 `app.core.archive_sync` 维护单调递增的 `revision`、变更日志与删除 tombstone。manifest 仅暴露非媒体文件白名单（JSON、Markdown、SRT、TXT、封面及图文图片），导入操作保持归档 ID 幂等。`services/remote_archive_upload.py` 负责将本机完成的归档上传至服务器，`app.core.remote_execution` 与 `services/remote_task_worker.py` 提供桌面端主动轮询领单与离线回退。多算力节点路由、受限内存 Linux 服务器算力角色、跨平台 CPU 与 GPU 统一选择及桌面端增量拉取的目标设计见[多设备协同与计算架构](multi-device-architecture.md)，待实施事项在 GitHub Issues 与 Milestones 中维护。
 
 ## 启动与开发
 

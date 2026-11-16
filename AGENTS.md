@@ -29,10 +29,14 @@ CLI (mpp) / HTTP
 - 所有 service 使用 singleton 模式，通过 `get_xxx_service()` 获取
 - 核心模块在 `app.core/`: settings, database, events, queue, pipeline
 - Runtime settings 定义在 `app.core.settings`，API route 是薄 wrapper
-- LLM 调用通过 `openai` SDK（指到各 provider 的 OpenAI 兼容端点），支持 anthropic / openai / deepseek / custom / local HF
-- DeepSeek 原生 provider 支持 v4 的 `thinking` 控制：按阶段（analyze/polish/summary/mindmap）独立配置 model + thinking 开关 + reasoning_effort，通过 `extra_body` 透传
-- ASR 后端支持 WhisperX 和 Qwen3-ASR，通过 runtime settings 切换
-- UVR5 人声分离保留——工作场景多样，不止访谈，可能有背景音乐等复杂音频
+- LLM 调用通过 `openai` SDK 连接各 provider 的 OpenAI 兼容端点，支持 anthropic、openai、deepseek、custom、本地模型（`llama_cpp` GGUF 与 `transformers` HF）及 OAuth CLI provider
+- DeepSeek 原生 provider 支持 v4 的 `thinking` 控制，按阶段（analyze、polish、summary、mindmap）独立配置 model、thinking 开关与 reasoning_effort，通过 `extra_body` 透传
+- ASR 后端支持 `llama_cpp`（Qwen3-ASR GGUF）、`sherpa_onnx`（Qwen3-ASR、SenseVoice、Paraformer、Whisper ONNX）和 `siliconflow`，音频流另支持 `moss` 本地引擎，通过 runtime settings 切换
+- UVR5 人声分离保留为可选步骤，应对含背景音乐的复杂音频场景
+- 所有非手机计算设备（Linux 服务器如 2c4g 或受限 cgroup 节点、Windows PC、macOS）均须支持各本地推理阶段的 CPU 或 GPU（CUDA、MPS、Metal）选择；手机仅承担任务提交、进度查看与离线文本阅读
+- 多设备协同默认仅同步结构化文本、封面与图文配图，不同步原始音视频媒体文件
+- 提交代码前运行 `python scripts/verify.py --staged` 在干净临时副本中完成对应模块校验
+- 待办事项与阶段路线统一通过 GitHub Issues 与 Milestones（`gh issue list`）跟踪，不在 `docs/` 下维护静态 TODO 清单
 
 ### CLI (`mpp`)
 
