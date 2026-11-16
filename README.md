@@ -278,9 +278,9 @@ cd web && npm run dev              # :5173
 - **AI**: llama.cpp (Qwen3-ASR / Local GGUF LLM), sherpa-onnx, pyannote-audio, UVR5 (audio-separator), OpenAI SDK
 - **下载与处理**: yt-dlp, Playwright, FFmpeg
 
-## 演进路线与待办
+## 演进路线与问题跟踪
 
-架构目标见 [多设备协同与计算架构](docs/multi-device-architecture.md)，具体待办事项与发版里程碑统一在 [GitHub Issues](https://github.com/CMander02/MediaProcessPipeline/issues) 中跟踪。
+多端设计说明见 [多设备协同与计算架构](docs/multi-device-architecture.md)。开发规划与阶段看板在仓库关联的 [GitHub Projects](https://github.com/users/CMander02/projects/6) 中维护，具体缺陷在 [GitHub Issues](https://github.com/CMander02/MediaProcessPipeline/issues) 中跟踪。
 
 ## License
 

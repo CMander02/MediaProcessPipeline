@@ -36,7 +36,7 @@ CLI (mpp) / HTTP
 - 所有非手机计算设备（Linux 服务器如 2c4g 或受限 cgroup 节点、Windows PC、macOS）均须支持各本地推理阶段的 CPU 或 GPU（CUDA、MPS、Metal）选择；手机仅承担任务提交、进度查看与离线文本阅读
 - 多设备协同默认仅同步结构化文本、封面与图文配图，不同步原始音视频媒体文件
 - 提交代码前运行 `python scripts/verify.py --staged` 在干净临时副本中完成对应模块校验
-- 待办事项与阶段路线统一通过 GitHub Issues 与 Milestones（`gh issue list`）跟踪，不在 `docs/` 下维护静态 TODO 清单
+- 具体代码缺陷通过 GitHub Issues 跟踪；阶段规划与功能演进统一在仓库关联的 GitHub Projects 看板（Project `#6`）维护，不在 `docs/` 下存放静态清单
 
 ### CLI (`mpp`)
 
