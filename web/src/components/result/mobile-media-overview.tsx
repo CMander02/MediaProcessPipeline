@@ -13,14 +13,15 @@ import { SummaryTab } from "./summary-tab"
 
 export function MobileMediaOverview({ view, actions }: { view: ReturnType<typeof useResultViewer>; actions: ReactNode }) {
   const [expanded, setExpanded] = useState(false)
-  const { archive, displayTitle, platform, uploader, sourceHref, handleOpenSource, summary, mediaType, duration, isProcessing, taskError } = view
+  const { archive, displayTitle, platform, uploader, sourceHref, summary, mediaType, duration, isProcessing, taskError } = view
   const description = typeof archive?.metadata.description === "string" ? archive.metadata.description : ""
+  const showSourceLink = archive?.media_file && sourceHref
   return <>
     <section aria-label="内容简介" className="space-y-3 px-4 py-4">
-      {(uploader || platform) && <div className="flex items-center gap-2 text-sm text-muted-foreground">
+      {(uploader || platform || showSourceLink) && <div className="flex items-center gap-2 text-sm text-muted-foreground">
         {platform && <PlatformIcon platform={platform} iconOnly className="size-5" />}
-        <span className="truncate">{uploader || platform}</span>
-        {sourceHref && <button type="button" className="ml-auto min-h-10 shrink-0 px-2 text-xs" onClick={handleOpenSource}>查看原链接</button>}
+        {(uploader || platform) && <span className="truncate">{uploader || platform}</span>}
+        {showSourceLink && <a href={showSourceLink} target="_blank" rel="noopener noreferrer" className="ml-auto inline-flex min-h-10 shrink-0 items-center px-2 text-xs">查看原链接</a>}
       </div>}
       <div className="flex items-start gap-2">
         {view.editingTitle ? <input aria-label="内容标题" autoFocus className="min-w-0 flex-1 border-b bg-transparent py-1 text-base" value={view.titleDraft} onChange={(event) => view.setTitleDraft(event.target.value)} onBlur={view.commitTitle} onKeyDown={(event) => { if (event.key === "Enter") void view.commitTitle(); if (event.key === "Escape") view.setEditingTitle(false) }} /> : <button type="button" className="flex min-w-0 flex-1 items-start gap-2 text-left" aria-expanded={expanded} aria-label={expanded ? "收起简介" : "展开简介"} onClick={() => setExpanded((value) => !value)}>

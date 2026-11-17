@@ -1,8 +1,10 @@
 from pathlib import Path
 import json
 import sys
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
+import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -11,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from app.core import database, remote_execution as execution, settings as settings_module
 from app.core.settings import RuntimeSettings
 from app.models import Task, TaskStatus, TaskType
-from app.api.routes import execution as route, sync
+from app.api.routes import execution as route, pipeline, sync
 from app.core.archive_sync import build_archive_zip
 
 
@@ -24,9 +26,13 @@ def setup(tmp_path, monkeypatch):
     database.reset_db_path(tmp_path)
     app = FastAPI()
     app.include_router(route.router, prefix="/api")
+    app.include_router(pipeline.router, prefix="/api")
     app.include_router(sync.router, prefix="/api")
-    yield runtime, database.get_task_store(), TestClient(app)
-    database.close_db()
+    try:
+        with TestClient(app) as client:
+            yield runtime, database.get_task_store(), client
+    finally:
+        database.reset_db_path()
 
 
 def waiting(store, source="https://example.com/video"):
@@ -147,6 +153,36 @@ def test_uploaded_source_requires_matching_attempt_and_managed_path(setup, tmp_p
     assert client.get(f"/api/execution/tasks/{task.id}/source", params=params).status_code == 409
 
 
+@pytest.mark.asyncio
+async def test_worker_accept_downloads_the_uploaded_source(setup, tmp_path, monkeypatch):
+    from app.api.routes import tasks
+    from app.services import remote_task_worker
+
+    _, store, client = setup
+    response = client.post("/api/pipeline/stage", files={"file": ("源.mp4", b"uploaded", "video/mp4")})
+    assert response.status_code == 200, response.text
+    task = waiting(store, response.json()["path"])
+    assigned = Task.model_validate(execution.poll("desktop", capacity=True)["task"])
+    worker_settings = RuntimeSettings(data_root=str(tmp_path / "worker"), remote_worker_id="desktop")
+    local_store = Mock()
+    local_store.get.return_value = None
+    queue = Mock(submit=AsyncMock())
+    monkeypatch.setattr(remote_task_worker, "get_task_store", lambda: local_store)
+    monkeypatch.setattr(remote_task_worker, "get_task_queue", lambda: queue)
+    monkeypatch.setattr(tasks, "_initialize_task", Mock())
+
+    transport = httpx.ASGITransport(app=client.app)
+    async with httpx.AsyncClient(transport=transport) as server_client:
+        await remote_task_worker.RemoteTaskWorker().accept(
+            assigned, "https://cloud.example", server_client, worker_settings,
+        )
+    downloaded = Path(local_store.save.call_args.args[0].source)
+    assert downloaded.is_relative_to(worker_settings.data_root)
+    assert downloaded.read_bytes() == b"uploaded"
+    assert list(downloaded.parent.iterdir()) == [downloaded]
+    queue.submit.assert_awaited_once_with(task.id)
+
+
 def test_paused_task_does_not_block_next_claim(setup):
     _, store, _ = setup
     first = waiting(store)
@@ -256,8 +292,93 @@ async def test_upload_keeps_heartbeat_alive_until_result_commits(setup, monkeypa
         return await original_wait(tasks, timeout=0)
     monkeypatch.setattr(worker_module.asyncio, "wait", quick_wait)
     worker = worker_module.RemoteTaskWorker()
-    await worker.upload_result(Uploader(), None, None, "https://cloud.example", runtime,
+    task = Task(task_type=TaskType.PIPELINE, source="https://example.com/video")
+    await worker.upload_result(Uploader(), task, None, "https://cloud.example", runtime,
         store, Client(), {"id": "task", "attempt": "attempt"})
     assert calls[0]["state"]["attempt"] == "attempt"
     assert calls[0]["capacity"] is False
     assert calls[-1] == "uploaded"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "upload, default_media, keep_server_media, expected_media",
+    [
+        (False, None, None, False),
+        (True, None, None, False),
+        (True, True, None, True),
+        (True, False, True, True),
+        (True, True, False, False),
+    ],
+)
+async def test_worker_result_upload_respects_media_policy(
+    setup, tmp_path, monkeypatch, upload, default_media, keep_server_media, expected_media,
+):
+    from app.services import remote_archive_upload
+    from app.services.remote_task_worker import RemoteTaskWorker
+
+    _, server_store, client = setup
+    source_url = "https://www.youtube.com/watch?v=abcdefghijk"
+    staged = None
+    if upload:
+        response = client.post("/api/pipeline/stage", files={"file": ("影片.mp4", b"media", "video/mp4")})
+        assert response.status_code == 200, response.text
+        staged = Path(response.json()["path"])
+    task = waiting(server_store, str(staged) if staged else source_url)
+    if keep_server_media is not None:
+        task.options["keep_server_media"] = keep_server_media
+        server_store.save(task)
+    claim = execution.poll("desktop", capacity=True)["task"]
+    attempt = claim["options"][execution.KEY]["attempt"]
+    completed = Task(
+        id=task.id, task_type=TaskType.PIPELINE, source="worker-file.mp4" if upload else source_url,
+        status=TaskStatus.COMPLETED,
+        options={
+            **({} if keep_server_media is None else {"keep_server_media": keep_server_media}),
+            execution.ORIGIN: {"attempt": attempt},
+        },
+    )
+    worker_root = tmp_path / "worker"
+    archive = worker_root / "result"
+    (archive / "images").mkdir(parents=True)
+    (archive / "metadata.json").write_text(json.dumps({
+        "title": "Remote result", "source_url": source_url if not upload else completed.source,
+        "media_type": "video",
+    }), encoding="utf-8")
+    (archive / "summary.md").write_text("# Summary", encoding="utf-8")
+    (archive / "mindmap.md").write_text("# Map", encoding="utf-8")
+    (archive / "transcript.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nTranscript\n", encoding="utf-8")
+    (archive / "cover.jpg").write_bytes(b"cover")
+    (archive / "images" / "illustration.jpg").write_bytes(b"image")
+    (archive / "video.mp4").write_bytes(b"video")
+    (archive / "audio.mp3").write_bytes(b"audio")
+    (archive / "working.wav").write_bytes(b"audio")
+    worker_settings = RuntimeSettings(
+        data_root=str(worker_root), remote_worker_id="desktop",
+    )
+    if default_media is not None:
+        worker_settings.remote_sync_include_media = default_media
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client.app)) as server_client:
+        monkeypatch.setattr(remote_archive_upload, "httpx_client_kwargs", lambda _: {
+            "transport": httpx.ASGITransport(app=client.app),
+        })
+        await RemoteTaskWorker().upload_result(
+            remote_archive_upload.RemoteArchiveUploadService(),
+            completed, archive, "https://cloud.example", worker_settings,
+            Mock(), server_client, {"id": str(task.id), "attempt": attempt},
+        )
+    result = server_store.get(task.id)
+    destination = Path(result.result["output_dir"])
+    assert result.status == TaskStatus.COMPLETED
+    assert result.source == task.source
+    if not upload:
+        metadata = json.loads((destination / "metadata.json").read_text(encoding="utf-8"))
+        assert metadata["source_url"] == task.source
+    assert (destination / "images" / "illustration.jpg").read_bytes() == b"image"
+    assert (destination / "cover.jpg").read_bytes() == b"cover"
+    assert all((destination / name).is_file() for name in ("summary.md", "mindmap.md", "transcript.srt"))
+    actual_media = {p.name for p in destination.iterdir() if p.suffix in {".mp4", ".mp3", ".wav"}}
+    assert actual_media == ({"video.mp4", "audio.mp3", "working.wav"} if expected_media else set())
+    if staged:
+        assert staged.exists() is expected_media
+    assert (archive / "video.mp4").is_file()

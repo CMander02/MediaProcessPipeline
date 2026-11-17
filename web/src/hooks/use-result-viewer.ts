@@ -29,9 +29,9 @@ import {
 import { timelineEventKey, timelineStatusText } from "../lib/result-timeline"
 import {
   resolveSourceUrl,
+  sourceUrlAtTime,
   asRecord,
   normalizeArchivePath,
-  firstHttpUrl,
   firstTextValue,
 } from "../lib/result-metadata"
 import { usePortraitResultLayout, useMobileResultLayout } from "./use-result-layout"
@@ -834,7 +834,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt, embe
   )
 
   const mediaType: "video" | "audio" = archive?.has_video ? "video" : "audio"
-  const sourceHref = firstHttpUrl(sourceUrl)
+  const sourceHref = sourceUrl
   const isImageNote = contentSubtype === "image_note"
   const isTextNote = contentSubtype === "text_note"
   const archiveMetadata = (archive?.metadata || {}) as Record<string, unknown>
@@ -1038,10 +1038,12 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt, embe
     }
   }
 
-  const handleOpenSource = useCallback(() => {
-    if (!sourceHref) return
-    void platformAdapter.openExternal(sourceHref)
-  }, [platformAdapter, sourceHref])
+  const handleTimestampClick = useCallback((timeMs: number) => {
+    seekTo(timeMs)
+    if (archive && !archive.media_file && sourceHref) {
+      void platformAdapter.openExternal(sourceUrlAtTime(sourceHref, timeMs))
+    }
+  }, [archive, platformAdapter, seekTo, sourceHref])
 
   const handleResumeFromCheckpoint = useCallback(async () => {
     if (resuming) return
@@ -1180,7 +1182,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt, embe
     setTranscriptEditing,
     setTranscript,
     sourceHref,
-    handleOpenSource,
+    handleTimestampClick,
     sourceTabLabel,
     activeTab,
     setActiveTab,

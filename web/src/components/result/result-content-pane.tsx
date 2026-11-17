@@ -176,6 +176,7 @@ export function ResultContentPane({ view, mobileOverview, mobileSpeakers }: { vi
     currentSegmentIndex,
     autoScroll,
     seekTo,
+    handleTimestampClick,
     currentTime,
     chapterTocNodes,
     onManualScroll,
@@ -310,6 +311,7 @@ export function ResultContentPane({ view, mobileOverview, mobileSpeakers }: { vi
                       currentSegmentIndex={currentSegmentIndex}
                       autoScroll={autoScroll}
                       onSegmentClick={(sub) => seekTo(sub.startTime)}
+                      onTimestampClick={handleTimestampClick}
                       currentTime={currentTime}
                       tocNodes={chapterTocNodes}
                       tracks={subtitleTracks}
@@ -319,7 +321,7 @@ export function ResultContentPane({ view, mobileOverview, mobileSpeakers }: { vi
                       onSelectSecondary={(lang) => void selectSecondaryTrack(lang)}
                       secondaryTexts={secondaryTexts}
                       readOnly={!isPrimaryTrack}
-                      onTocSeek={seekTo}
+                      onTocSeek={handleTimestampClick}
                       onManualScroll={onManualScroll}
                       srtPath={archivePath + sep + (
                         activeTrackLang && !subtitleTracks.find((t) => t.lang === activeTrackLang)?.polished
@@ -359,7 +361,7 @@ export function ResultContentPane({ view, mobileOverview, mobileSpeakers }: { vi
                 onFitReady={(fn) => setMindmapFit(() => fn)}
                 chapters={flattenChapterTree(chapterTocNodes).map(({ node }) => node)}
                 currentTime={currentTime}
-                onSeek={seekTo}
+                onSeek={handleTimestampClick}
               />
             ) : isProcessing ? (
               <div className="flex items-center justify-center h-full text-muted-foreground">

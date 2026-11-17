@@ -43,6 +43,7 @@ interface TranscriptTabProps {
   autoScroll: boolean
   currentTime?: number
   onSegmentClick: (subtitle: Subtitle) => void
+  onTimestampClick?: (timeMs: number) => void
   onManualScroll: () => void
   onTocSeek?: (timeMs: number) => void
   /** Chapters with sections and sub-sections */
@@ -155,6 +156,7 @@ export function TranscriptTab({
   autoScroll,
   currentTime = 0,
   onSegmentClick,
+  onTimestampClick,
   onManualScroll,
   onTocSeek,
   tocNodes,
@@ -560,6 +562,7 @@ export function TranscriptTab({
                     editing={editingIndex === idx}
                     speakers={speakers}
                     onClick={() => onSegmentClick(subtitle)}
+                    onTimestampClick={onTimestampClick && (() => onTimestampClick(subtitle.startTime))}
                     onEdit={(changes) => { setIsNewInsert(false); handleEdit(idx, changes) }}
                     onDelete={() => handleDelete(idx)}
                     onInsert={(pos) => handleInsert(idx, pos)}

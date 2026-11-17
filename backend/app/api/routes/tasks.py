@@ -22,7 +22,7 @@ from fastapi.responses import StreamingResponse
 from app.core.atomic_file import atomic_write_text
 from app.core.database import get_task_store
 from app.core.events import get_event_bus
-from app.core.paths import get_workspace_paths
+from app.core.paths import managed_staged_file
 from app.core.public_urls import UnsafeURLError, validate_public_http_url
 from app.core.pipeline import (
     PIPELINE_STEPS,
@@ -42,21 +42,6 @@ from app.models.task import TaskImportItem, TaskImportResponse
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 logger = logging.getLogger(__name__)
-
-
-def _is_managed_staging_source(source: str, data_root: str) -> bool:
-    """Allow remote tasks to consume files created by the upload endpoint."""
-    candidate = Path(source).expanduser().resolve()
-    for staging_root in get_workspace_paths(data_root).staging_roots:
-        try:
-            relative = candidate.relative_to(staging_root)
-        except (OSError, ValueError):
-            continue
-        if (len(relative.parts) == 2
-                and re.fullmatch(r"[0-9a-f]{32}", relative.parts[0]) is not None
-                and candidate.is_file()):
-            return True
-    return False
 
 
 def _validate_public_http_url(url: str) -> None:
@@ -89,7 +74,7 @@ def _prepare_task(task_create: TaskCreate, request: Request, source: str) -> tup
     if (
         _looks_like_local_path(source)
         and not filesystem_access_allowed(request, runtime)
-        and not _is_managed_staging_source(source, runtime.data_root)
+        and managed_staged_file(source, runtime.data_root) is None
     ):
         raise HTTPException(status_code=403, detail="当前远程实例未开放本地路径任务提交。")
     task = Task(

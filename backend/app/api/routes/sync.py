@@ -280,6 +280,9 @@ async def import_completed_archive(
             cleanup_completed_task(task)
         if execution_id:
             from app.core.events import TaskEvent, get_event_bus
+            from app.core.remote_execution import cleanup_completed_upload
+
+            cleanup_completed_upload(store.get(task.id), data_root)
             await get_event_bus().publish(TaskEvent(task.id, "completed", {"progress": 1.0}))
         return outcome
     finally:

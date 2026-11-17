@@ -145,6 +145,47 @@ describe("result viewer state", () => {
     expect(result.current.sourceHref).toBe("https://example.com/source")
   })
 
+  it.each([
+    ["https://www.youtube.com/watch?v=fixture&t=2s", "https://www.youtube.com/watch?v=fixture&t=95s"],
+    ["https://youtu.be/fixture?si=shared", "https://youtu.be/fixture?si=shared&t=95s"],
+    ["https://www.bilibili.com/video/BV1fixture?p=2", "https://www.bilibili.com/video/BV1fixture?p=2&t=95"],
+    ["https://youtube.com.example.org/watch?v=fixture", "https://youtube.com.example.org/watch?v=fixture"],
+  ])("opens %s on a timestamp click only when there is no local media", async (sourceUrl, expectedUrl) => {
+    const timedSrt = "1\n00:01:35,500 --> 00:01:37,000\n[Speaker 1] Search result\n"
+    const metadata = { ...mocks.archive.metadata, source_url: sourceUrl }
+    mocks.repository.get.mockResolvedValue({ ...mocks.archive, media_file: null, metadata })
+    mocks.repository.readFile.mockImplementation(async (path: string) => {
+      if (path.endsWith("summary.md")) return "# Summary"
+      if (path.endsWith("mindmap.md")) return "# Map\n- First"
+      if (path.endsWith("transcript.srt")) return timedSrt
+      return ""
+    })
+    const { result } = renderHook(() => useResultViewer({ archivePath: mocks.archive.path, startAt: 95.5 }))
+    await waitFor(() => expect(result.current.transcript).toBe(timedSrt))
+    expect(result.current.mediaUrl).toBeNull()
+    expect(result.current.summary).toBe("# Summary")
+    expect(result.current.mindmap).toBe("# Map\n- First")
+    expect(result.current.activeTab).toBe("transcript")
+    expect(result.current.currentSegmentIndex).toBe(0)
+    expect(mocks.adapter.openExternal).not.toHaveBeenCalled()
+
+    act(() => result.current.handleTimestampClick(95_500))
+
+    expect(mocks.adapter.openExternal).toHaveBeenCalledExactlyOnceWith(expectedUrl)
+  })
+
+  it("keeps timestamp clicks in the viewer when the archive has media", async () => {
+    const { result } = renderHook(() => useResultViewer({ archivePath: mocks.archive.path }))
+    await waitFor(() => expect(result.current.mediaUrl).toBe("media:/library/fixture/source.wav"))
+    const audio = document.createElement("audio")
+    const unbind = result.current.bindMedia(audio)
+    act(() => result.current.handleTimestampClick(1_500))
+    expect(audio.currentTime).toBe(1.5)
+    expect(mocks.adapter.openExternal).not.toHaveBeenCalled()
+    vi.spyOn(audio, "pause").mockImplementation(() => {})
+    unbind?.()
+  })
+
   it("applies SSE file updates and saves an edited title", async () => {
     const { result } = renderHook(() => useResultViewer({ archivePath: mocks.archive.path }))
     await waitFor(() => expect(result.current.displayTitle).toBe("Fixture"))

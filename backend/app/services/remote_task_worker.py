@@ -103,7 +103,6 @@ class RemoteTaskWorker:
                         output = uploader._archive_dir(task, Path(settings.data_root).resolve())
                         if output is None:
                             raise ValueError("Completed remote task has no archive")
-                        # Cloud-origin media must remain playable on the cloud endpoint.
                         await self.upload_result(uploader, task, output, server, settings, store, client, state)
                     self.active = None
                 return
@@ -112,8 +111,10 @@ class RemoteTaskWorker:
                 await self.accept(assigned, server, client, settings)
 
     async def upload_result(self, uploader, task, output, server, settings, store, client, state):
-        upload = asyncio.create_task(uploader._upload(task, output, server,
-            settings.model_copy(update={"remote_sync_include_media": True}), store))
+        keep_server_media = task.options.get("keep_server_media")
+        if isinstance(keep_server_media, bool):
+            settings = settings.model_copy(update={"remote_sync_include_media": keep_server_media})
+        upload = asyncio.create_task(uploader._upload(task, output, server, settings, store))
         try:
             while not upload.done():
                 await asyncio.wait({upload}, timeout=10)

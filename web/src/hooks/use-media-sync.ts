@@ -93,8 +93,11 @@ export function useMediaSync({ subtitles, initialTime, onTimeUpdate }: UseMediaS
   }, [])
 
   const seekTo = useCallback((timeMs: number) => {
+    const seconds = timeMs / 1000
     if (mediaRef.current) {
-      mediaRef.current.currentTime = timeMs / 1000
+      mediaRef.current.currentTime = seconds
+    } else {
+      setCurrentTime(seconds)
     }
     // Re-enable auto-scroll on explicit seek
     setAutoScroll(true)

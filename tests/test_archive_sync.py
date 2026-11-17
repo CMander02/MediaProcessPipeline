@@ -339,6 +339,81 @@ def test_completed_archive_import_cleans_intermediate_audio(tmp_path, sync_clien
     assert "source_(Vocals).wav" not in manifest["assets"]
 
 
+@pytest.mark.parametrize(
+    "source_kind",
+    ["legacy_staging", "shared", "library_file", "linked_upload", "no_text", "empty_text", "keep", "retry"],
+)
+def test_remote_text_import_only_reclaims_its_unshared_staged_source(
+    tmp_path, sync_client, monkeypatch, source_kind,
+):
+    from app.core import remote_execution as execution
+
+    runtime = settings_module.get_runtime_settings()
+    runtime.remote_execution_enabled = True
+    runtime.remote_worker_id = "desktop"
+    store = database.get_task_store()
+    staging = tmp_path / "_staging" / uuid4().hex
+    staging.mkdir(parents=True)
+    original = tmp_path / "original.mp4" if source_kind in {"library_file", "linked_upload"} else staging / "original.mp4"
+    original.write_bytes(b"original media")
+    source = original
+    if source_kind == "linked_upload":
+        source = staging / "linked.mp4"
+        try:
+            source.symlink_to(original)
+        except OSError:
+            pytest.skip("Host does not allow unprivileged file symlinks")
+    task = Task(task_type=TaskType.PIPELINE, status=TaskStatus.QUEUED, source=str(source))
+    if source_kind == "keep":
+        task.options["keep_server_media"] = True
+    assert execution.defer(task)
+    attempt = execution.poll("desktop", capacity=True)["task"]["options"][execution.KEY]["attempt"]
+    if source_kind == "shared":
+        store.save(Task(task_type=TaskType.PIPELINE, status=TaskStatus.QUEUED, source=task.source))
+
+    incoming = _archive(tmp_path, "incoming", "Remote text")
+    if source_kind == "no_text":
+        (incoming / "summary.md").unlink()
+    elif source_kind == "empty_text":
+        (incoming / "summary.md").write_text(" \n", encoding="utf-8")
+    package = tmp_path / "remote-text.zip"
+    build_archive_zip(incoming, package)
+    completed = task.model_copy(update={"status": TaskStatus.COMPLETED, "source": "worker.mp4"})
+
+    def upload(execution_id):
+        with package.open("rb") as archive:
+            return sync_client.post("/api/sync/import", data={
+                "task_json": completed.model_dump_json(),
+                "archive_name": "Remote text",
+                "worker_id": "desktop",
+                "execution_id": execution_id,
+            }, files={"archive": ("result.zip", archive, "application/zip")})
+
+    assert upload("old-attempt").status_code == 409
+    assert source.read_bytes() == b"original media"
+    original_unlink = Path.unlink
+
+    def deny_source_unlink(path, *args, **kwargs):
+        if path == source:
+            raise PermissionError("Staged source is in use")
+        return original_unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        if source_kind == "retry":
+            patch.setattr(Path, "unlink", deny_source_unlink)
+        response = upload(attempt)
+    assert response.status_code == 200, response.text
+    assert store.get(task.id).source == str(source)
+    if source_kind == "legacy_staging":
+        assert not staging.exists()
+    else:
+        assert original.read_bytes() == b"original media"
+        assert source.is_file()
+    assert upload(attempt).json()["already_synced"] is True
+    if source_kind == "retry":
+        assert not staging.exists()
+
+
 def test_portable_archive_rejects_path_traversal(tmp_path):
     zip_path = tmp_path / "unsafe.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:

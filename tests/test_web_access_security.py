@@ -167,17 +167,19 @@ def test_remote_capabilities_and_filesystem_boundary(tmp_path, monkeypatch):
 
 
 def test_remote_tasks_accept_only_managed_staged_uploads(tmp_path):
+    from app.core.paths import managed_staged_file
+
     staging_dir = tmp_path / "_staging" / ("a" * 32)
     staging_dir.mkdir(parents=True)
     uploaded = staging_dir / "demo.mp4"
     uploaded.write_bytes(b"media")
 
-    assert tasks._is_managed_staging_source(str(uploaded), str(tmp_path))
-    assert not tasks._is_managed_staging_source(str(tmp_path / "demo.mp4"), str(tmp_path))
-    assert not tasks._is_managed_staging_source(
+    assert managed_staged_file(str(uploaded), tmp_path) == uploaded
+    assert managed_staged_file(str(tmp_path / "demo.mp4"), tmp_path) is None
+    assert managed_staged_file(
         str(tmp_path / "_staging" / "guessable" / "demo.mp4"),
-        str(tmp_path),
-    )
+        tmp_path,
+    ) is None
 
 
 def test_main_middleware_accepts_unlocked_cookie(tmp_path, monkeypatch):

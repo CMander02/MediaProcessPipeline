@@ -108,7 +108,6 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
     startEditTitle,
     platform,
     sourceHref,
-    handleOpenSource,
     uploader,
     headerMediaLabel,
     headerMediaIcon,
@@ -185,6 +184,9 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
     : latestStatusEvents
 
   const phoneAvLayout = isMobileLayout && !isNoteContent
+  const showSourcePreview = Boolean(archive && !archive.media_file && !isNoteContent && !isProcessing)
+  const thumbnailUrl = archive?.thumbnail_url
+    ?? (archive?.has_thumbnail && (online || !archive.offline) ? api.archives.thumbnailUrl(archivePath) : undefined)
   const mediaPlayerBlock = mediaUrl ? (
     <div className={cn("sticky top-0 z-10 bg-background", !phoneAvLayout && "pb-2")}>
       <MediaPlayer
@@ -195,7 +197,7 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
         loop={videoLoop}
         onLoopChange={setVideoLoop}
         mobile={phoneAvLayout}
-        poster={archive?.thumbnail_url ?? (archive?.has_thumbnail ? api.archives.thumbnailUrl(archivePath) : undefined)}
+        poster={thumbnailUrl}
         title={displayTitle ?? undefined}
         autoPlay={route.params.play === "1"}
       />
@@ -203,6 +205,18 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
   ) : archive?.media_file && !online ? (
     <div className="flex min-h-32 items-center justify-center rounded-lg border bg-muted/20 px-4 text-center text-sm text-muted-foreground">
       连接服务器后播放音视频；摘要、字幕、导图和图文资料可继续离线阅读。
+    </div>
+  ) : showSourcePreview && (thumbnailUrl || sourceHref || phoneAvLayout) ? (
+    <div className={cn("space-y-2 border-b p-3 md:border-0 md:p-0", !thumbnailUrl && "max-md:pt-14")}>
+      {thumbnailUrl && <img src={thumbnailUrl} alt="封面" className="max-h-[24dvh] w-full rounded-lg object-contain md:max-h-[42dvh]" />}
+      {sourceHref && (
+        <Button asChild variant="outline" className="min-h-11 md:min-h-0">
+          <a href={sourceHref} target="_blank" rel="noopener noreferrer">
+            <HugeiconsIcon icon={Link01Icon} className="size-4" />
+            打开原始链接
+          </a>
+        </Button>
+      )}
     </div>
   ) : null
 
@@ -229,32 +243,22 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
         <span className="truncate">{displayTitle}</span>
         <HugeiconsIcon icon={PencilEdit01Icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
       </button>
+      {sourceHref && !showSourcePreview && (
+        <a
+          href={sourceHref}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-primary"
+          aria-label="打开原始链接"
+          title="打开原始链接"
+        >
+          {platform ? <PlatformIcon platform={platform} uploader={uploader} className="size-4" /> : <HugeiconsIcon icon={Link01Icon} className="size-4" />}
+        </a>
+      )}
       <div className="hidden shrink-0 items-center gap-1.5 text-muted-foreground sm:flex">
-        {platform ? (
-          sourceHref ? (
-            <button
-              type="button"
-              onClick={handleOpenSource}
-              className="rounded p-1 transition-colors hover:bg-muted hover:text-primary"
-              title={uploader ? `打开 ${uploader}` : "打开原始来源"}
-            >
-              <PlatformIcon platform={platform} uploader={uploader} className="h-4 w-4" />
-            </button>
-          ) : (
-            <span className="p-1" title={uploader ?? platform}>
-              <PlatformIcon platform={platform} uploader={uploader} className="h-4 w-4" />
-            </span>
-          )
-        ) : sourceHref ? (
-          <button
-            type="button"
-            onClick={handleOpenSource}
-            className="rounded p-1 transition-colors hover:bg-muted hover:text-primary"
-            title="打开原始链接"
-          >
-            <HugeiconsIcon icon={Link01Icon} className="h-3.5 w-3.5" />
-          </button>
-        ) : null}
+        {platform && (!sourceHref || showSourcePreview) && <span className="p-1" title={uploader ?? platform}>
+          <PlatformIcon platform={platform} uploader={uploader} className="size-4" />
+        </span>}
         <AttemptsMenu source={sourceHref} currentPath={archivePath} onTarget={onTarget} />
         <span className="rounded p-1" title={headerMediaLabel}>
           <HugeiconsIcon icon={headerMediaIcon} className="h-3.5 w-3.5" strokeWidth={1.75} />

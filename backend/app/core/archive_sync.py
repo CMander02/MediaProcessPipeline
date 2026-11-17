@@ -867,6 +867,10 @@ def archive_file_manifest(archive_dir: Path) -> dict[str, str]:
     }
 
 
+def is_archive_media_file(path: str | Path) -> bool:
+    return Path(path).suffix.casefold() in _MEDIA_EXTENSIONS
+
+
 def build_archive_zip(
     archive_dir: Path,
     destination: Path,
@@ -886,7 +890,7 @@ def build_archive_zip(
         relative = _safe_member_path(path.relative_to(archive_root).as_posix()).as_posix()
         if relative == "_sync_manifest.json" or path.suffix.casefold() in _SKIP_ARCHIVE_SUFFIXES:
             continue
-        if not include_media and path.suffix.casefold() in _MEDIA_EXTENSIONS:
+        if not include_media and is_archive_media_file(path):
             continue
         candidates.append((path, relative))
     if len(candidates) + 1 > MAX_ARCHIVE_MEMBERS:

@@ -1,16 +1,25 @@
 """Single preferred worker, with durable task ownership and offline fallback."""
 
+import logging
+import time
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
-import time
 from uuid import uuid4
 
 from app.core.database import get_task_store, task_write_transaction, _save_task_row
+from app.core.paths import managed_staged_file, task_uses_directory
 from app.core.settings import get_runtime_settings
-from app.models import TaskStatus, TaskType
+from app.models import Task, TaskStatus, TaskType
+
+logger = logging.getLogger(__name__)
 
 KEY = "_remote_execution"
 ORIGIN = "_remote_origin"
+_TEXT_RESULT_FILES = (
+    "transcript.srt", "transcript_polished.srt", "transcript_polished.md",
+    "summary.md", "mindmap.md", "detail.md", "source.md",
+)
 _last_seen = 0.0
 
 
@@ -23,6 +32,48 @@ def source_file(task):
     path = Path(task.source).resolve()
     root = Path(get_runtime_settings().data_root).resolve()
     return path if path.is_relative_to(root) and path.is_file() else None
+
+
+def _has_archived_text(files: dict[str, str]) -> bool:
+    for name in _TEXT_RESULT_FILES:
+        if name not in files:
+            continue
+        with suppress(FileNotFoundError):
+            with Path(files[name]).open(encoding="utf-8-sig") as text:
+                if text.read(1024).strip():
+                    return True
+    return False
+
+
+def cleanup_completed_upload(task: Task | None, data_root: Path) -> None:
+    from app.core.archive_sync import is_archive_media_file
+
+    if (
+        task is None
+        or task.status != TaskStatus.COMPLETED
+        or task.options.get("keep_server_media") is True
+    ):
+        return
+    path = managed_staged_file(task.source, data_root)
+    if path is None:
+        return
+    archive = (task.result or {}).get("archive")
+    files = archive.get("files") if isinstance(archive, dict) else None
+    if not isinstance(files, dict) or any(is_archive_media_file(name) for name in files):
+        return
+    try:
+        if not _has_archived_text(files):
+            return
+        if any(
+            other.id != task.id and task_uses_directory(other, path.parent)
+            for other in get_task_store().list(limit=-1)
+        ):
+            return
+        path.unlink(missing_ok=True)
+        with suppress(OSError):
+            path.parent.rmdir()
+    except (OSError, ValueError, RuntimeError):
+        logger.warning("Could not reclaim staged upload for task %s", task.id, exc_info=True)
 
 
 def defer(task):

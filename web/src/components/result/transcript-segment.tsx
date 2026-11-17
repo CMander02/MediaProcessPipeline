@@ -32,6 +32,7 @@ interface TranscriptSegmentProps {
   editing: boolean
   speakers: string[]
   onClick: () => void
+  onTimestampClick?: () => void
   onEdit: (updated: Partial<Subtitle>) => void
   onDelete: () => void
   onInsert: (position: "above" | "below") => void
@@ -49,6 +50,7 @@ export const TranscriptSegment = memo(function TranscriptSegment({
   editing,
   speakers,
   onClick,
+  onTimestampClick,
   onEdit,
   onDelete,
   onInsert,
@@ -191,7 +193,8 @@ export const TranscriptSegment = memo(function TranscriptSegment({
               }`}
               onClick={(e) => {
                 e.stopPropagation()
-                onClick()
+                if (onTimestampClick) onTimestampClick()
+                else onClick()
               }}
             >
               {formatTimeShort(subtitle.startTime)}

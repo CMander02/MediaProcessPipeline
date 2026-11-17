@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 from dataclasses import dataclass
 from functools import lru_cache
@@ -25,6 +26,7 @@ SYSTEM_DIRECTORIES = frozenset(
         "_sync_downloads",
         "_remote_sync",
         "_remote_sync_client",
+        "_remote_execution",
         "_deleting",
     }
 )
@@ -77,6 +79,7 @@ class WorkspacePaths:
             "sync_downloads",
             "remote_sync",
             "remote_sync_client",
+            "remote_execution",
             "deleting",
             "uploads",
             "manual_task",
@@ -255,6 +258,23 @@ def managed_child(path: str | Path, root: str | Path) -> Path:
             if is_directory_link(current):
                 raise ValueError("Linked directories are not managed deletion targets")
     return resolved
+
+
+def managed_staged_file(source: str, root: str | Path) -> Path | None:
+    if "://" in source:
+        return None
+    workspace = get_workspace_paths(root)
+    try:
+        candidate = managed_child(Path(source).expanduser(), workspace.root)
+        if (
+            candidate.parent.parent in workspace.staging_roots
+            and re.fullmatch(r"[0-9a-f]{32}", candidate.parent.name)
+            and candidate.is_file()
+        ):
+            return candidate
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return None
 
 
 def archive_directory(path: str | Path, root: str | Path) -> Path:
