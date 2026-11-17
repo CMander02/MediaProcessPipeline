@@ -6,8 +6,17 @@ import { fileURLToPath } from "node:url"
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const projectRoot = path.resolve(webRoot, "..")
 const pyproject = readFileSync(path.join(projectRoot, "pyproject.toml"), "utf8")
-const version = pyproject.match(/^version\s*=\s*"(\d+\.\d+\.\d+)"\s*$/m)?.[1]
+const project = pyproject.split(/^\[/m).find((section) => /^project\][ \t]*\r?\n/.test(section))
+const version = project?.match(/^version[ \t]*=[ \t]*"((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))"[ \t]*\r?$/m)?.[1]
 if (!version) throw new Error("无法从 pyproject.toml 读取 MPP 版本号")
+
+const desktopVersion = JSON.parse(readFileSync(path.join(projectRoot, "desktop/package.json"), "utf8")).version
+if (desktopVersion !== version) {
+  throw new Error(`desktop/package.json 版本为 ${desktopVersion}，pyproject.toml 版本为 ${version}`)
+}
+if (process.env.RELEASE_TAG !== undefined && process.env.RELEASE_TAG !== `v${version}`) {
+  throw new Error(`RELEASE_TAG 为 ${JSON.stringify(process.env.RELEASE_TAG)}，预期为 v${version}`)
+}
 
 const gradle = readFileSync(path.join(webRoot, "android", "app", "build.gradle"), "utf8")
 if (!gradle.includes("pyproject.toml") || !gradle.includes("versionName mppVersionName")) {
