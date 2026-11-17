@@ -5,9 +5,18 @@ MPP 0.5.0 使用 `web/src/` 作为 PC、服务器和 Android 的唯一 UI 源码
 ## 环境
 
 - Node.js 22 或更高版本
-- Android Studio 2025.2.1 或更高版本，使用内置 JBR 21
+- Java 21（Android Studio 内置 JBR 21，或 macOS Homebrew 安装的 `openjdk@21`）
 - Android SDK Platform 36、Build Tools 35+
-- 已连接的 Android 设备或模拟器
+- 已连接的 Android 设备或模拟器（仅真机联调时需要）
+
+macOS 不安装完整 Android Studio 时，可直接通过 Homebrew 准备命令行构建环境（`web/scripts/android-gradle.mjs` 会自动定位以下默认路径）：
+
+```bash
+brew install openjdk@21
+brew install --cask android-commandlinetools
+JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home yes | sdkmanager --licenses
+JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home sdkmanager "platform-tools" "platforms;android-36" "build-tools;35.0.0"
+```
 
 ## 常用命令
 

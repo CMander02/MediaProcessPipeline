@@ -21,6 +21,26 @@ if (process.platform === "win32") {
   env.JAVA_HOME ||= "C:\\Program Files\\Android\\Android Studio\\jbr"
   env.ANDROID_HOME ||= path.join(env.LOCALAPPDATA ?? "", "Android", "Sdk")
   env.ANDROID_SDK_ROOT ||= env.ANDROID_HOME
+} else if (process.platform === "darwin") {
+  const javaCandidates = [
+    "/Applications/Android Studio.app/Contents/jbr/Contents/Home",
+    "/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home",
+    "/usr/local/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home",
+  ]
+  if (!env.JAVA_HOME) {
+    const foundJava = javaCandidates.find((candidate) => existsSync(candidate))
+    if (foundJava) env.JAVA_HOME = foundJava
+  }
+  const sdkCandidates = [
+    path.join(env.HOME ?? "", "Library", "Android", "sdk"),
+    "/opt/homebrew/share/android-commandlinetools",
+    "/usr/local/share/android-commandlinetools",
+  ]
+  if (!env.ANDROID_HOME) {
+    const foundSdk = sdkCandidates.find((candidate) => existsSync(candidate))
+    if (foundSdk) env.ANDROID_HOME = foundSdk
+  }
+  env.ANDROID_SDK_ROOT ||= env.ANDROID_HOME
 }
 
 const isWindows = process.platform === "win32"
