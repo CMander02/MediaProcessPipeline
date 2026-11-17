@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
 import process from "node:process"
 import { fileURLToPath } from "node:url"
@@ -16,6 +16,14 @@ if (tasks.length === 0 || tasks.some((task) => !/^[A-Za-z][A-Za-z0-9:_-]*$/.test
   throw new Error("请提供有效的 Gradle 任务。")
 }
 
+function javaMajorVersion(javaHome) {
+  if (!javaHome) return null
+  const releaseFile = path.join(javaHome, "release")
+  if (!existsSync(releaseFile)) return null
+  const match = readFileSync(releaseFile, "utf8").match(/^JAVA_VERSION="(\d+)/m)
+  return match ? Number(match[1]) : null
+}
+
 const env = { ...process.env }
 if (process.platform === "win32") {
   env.JAVA_HOME ||= "C:\\Program Files\\Android\\Android Studio\\jbr"
@@ -23,11 +31,13 @@ if (process.platform === "win32") {
   env.ANDROID_SDK_ROOT ||= env.ANDROID_HOME
 } else if (process.platform === "darwin") {
   const javaCandidates = [
+    env.MPP_ANDROID_JAVA_HOME,
     "/Applications/Android Studio.app/Contents/jbr/Contents/Home",
     "/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home",
     "/usr/local/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home",
-  ]
-  if (!env.JAVA_HOME) {
+  ].filter(Boolean)
+  const currentMajor = javaMajorVersion(env.JAVA_HOME)
+  if (!env.JAVA_HOME || (currentMajor !== null && currentMajor !== 21)) {
     const foundJava = javaCandidates.find((candidate) => existsSync(candidate))
     if (foundJava) env.JAVA_HOME = foundJava
   }
@@ -44,8 +54,19 @@ if (process.platform === "win32") {
 }
 
 const isWindows = process.platform === "win32"
+if (env.JAVA_HOME) {
+  env.PATH = `${path.join(env.JAVA_HOME, "bin")}${path.delimiter}${env.PATH ?? ""}`
+}
+const gradleArgs = env.JAVA_HOME
+  ? [
+      `-Dorg.gradle.java.home=${env.JAVA_HOME}`,
+      "-Dorg.gradle.java.installations.auto-detect=false",
+      `-Dorg.gradle.java.installations.paths=${env.JAVA_HOME}`,
+      ...tasks,
+    ]
+  : tasks
 const executable = isWindows ? (process.env.ComSpec || "cmd.exe") : "./gradlew"
-const args = isWindows ? ["/d", "/s", "/c", "gradlew.bat", ...tasks] : tasks
+const args = isWindows ? ["/d", "/s", "/c", "gradlew.bat", ...gradleArgs] : gradleArgs
 const result = spawnSync(executable, args, {
   cwd: androidRoot,
   env,
