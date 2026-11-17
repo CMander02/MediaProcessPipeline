@@ -15,7 +15,9 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import tomllib
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +61,41 @@ _READ_REQUEST_PROMPT = (
 
 class CodingPlanCLIError(RuntimeError):
     """A coding-plan CLI is unavailable, unauthenticated, or failed."""
+
+
+class _CodexRequestLimiter:
+    def __init__(self) -> None:
+        self._active = 0
+        self._lock = threading.Lock()
+        self._waiters: set[Future[None]] = set()
+
+    async def __aenter__(self) -> None:
+        from app.core.settings import get_runtime_settings
+
+        while True:
+            limit = get_runtime_settings().codex_max_concurrency
+            with self._lock:
+                if self._active < limit:
+                    self._active += 1
+                    return
+                waiter: Future[None] = Future()
+                self._waiters.add(waiter)
+            try:
+                await asyncio.wrap_future(waiter)
+            finally:
+                with self._lock:
+                    self._waiters.discard(waiter)
+
+    async def __aexit__(self, *_exc: Any) -> None:
+        with self._lock:
+            self._active -= 1
+            waiters, self._waiters = self._waiters, set()
+        for waiter in waiters:
+            if waiter.set_running_or_notify_cancel():
+                waiter.set_result(None)
+
+
+_CODEX_LIMITER = _CodexRequestLimiter()
 
 
 def is_coding_plan_provider(provider_type: str) -> bool:
@@ -237,8 +274,8 @@ async def _run_cli(
     stdin_text: str | None = None,
     env_override: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
-    try:
-        process = await asyncio.create_subprocess_exec(
+    startup = asyncio.create_task(
+        asyncio.create_subprocess_exec(
             *command,
             cwd=str(cwd),
             env=env_override or _subprocess_env(),
@@ -248,31 +285,50 @@ async def _run_cli(
             creationflags=_creation_flags(),
             start_new_session=os.name != "nt",
         )
-    except OSError as exc:
-        raise CodingPlanCLIError(f"无法启动 OAuth CLI：{exc}") from exc
-    payload = stdin_text.encode("utf-8") if stdin_text is not None else None
+    )
     try:
+        try:
+            process = await asyncio.shield(startup)
+        except OSError as exc:
+            raise CodingPlanCLIError(f"无法启动 OAuth CLI：{exc}") from exc
+        payload = stdin_text.encode("utf-8") if stdin_text is not None else None
         stdout, stderr = await asyncio.wait_for(
             process.communicate(payload), timeout=max(1.0, timeout_sec)
         )
-    except asyncio.CancelledError:
+        return (
+            int(process.returncode or 0),
+            stdout.decode("utf-8", errors="replace").strip(),
+            stderr.decode("utf-8", errors="replace").strip(),
+        )
+    finally:
+        await _finish_cli_process(startup)
+
+
+async def _finish_cli_process(startup: asyncio.Task[asyncio.subprocess.Process]) -> None:
+    async def cleanup() -> None:
+        try:
+            process = await startup
+        except OSError:
+            return
         await _terminate_process_tree(process)
-        raise
-    except asyncio.TimeoutError:
-        await _terminate_process_tree(process)
-        raise
-    return (
-        int(process.returncode or 0),
-        stdout.decode("utf-8", errors="replace").strip(),
-        stderr.decode("utf-8", errors="replace").strip(),
-    )
+
+    pending = asyncio.create_task(cleanup())
+    cancelled = False
+    while not pending.done():
+        try:
+            await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            cancelled = True
+    pending.result()
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:
     """Terminate the exact CLI process tree so helper children cannot leak."""
 
-    if process.returncode is None:
-        if os.name == "nt":
+    if os.name == "nt":
+        if process.returncode is None:
             try:
                 killer = await asyncio.create_subprocess_exec(
                     "taskkill.exe",
@@ -288,12 +344,13 @@ async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:
                 await asyncio.wait_for(killer.wait(), timeout=10)
             except (OSError, asyncio.TimeoutError):
                 process.kill()
-        else:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            except OSError:
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            if process.returncode is None:
                 process.kill()
     try:
         await asyncio.wait_for(process.communicate(), timeout=10)
@@ -1009,9 +1066,10 @@ async def call_coding_plan_cli(
             )
         raise CodingPlanCLIError(f"不支持的 OAuth CLI Provider：{provider_type}")
 
-    # These headless calls are ephemeral and use isolated working directories,
-    # so subtitle chunks can consume the configured concurrency.
-    if normalized in {CODEX_PROVIDER_TYPE, KIMI_PROVIDER_TYPE, QODER_PROVIDER_TYPE}:
+    if normalized == CODEX_PROVIDER_TYPE:
+        async with _CODEX_LIMITER:
+            return await invoke()
+    if normalized in {KIMI_PROVIDER_TYPE, QODER_PROVIDER_TYPE}:
         return await invoke()
     async with _lock(normalized):
         return await invoke()

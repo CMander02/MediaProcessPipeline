@@ -123,34 +123,35 @@ def test_failed_import_restores_all_files_and_all_database_state(imported, monke
     def fail(*args, **kwargs):
         raise OSError("injected import failure")
 
-    if failure == "task":
-        monkeypatch.setattr(database, "_save_task_row", fail)
-    elif failure == "mirrors":
-        original = get_artifact_store().import_mirrors
+    with monkeypatch.context() as patch:
+        if failure == "task":
+            patch.setattr(database, "_save_task_row", fail)
+        elif failure == "mirrors":
+            original = get_artifact_store().import_mirrors
 
-        def partial_mirrors(*args, **kwargs):
-            original(*args, **kwargs)
-            fail()
+            def partial_mirrors(*args, **kwargs):
+                original(*args, **kwargs)
+                fail()
 
-        monkeypatch.setattr(get_artifact_store(), "import_mirrors", partial_mirrors)
-    elif failure == "index":
-        service = archive_sync.get_archive_sync_service()
-        original = service._upsert_if_changed
+            patch.setattr(get_artifact_store(), "import_mirrors", partial_mirrors)
+        elif failure == "index":
+            service = archive_sync.get_archive_sync_service()
+            original = service._upsert_if_changed
 
-        def partial_index(*args, **kwargs):
-            original(*args, **kwargs)
-            fail()
+            def partial_index(*args, **kwargs):
+                original(*args, **kwargs)
+                fail()
 
-        monkeypatch.setattr(service, "_upsert_if_changed", partial_index)
-    else:
-        connection = database._get_conn()
+            patch.setattr(service, "_upsert_if_changed", partial_index)
+        else:
+            connection = database._get_conn()
 
-        class FailCommit:
-            def __getattr__(self, name):
-                return fail if name == "commit" else getattr(connection, name)
+            class FailCommit:
+                def __getattr__(self, name):
+                    return fail if name == "commit" else getattr(connection, name)
 
-        monkeypatch.setattr(database, "_connection", FailCommit())
-    response = upload()
+            patch.setattr(database, "_connection", FailCommit())
+        response = upload()
     assert response.status_code == 500
     assert _files(archives) == before_files
     assert _rows() == before_rows
@@ -219,8 +220,9 @@ def test_exception_after_sqlite_commit_keeps_committed_files_and_mirrors(importe
             connection.commit()
             raise OSError("interrupted immediately after commit")
 
-    monkeypatch.setattr(database, "_connection", FailAfterCommit())
-    assert upload().status_code == 500
+    with monkeypatch.context() as patch:
+        patch.setattr(database, "_connection", FailAfterCommit())
+        assert upload().status_code == 500
     assert (destination / "summary.md").read_text() == "new summary"
     store = database.get_task_store()
     assert store.get_artifact(task.id, "summary.md")["content"] == "new summary"

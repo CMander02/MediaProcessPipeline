@@ -114,7 +114,9 @@ def resolve_public_url(url: str) -> tuple[str, int, tuple[str, ...]]:
         host = host.encode("idna").decode("ascii")
         try:
             address = ipaddress.ip_address(host)
-        except ValueError:
+        except ValueError as exc:
+            if host.rsplit(".", 1)[-1].isdecimal():
+                raise UnsafeURLError("URL contains a nonstandard numeric host") from exc
             addresses = tuple(
                 dict.fromkeys(
                     result[4][0]

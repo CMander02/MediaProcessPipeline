@@ -147,6 +147,60 @@ async def test_workflow_enables_each_derived_output_independently(runtime, enabl
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fast_path", [False, True])
+async def test_postprocess_failure_waits_for_other_output_requests(runtime, monkeypatch, fast_path):
+    from app.services import analysis
+
+    mindmap_started = asyncio.Event()
+    mindmap_cleaned = asyncio.Event()
+
+    async def fail_detail(*_args, **_kwargs):
+        await mindmap_started.wait()
+        raise RuntimeError("detail request failed")
+
+    async def pending_mindmap(*_args, **_kwargs):
+        mindmap_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            mindmap_cleaned.set()
+
+    monkeypatch.setattr(settings.get_runtime_settings(), "generate_video_detail", True)
+    monkeypatch.setattr(analysis, "generate_detail", fail_detail)
+    monkeypatch.setattr(analysis, "generate_mindmap", pending_mindmap)
+    if fast_path:
+        from app.core.pipeline_steps import subtitle_fast_path as fast
+        from app.models import MediaMetadata
+
+        directory = runtime.root / "archives" / "fast-caption"
+        directory.mkdir(parents=True)
+        subtitle = directory / "zh.srt"
+        subtitle.write_text(SRT, encoding="utf-8")
+        monkeypatch.setattr(
+            fast, "_prepare_source_context", AsyncMock(return_value={"title": "fixture"})
+        )
+        monkeypatch.setattr(fast, "review_transcript_speakers", AsyncMock())
+        task = create_task(runtime.source, result={"output_dir": str(directory)})
+        request = fast._run_subtitle_fast_path(
+            task,
+            directory,
+            {"subtitle_path": str(subtitle), "subtitle_format": "srt", "subtitle_lang": "zh"},
+            MediaMetadata(title="fixture", media_type="video", duration_seconds=2),
+        )
+    else:
+        task = create_task(runtime.source)
+        request = pipeline.run_pipeline(task)
+
+    with pytest.raises(RuntimeError, match="detail request failed"):
+        await asyncio.wait_for(request, timeout=5)
+
+    saved = database.get_task_store().get(task.id)
+    assert mindmap_cleaned.is_set()
+    assert "analyze" not in saved.completed_steps
+
+
+@pytest.mark.asyncio
 async def test_download_transcribe_postprocess_handoffs_restore_outputs(runtime):
     task = create_task(runtime.source)
     store = database.get_task_store()

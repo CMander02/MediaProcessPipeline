@@ -31,6 +31,7 @@ def workspace(tmp_path, monkeypatch):
         settings, "_runtime_settings", settings.RuntimeSettings(data_root=str(root))
     )
     monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "config.json")
+    monkeypatch.setattr("app.core.logging_setup.relocate_log_file", lambda _directory: None)
     database.reset_db_path(root)
     kb.reset_kb_store()
     voice.reset_voiceprint_store()

@@ -274,6 +274,10 @@ async def import_completed_archive(
         # read the old task and then enqueue it halfway through replacement.
         outcome = _commit_import(task, extracted_root, metadata, data_root, archive_name,
                                  upload_sha256, upload_size, worker_id.strip(), execution_id.strip())
+        if not outcome["already_synced"]:
+            from app.core.media_retention import cleanup_completed_task
+
+            cleanup_completed_task(task)
         if execution_id:
             from app.core.events import TaskEvent, get_event_bus
             await get_event_bus().publish(TaskEvent(task.id, "completed", {"progress": 1.0}))

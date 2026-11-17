@@ -9,6 +9,7 @@ import zipfile
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -28,13 +29,18 @@ from app.models import Task, TaskStatus, TaskType  # noqa: E402
 from app.services.archiving.archive import get_archive_service  # noqa: E402
 
 
-def _client(tmp_path: Path, monkeypatch) -> TestClient:
+@pytest.fixture
+def sync_client(tmp_path, monkeypatch):
     runtime = RuntimeSettings(data_root=str(tmp_path), api_token="")
     monkeypatch.setattr(settings_module, "_runtime_settings", runtime)
     database.reset_db_path(tmp_path)
     app = FastAPI()
     app.include_router(sync_route.router, prefix="/api")
-    return TestClient(app)
+    try:
+        with TestClient(app) as client:
+            yield client
+    finally:
+        database.reset_db_path()
 
 
 def _archive(tmp_path: Path, name: str, title: str, archive_id: str | None = None) -> Path:
@@ -51,20 +57,19 @@ def _archive(tmp_path: Path, name: str, title: str, archive_id: str | None = Non
     return archive_dir
 
 
-def test_sync_changes_are_revisioned_paginated_and_tombstoned(tmp_path, monkeypatch):
-    client = _client(tmp_path, monkeypatch)
+def test_sync_changes_are_revisioned_paginated_and_tombstoned(tmp_path, sync_client):
     first_id = str(uuid4())
     first = _archive(tmp_path, "first", "第一份", first_id)
     _archive(tmp_path, "second", "第二份")
 
-    page_one = client.get("/api/sync/changes", params={"cursor": 0, "limit": 1})
+    page_one = sync_client.get("/api/sync/changes", params={"cursor": 0, "limit": 1})
     assert page_one.status_code == 200
     first_page = page_one.json()
     assert len(first_page["changes"]) == 1
     assert first_page["has_more"] is True
     assert first_page["next_cursor"] == 1
 
-    page_two = client.get(
+    page_two = sync_client.get(
         "/api/sync/changes",
         params={"cursor": first_page["next_cursor"], "limit": 10},
     ).json()
@@ -78,7 +83,7 @@ def test_sync_changes_are_revisioned_paginated_and_tombstoned(tmp_path, monkeypa
     metadata["title"] = "第一份（已更新）"
     (first / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
     get_archive_sync_service().reconcile()
-    update = client.get("/api/sync/changes", params={"cursor": 2, "limit": 10}).json()
+    update = sync_client.get("/api/sync/changes", params={"cursor": 2, "limit": 10}).json()
     assert update["changes"][0]["archive_id"] == first_id
     assert update["changes"][0]["archive"]["title"] == "第一份（已更新）"
     assert update["changes"][0]["revision"] == 3
@@ -87,7 +92,7 @@ def test_sync_changes_are_revisioned_paginated_and_tombstoned(tmp_path, monkeypa
         child.unlink()
     first.rmdir()
     get_archive_sync_service().reconcile()
-    deleted = client.get("/api/sync/changes", params={"cursor": 3, "limit": 10}).json()
+    deleted = sync_client.get("/api/sync/changes", params={"cursor": 3, "limit": 10}).json()
     assert len(deleted["changes"]) == 1
     assert deleted["changes"][0]["revision"] == 4
     assert deleted["changes"][0]["archive_id"] == first_id
@@ -95,8 +100,7 @@ def test_sync_changes_are_revisioned_paginated_and_tombstoned(tmp_path, monkeypa
     assert "archive" not in deleted["changes"][0]
 
 
-def test_sync_manifest_filters_media_and_serves_etag(tmp_path, monkeypatch):
-    client = _client(tmp_path, monkeypatch)
+def test_sync_manifest_filters_media_and_serves_etag(tmp_path, sync_client):
     archive_id = str(uuid4())
     archive = _archive(tmp_path, "rich", "同步资料", archive_id)
     (archive / "transcript_polished.srt").write_text(
@@ -117,9 +121,9 @@ def test_sync_manifest_filters_media_and_serves_etag(tmp_path, monkeypatch):
     work.mkdir()
     (work / "secret.json").write_text("{}", encoding="utf-8")
 
-    changes = client.get("/api/sync/changes").json()
+    changes = sync_client.get("/api/sync/changes").json()
     assert changes["changes"][0]["archive_id"] == archive_id
-    manifest_response = client.get(f"/api/sync/archives/{archive_id}/manifest")
+    manifest_response = sync_client.get(f"/api/sync/archives/{archive_id}/manifest")
     assert manifest_response.status_code == 200
     manifest = manifest_response.json()
     paths = {entry["relative_path"] for entry in manifest["files"]}
@@ -140,22 +144,21 @@ def test_sync_manifest_filters_media_and_serves_etag(tmp_path, monkeypatch):
         entry for entry in manifest["files"] if entry["relative_path"] == "images/00.jpg"
     )
     assert image_entry["sha256"] == hashlib.sha256(b"image-zero").hexdigest()
-    downloaded = client.get(f"/api/sync/archives/{archive_id}/files/images/00.jpg")
+    downloaded = sync_client.get(f"/api/sync/archives/{archive_id}/files/images/00.jpg")
     assert downloaded.status_code == 200
     assert downloaded.content == b"image-zero"
     assert downloaded.headers["etag"] == f'"{image_entry["sha256"]}"'
     assert downloaded.headers["cache-control"] == "private, no-cache"
 
-    cached = client.get(
+    cached = sync_client.get(
         f"/api/sync/archives/{archive_id}/files/images/00.jpg",
         headers={"If-None-Match": downloaded.headers["etag"]},
     )
     assert cached.status_code == 304
-    assert client.get(f"/api/sync/archives/{archive_id}/files/video.mp4").status_code == 404
+    assert sync_client.get(f"/api/sync/archives/{archive_id}/files/video.mp4").status_code == 404
 
 
-def test_sync_rejects_path_escape_and_symlinks(tmp_path, monkeypatch):
-    _client(tmp_path, monkeypatch)
+def test_sync_rejects_path_escape_and_symlinks(tmp_path, sync_client):
     archive_id = str(uuid4())
     archive = _archive(tmp_path, "safe", "安全资料", archive_id)
     outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
@@ -180,19 +183,17 @@ def test_sync_rejects_path_escape_and_symlinks(tmp_path, monkeypatch):
         outside.unlink(missing_ok=True)
 
 
-def test_sync_rebuild_recreates_current_index(tmp_path, monkeypatch):
-    client = _client(tmp_path, monkeypatch)
+def test_sync_rebuild_recreates_current_index(tmp_path, sync_client):
     _archive(tmp_path, "one", "一")
     _archive(tmp_path, "two", "二")
 
-    response = client.post("/api/sync/rebuild")
+    response = sync_client.post("/api/sync/rebuild")
 
     assert response.status_code == 200
     assert response.json() == {"archives": 2, "revision": 2}
 
 
-def test_sync_migrates_legacy_gb18030_metadata(tmp_path, monkeypatch):
-    client = _client(tmp_path, monkeypatch)
+def test_sync_migrates_legacy_gb18030_metadata(tmp_path, sync_client):
     archive = tmp_path / "legacy-encoding"
     archive.mkdir()
     legacy_metadata = {
@@ -206,7 +207,7 @@ def test_sync_migrates_legacy_gb18030_metadata(tmp_path, monkeypatch):
     (archive / "summary.md").write_text("# 旧编码资料\n", encoding="utf-8")
     get_archive_sync_service().reconcile()
 
-    response = client.get("/api/sync/changes")
+    response = sync_client.get("/api/sync/changes")
 
     assert response.status_code == 200
     change = response.json()["changes"][0]
@@ -216,24 +217,23 @@ def test_sync_migrates_legacy_gb18030_metadata(tmp_path, monkeypatch):
     assert migrated["archive_id"] == change["archive_id"]
 
 
-def test_sync_preserves_id_on_move_and_repairs_copied_id(tmp_path, monkeypatch):
-    client = _client(tmp_path, monkeypatch)
+def test_sync_preserves_id_on_move_and_repairs_copied_id(tmp_path, sync_client):
     archive_id = str(uuid4())
     original = _archive(tmp_path, "original", "原始资料", archive_id)
-    initial = client.get("/api/sync/changes").json()
+    initial = sync_client.get("/api/sync/changes").json()
     assert initial["server_revision"] == 1
 
     moved = tmp_path / "moved"
     original.rename(moved)
     get_archive_sync_service().reconcile()
-    moved_change = client.get("/api/sync/changes", params={"cursor": 1}).json()
+    moved_change = sync_client.get("/api/sync/changes", params={"cursor": 1}).json()
     assert moved_change["changes"][0]["archive_id"] == archive_id
     assert moved_change["changes"][0]["archive"]["path"] == str(moved)
 
     copied = tmp_path / "copied"
     shutil.copytree(moved, copied)
     get_archive_sync_service().reconcile()
-    copied_changes = client.get(
+    copied_changes = sync_client.get(
         "/api/sync/changes",
         params={"cursor": moved_change["next_cursor"]},
     ).json()
@@ -244,8 +244,7 @@ def test_sync_preserves_id_on_move_and_repairs_copied_id(tmp_path, monkeypatch):
     assert copied_metadata["archive_id"] in copied_ids
 
 
-def test_completed_archive_import_is_idempotent_and_excludes_media(tmp_path, monkeypatch):
-    client = _client(tmp_path, monkeypatch)
+def test_completed_archive_import_is_idempotent_and_excludes_media(tmp_path, sync_client):
     source = _archive(tmp_path, "local-source", "本地结果")
     (source / "transcript.srt").write_text("字幕", encoding="utf-8")
     (source / "source.mp4").write_bytes(b"video")
@@ -267,7 +266,7 @@ def test_completed_archive_import_is_idempotent_and_excludes_media(tmp_path, mon
 
     def upload():
         with zip_path.open("rb") as archive:
-            return client.post(
+            return sync_client.post(
                 "/api/sync/import",
                 data={
                     "task_json": task.model_dump_json(),
@@ -301,6 +300,45 @@ def test_completed_archive_import_is_idempotent_and_excludes_media(tmp_path, mon
     assert store.list_events(task.id) == first_events
 
 
+def test_completed_archive_import_cleans_intermediate_audio(tmp_path, sync_client):
+    from app.core.media_retention import record_media
+
+    source = _archive(tmp_path, "local-source", "本地结果")
+    (source / "transcript.srt").write_text("字幕", encoding="utf-8")
+    for name, role in (("source.mp4", "source"), ("source.wav", "working"),
+                       ("source_(Vocals).wav", "separated")):
+        path = source / name
+        path.write_bytes(b"media")
+        record_media(source, path, role, playback=role == "source")
+    zip_path = tmp_path / "portable.zip"
+    build_archive_zip(source, zip_path, include_media=True)
+    task = Task(
+        task_type=TaskType.PIPELINE,
+        status=TaskStatus.COMPLETED,
+        source="https://example.com/video",
+        progress=1.0,
+        completed_steps=["download", "separate", "transcribe", "archive"],
+    )
+    with zip_path.open("rb") as archive:
+        response = sync_client.post(
+            "/api/sync/import",
+            data={"task_json": task.model_dump_json(), "archive_name": "来自本地"},
+            files={"archive": ("archive.zip", archive, "application/zip")},
+        )
+    assert response.status_code == 200, response.text
+    imported = database.get_task_store().get(task.id)
+    destination = Path(imported.result["output_dir"])
+    assert imported.status == TaskStatus.COMPLETED
+    assert imported.completed_steps == task.completed_steps
+    assert (destination / "source.mp4").exists()
+    assert not (destination / "source.wav").exists()
+    assert not (destination / "source_(Vocals).wav").exists()
+    assert (destination / "transcript.srt").exists()
+    assert (source / "source_(Vocals).wav").exists()
+    manifest = json.loads((destination / "media_assets.json").read_text())
+    assert "source_(Vocals).wav" not in manifest["assets"]
+
+
 def test_portable_archive_rejects_path_traversal(tmp_path):
     zip_path = tmp_path / "unsafe.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
@@ -315,8 +353,7 @@ def test_portable_archive_rejects_path_traversal(tmp_path):
         raise AssertionError("unsafe ZIP member was accepted")
 
 
-def test_task_archive_export_excludes_media_by_default(tmp_path, monkeypatch):
-    client = _client(tmp_path, monkeypatch)
+def test_task_archive_export_excludes_media_by_default(tmp_path, sync_client):
     archive = _archive(tmp_path, "export-source", "待传输任务")
     (archive / "transcript.srt").write_text("字幕", encoding="utf-8")
     (archive / "source.mp4").write_bytes(b"video")
@@ -329,7 +366,7 @@ def test_task_archive_export_excludes_media_by_default(tmp_path, monkeypatch):
     )
     database.get_task_store().save(task)
 
-    response = client.get(f"/api/sync/tasks/{task.id}/archive")
+    response = sync_client.get(f"/api/sync/tasks/{task.id}/archive")
 
     assert response.status_code == 200
     assert response.headers["x-mpp-include-media"] == "false"
@@ -342,8 +379,7 @@ def test_task_archive_export_excludes_media_by_default(tmp_path, monkeypatch):
     assert "source.mp4" not in names
 
 
-def test_portable_archive_keeps_declared_video_task_type_without_media(tmp_path, monkeypatch):
-    _client(tmp_path, monkeypatch)
+def test_portable_archive_keeps_declared_video_task_type_without_media(tmp_path, sync_client):
     archive = _archive(tmp_path, "video-without-media", "视频任务")
     metadata_path = archive / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -358,8 +394,7 @@ def test_portable_archive_keeps_declared_video_task_type_without_media(tmp_path,
     assert item["media_is_external"] is True
 
 
-def test_portable_archive_keeps_declared_audio_task_type_without_media(tmp_path, monkeypatch):
-    _client(tmp_path, monkeypatch)
+def test_portable_archive_keeps_declared_audio_task_type_without_media(tmp_path, sync_client):
     archive = _archive(tmp_path, "audio-without-media", "音频任务")
     metadata_path = archive / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))

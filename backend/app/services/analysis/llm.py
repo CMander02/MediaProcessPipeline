@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 os.environ.setdefault("LITELLM_LOG", "WARNING")
 
+from app.core.async_utils import cancel_and_wait, gather_cancel_on_error
 from app.core.config import get_settings
 from app.core.logging_setup import log_event
 from app.core.settings import get_runtime_settings
@@ -1071,18 +1072,19 @@ class LLMService:
             asyncio.create_task(process_chunk(idx, start, end, segs))
             for idx, start, end, segs in chunks
         ]
+        batch = asyncio.gather(*tasks)
         try:
-            raw_results = await asyncio.gather(*tasks)
-        except Exception as first_error:
-            if not _is_retryable_llm_error(first_error):
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-                raise
-            # A transient connection failure in one chunk should not discard
-            # successful work or cancel unrelated in-flight chunks.
-            raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                raw_results = await asyncio.shield(batch)
+            except Exception as first_error:
+                if not _is_retryable_llm_error(first_error):
+                    raise
+                raw_results = await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
+        except BaseException:
+            await cancel_and_wait(tasks)
+            if not batch.cancelled():
+                batch.exception()
+            raise
 
         results: list[tuple[int, list[dict]]] = []
         failed_chunks: list[tuple[tuple[int, int, int, list[dict]], BaseException]] = []
@@ -1360,7 +1362,7 @@ class LLMService:
                 }
             return canonicalize_json(parsed, source_context)
 
-        chapter_results = await asyncio.gather(
+        chapter_results = await gather_cancel_on_error(
             *(summarize_chapter(index, item) for index, item in enumerate(timeline))
         )
         digest_lines = []
@@ -1544,7 +1546,7 @@ class LLMService:
                 )
                 return _chapter_key(chapters[index], index), resp
 
-        map_results = await asyncio.gather(
+        map_results = await gather_cancel_on_error(
             *[
                 map_one(index, str(chapter.get("title") or ""), content)
                 for index, chapter in enumerate(chapters)
@@ -1627,7 +1629,7 @@ class LLMService:
                 )
                 return title, resp
 
-        map_results = await asyncio.gather(
+        map_results = await gather_cancel_on_error(
             *[map_one(t, c) for t, c in chapter_texts.items() if c.strip()]
         )
         chapter_summaries = dict(map_results)
@@ -1681,7 +1683,7 @@ class LLMService:
                 )
                 return self._filter_mindmap_lines(resp)
 
-        results = await asyncio.gather(
+        results = await gather_cancel_on_error(
             *[reduce_one(label, batch_names) for label, batch_names in groups]
         )
 

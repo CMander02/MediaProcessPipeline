@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -128,7 +129,7 @@ def test_backup_includes_committed_wal(library):
         assert Path(str(root / "tasks.db") + "-wal").stat().st_size > 0
         preview = StorageMigration(root).preview()
         StorageMigration(root)._backup(preview)
-        with sqlite3.connect(preview["databases"][0]["backup"]) as backup:
+        with closing(sqlite3.connect(preview["databases"][0]["backup"])) as backup:
             assert backup.execute("SELECT message FROM tasks").fetchone()[0] == "from WAL"
     finally:
         conn.close()
@@ -196,7 +197,7 @@ def test_completed_rollback_retains_later_edits(library):
     migration.rollback()
     assert store.get(task_id).message != "after migration"
     retained = Path(result["backup"]) / "before-rollback"
-    with sqlite3.connect(retained / "tasks.db") as conn:
+    with closing(sqlite3.connect(retained / "tasks.db")) as conn:
         assert conn.execute("SELECT message FROM tasks").fetchone()[0] == "after migration"
     assert json.loads((retained / "json/访谈 🎙️/metadata.json").read_text())["later_edit"]
     assert migration.rollback()["status"] == "rolled_back"

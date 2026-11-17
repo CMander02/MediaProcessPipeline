@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
+from app.core.async_utils import gather_cancel_on_error
 from app.core.logging_setup import log_event
 from app.core.workflow import stage_enabled
 from app.core.pipeline_steps.artifacts import (
@@ -273,7 +273,7 @@ async def postprocess(ctx: PipelineContext) -> None:
             ctx.task.options.get("workflow") is not None or ctx.rt.generate_video_detail
         ):
             tasks["detail"] = generate_detail(mindmap_text, user_language=user_language)
-        results = dict(zip(tasks, await asyncio.gather(*tasks.values())))
+        results = dict(zip(tasks, await gather_cancel_on_error(*tasks.values()), strict=True))
         ctx.mindmap = results.get("mindmap", "")
         ctx.mindmap = canonicalize_text(ctx.mindmap, ctx.source_context)
         from app.services.analysis.text_locale import normalize_chinese_script

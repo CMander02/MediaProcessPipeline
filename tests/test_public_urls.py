@@ -28,9 +28,6 @@ from app.core import public_urls
         "http://sub.localhost/canary",
         "http://127.0.0.1/",
         "http://127.0.0.1./",
-        "http://127.1/",
-        "http://2130706433/",
-        "http://0177.0.0.1/",
         "http://[::1]/",
         "http://[::ffff:127.0.0.1]/",
         "http://[fe80::1%25eth0]/",
@@ -49,6 +46,16 @@ from app.core import public_urls
 def test_reject_nonpublic_or_ambiguous_urls(url):
     with pytest.raises(public_urls.UnsafeURLError):
         public_urls.validate_public_http_url(url)
+
+
+@pytest.mark.parametrize("host", ["127.1", "2130706433", "0177.0.0.1", "media.example.42."])
+def test_nonstandard_numeric_hosts_never_reach_dns(monkeypatch, host):
+    def unexpected_resolution(*args, **kwargs):
+        pytest.fail("Numeric host reached DNS resolution")
+
+    monkeypatch.setattr(socket, "getaddrinfo", unexpected_resolution)
+    with pytest.raises(public_urls.UnsafeURLError):
+        public_urls.resolve_public_url(f"http://{host}/")
 
 
 def test_reject_domain_with_any_private_dns_answer(monkeypatch):

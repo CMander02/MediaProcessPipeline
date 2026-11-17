@@ -291,29 +291,27 @@ def _static_file(path: str) -> Path | None:
 if _web_dist.is_dir():
     app.mount("/assets", NoStoreStaticFiles(directory=str(_web_dist / "assets")), name="static")
 
-    # Serve static files in root (favicon, etc.)
-    @app.get("/favicon.svg")
-    async def favicon():
-        file_path = _static_file("favicon.svg")
-        if file_path is None or not file_path.is_file():
-            return JSONResponse(status_code=404, content={"detail": "Not found"})
-        return FileResponse(file_path, headers=_NO_STORE_HEADERS)
+@app.get("/favicon.svg")
+async def favicon():
+    file_path = _static_file("favicon.svg")
+    if file_path is None or not file_path.is_file():
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
+    return FileResponse(file_path, headers=_NO_STORE_HEADERS)
 
-    # SPA fallback: serve index.html for all non-API routes
-    @app.get("/{path:path}")
-    async def spa_fallback(path: str):
-        if path == "api" or path.startswith("api/"):
-            return JSONResponse(
-                status_code=404,
-                content={"detail": f"API route not found: /{path}"},
-            )
-        file_path = _static_file(path)
-        if file_path is None:
-            return JSONResponse(status_code=404, content={"detail": "Not found"})
-        if file_path.is_file():
-            return FileResponse(file_path, headers=_NO_STORE_HEADERS)
-        index = _static_file("index.html")
-        if index is None or not index.is_file():
-            return JSONResponse(status_code=404, content={"detail": "Not found"})
-        return FileResponse(index, headers=_NO_STORE_HEADERS)
+@app.get("/{path:path}")
+async def spa_fallback(path: str):
+    if path == "api" or path.startswith("api/"):
+        return JSONResponse(
+            status_code=404,
+            content={"detail": f"API route not found: /{path}"},
+        )
+    file_path = _static_file(path)
+    if file_path is None:
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
+    if file_path.is_file():
+        return FileResponse(file_path, headers=_NO_STORE_HEADERS)
+    index = _static_file("index.html")
+    if index is None or not index.is_file():
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
+    return FileResponse(index, headers=_NO_STORE_HEADERS)
 

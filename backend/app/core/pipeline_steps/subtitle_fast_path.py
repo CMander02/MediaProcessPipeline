@@ -6,6 +6,7 @@ import asyncio
 import logging
 from pathlib import Path
 
+from app.core.async_utils import gather_cancel_on_error
 from app.core.logging_setup import log_event
 from app.core.pipeline_steps.artifacts import (
     _prepare_source_context,
@@ -272,7 +273,7 @@ async def _run_subtitle_fast_path(
     tasks = [generate_mindmap(mindmap_text, metadata=mindmap_metadata, user_language=user_language)]
     if rt.generate_video_detail:
         tasks.append(generate_detail(mindmap_text, user_language=user_language))
-    results = await asyncio.gather(*tasks)
+    results = await gather_cancel_on_error(*tasks)
     mindmap = results[0]
     mindmap = canonicalize_text(mindmap, summary_context)
     from app.services.analysis.text_locale import normalize_chinese_script

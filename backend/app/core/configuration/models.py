@@ -248,6 +248,7 @@ class RuntimeSettings(BaseModel):
     llm_polish_concurrency: int = Field(default=4, ge=1, le=8)
 
     # Concurrency
+    codex_max_concurrency: int = Field(default=1, ge=1, le=8)
     max_download_concurrency: int = 2  # max parallel downloads (I/O bound, set 1-4)
     # When False, GPU steps only start after all active downloads finish (serial mode).
     # Reduces peak VRAM by preventing download+GPU overlap.

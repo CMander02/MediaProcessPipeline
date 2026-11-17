@@ -1,8 +1,13 @@
 import asyncio
 import json
+import os
+import signal
 import sys
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
+import psutil
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -610,20 +615,27 @@ async def test_qoder_provider_allows_parallel_headless_calls(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_codex_provider_allows_parallel_ephemeral_calls(monkeypatch, tmp_path):
+@pytest.mark.parametrize("limit", [1, 2])
+async def test_codex_requests_share_runtime_limit_across_models(monkeypatch, tmp_path, limit):
+    from app.core import settings
+
+    monkeypatch.setattr(
+        settings, "get_runtime_settings", lambda: SimpleNamespace(codex_max_concurrency=limit)
+    )
     executable = tmp_path / "codex.exe"
     executable.touch()
     active = 0
     peak = 0
-    both_started = asyncio.Event()
+    limit_reached = asyncio.Event()
+    release = asyncio.Event()
 
     async def fake_call(*_args, **_kwargs):
         nonlocal active, peak
         active += 1
         peak = max(peak, active)
-        if active == 2:
-            both_started.set()
-        await asyncio.wait_for(both_started.wait(), timeout=1)
+        if active == limit:
+            limit_reached.set()
+        await release.wait()
         active -= 1
         return "ok"
 
@@ -632,17 +644,27 @@ async def test_codex_provider_allows_parallel_ephemeral_calls(monkeypatch, tmp_p
     )
     monkeypatch.setattr(coding_plan_cli, "_call_codex", fake_call)
 
-    results = await asyncio.gather(
-        coding_plan_cli.call_coding_plan_cli(
-            "codex_oauth", model="gpt-5.6-luna", prompt="one", timeout_sec=30
-        ),
-        coding_plan_cli.call_coding_plan_cli(
-            "codex_oauth", model="gpt-5.6-luna", prompt="two", timeout_sec=30
-        ),
+    pending = asyncio.gather(
+        *(
+            coding_plan_cli.call_coding_plan_cli(
+                provider_type, model=model, prompt="request", timeout_sec=30
+            )
+            for provider_type, model in [
+                ("codex_oauth", "model-for-analyze"),
+                (" CODEX_OAUTH ", "model-for-polish"),
+                ("codex_oauth", "model-for-mindmap"),
+            ]
+        )
     )
-
-    assert results == ["ok", "ok"]
-    assert peak == 2
+    try:
+        await asyncio.wait_for(limit_reached.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert active == limit
+    finally:
+        release.set()
+        results = await asyncio.wait_for(pending, timeout=2)
+    assert results == ["ok", "ok", "ok"]
+    assert peak == limit
 
 
 @pytest.mark.asyncio
@@ -701,3 +723,242 @@ async def test_status_wraps_cli_start_failure(monkeypatch, tmp_path):
     assert status["installed"] is True
     assert status["authenticated"] is False
     assert status["message"] == "无法启动 OAuth CLI：access denied"
+
+
+def test_codex_concurrency_defaults_to_one_and_rejects_unbounded_values():
+    from app.core.settings import RuntimeSettings
+    from pydantic import ValidationError
+
+    assert RuntimeSettings().codex_max_concurrency == 1
+    for limit in (0, -1, 9):
+        with pytest.raises(ValidationError):
+            RuntimeSettings(codex_max_concurrency=limit)
+
+
+@pytest.mark.asyncio
+async def test_lowering_codex_limit_waits_for_existing_requests(monkeypatch):
+    from app.core import settings
+
+    runtime = SimpleNamespace(codex_max_concurrency=2)
+    monkeypatch.setattr(settings, "get_runtime_settings", lambda: runtime)
+    limiter = coding_plan_cli._CODEX_LIMITER
+    release = [asyncio.Event() for _ in range(3)]
+    entered = []
+
+    async def request(index):
+        async with limiter:
+            entered.append(index)
+            await release[index].wait()
+
+    first = asyncio.create_task(request(0))
+    second = asyncio.create_task(request(1))
+    await _wait_until(lambda: len(entered) == 2)
+    runtime.codex_max_concurrency = 1
+    third = asyncio.create_task(request(2))
+    await asyncio.sleep(0)
+    assert entered == [0, 1]
+    release[0].set()
+    await first
+    await asyncio.sleep(0)
+    assert entered == [0, 1]
+    release[1].set()
+    await second
+    await _wait_until(lambda: len(entered) == 3)
+    release[2].set()
+    await third
+
+
+@pytest.mark.asyncio
+async def test_codex_budget_is_shared_by_daemon_and_worker_loops(monkeypatch):
+    from app.core import settings
+
+    monkeypatch.setattr(
+        settings, "get_runtime_settings", lambda: SimpleNamespace(codex_max_concurrency=1)
+    )
+    monkeypatch.setattr(
+        coding_plan_cli, "resolve_coding_plan_executable", lambda *_a, **_kw: Path("codex")
+    )
+    daemon_started = asyncio.Event()
+    release = asyncio.Event()
+    worker_waiting = threading.Event()
+    worker_started = threading.Event()
+
+    async def fake_call(_executable, _model, prompt, *_args, **_kwargs):
+        if prompt == "daemon":
+            daemon_started.set()
+            await release.wait()
+        else:
+            worker_started.set()
+        return prompt
+
+    monkeypatch.setattr(coding_plan_cli, "_call_codex", fake_call)
+
+    async def call(prompt):
+        if prompt == "worker":
+            asyncio.get_running_loop().call_soon(worker_waiting.set)
+        return await coding_plan_cli.call_coding_plan_cli(
+            "codex_oauth", model="default", prompt=prompt
+        )
+
+    daemon = asyncio.create_task(call("daemon"))
+    await asyncio.wait_for(daemon_started.wait(), timeout=2)
+    worker = asyncio.create_task(asyncio.to_thread(lambda: asyncio.run(call("worker"))))
+    try:
+        assert await asyncio.to_thread(worker_waiting.wait, 2)
+        assert not worker_started.is_set()
+    finally:
+        release.set()
+        results = await asyncio.wait_for(asyncio.gather(daemon, worker), timeout=2)
+    assert results == ["daemon", "worker"]
+
+
+@pytest.mark.asyncio
+async def test_codex_waiter_cancel_does_not_start_cli_or_lose_permit(monkeypatch):
+    from app.core import settings
+
+    monkeypatch.setattr(
+        settings, "get_runtime_settings", lambda: SimpleNamespace(codex_max_concurrency=1)
+    )
+    monkeypatch.setattr(
+        coding_plan_cli, "resolve_coding_plan_executable", lambda *_a, **_kw: Path("codex")
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+    prompts = []
+
+    async def fake_call(_executable, _model, prompt, *_args, **_kwargs):
+        prompts.append(prompt)
+        started.set()
+        await release.wait()
+        return prompt
+
+    monkeypatch.setattr(coding_plan_cli, "_call_codex", fake_call)
+
+    def call(prompt):
+        return asyncio.create_task(coding_plan_cli.call_coding_plan_cli(
+            "codex_oauth", model="default", prompt=prompt
+        ))
+
+    first = call("first")
+    await started.wait()
+    cancelled = call("cancelled")
+    await asyncio.sleep(0)
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+    following = call("following")
+    await asyncio.sleep(0)
+    assert prompts == ["first"]
+    release.set()
+    assert await asyncio.gather(first, following) == ["first", "following"]
+    assert prompts == ["first", "following"]
+
+
+@pytest.mark.asyncio
+async def test_codex_cancel_during_spawn_holds_permit_until_cleanup(monkeypatch, tmp_path):
+    from app.core import settings
+
+    monkeypatch.setattr(
+        settings, "get_runtime_settings", lambda: SimpleNamespace(codex_max_concurrency=1)
+    )
+    monkeypatch.setattr(
+        coding_plan_cli, "resolve_coding_plan_executable", lambda *_a, **_kw: Path("codex")
+    )
+    spawning = asyncio.Event()
+    spawned = asyncio.Event()
+    cleaning = asyncio.Event()
+    cleaned = asyncio.Event()
+    process = object()
+    prompts = []
+
+    async def fake_spawn(*_args, **_kwargs):
+        spawning.set()
+        await spawned.wait()
+        return process
+
+    async def fake_cleanup(actual_process):
+        assert actual_process is process
+        cleaning.set()
+        await cleaned.wait()
+
+    async def fake_call(_executable, _model, prompt, *_args, **_kwargs):
+        prompts.append(prompt)
+        if prompt == "first":
+            await coding_plan_cli._run_cli(["codex"], cwd=tmp_path, timeout_sec=30)
+        return prompt
+
+    monkeypatch.setattr(coding_plan_cli.asyncio, "create_subprocess_exec", fake_spawn)
+    monkeypatch.setattr(coding_plan_cli, "_terminate_process_tree", fake_cleanup)
+    monkeypatch.setattr(coding_plan_cli, "_call_codex", fake_call)
+    first = asyncio.create_task(coding_plan_cli.call_coding_plan_cli(
+        "codex_oauth", model="default", prompt="first"
+    ))
+    await spawning.wait()
+    first.cancel()
+    following = asyncio.create_task(coding_plan_cli.call_coding_plan_cli(
+        "codex_oauth", model="default", prompt="following"
+    ))
+    spawned.set()
+    await asyncio.wait_for(cleaning.wait(), timeout=1)
+    first.cancel()
+    await asyncio.sleep(0)
+    assert prompts == ["first"]
+    assert not first.done()
+    assert not following.done()
+    cleaned.set()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert await asyncio.wait_for(following, timeout=1) == "following"
+
+
+async def _wait_until(predicate):
+    async def poll():
+        while not predicate():
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(poll(), timeout=5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group cleanup")
+@pytest.mark.parametrize("outcome", ["success", "error", "timeout", "cancel"])
+async def test_cli_cleanup_kills_helpers_even_after_parent_exits(tmp_path, outcome):
+    pid_file = tmp_path / "helper.pid"
+    script = "\n".join([
+        "import pathlib, subprocess, sys, time",
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)",
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(child.pid))",
+        "time.sleep(60)" if outcome in {"timeout", "cancel"} else "",
+        "sys.exit(1)" if outcome == "error" else "",
+    ])
+    pending = asyncio.create_task(coding_plan_cli._run_cli(
+        [sys.executable, "-c", script], cwd=tmp_path,
+        timeout_sec=1 if outcome == "timeout" else 30,
+    ))
+    await _wait_until(lambda: pid_file.exists() and pid_file.stat().st_size > 0)
+    pid = int(pid_file.read_text())
+
+    def helper_alive():
+        try:
+            return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
+
+    try:
+        if outcome == "cancel":
+            pending.cancel()
+        if outcome in {"timeout", "cancel"}:
+            expected = asyncio.TimeoutError if outcome == "timeout" else asyncio.CancelledError
+            with pytest.raises(expected):
+                await pending
+        else:
+            code, _, _ = await pending
+            assert code == (1 if outcome == "error" else 0)
+        await _wait_until(lambda: not helper_alive())
+    finally:
+        if helper_alive():
+            os.kill(pid, signal.SIGKILL)
+        if not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
