@@ -6,7 +6,7 @@ import { useArchivePage } from "@/hooks/use-archive-page"
 import { useListPosition } from "@/hooks/use-view-position"
 import { archiveCacheScope } from "@/lib/archive-cache-scope"
 import { useActiveTasks } from "@/hooks/use-active-tasks"
-import { archiveQueryFilters, libraryStateFromParams, useLibraryControls } from "@/hooks/use-library-controls"
+import { archiveQueryFilters, libraryStateFromParams, rememberLibraryArchive, useLibraryControls } from "@/hooks/use-library-controls"
 import { useLibraryDirectory } from "@/hooks/use-library-directory"
 import { useMediaQuery } from "@/hooks/use-media-query"
 import { usePlatform } from "@/platform/use-platform"
@@ -36,7 +36,10 @@ export function LibraryPage(props: Props) {
   const library = useLibraryControls()
   const { folders } = useLibraryDirectory()
   const all = library.scope === "all"
-  const open = (archive: ArchiveItem) => library.setLocation({ folder: all ? undefined : archive.folder_id || undefined, item: archive.content_key || archive.path })
+  const open = (archive: ArchiveItem) => {
+    rememberLibraryArchive({ ...library, folder: all ? undefined : archive.folder_id || undefined }, archive)
+    library.setLocation({ folder: all ? undefined : archive.folder_id || undefined, item: archive.content_key || archive.path })
+  }
   if (library.view !== "split") return <FilesPage {...props} scope={library.scope} folderId={all ? undefined : library.folder} folders={folders} onFolderOpen={(folder) => library.setLocation({ folder, item: undefined })} />
   return <FilesSplitView filters={props.filters} onOpen={open} />
 }
@@ -85,6 +88,13 @@ function SplitViewGroup({ folderId, all = false, filters, active, onOpen, onFirs
   const archiveMap = new Map(shown.map((item) => [item.archive_id ?? item.path, item]))
   const folderMap = new Map(shownFolders.map((folder) => [folder.id, folder]))
   const visibleEntries = shownEntries ?? shown.map((item) => ({ kind: "archive" as const, id: item.archive_id ?? item.path }))
+  useEffect(() => {
+    const archive = archives.find((item) => (item.content_key || item.path) === active)
+    if (!archive) return
+    const index = entries?.findIndex((entry) => entry.kind === "archive" && entry.id === (archive.archive_id ?? archive.path))
+      ?? archives.indexOf(archive)
+    rememberLibraryArchive({ ...filters, scope: all ? "all" : "folders", folder: folderId }, archive, index)
+  }, [active, archives, entries, filters, all, folderId])
   useEffect(() => { if (archives[0]) onFirst?.(archives[0]) }, [archives, onFirst])
   return <div className="space-y-1 py-1">
     {visibleEntries.map((entry) => {
@@ -97,7 +107,11 @@ function SplitViewGroup({ folderId, all = false, filters, active, onOpen, onFirs
       const key = archive.content_key || archive.path
       return <div key={archive.path} className={cn("group flex min-w-0 items-center gap-1 rounded-md hover:bg-muted", active === key && "bg-muted ring-1 ring-border")}>
         {selectionMode && <input type="checkbox" checked={selected.has(key)} aria-label={`选择 ${archive.title}`} className="ml-1 size-3.5 shrink-0" onChange={() => onSelect(key)} />}
-        <button data-content-key={archive.content_key} aria-current={active === key ? "true" : undefined} className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-2 text-left" onClick={() => selectionMode ? onSelect(key) : onOpen(archive)}
+        <button data-content-key={key} aria-current={active === key ? "true" : undefined} className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-2 text-left" onClick={() => {
+          if (selectionMode) { onSelect(key); return }
+          rememberLibraryArchive({ ...filters, scope: all ? "all" : "folders", folder: folderId }, archive, visibleEntries.indexOf(entry))
+          onOpen(archive)
+        }}
           draggable={canMove && !!archive.content_key && !busy} onDragStart={(event) => { startLibraryDrag(event, selected.has(key) ? [...selected] : [key]); onDragging(true) }} onDragEnd={() => onDragging(false)}>
           <img draggable={false} src={archive.thumbnail_url ?? api.archives.thumbnailUrl(archive.path)} alt="" loading="lazy" className="aspect-[535/304] w-16 shrink-0 rounded bg-muted object-cover" onError={(event) => { event.currentTarget.style.visibility = "hidden" }} />
           <span className="min-w-0"><span className="line-clamp-2 text-xs leading-5">{archive.title}</span><span className="flex min-w-0 gap-1.5 text-[10px] text-muted-foreground"><span className="shrink-0">{archive.processing ? "处理中" : archive.metadata.status === "failed" ? "处理失败" : archive.date}</span>{all && archive.folder_id && folderNames.has(archive.folder_id) && <span className="flex min-w-0 items-center gap-0.5" title={`在文件夹「${folderNames.get(archive.folder_id)}」中`}><HugeiconsIcon icon={FolderOpenIcon} className="size-3 shrink-0" /><span className="truncate">{folderNames.get(archive.folder_id)}</span></span>}</span></span>
@@ -159,10 +173,34 @@ function FilesSplitView({ filters, onOpen }: { filters: LibraryFilters; onOpen: 
     setLastFolder(library.folder)
     if (library.folder) setExpanded(new Set([...expanded, library.folder]))
   }
+  useEffect(() => {
+    if (narrow || selectionMode) return
+    const browse = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+      if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable]:not([contenteditable=false]), [role=textbox]")) return
+      if (document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [data-slot="dropdown-menu-content"][data-state="open"]')) return
+      const direction = event.key === "ArrowDown" || event.key === "j" ? 1 : event.key === "ArrowUp" || event.key === "k" ? -1 : 0
+      if (!direction) return
+      const items = [...(scrollRef.current?.querySelectorAll<HTMLButtonElement>("button[data-content-key]") ?? [])]
+        .filter((item) => !item.disabled && !item.closest("[hidden]"))
+      if (!items.length) return
+      const active = items.findIndex((item) => item.getAttribute("aria-current") === "true")
+      const index = active < 0 ? (direction > 0 ? 0 : items.length - 1) : Math.max(0, Math.min(items.length - 1, active + direction))
+      const next = items[index]
+      event.preventDefault()
+      next.click()
+      next.scrollIntoView({ block: "nearest" })
+    }
+    window.addEventListener("keydown", browse)
+    return () => window.removeEventListener("keydown", browse)
+  }, [narrow, selectionMode])
   const { item: selectedItem, setLocation } = library
   const first = useCallback((item: ArchiveItem) => {
-    if (!narrow && !selectedItem && autoSelect) setLocation({ item: item.content_key || item.path }, false)
-  }, [narrow, selectedItem, setLocation, autoSelect])
+    if (!narrow && !selectedItem && autoSelect) {
+      rememberLibraryArchive({ ...filters, scope: library.scope, folder: library.folder }, item, 0)
+      setLocation({ item: item.content_key || item.path }, false)
+    }
+  }, [narrow, selectedItem, setLocation, autoSelect, filters, library.scope, library.folder])
   return <div className="relative flex h-full min-w-0">
       <aside aria-label="文件列表" hidden={narrow && !!library.item} className={cn("flex h-full shrink-0 flex-col overflow-hidden bg-background p-2", narrow ? "w-full" : "w-[21.333rem] border-r", narrow && !!library.item && "hidden")}>
         <div ref={scrollRef} data-split-scroll className="min-h-0 flex-1 overflow-y-auto">
@@ -215,6 +253,11 @@ function SplitViewResult({ contentKey }: { contentKey?: string }) {
     void load().then((result) => { if (!cancelled) setResolved({ key: contentKey, archive: result.archive, taskId: result.task_id }) }).catch((error) => { if (!cancelled) setResolved({ key: contentKey, archive: null, taskId: null, error: String(error) }) })
     return () => { cancelled = true }
   }, [contentKey, platform, route.params.generation])
+  useEffect(() => {
+    if (resolved && resolved.key === contentKey && resolved.archive) {
+      rememberLibraryArchive(libraryStateFromParams(route.params), resolved.archive)
+    }
+  }, [resolved, contentKey, route.params])
   const onTarget = useCallback((path: string | null, taskId?: string | null) => {
     if (!contentKey) return
     const current = parseHash(window.location.hash)

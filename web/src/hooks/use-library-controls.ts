@@ -1,4 +1,6 @@
 import { useCallback } from "react"
+import { archiveCacheScope } from "@/lib/archive-cache-scope"
+import type { ArchiveItem } from "@/repositories/archive-types"
 
 import {
   DEFAULT_LIBRARY_FILTERS,
@@ -89,6 +91,31 @@ export function archiveQueryFilters(filters: LibraryFilters) {
   }
 }
 
+type FocusScope = LibraryFilters & Pick<LibraryState, "scope" | "folder">
+type LibraryArchiveFocus = { kind: "item"; item: string }
+  | { kind: "archive"; item: string; path: string; index?: number }
+const archiveFocus = new Map<string, LibraryArchiveFocus>()
+
+function focusKey(state: FocusScope) {
+  return `${archiveCacheScope()}:${JSON.stringify({ ...archiveQueryFilters(state), scope: state.scope ?? "folders", folder: state.scope === "all" ? undefined : state.folder })}`
+}
+
+export function libraryArchiveFocus(state: FocusScope) {
+  return archiveFocus.get(focusKey(state))
+}
+
+export function rememberLibraryArchive(state: FocusScope, archive: Pick<ArchiveItem, "content_key" | "path">, index?: number) {
+  const key = focusKey(state)
+  const item = archive.content_key || archive.path
+  const previous = archiveFocus.get(key)
+  archiveFocus.delete(key)
+  archiveFocus.set(key, { kind: "archive", item, path: archive.path, index: index ?? (previous?.kind === "archive" && previous.item === item ? previous.index : undefined) })
+  if (archiveFocus.size > 80) {
+    const oldest = archiveFocus.keys().next().value
+    if (oldest !== undefined) archiveFocus.delete(oldest)
+  }
+}
+
 function currentParams(): Record<string, string> {
   const route = parseHash(window.location.hash)
   return route.page === "files" ? route.params : parseHash(libraryHash()).params
@@ -175,10 +202,15 @@ export function useLibraryControls() {
       const current = libraryStateFromParams(currentParams())
       const inLibrary = parseHash(window.location.hash).page === "files"
       if (inLibrary && current.view === view && (view !== "grid" || !(current.item || current.attempt || current.viewerTask || current.generation))) return
+      const focus = libraryArchiveFocus(current)
+      if (current.item && current.item !== focus?.item) {
+        archiveFocus.set(focusKey(current), { kind: "item", item: current.item })
+      }
       const next: LibraryState = {
         ...current,
         view,
-        ...(view === "grid" ? { item: undefined, attempt: undefined, viewerTask: undefined, generation: undefined } : {}),
+        ...(view === "grid" ? { item: undefined, attempt: undefined, viewerTask: undefined, generation: undefined }
+          : { item: current.item ?? focus?.item }),
       }
       // Closing the split view returns to the grid it was opened from.
       if (returnsBack(next)) return

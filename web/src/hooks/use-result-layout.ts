@@ -1,4 +1,28 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import type { Layout } from "react-resizable-panels"
+
+const PANEL_RATIO_KEY = "mpp-result-panel-ratio"
+
+function loadPanelRatio() {
+  try {
+    const ratio = Number(localStorage.getItem(PANEL_RATIO_KEY) ?? 50)
+    if (Number.isFinite(ratio) && ratio >= 20 && ratio <= 70) return ratio
+  } catch {
+    return 50
+  }
+  return 50
+}
+
+export function useResultPanelLayout() {
+  const [ratio, setRatio] = useState(loadPanelRatio)
+  const defaultLayout = useMemo(() => ({ media: ratio, content: 100 - ratio }), [ratio])
+  const onLayoutChanged = useCallback((layout: Layout) => {
+    const ratio = layout.media
+    setRatio(ratio)
+    try { localStorage.setItem(PANEL_RATIO_KEY, String(ratio)) } catch { return }
+  }, [])
+  return { defaultLayout, onLayoutChanged }
+}
 
 export function usePortraitResultLayout(): boolean {
   const [portrait, setPortrait] = useState(() => {

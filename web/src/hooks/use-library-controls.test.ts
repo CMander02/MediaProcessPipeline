@@ -3,7 +3,7 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { libraryHash, navigate, parseHash, previousHash } from "@/lib/router"
-import { useLibraryControls } from "./use-library-controls"
+import { libraryArchiveFocus, rememberLibraryArchive, useLibraryControls } from "./use-library-controls"
 
 function controls() {
   return renderHook(() => useLibraryControls()).result
@@ -61,18 +61,28 @@ describe("library navigation history", () => {
     expect(library.current.scope).toBe("all")
   })
 
-  it("switching to the grid clears the open item and its selected result", () => {
+  it("switching to the grid clears detail parameters and retains the focused archive for split view", () => {
     act(() => navigate("#/files?q=unique-grid-switch&page=3&view=split&scope=all&item=C&attempt=attempt-1&viewerTask=task-1&generation=generation-1"))
     const library = controls()
     act(() => library.current.setView("grid"))
     expect(window.location.hash).toBe("#/files?q=unique-grid-switch&page=3&scope=all")
 
     act(() => library.current.setView("split"))
-    expect(window.location.hash).toBe("#/files?q=unique-grid-switch&page=3&view=split&scope=all")
-    expect(library.current.item).toBeUndefined()
+    expect(window.location.hash).toBe("#/files?q=unique-grid-switch&page=3&view=split&scope=all&item=C")
+    expect(library.current.item).toBe("C")
     expect(library.current.attempt).toBeUndefined()
     expect(library.current.viewerTask).toBeUndefined()
     expect(library.current.generation).toBeUndefined()
+  })
+
+  it("keeps an unloaded selection separate from the previous archive path", () => {
+    act(() => navigate("#/files?q=unloaded-focus&view=split&scope=all&item=B"))
+    const library = controls()
+    rememberLibraryArchive(library.current, { content_key: "A", path: "/archives/a" }, 0)
+    act(() => library.current.setView("grid"))
+    expect(libraryArchiveFocus(library.current)).toEqual({ kind: "item", item: "B" })
+    act(() => library.current.setView("split"))
+    expect(library.current.item).toBe("B")
   })
 
   it("selecting the grid clears detail parameters from an old grid link", () => {

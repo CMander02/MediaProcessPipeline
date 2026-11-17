@@ -63,6 +63,7 @@ vi.mock("@/hooks/use-active-tasks", () => ({
 }))
 
 vi.mock("@/lib/api", () => ({
+  getApiClientConfig: () => ({ baseUrl: "http://localhost" }),
   api: {
     tasks: {
       get: mocks.getTask,

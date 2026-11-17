@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { LibraryPage } from "./library-page"
-import { useLibraryControls } from "@/hooks/use-library-controls"
+import { libraryStateFromParams, rememberLibraryArchive, useLibraryControls } from "@/hooks/use-library-controls"
 import { goLibraryHistory, libraryHash, navigate, parseHash, previousHash, useRoute } from "@/lib/router"
 import type { LibraryFolder } from "@/lib/library-types"
 import type { ArchiveItem } from "@/repositories/archive-types"
@@ -11,9 +11,11 @@ import type { ArchiveItem } from "@/repositories/archive-types"
 const mocks = vi.hoisted(() => ({
   resolve: vi.fn(),
   refresh: vi.fn(),
+  scrollIntoView: vi.fn(),
   updatePreferences: vi.fn(),
   server: "http://localhost",
   hasMore: false,
+  totalOverride: 0,
   loadMore: vi.fn(),
   intersect: () => {},
   platform: { kind: "web", isNative: false },
@@ -54,7 +56,7 @@ vi.mock("@/hooks/use-archive-page", () => ({
       archives: pageArchives,
       // Archive-only API responses may omit folders entirely.
       ...(query.include_folders ? { folders, entries: folderEntries } : {}),
-      total: pageArchives.length + (query.include_folders ? folders.length : 0), loading: false,
+      total: mocks.totalOverride || pageArchives.length + (query.include_folders ? folders.length : 0), loading: false,
       hasMore: mocks.hasMore, loadingMore: false, loadMore: mocks.loadMore,
       refresh: mocks.refresh, removeArchive: vi.fn(), lastReconciledAt: new Date().toISOString(),
     }
@@ -117,7 +119,9 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.server = `http://localhost/session-${++session}`
   viewport(1440)
+  HTMLElement.prototype.scrollIntoView = mocks.scrollIntoView
   mocks.hasMore = false
+  mocks.totalOverride = 0
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} })
   mocks.resolve.mockImplementation(async (key: string) => ({
     archive: archives.find((archive) => archive.content_key === key) ?? null,
@@ -260,6 +264,64 @@ describe("library view navigation", () => {
     expect(document.querySelector("[data-split-scroll]")?.scrollTop).toBe(810)
     expect(screen.getByRole("button", { name: /课程/ }).getAttribute("aria-expanded")).toBe("true")
     expect(screen.getByRole("button", { name: /视频 b/ })).toBeTruthy()
+  })
+
+  it("navigates visible archives with arrow keys and j/k without moving past the ends", async () => {
+    openLibrary("#/files?view=split&scope=all")
+    await screen.findByRole("region", { name: "内容详情" })
+    for (const key of ["ArrowDown", "j"]) {
+      fireEvent.keyDown(window, { key })
+      await waitFor(() => expect(parseHash(window.location.hash).params.item).toBe("content-b"))
+    }
+    fireEvent.keyDown(window, { key: "ArrowUp" })
+    await waitFor(() => expect(parseHash(window.location.hash).params.item).toBe("content-a"))
+    fireEvent.keyDown(window, { key: "k" })
+    expect(parseHash(window.location.hash).params.item).toBe("content-a")
+    expect(mocks.scrollIntoView).toHaveBeenCalledWith({ block: "nearest" })
+  })
+
+  it.each(["input", "textarea", "select", "contenteditable", "menu", "dialog"])("does not navigate when %s is active", async (kind) => {
+    openLibrary("#/files?view=split&scope=all")
+    await screen.findByRole("region", { name: "内容详情" })
+    const element = document.createElement(["input", "textarea", "select"].includes(kind) ? kind : "div")
+    if (kind === "contenteditable") element.setAttribute("contenteditable", "true")
+    if (kind === "menu" || kind === "dialog") element.setAttribute("role", kind)
+    document.body.append(element)
+    try {
+      element.focus()
+      fireEvent.keyDown(element, { key: "ArrowDown" })
+      fireEvent.keyDown(element, { key: "j" })
+      expect(parseHash(window.location.hash).params.item).toBe("content-a")
+      expect(mocks.scrollIntoView).not.toHaveBeenCalled()
+    } finally { element.remove() }
+  })
+
+  it("preserves folder, filters and the focused archive across view switches", async () => {
+    function ViewButtons() {
+      const library = useLibraryControls()
+      return <><button onClick={() => library.setView("grid")}>Grid</button><button onClick={() => library.setView("split")}>Split</button></>
+    }
+    act(() => navigate("#/files?view=split&folder=course&q=video&media=video&item=content-b"))
+    render(<><ViewButtons /><RoutedLibrary /></>)
+    await screen.findByRole("region", { name: "内容详情" })
+    fireEvent.click(screen.getByText("Grid"))
+    await screen.findByTestId("archive-grid")
+    expect(parseHash(window.location.hash).params).toMatchObject({ folder: "course", q: "video", media: "video" })
+    expect(parseHash(window.location.hash).params.item).toBeUndefined()
+    fireEvent.focus(document.querySelector('[data-archive-path="/archives/b"]')!)
+    fireEvent.click(screen.getByText("Split"))
+    await waitFor(() => expect(parseHash(window.location.hash).params.item).toBe("content-b"))
+    expect(screen.getByRole("button", { name: /视频 b/ }).getAttribute("aria-current")).toBe("true")
+  })
+
+  it("opens the grid page containing the focused split archive", async () => {
+    mocks.totalOverride = 100
+    const hash = "#/files?folder=course"
+    act(() => navigate(hash))
+    rememberLibraryArchive(libraryStateFromParams(parseHash(hash).params), archives[1], 30)
+    render(<RoutedLibrary />)
+    await waitFor(() => expect(parseHash(window.location.hash).params.page).toBe("2"))
+    expect(document.activeElement?.getAttribute("data-archive-path")).toBe("/archives/b")
   })
 
   it("opens a mobile detail link directly and clears its selected version when returning to the list", async () => {

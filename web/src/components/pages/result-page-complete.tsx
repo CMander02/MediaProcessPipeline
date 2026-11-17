@@ -46,6 +46,7 @@ import { ResultContentPane } from "../result/result-content-pane"
 import { MobileMediaOverview } from "../result/mobile-media-overview"
 import { api } from "@/lib/api"
 import { useRoute } from "@/lib/router"
+import { useResultPanelLayout } from "@/hooks/use-result-layout"
 import { usePreferences } from "@/hooks/use-preferences"
 import {
   timelineEventKey,
@@ -69,6 +70,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
   }, [embedded])
   const view = useResultViewer({ archivePath, taskId: taskIdProp, startAt, embedded, layoutWidth, onTarget })
   const { prefs, update: updatePrefs } = usePreferences()
+  const panelLayout = useResultPanelLayout()
+  const [expandedSource, setExpandedSource] = useState<string | null>(null)
   const {
     mediaUrl,
     videoLoop,
@@ -184,6 +187,9 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
     : latestStatusEvents
 
   const phoneAvLayout = isMobileLayout && !isNoteContent
+  const hasPlayableMedia = Boolean(mediaUrl)
+  const compactSource = Boolean(archive && !isMobileLayout && !isNoteContent && !isProcessing && !hasPlayableMedia)
+  const sourceExpanded = expandedSource === archivePath
   const showSourcePreview = Boolean(archive && !archive.media_file && !isNoteContent && !isProcessing)
   const thumbnailUrl = archive?.thumbnail_url
     ?? (archive?.has_thumbnail && (online || !archive.offline) ? api.archives.thumbnailUrl(archivePath) : undefined)
@@ -377,8 +383,8 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
       "h-full min-h-0 overflow-y-auto",
       isPortraitLayout || isMobileLayout ? "p-0" : "p-4",
     )}>
-      {embedded && <div className="mb-3 flex min-w-0 items-center gap-2">{titleArea}{processingBadge}{moreMenu}</div>}
-      {embedded && taskError && <p role="alert" className="mb-3 text-sm text-destructive">{taskError}</p>}
+      {embedded && !compactSource && <div className="mb-3 flex min-w-0 items-center gap-2">{titleArea}{processingBadge}{moreMenu}</div>}
+      {embedded && !compactSource && taskError && <p role="alert" className="mb-3 text-sm text-destructive">{taskError}</p>}
       <div className={cn(
         "space-y-3",
         // Video results: keep the player near eye level rather than at the top edge.
@@ -564,7 +570,13 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
         </div>
       )}
 
-      {/* Main content area — three-column layout */}
+      {compactSource && <div data-testid="result-source-bar" className="flex min-w-0 shrink-0 items-center gap-2 border-b bg-muted/20 px-4 py-2 text-xs text-muted-foreground">
+        {embedded && <>{titleArea}{processingBadge}{moreMenu}</>}
+        <span className="shrink-0">本地未保存音视频</span>
+        {sourceHref && <a href={sourceHref} target="_blank" rel="noopener noreferrer" className="truncate text-primary hover:underline">打开原始链接</a>}
+        <Button size="sm" variant="ghost" className="ml-auto h-7 shrink-0 px-2 text-xs" aria-expanded={sourceExpanded} aria-controls="result-source-panel" onClick={() => setExpandedSource(sourceExpanded ? null : archivePath)}>{sourceExpanded ? "折叠侧栏" : "展开侧栏"}</Button>
+      </div>}
+      {embedded && compactSource && taskError && <p role="alert" className="shrink-0 px-4 py-2 text-sm text-destructive">{taskError}</p>}
       <div className="flex-1 min-h-0 relative">
         {phoneAvLayout ? (
           <div className="absolute inset-0 flex flex-col">
@@ -591,10 +603,12 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
               </section>
             </div>
           </div>
+        ) : compactSource && !sourceExpanded ? (
+          <div className="absolute inset-0" data-testid="result-reading-workspace">{contentPane}</div>
         ) : isPortraitLayout ? (
           <div className="absolute inset-0 overflow-hidden p-3">
             <div className={cn("grid h-full min-h-0 grid-rows-[minmax(220px,42%)_minmax(0,1fr)] gap-3", embedded ? layoutWidth !== undefined && layoutWidth >= 640 && "grid-cols-[minmax(260px,0.95fr)_minmax(300px,1fr)] grid-rows-1" : "sm:grid-cols-[minmax(260px,0.95fr)_minmax(300px,1fr)] sm:grid-rows-1")}>
-              <div className="min-h-0 overflow-hidden">
+              <div id="result-source-panel" className="min-h-0 overflow-hidden">
                 {mediaPane}
               </div>
               <div className="min-h-0 overflow-hidden">
@@ -605,17 +619,19 @@ export function ResultPageComplete({ archivePath, taskId: taskIdProp, startAt, e
         ) : (
         <ResizablePanelGroup
           orientation="horizontal"
+          defaultLayout={panelLayout.defaultLayout}
+          onLayoutChanged={panelLayout.onLayoutChanged}
           className="absolute inset-0"
         >
-          {/* Left panel — media, speakers */}
-          <ResizablePanel defaultSize="50%" minSize="20%" maxSize="70%">
+          <ResizablePanel id="media" minSize="20%" maxSize="70%">
+            <div id="result-source-panel" className="h-full min-h-0">
             {mediaPane}
+            </div>
           </ResizablePanel>
 
           <ResizableHandle withHandle />
 
-          {/* Right panel — tabbed content */}
-          <ResizablePanel defaultSize="50%" minSize="25%">
+          <ResizablePanel id="content" minSize="25%">
             {contentPane}
           </ResizablePanel>
         </ResizablePanelGroup>

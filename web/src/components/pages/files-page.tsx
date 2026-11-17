@@ -10,7 +10,7 @@ import { navigate } from "@/lib/router"
 import { api, type Task } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { hasActiveFilters, type LibraryFilters } from "@/lib/archive-filters"
-import { archiveQueryFilters, type LibraryScope } from "@/hooks/use-library-controls"
+import { libraryArchiveFocus, rememberLibraryArchive, archiveQueryFilters, type LibraryScope } from "@/hooks/use-library-controls"
 import { publishLibraryFacets } from "@/lib/library-facets"
 import type { ArchiveItem } from "@/hooks/use-archives"
 import { ArchiveCard } from "@/components/archive-card"
@@ -154,6 +154,10 @@ export function FilesPage({
     ...shownFolders.map((folder) => ({ kind: "folder" as const, id: folder.id })),
   ]
   const itemKey = (item: ArchiveItem) => item.content_key || item.path
+  const rememberFocus = (archive: ArchiveItem) => {
+    const index = visibleEntries.findIndex((entry) => entry.kind === "archive" && entry.id === (archive.archive_id ?? archive.path))
+    rememberLibraryArchive({ ...filters, scope, folder: folderId }, archive, (isPhone ? 0 : (page - 1) * pageSize) + index)
+  }
 
   const { tasks: activeTasks } = useActiveTasks()
   const tasksById = useMemo(() => new Map<string, Task>(activeTasks.map((task) => [task.id, task])), [activeTasks])
@@ -163,16 +167,25 @@ export function FilesPage({
   }, [facets])
   useEffect(() => () => publishLibraryFacets(null), [])
 
-  // Coming back from a result page: focus the card that was opened so the eye lands where it left.
+  const restoredFocus = useRef<string | null>(null)
+  const focusContext = libraryArchiveFocus({ ...filters, scope, folder: folderId })
+  const focus = focusContext?.kind === "archive" ? focusContext : undefined
   useEffect(() => {
-    if (loading || !returnFocusPath) return
-    const target = gridRef.current?.querySelector<HTMLElement>(`[data-archive-path="${CSS.escape(returnFocusPath)}"]`)
-    returnFocusPath = null
+    if (loading || restoredFocus.current === filterKey) return
+    if (!isPhone && focus?.index !== undefined) {
+      const targetPage = Math.min(Math.floor(focus.index / pageSize) + 1, Math.max(1, Math.ceil(total / pageSize)))
+      if (targetPage !== page) { setPage(targetPage); return }
+    }
+    const focusPath = focus?.path ?? returnFocusPath
+    if (!focusPath) { restoredFocus.current = filterKey; return }
+    const target = [...(gridRef.current?.querySelectorAll<HTMLElement>("[data-archive-path]") ?? [])].find((card) => card.dataset.archivePath === focusPath)
     if (target) {
+      restoredFocus.current = filterKey
+      returnFocusPath = null
       target.focus({ preventScroll: true })
       if (!isPhone || !hasSavedPosition) target.scrollIntoView({ block: "nearest" })
     }
-  }, [loading, archives, isPhone, hasSavedPosition])
+  }, [loading, archives, isPhone, hasSavedPosition, focus, filterKey, page, pageSize, total, setPage])
 
   // A task leaving the active list has finished, failed or been removed: reload the cards.
   const activeIds = activeTasks.map((task) => task.id).sort().join(",")
@@ -401,6 +414,7 @@ export function FilesPage({
   const handleOpen = (path: string, taskId?: string) => {
     returnFocusPath = path
     const item = shown.find((archive) => archive.path === path)
+    if (item) rememberFocus(item)
     if (onArchiveOpen && item) { onArchiveOpen(item); return }
     updatePrefs({ lastArchivePath: path })
     returnFocusPath = path
@@ -483,6 +497,11 @@ export function FilesPage({
         <div
           ref={gridRef}
           data-testid="archive-grid"
+          onFocusCapture={(event) => {
+            const path = event.target.closest<HTMLElement>("[data-archive-path]")?.dataset.archivePath
+            const archive = shown.find((item) => item.path === path)
+            if (archive) rememberFocus(archive)
+          }}
           className="grid h-full min-h-0 grid-cols-2 content-start items-start gap-3 overflow-x-hidden overflow-y-auto max-md:[overflow-anchor:none] max-md:*:[contain-intrinsic-size:auto_220px] max-md:*:[content-visibility:auto] sm:gap-x-5 sm:gap-y-4 lg:grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] min-[1972px]:grid-cols-7"
           style={gridLayout ? { gridTemplateColumns: `repeat(${gridLayout.columns}, minmax(0, 1fr))`, rowGap: gridLayout.rowGap } : undefined}
         >
