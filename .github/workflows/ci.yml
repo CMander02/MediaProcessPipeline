@@ -95,10 +95,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-36 build-tools;35.0.0
       - run: npm ci
       - run: npm run android:sync
       - name: Run Android unit tests
         run: |
-          sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
           chmod +x android/gradlew
           node scripts/android-gradle.mjs testDebugUnitTest

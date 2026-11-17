@@ -177,13 +177,15 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      - uses: android-actions/setup-android@v3
+        if: steps.signing.outputs.enabled == 'true'
+        with:
+          packages: platform-tools platforms;android-36 build-tools;35.0.0
       - run: npm ci
         if: steps.signing.outputs.enabled == 'true'
-      - name: Prepare Android SDK
+      - name: Enable Gradle wrapper execution
         if: steps.signing.outputs.enabled == 'true'
-        run: |
-          sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
-          chmod +x android/gradlew
+        run: chmod +x android/gradlew
       - name: Build and verify signed APK
         if: steps.signing.outputs.enabled == 'true'
         env:
