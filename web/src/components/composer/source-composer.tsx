@@ -4,7 +4,7 @@ import {
   Cancel01Icon, FileAudioIcon, FileVideoIcon, FolderOpenIcon, Loading03Icon, PlayIcon, Upload01Icon,
 } from "@hugeicons/core-free-icons"
 
-import { api, type ImportItemResult, type ImportSummary, type LibraryMatch, type Task } from "@/lib/api"
+import { api, type ExecutionNodesResponse, type ImportItemResult, type ImportSummary, type LibraryMatch, type Task } from "@/lib/api"
 import { useAppAccess } from "@/hooks/use-app-access-context"
 import { libraryChanged, useLibraryDirectory } from "@/hooks/use-library-directory"
 import { useSubmitHistory } from "@/hooks/use-submit-history"
@@ -79,6 +79,8 @@ interface SourceComposerProps {
 export function SourceComposer({ mode, onSubmitted, onCancel, onNavigate }: SourceComposerProps) {
   const { capabilities, online } = useAppAccess()
   const { folders } = useLibraryDirectory()
+  const [execution, setExecution] = useState<ExecutionNodesResponse | null>(null)
+  const [targetWorkerId, setTargetWorkerId] = useState("")
   const [destination, setDestination] = useState(() => new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("folder") ?? "auto")
   const [moveExisting, setMoveExisting] = useState(false)
   const [collectionFolders, setCollectionFolders] = useState<Set<string>>(() => new Set())
@@ -128,6 +130,15 @@ export function SourceComposer({ mode, onSubmitted, onCancel, onNavigate }: Sour
     window.addEventListener("mpp:settings-change", load)
     return () => { active = false; window.removeEventListener("mpp:settings-change", load) }
   }, [])
+
+  useEffect(() => {
+    if (!online) return
+    let active = true
+    const load = () => api.execution.nodes().then((result) => { if (active) setExecution(result) }).catch(() => {})
+    void load()
+    window.addEventListener("mpp:settings-change", load)
+    return () => { active = false; window.removeEventListener("mpp:settings-change", load) }
+  }, [online])
 
   const { entries, unrecognized } = useMemo(
     () => parseSources(text, { allowPaths: capabilities.local_path_submission }),
@@ -330,7 +341,9 @@ export function SourceComposer({ mode, onSubmitted, onCancel, onNavigate }: Sour
       for (let offset = 0; offset < sources.length; offset += 100) {
         const batch = sources.slice(offset, offset + 100)
         try {
-          const response = Object.keys(importDestination).length
+          const response = targetWorkerId
+            ? await api.tasks.importSources(batch, options, importDestination, targetWorkerId)
+            : Object.keys(importDestination).length
             ? await api.tasks.importSources(batch, options, importDestination)
             : await api.tasks.importSources(batch, options)
           for (const item of response.items) collected[item.source] = item
@@ -416,7 +429,9 @@ export function SourceComposer({ mode, onSubmitted, onCancel, onNavigate }: Sour
         onNavigate?.()
         navigate(`#/result/task/${match.task_id}`)
       } else {
-        const task = await api.tasks.create(entry.source, buildOptions())
+        const task = targetWorkerId
+          ? await api.tasks.create(entry.source, buildOptions(), targetWorkerId)
+          : await api.tasks.create(entry.source, buildOptions())
         onSubmitted?.([task], { created: 1, reused: 0, active: 0, needsAction: 0, failed: 0 })
       }
     } catch (reason) {
@@ -474,6 +489,7 @@ export function SourceComposer({ mode, onSubmitted, onCancel, onNavigate }: Sour
         open={showFolderDialog && capabilities.filesystem_browse}
         onOpenChange={setShowFolderDialog}
         options={buildOptions()}
+        targetWorkerId={targetWorkerId || undefined}
         onSubmitted={(taskId) => {
           onNavigate?.()
           navigate(taskId ? `#/result/task/${taskId}` : "#/files")
@@ -648,6 +664,17 @@ export function SourceComposer({ mode, onSubmitted, onCancel, onNavigate }: Sour
               if (event.target.files) { addFiles(Array.from(event.target.files)); event.target.value = "" }
             }}
           />
+        </div>
+      )}
+
+      {execution && (execution.enabled || execution.nodes.some((node) => node.node_id !== "local" && node.online)) && (
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <label htmlFor={`execution-device-${mode}`}>执行设备</label>
+          <select id={`execution-device-${mode}`} className="h-9 max-w-full rounded-md border bg-background px-2" value={targetWorkerId} disabled={submitting || !online} onChange={(event) => setTargetWorkerId(event.target.value)}>
+            <option value="">跟随默认</option>
+            <option value="local">服务器本机</option>
+            {execution.nodes.filter((node) => node.node_id !== "local").map((node) => <option key={node.node_id} value={node.node_id}>{node.display_name || node.node_id}{node.online ? node.busy ? "（忙碌）" : "" : "（离线）"}</option>)}
+          </select>
         </div>
       )}
 

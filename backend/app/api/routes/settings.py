@@ -24,6 +24,7 @@ __all__ = ["RuntimeSettings", "get_runtime_settings", "SETTINGS_FILE", "router"]
 
 # Fields that contain secrets — values are masked in GET responses
 _SECRET_FIELDS = {
+    "remote_api_token",
     "api_token",
     "anthropic_api_key",
     "openai_api_key",

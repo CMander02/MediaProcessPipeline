@@ -5,6 +5,7 @@ export type LlmProvider = "local" | "deepseek" | "custom" | "anthropic" | "opena
 export type AsrProvider = "moss_cpp" | "llama_cpp" | "sherpa_onnx" | "siliconflow"
 export type AudioProcessingFlow = "asr" | "moss"
 export type DeviceValue = "auto" | "gpu" | "cpu" | "cuda" | "mps" | "metal"
+export type RemoteOfflinePolicy = "fallback_server" | "wait" | "fallback_any_online"
 export type ModelCapability = "llm" | "vlm" | "chat" | "fast" | "thinking" | "reasoning" | "vision" | "asr" | "embedding" | "rerank" | "local" | "json"
 export type ServiceModelType = "llm" | "vlm" | "embedding" | "rerank" | "asr"
 export type ModelStage = DeepSeekStage | "asr" | "vision" | "embedding"
@@ -185,6 +186,18 @@ export interface RuntimeSettings {
   vlm_concurrency?: number
   vlm_timeout_sec?: number
 
+  remote_server_url?: string
+  remote_api_token?: string
+  remote_worker_id?: string
+  remote_worker_name?: string
+  remote_preferred_worker_id?: string
+  remote_sync_enabled?: boolean
+  remote_sync_upload_results?: boolean
+  remote_sync_download_results?: boolean
+  remote_execution_worker_enabled?: boolean
+  remote_execution_enabled?: boolean
+  remote_execution_offline_policy?: RemoteOfflinePolicy
+
   api_token?: string
   allow_remote_filesystem?: boolean
   data_root?: string
@@ -197,6 +210,7 @@ export interface RuntimeSettings {
 
 export const SECRET_SETTING_KEYS = [
   "api_token",
+  "remote_api_token",
   "anthropic_api_key",
   "openai_api_key",
   "custom_api_key",

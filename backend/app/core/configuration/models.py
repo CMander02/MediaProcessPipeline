@@ -358,13 +358,20 @@ class RuntimeSettings(BaseModel):
     remote_sync_upload_results: bool = True
     remote_sync_download_results: bool = True
     remote_sync_include_media: bool = False
-    remote_execution_enabled: bool = False  # Server: prefer the configured worker.
+    remote_execution_enabled: bool = False
+    remote_preferred_worker_id: str = ""
+    remote_execution_offline_policy: Literal["fallback_server", "wait", "fallback_any_online"] = "fallback_server"
     remote_execution_worker_enabled: bool = False  # Desktop: pull server tasks.
     remote_execution_wait_sec: float = Field(default=120.0, ge=30.0)
 
     # Paths
     data_root: str = Field(default_factory=lambda: str(default_data_root()))
     media_retention_policy: Literal["all", "playback", "text"] = "all"
+
+    @field_validator("remote_worker_id", "remote_preferred_worker_id")
+    @classmethod
+    def _normalize_remote_node_id(cls, value: str) -> str:
+        return value.strip()
 
     @model_validator(mode="after")
     def _validate_kb_chunk_window(self):

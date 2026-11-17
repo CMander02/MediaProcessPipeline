@@ -102,6 +102,17 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS execution_nodes (
+    node_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    compute_devices TEXT NOT NULL DEFAULT '["cpu"]',
+    capabilities TEXT NOT NULL DEFAULT '{}',
+    busy INTEGER NOT NULL DEFAULT 0,
+    last_heartbeat_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS task_artifacts (
     task_id      TEXT NOT NULL,
     filename     TEXT NOT NULL,

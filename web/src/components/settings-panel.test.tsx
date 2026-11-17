@@ -132,6 +132,8 @@ vi.mock("@/lib/api", () => ({
   getApiToken: vi.fn(() => ""),
   persistApiToken: vi.fn(),
   api: {
+    execution: { nodes: vi.fn().mockResolvedValue({ enabled: false, preferred_worker_id: "", offline_policy: "fallback_server", nodes: [] }) },
+    sync: { pull: vi.fn().mockResolvedValue({ enabled: true, upserted: 0, deleted: 0, skipped: 0 }) },
     settings: {
       get: vi.fn().mockResolvedValue(mockSettings),
       patch: vi.fn().mockImplementation(async (updates: Record<string, unknown>) => ({
@@ -417,9 +419,18 @@ describe("SettingsPanel", () => {
     const nav = await screen.findByRole("navigation", { name: "设置分组" })
     const labels = within(nav).getAllByRole("button").map((button) => button.textContent?.trim())
 
-    expect(labels).toEqual(["常规", "处理流程", "模型服务商", "来源与账号", "存储与网络", "高级"])
+    expect(labels).toEqual(["常规", "处理流程", "模型服务商", "来源与账号", "存储与网络", "多设备与同步", "高级"])
     expect(screen.getByRole("heading", { name: "常规" })).toBeInTheDocument()
     expect(screen.getByText("循环播放")).toBeInTheDocument()
+  })
+
+  it("opens multi-device settings from the settings group", async () => {
+    render(<SettingsPanel />)
+    const nav = await screen.findByRole("navigation", { name: "设置分组" })
+    fireEvent.click(within(nav).getByRole("button", { name: "多设备与同步" }))
+    expect(await screen.findByRole("textbox", { name: "本机节点 ID" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "立即拉取同步" })).toBeInTheDocument()
+    navigate("#/settings", { replace: true })
   })
 
   it("keeps yt-dlp, web scraping and access control under 高级", async () => {
@@ -684,7 +695,7 @@ describe("SettingsPanel on a phone", () => {
 
     const list = await screen.findByRole("list", { name: "设置分组" })
     const labels = within(list).getAllByRole("button").map((button) => button.textContent ?? "")
-    for (const label of ["常规", "处理流程", "模型服务商", "来源与账号", "存储与网络", "高级"]) {
+    for (const label of ["常规", "处理流程", "模型服务商", "来源与账号", "存储与网络", "多设备与同步", "高级"]) {
       expect(labels.some((text) => text.startsWith(label))).toBe(true)
     }
 

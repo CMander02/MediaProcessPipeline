@@ -55,10 +55,11 @@ interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   options: Record<string, unknown>
+  targetWorkerId?: string
   onSubmitted?: (taskId?: string) => void
 }
 
-export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: Props) {
+export function FolderQueueDialog({ open, onOpenChange, options, targetWorkerId, onSubmitted }: Props) {
   const [items, setItems] = useState<BrowseItem[]>([])
   const [drives, setDrives] = useState<BrowseItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -135,7 +136,9 @@ export function FolderQueueDialog({ open, onOpenChange, options, onSubmitted }: 
     for (const file of mediaFiles) {
       if (cancelledRef.current) break
       try {
-        const task = await api.tasks.create(file.path, options)
+        const task = targetWorkerId
+          ? await api.tasks.create(file.path, options, targetWorkerId)
+          : await api.tasks.create(file.path, options)
         firstTaskId ??= task.id
       } catch {
         failed.push(file.name)

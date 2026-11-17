@@ -2,10 +2,12 @@
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
+
+WorkerTarget = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
 
 
 class TaskStatus(StrEnum):
@@ -73,6 +75,7 @@ class TaskCreate(BaseModel):
     source: str
     options: dict[str, Any] = Field(default_factory=dict)
     webhook_url: str | None = None
+    target_worker_id: WorkerTarget | None = None
 
 
 class CollectionFolderImport(BaseModel):
@@ -85,6 +88,7 @@ class TaskBatchCreate(BaseModel):
     sources: list[str] = Field(min_length=1, max_length=100)
     options: dict[str, Any] = Field(default_factory=dict)
     webhook_url: str | None = None
+    target_worker_id: WorkerTarget | None = None
     folder_id: str | None = None
     move_existing: bool = False
     collection_folders: list[CollectionFolderImport] = Field(default_factory=list, max_length=100)

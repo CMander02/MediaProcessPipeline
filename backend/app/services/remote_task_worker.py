@@ -14,7 +14,7 @@ from app.core.network import httpx_client_kwargs
 from app.core.paths import get_workspace_paths
 from app.core.queue import get_task_queue
 from app.core.settings import get_runtime_settings
-from app.core.workspace_lifecycle import uses_workspace
+from app.core.workspace_lifecycle import run_in_thread, uses_workspace
 from app.models import Task, TaskStatus
 from app.services.remote_archive_upload import RemoteArchiveUploadService, _normalized_server_url
 
@@ -54,6 +54,7 @@ class RemoteTaskWorker:
 
     @uses_workspace
     async def tick(self, settings):
+        await run_in_thread(execution.host_capabilities)
         server = _normalized_server_url(settings.remote_server_url)
         store = get_task_store()
         queue = get_task_queue()
@@ -76,7 +77,7 @@ class RemoteTaskWorker:
                          if key in {"id", "status", "progress", "current_step", "completed_steps", "message", "error"}}
                 state["attempt"] = origin["attempt"]
             response = await client.post(server + "/api/execution/poll", json={
-                "worker_id": settings.remote_worker_id, "state": state,
+                "worker_id": execution.worker_identity(settings), **execution.worker_metadata(settings), "state": state,
                 "capacity": task is None and not queue.active_task_ids and not queue.pending_count})
             response.raise_for_status()
             payload = response.json()
@@ -121,7 +122,7 @@ class RemoteTaskWorker:
                 if upload.done():
                     break
                 response = await client.post(server + "/api/execution/poll", json={
-                    "worker_id": settings.remote_worker_id, "capacity": False,
+                    "worker_id": execution.worker_identity(settings), **execution.worker_metadata(settings), "capacity": False,
                     "state": {**state, "message": "正在回传归档"}})
                 response.raise_for_status()
                 if response.json().get("command") != "processing":
@@ -155,7 +156,7 @@ class RemoteTaskWorker:
             part = target.with_suffix(target.suffix + ".part")
             try:
                 async with client.stream("GET", server + f"/api/execution/tasks/{assigned.id}/source",
-                    params={"worker_id": settings.remote_worker_id, "attempt": marker["attempt"]},
+                    params={"worker_id": execution.worker_identity(settings), "attempt": marker["attempt"]},
                     timeout=httpx.Timeout(3600, connect=15)) as response:
                     response.raise_for_status()
                     with part.open("wb") as output:

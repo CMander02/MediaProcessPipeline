@@ -22,7 +22,7 @@ def setup(tmp_path, monkeypatch):
     runtime = RuntimeSettings(data_root=str(tmp_path), remote_execution_enabled=True,
         remote_worker_id="desktop", remote_worker_name="Desktop")
     monkeypatch.setattr(settings_module, "_runtime_settings", runtime)
-    monkeypatch.setattr(execution, "_last_seen", 0)
+    monkeypatch.setattr(execution, "_server_started_at", 0)
     database.reset_db_path(tmp_path)
     app = FastAPI()
     app.include_router(route.router, prefix="/api")

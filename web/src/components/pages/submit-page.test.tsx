@@ -48,6 +48,7 @@ async function showCollection(data: BilibiliCollectionResult) {
 const openCollection = () => fireEvent.click(screen.getByRole("button", { name: /选择其他视频/ }))
 
 beforeEach(() => {
+  vi.spyOn(api.execution, "nodes").mockResolvedValue({ enabled: false, preferred_worker_id: "", offline_policy: "fallback_server", nodes: [] })
   vi.spyOn(api.settings, "get").mockResolvedValue({} as never)
   vi.spyOn(api.tasks, "list").mockResolvedValue([])
   vi.spyOn(api.archives, "lookup").mockResolvedValue({ matches: {} })
@@ -283,5 +284,52 @@ describe("submission", () => {
     expect(api.tasks.importSources).toHaveBeenCalledWith(["C:/media/local.mp3", "C:/staging/video.mp4"], { force_asr: false, workflow: DEFAULT_WORKFLOW })
     expect(screen.getByText("video.mp4")).toBeInTheDocument()
     expect(linkBox()).toHaveValue("C:/media/local.mp3")
+  })
+})
+
+
+describe("execution device selection", () => {
+  const enableNodes = () => vi.mocked(api.execution.nodes).mockResolvedValue({
+    enabled: true, preferred_worker_id: "pc", offline_policy: "fallback_server",
+    nodes: [
+      { node_id: "pc", display_name: "台式机", platform: "windows", compute_devices: ["cpu", "cuda"], capabilities: {}, busy: false, online: true, last_heartbeat_at: 100, updated_at: 100 },
+      { node_id: "mac", display_name: "笔记本", platform: "macos", compute_devices: ["cpu", "metal"], capabilities: {}, busy: false, online: false, last_heartbeat_at: 1, updated_at: 1 },
+    ],
+  })
+
+  it("hides execution selection when remote execution is disabled and no node is available", async () => {
+    render(<SubmitPage />)
+    await waitFor(() => expect(api.execution.nodes).toHaveBeenCalledOnce())
+    expect(screen.queryByRole("combobox", { name: "执行设备" })).not.toBeInTheDocument()
+  })
+
+  it.each(["pc", "mac", "local"])("sends target %s for imported links", async (target) => {
+    enableNodes()
+    render(<SubmitPage />)
+    const selector = await screen.findByRole("combobox", { name: "执行设备" })
+    expect(within(selector).getByRole("option", { name: "笔记本（离线）" })).toBeInTheDocument()
+    fireEvent.change(selector, { target: { value: target } })
+    enter("https://example.com/routed")
+    await submit()
+    await waitFor(() => expect(api.tasks.importSources).toHaveBeenCalledWith(["https://example.com/routed"], { force_asr: false, workflow: DEFAULT_WORKFLOW }, {}, target))
+  })
+
+  it("sends selected execution device for uploaded files and local paths", async () => {
+    enableNodes()
+    const createElement = document.createElement.bind(document)
+    vi.spyOn(document, "createElement").mockImplementation((name, options) => {
+      const element = createElement(name, options)
+      if (name === "video") queueMicrotask(() => element.dispatchEvent(new Event("error")))
+      return element
+    })
+    vi.spyOn(api.pipeline, "stage").mockResolvedValue({ staging_id: "routed-upload", path: "/staging/routed.mp4", filename: "routed.mp4", title: "routed", size: 5, media_type: "video" })
+    const { container } = render(<SubmitPage />)
+    fireEvent.change(await screen.findByRole("combobox", { name: "执行设备" }), { target: { value: "pc" } })
+    enter("/media/local.mp3")
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [new File(["video"], "routed.mp4", { type: "video/mp4" })] } })
+    await waitFor(() => expect(api.pipeline.stage).toHaveBeenCalledOnce())
+    await waitFor(() => expect(screen.queryByText("上传中…")).not.toBeInTheDocument())
+    await submit()
+    await waitFor(() => expect(api.tasks.importSources).toHaveBeenCalledWith(["/media/local.mp3", "/staging/routed.mp4"], { force_asr: false, workflow: DEFAULT_WORKFLOW }, {}, "pc"))
   })
 })

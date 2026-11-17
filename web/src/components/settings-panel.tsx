@@ -10,6 +10,7 @@ import { api, type BilibiliAuthStatus, type Settings, type TwitterAuthStatus, ty
 import { usePreferences } from "@/hooks/use-preferences"
 import { systemNotificationsAvailable } from "@/hooks/use-task-notifications"
 import { OptionSelect, ProxySetting, SettingRow } from "@/components/settings/setting-controls"
+import { MultiDeviceSettings } from "@/components/settings/multi-device"
 import { LibraryLocation } from "@/components/settings/library-location"
 import { SourceOverview } from "@/components/settings/source-overview"
 import { SettingsSaveErrors } from "@/components/settings/save-errors"
@@ -31,7 +32,7 @@ import { buildHash, navigate, useRoute } from "@/lib/router"
 
 // --- Groups ---
 
-type GroupId = "general" | "pipeline" | "providers" | "sources" | "storage" | "advanced"
+type GroupId = "general" | "pipeline" | "providers" | "sources" | "storage" | "devices" | "advanced"
 
 interface SectionDef {
   id: string
@@ -105,6 +106,12 @@ const GROUPS: GroupDef[] = [
       { id: "network", title: "网络", keywords: "网络 代理 proxy 系统代理 无代理 自定义 SOCKS" },
       { id: "queue", title: "队列", keywords: "队列 并行下载数 VLM 并发 VLM 超时" },
     ],
+  },
+  {
+    id: "devices",
+    label: "多设备与同步",
+    description: "连接远程服务器、同步文本归档并选择任务执行节点。",
+    sections: [{ id: "multi-device", title: "多设备与同步", mobile: true, keywords: "远程服务器 Token 节点 ID 名称 同步 上传 下载 算力 在线 离线 默认优先 执行设备 拉取" }],
   },
   {
     id: "advanced",
@@ -443,6 +450,8 @@ export function SettingsPanel() {
 
   const sectionContent = (id: string): ReactNode => {
     switch (id) {
+      case "multi-device":
+        return <MultiDeviceSettings {...sourceProps} mobile={platform.isNative || narrow} />
       case "appearance":
         return (
           <Card>

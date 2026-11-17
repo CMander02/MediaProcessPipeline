@@ -62,3 +62,10 @@ describe("createCustomProfileMirrorPatch", () => {
     })
   })
 })
+
+
+it("does not send the masked remote server token back to settings", () => {
+  expect(createSettingsPatch({ remote_api_token: "***...abcd", remote_server_url: "https://example.com" }))
+    .toEqual({ remote_server_url: "https://example.com" })
+  expect(createSettingsPatch({ remote_api_token: "new-token" })).toEqual({ remote_api_token: "new-token" })
+})

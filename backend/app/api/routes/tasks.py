@@ -71,6 +71,10 @@ def _prepare_task(task_create: TaskCreate, request: Request, source: str) -> tup
         options = snapshot_workflow(task_create.options, runtime)
     except ValidationError as exc:
         raise HTTPException(422, detail="Invalid workflow options") from exc
+    from app.core.remote_execution import KEY
+    options.pop(KEY, None)
+    if task_create.target_worker_id is not None:
+        options[KEY] = {"target_worker_id": task_create.target_worker_id}
     if (
         _looks_like_local_path(source)
         and not filesystem_access_allowed(request, runtime)
@@ -193,6 +197,7 @@ async def create_tasks_batch(batch_create: TaskBatchCreate, request: Request):
                     source=source,
                     options=batch_create.options,
                     webhook_url=batch_create.webhook_url,
+                    target_worker_id=batch_create.target_worker_id,
                 ),
                 request,
             )
@@ -247,6 +252,7 @@ async def import_tasks(batch_create: TaskBatchCreate, request: Request):
             task, metadata = await run_in_thread(_prepare_task, TaskCreate(
                 task_type=batch_create.task_type, source=normalized,
                 options=batch_create.options, webhook_url=batch_create.webhook_url,
+                target_worker_id=batch_create.target_worker_id,
             ), request, normalized)
             request_key = content_key or normalized
             if request_key in seen:

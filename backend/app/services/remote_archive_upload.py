@@ -9,7 +9,6 @@ import json
 import logging
 import re
 import shutil
-import socket
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Callable
@@ -243,10 +242,8 @@ class RemoteArchiveUploadService:
             archive_sha256 = await run_in_thread(_sha256, zip_path)
             task_payload = task.model_dump(mode="json")
             task_payload["result"] = _portable_result(task.result)
-            worker_id = (
-                str(settings.remote_worker_id or "").strip()
-                or f"desktop-{socket.gethostname().strip() or 'mpp'}"
-            )
+            from app.core.remote_execution import worker_identity
+            worker_id = worker_identity(settings)
             headers = {
                 "User-Agent": "MPP-Remote-Archive-Upload/1",
                 "X-Requested-With": "MPP-Remote-Sync",

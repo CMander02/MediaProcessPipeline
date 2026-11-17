@@ -135,3 +135,24 @@ describe("API client", () => {
     )
   })
 })
+
+
+describe("execution routing payload", () => {
+  it("serializes task, batch and import execution targets at the request boundary", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("{}", { status: 200 }))
+    await api.tasks.create("/source.mp4", {}, "pc")
+    await api.tasks.createBatch(["/source.mp4"], {}, "local")
+    await api.tasks.importSources(["https://example.com"], {}, { folder_id: null }, "mac")
+    expect(fetchMock.mock.calls.map(([, options]) => JSON.parse(String(options?.body)))).toEqual([
+      { task_type: "pipeline", source: "/source.mp4", options: {}, target_worker_id: "pc" },
+      { task_type: "pipeline", sources: ["/source.mp4"], options: {}, target_worker_id: "local" },
+      { sources: ["https://example.com"], options: {}, folder_id: null, target_worker_id: "mac" },
+    ])
+  })
+
+  it("omits the execution target when following server defaults", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("{}", { status: 200 }))
+    await api.tasks.importSources(["https://example.com"])
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).not.toHaveProperty("target_worker_id")
+  })
+})

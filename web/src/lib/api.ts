@@ -4,9 +4,28 @@
  */
 
 import { createSettingsPatch, type SettingsPatchInput } from "./settings-patch"
-import type { DeviceValue, ProviderConfig, ProviderModelRecord, RuntimeSettings } from "./settings-schema"
+import type { DeviceValue, ProviderConfig, ProviderModelRecord, RemoteOfflinePolicy, RuntimeSettings } from "./settings-schema"
 import type { ArchivePage, ArchiveQuery, ArchiveIndexStatus } from "@/repositories/archive-types"
 import type { LibraryDirectory, LibraryFolder, BatchAction, BatchScope, BatchPreview, BatchTarget, ImportDestination } from "./library-types"
+
+export interface ExecutionNode {
+  node_id: string
+  display_name: string
+  platform: string
+  compute_devices: string[]
+  capabilities: Record<string, unknown>
+  busy: boolean
+  last_heartbeat_at: number
+  updated_at: number
+  online: boolean
+}
+
+export interface ExecutionNodesResponse {
+  enabled: boolean
+  preferred_worker_id: string
+  offline_policy: RemoteOfflinePolicy
+  nodes: ExecutionNode[]
+}
 
 export interface Task {
   id: string
@@ -635,13 +654,17 @@ export const api = {
 
   capabilities: () => get<Capabilities>("/api/capabilities"),
 
+  execution: {
+    nodes: () => get<ExecutionNodesResponse>("/api/execution/nodes"),
+  },
+
   tasks: {
-    create: (source: string, options: Record<string, unknown> = {}) =>
-      post<Task>("/api/tasks", { task_type: "pipeline", source, options }),
-    createBatch: (sources: string[], options: Record<string, unknown> = {}) =>
-      post<Task[]>("/api/tasks/batch", { task_type: "pipeline", sources, options }),
-    importSources: (sources: string[], options: Record<string, unknown> = {}, destination: ImportDestination = {}) =>
-      post<{ items: ImportItemResult[] }>("/api/tasks/import", { sources, options, ...destination }),
+    create: (source: string, options: Record<string, unknown> = {}, targetWorkerId?: string) =>
+      post<Task>("/api/tasks", { task_type: "pipeline", source, options, target_worker_id: targetWorkerId }),
+    createBatch: (sources: string[], options: Record<string, unknown> = {}, targetWorkerId?: string) =>
+      post<Task[]>("/api/tasks/batch", { task_type: "pipeline", sources, options, target_worker_id: targetWorkerId }),
+    importSources: (sources: string[], options: Record<string, unknown> = {}, destination: ImportDestination = {}, targetWorkerId?: string) =>
+      post<{ items: ImportItemResult[] }>("/api/tasks/import", { sources, options, ...destination, target_worker_id: targetWorkerId }),
     list: (status?: string, limit = 50) => {
       const params = new URLSearchParams({ limit: String(limit) })
       if (status) params.set("status", status)
@@ -752,6 +775,10 @@ export const api = {
   },
 
   sync: {
+    pull: () => post<
+      | { enabled: true; upserted: number; deleted: number; skipped: number }
+      | { enabled: false; reason?: "self_workspace"; upserted: 0; deleted: 0; skipped: 0 }
+    >("/api/sync/pull"),
     status: () => get<{ workspace_id: string; revision: number }>("/api/sync/status"),
     changes: (cursor = 0, limit = 100) =>
       get<{ changes: SyncChange[]; next_cursor: number; has_more: boolean; server_revision: number }>(
