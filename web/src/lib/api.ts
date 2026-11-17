@@ -4,7 +4,7 @@
  */
 
 import { createSettingsPatch, type SettingsPatchInput } from "./settings-patch"
-import type { ProviderConfig, ProviderModelRecord, RuntimeSettings } from "./settings-schema"
+import type { DeviceValue, ProviderConfig, ProviderModelRecord, RuntimeSettings } from "./settings-schema"
 import type { ArchivePage, ArchiveQuery, ArchiveIndexStatus } from "@/repositories/archive-types"
 import type { LibraryDirectory, LibraryFolder, BatchAction, BatchScope, BatchPreview, BatchTarget, ImportDestination } from "./library-types"
 
@@ -269,7 +269,7 @@ export interface Settings extends RuntimeSettings {
   qwen3_aligner_model_path: string
   llama_cpp_binary_path: string
   uvr_model: string
-  uvr_device: "cuda" | "cpu"
+  uvr_device: DeviceValue
   uvr_model_dir: string
   uvr_mdx_inst_hq3_path: string
   uvr_hp_uvr_path: string
@@ -412,6 +412,7 @@ export interface AuthStatus {
 }
 
 export interface Capabilities {
+  compute_capabilities?: ComputeCapabilities
   mode: "local" | "remote"
   authenticated: boolean
   url_submission: boolean
@@ -423,6 +424,14 @@ export interface Capabilities {
   local_path_submission: boolean
   open_local_folder: boolean
   archive_mutation: boolean
+}
+
+export interface ComputeCapabilities {
+  cuda_available: boolean
+  mps_available: boolean
+  metal_available: boolean
+  recommended_gpu_backend: "cuda" | "mps" | "metal" | null
+  component_gpu_backends?: Partial<Record<"uvr" | "sherpa_onnx" | "llama_cpp" | "moss_cpp" | "torch" | "transformers", "cuda" | "mps" | "metal" | null>>
 }
 
 export interface SyncChange {

@@ -10,6 +10,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
+from app.core.compute_device import detect_compute_capabilities, resolve_compute_device
 from app.services.recognition.sherpa_catalog import SherpaModelSpec
 
 logger = logging.getLogger(__name__)
@@ -67,8 +68,6 @@ class SherpaRuntime:
     ) -> tuple[Any, SherpaRuntimeInfo]:
         with self._lock:
             requested_device = options.device
-            if requested_device == "auto":
-                requested_device = str(spec.defaults.get("device") or "auto")
             providers = self._provider_candidates(requested_device)
             model_files = tuple(
                 sorted(
@@ -84,6 +83,7 @@ class SherpaRuntime:
             manifest = spec.directory / "manifest.json"
             key_base = (
                 spec.id,
+                providers,
                 model_files,
                 manifest.stat().st_mtime_ns,
                 max(1, int(options.num_threads)),
@@ -146,19 +146,8 @@ class SherpaRuntime:
 
     @staticmethod
     def _provider_candidates(device: str) -> tuple[str, ...]:
-        normalized = str(device or "auto").strip().lower()
-        if normalized == "auto":
-            try:
-                import sherpa_onnx
-
-                if "+cuda" in str(sherpa_onnx.__version__).lower():
-                    return ("cuda", "cpu")
-            except ImportError:
-                pass
-            return ("cpu",)
-        if normalized not in {"cpu", "cuda"}:
-            raise ValueError("sherpa_device must be one of: auto, cuda, cpu")
-        return (normalized,)
+        resolved = resolve_compute_device(device or "auto", "sherpa_onnx", detect_compute_capabilities())
+        return ("cuda", "cpu") if device == "auto" and resolved == "cuda" else (resolved,)
 
     @staticmethod
     def _create(

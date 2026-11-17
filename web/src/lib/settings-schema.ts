@@ -4,7 +4,7 @@ export type DeepSeekStage = (typeof DEEPSEEK_STAGES)[number]
 export type LlmProvider = "local" | "deepseek" | "custom" | "anthropic" | "openai"
 export type AsrProvider = "moss_cpp" | "llama_cpp" | "sherpa_onnx" | "siliconflow"
 export type AudioProcessingFlow = "asr" | "moss"
-export type DeviceValue = "cuda" | "cpu" | "auto"
+export type DeviceValue = "auto" | "gpu" | "cpu" | "cuda" | "mps" | "metal"
 export type ModelCapability = "llm" | "vlm" | "chat" | "fast" | "thinking" | "reasoning" | "vision" | "asr" | "embedding" | "rerank" | "local" | "json"
 export type ServiceModelType = "llm" | "vlm" | "embedding" | "rerank" | "asr"
 export type ModelStage = DeepSeekStage | "asr" | "vision" | "embedding"
@@ -117,7 +117,7 @@ export interface RuntimeSettings {
   sherpa_model_id?: string
   llama_asr_model_path?: string
   llama_asr_mmproj_path?: string
-  llama_asr_device?: string
+  llama_asr_device?: DeviceValue | string
   llama_asr_concurrency?: number
   llama_asr_max_new_tokens?: number
   llama_asr_timeout_sec?: number
@@ -130,9 +130,11 @@ export interface RuntimeSettings {
   sherpa_debug?: boolean
   asr_timestamp_mode?: "auto" | "native" | "vad" | "qwen_forced" | string
   qwen3_aligner_model_path?: string
+  aligner_device?: DeviceValue | string
+  pyannote_device?: DeviceValue | string
   llama_cpp_binary_path?: string
   uvr_model?: string
-  uvr_device?: Exclude<DeviceValue, "auto"> | string
+  uvr_device?: DeviceValue | string
   uvr_model_dir?: string
   uvr_mdx_inst_hq3_path?: string
   uvr_hp_uvr_path?: string

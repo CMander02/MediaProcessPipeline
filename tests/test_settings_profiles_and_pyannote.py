@@ -19,9 +19,9 @@ def test_pyannote_device_is_independent_of_sherpa_device():
     settings = RuntimeSettings(pyannote_device=" MPS ", sherpa_device="cpu")
     assert settings.pyannote_device == "mps"
     assert settings.sherpa_device == "cpu"
-    assert RuntimeSettings().pyannote_device == ""
+    assert RuntimeSettings().pyannote_device == "auto"
     with pytest.raises(ValueError, match="pyannote_device"):
-        RuntimeSettings(pyannote_device="metal")
+        RuntimeSettings(pyannote_device="invalid")
 
 
 def test_custom_profile_state_normalizes_active_profile():

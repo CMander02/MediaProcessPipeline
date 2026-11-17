@@ -8,6 +8,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
+from app.core.compute_device import detect_compute_capabilities, resolve_compute_device
+
 logger = logging.getLogger(__name__)
 
 _LANGUAGE_NAMES = {
@@ -80,9 +82,7 @@ class QwenForcedAlignerRuntime:
         resolved = Path(model_path).expanduser().resolve()
         if not resolved.is_dir():
             raise FileNotFoundError(f"Qwen3 ForcedAligner model not found: {resolved}")
-        normalized_device = str(device or "auto").strip().lower()
-        if normalized_device == "auto":
-            normalized_device = "cuda" if self._cuda_available() else "cpu"
+        normalized_device = resolve_compute_device(device or "auto", "torch", detect_compute_capabilities())
         key = (str(resolved), normalized_device)
         with self._lock:
             if self._aligner is not None and self._key == key:
@@ -122,14 +122,6 @@ class QwenForcedAlignerRuntime:
             except ImportError:
                 pass
 
-    @staticmethod
-    def _cuda_available() -> bool:
-        try:
-            import torch
-
-            return bool(torch.cuda.is_available())
-        except ImportError:
-            return False
 
 
 _runtime = QwenForcedAlignerRuntime()

@@ -5,6 +5,7 @@ import { type SharedSettingsProps, type LocalModelSettingsProps } from "./types"
 import { SelectSettingRow, SwitchSettingRow, AdvancedSettings, NumberSettingRow } from "./controls"
 import { workflowDefaults } from "@/lib/workflow"
 import { getRuntimeModelBindings } from "./registry-utils"
+import { DeviceSettingRow } from "./device-setting-row"
 
 export function AudioFlowControls({
   settings,
@@ -71,15 +72,11 @@ export function AudioFlowControls({
             title="选择 MOSS GGUF 模型"
             pickerLabel="选择文件"
           />
-          <SelectSettingRow
-            label="运行设备"
+          <DeviceSettingRow
+            component="moss_cpp"
             value={String(settings.moss_cpp_device ?? "auto")}
             onChange={(value) => updateSetting("moss_cpp_device", value)}
-          >
-            <option value="auto">自动</option>
-            <option value="cuda">CUDA</option>
-            <option value="cpu">CPU</option>
-          </SelectSettingRow>
+          />
           <AdvancedSettings>
             <NumberSettingRow label="CPU 线程" settingKey="moss_cpp_threads" fallback={8} {...{ settings, updateSetting, saving, saved }} />
             <NumberSettingRow label="最大输出" settingKey="moss_cpp_max_new_tokens" fallback={8192} {...{ settings, updateSetting, saving, saved }} />
@@ -110,6 +107,7 @@ export function VocalSeparationControls({
     ["UVR-DeEcho-DeReverb", "uvr_deecho_dereverb_path"],
     ["htdemucs", "uvr_htdemucs_path"],
   ] as const
+  const model = String(settings.uvr_model ?? "UVR-MDX-NET-Inst_HQ_3")
 
   return (
     <div>
@@ -119,7 +117,7 @@ export function VocalSeparationControls({
       >
         <SelectSettingRow
           label="默认模型"
-          value={String(settings.uvr_model ?? "UVR-MDX-NET-Inst_HQ_3")}
+          value={model}
           onChange={(value) => updateSetting("uvr_model", value)}
         >
           {modelPaths.map(([model]) => <option key={model} value={model}>{model}</option>)}
@@ -160,14 +158,11 @@ export function VocalSeparationControls({
       </SettingsSection>
 
       <SettingsSection title="运行" description="配置人声分离使用的设备和长音频分段长度。">
-        <SelectSettingRow
-          label="运行设备"
-          value={String(settings.uvr_device ?? "cuda")}
+        <DeviceSettingRow
+          component={model.startsWith("UVR-MDX") ? "uvr" : "torch"}
+          value={String(settings.uvr_device ?? "auto")}
           onChange={(value) => updateSetting("uvr_device", value)}
-        >
-          <option value="cuda">CUDA</option>
-          <option value="cpu">CPU</option>
-        </SelectSettingRow>
+        />
         <NumberSettingRow label="分段时长（秒）" settingKey="uvr_chunk_duration_sec" fallback={300} {...{ settings, updateSetting, saving, saved }} />
       </SettingsSection>
     </div>
@@ -211,10 +206,8 @@ export function AsrSettingsControls({
               value={String(settings.llama_asr_mmproj_path ?? "")} onSave={updateSetting}
               saving={saving} saved={saved} placeholder="mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"
               title="选择与 ASR 模型配套的 mmproj" pickerLabel="选择文件" />
-            <SelectSettingRow label="运行设备" value={String(settings.llama_asr_device ?? "auto")}
-              onChange={(value) => updateSetting("llama_asr_device", value)}>
-              <option value="auto">自动</option><option value="cuda">CUDA</option><option value="cpu">CPU</option>
-            </SelectSettingRow>
+            <DeviceSettingRow component="llama_cpp" value={String(settings.llama_asr_device ?? "auto")}
+              onChange={(value) => updateSetting("llama_asr_device", value)} />
             <NumberSettingRow label="分段并发数" settingKey="llama_asr_concurrency" fallback={8} {...{ settings, updateSetting, saving, saved }} />
             <AdvancedSettings>
               <NumberSettingRow label="分段输出上限" settingKey="llama_asr_max_new_tokens" fallback={512} {...{ settings, updateSetting, saving, saved }} />
@@ -257,15 +250,11 @@ export function AsrSettingsControls({
               title="选择 sherpa-onnx 模型根目录"
               pickerLabel="选择文件夹"
             />
-            <SelectSettingRow
-              label="运行设备"
+            <DeviceSettingRow
+              component="sherpa_onnx"
               value={String(settings.sherpa_device ?? "auto")}
               onChange={(value) => updateSetting("sherpa_device", value)}
-            >
-              <option value="auto">自动</option>
-              <option value="cuda">CUDA</option>
-              <option value="cpu">CPU</option>
-            </SelectSettingRow>
+            />
           </>
         ) : (
           <SettingRow
@@ -314,6 +303,9 @@ export function AsrSettingsControls({
               title="选择 Qwen3 ForcedAligner 模型目录"
               pickerLabel="选择文件夹"
             />
+            <DeviceSettingRow component="torch" label="对齐设备"
+              value={String(settings.aligner_device ?? "auto")}
+              onChange={(value) => updateSetting("aligner_device", value)} />
             <AdvancedSettings>
               <SelectSettingRow
                 label="切分策略"
@@ -334,6 +326,9 @@ export function AsrSettingsControls({
           </SettingsSection>
 
           <SettingsSection title="说话人模型" description="配置 pyannote 本地模型。开关在上面的「音频流程」里。">
+            <DeviceSettingRow component="torch" label="分离设备"
+              value={String(settings.pyannote_device || "auto")}
+              onChange={(value) => updateSetting("pyannote_device", value)} />
             <PathPickerRow
               label="说话人分离"
               settingKey="pyannote_model_path"
@@ -390,11 +385,9 @@ export function LocalLlmSettingsControls({ settings, updateSetting, saving, save
           <option value="transformers">Transformers · Hugging Face</option>
         </SelectSettingRow>
         <SettingRow label="名称" settingKey="local_llm_name" value={String(settings.local_llm_name ?? "Local LLM")} onSave={updateSetting} saving={saving} saved={saved} />
-        <SelectSettingRow label="运行设备" value={String(settings.local_llm_device ?? "auto")} onChange={(value) => updateSetting("local_llm_device", value)}>
-          <option value="auto">自动</option>
-          <option value="cuda">CUDA</option>
-          <option value="cpu">CPU</option>
-        </SelectSettingRow>
+        <DeviceSettingRow component={engine === "llama_cpp" ? "llama_cpp" : "transformers"}
+          value={String(settings.local_llm_device ?? "auto")}
+          onChange={(value) => updateSetting("local_llm_device", value)} />
         {engine === "llama_cpp" ? (
           <div className="pl-[6.75rem]">
             <Button

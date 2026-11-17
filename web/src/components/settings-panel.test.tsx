@@ -541,7 +541,8 @@ describe("SettingsPanel", () => {
     expect(screen.queryByText("Local LLM Server")).not.toBeInTheDocument()
 
     expect(screen.getByRole("heading", { name: "人声分离" })).toBeInTheDocument()
-    expect(screen.getByLabelText("默认模型")).toHaveTextContent("UVR-MDX-NET-Inst_HQ_3")
+    expect(within(screen.getByRole("region", { name: "人声分离" })).getByLabelText("默认模型"))
+      .toHaveTextContent("UVR-MDX-NET-Inst_HQ_3")
     expect(screen.getByRole("button", { name: "检查本机 UVR" })).toBeInTheDocument()
 
     expect(screen.getByRole("heading", { name: "语音识别" })).toBeInTheDocument()

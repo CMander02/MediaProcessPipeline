@@ -11,6 +11,7 @@ from typing import Any, Callable
 os.environ.setdefault("LITELLM_LOG", "WARNING")
 
 from app.core.async_utils import cancel_and_wait, gather_cancel_on_error
+from app.core.compute_device import detect_compute_capabilities, resolve_compute_device
 from app.core.config import get_settings
 from app.core.logging_setup import log_event
 from app.core.settings import get_runtime_settings
@@ -87,6 +88,7 @@ def _is_retryable_llm_error(error: BaseException) -> bool:
 # ---------------------------------------------------------------------------
 _local_llm: Any = None  # dict: {"model": ..., "tokenizer": ...}
 _local_llm_path: str = ""  # path that was used to load the model
+_local_llm_config: tuple[str, str] | None = None
 _local_llm_lock: asyncio.Lock | None = None
 _local_llm_infer_lock: asyncio.Lock | None = None
 
@@ -122,7 +124,7 @@ def _resolve_dtype(name: str):
     return mapping.get(name.lower() if name else "", torch.bfloat16)
 
 
-def _load_local_llm(model_path: str, device: str = "cuda", dtype: str = "bfloat16") -> Any:
+def _load_local_llm(model_path: str, device: str = "auto", dtype: str = "bfloat16") -> Any:
     """Load HF model from a local directory via transformers (blocking).
 
     Supports both text-only and VL/multimodal checkpoints — we auto-pick the
@@ -172,7 +174,7 @@ def _load_local_llm(model_path: str, device: str = "cuda", dtype: str = "bfloat1
 
         ModelCls = AutoModelForCausalLM
 
-    device_map = device if device else "auto"
+    device_map = resolve_compute_device(device or "auto", "transformers", detect_compute_capabilities())
     model = ModelCls.from_pretrained(
         model_path,
         torch_dtype=torch_dtype,
@@ -192,11 +194,12 @@ def _load_local_llm(model_path: str, device: str = "cuda", dtype: str = "bfloat1
 
 def offload_local_llm() -> None:
     """Release the local HF model and free VRAM. Safe to call multiple times."""
-    global _local_llm, _local_llm_path
+    global _local_llm, _local_llm_path, _local_llm_config
     if _local_llm is not None:
         log_event(logger, logging.INFO, "llm.local.offload_started")
         _local_llm = None
         _local_llm_path = ""
+        _local_llm_config = None
         try:
             import gc
 
@@ -264,7 +267,7 @@ class LLMService:
 
     async def _call_local(self, prompt: str, system_prompt: str = "") -> str:
         """Call local HF model (transformers). Loads on first call; serialised via lock."""
-        global _local_llm, _local_llm_path
+        global _local_llm, _local_llm_path, _local_llm_config
         rt = get_runtime_settings()
         model_path = rt.local_llm_model_path
 
@@ -276,12 +279,14 @@ class LLMService:
         load_lock = _get_local_llm_lock()
         infer_lock = _get_local_llm_infer_lock()
 
+        device = resolve_compute_device(
+            getattr(rt, "local_llm_device", "auto") or "auto", "transformers", detect_compute_capabilities(),
+        )
+        dtype = getattr(rt, "local_llm_dtype", "bfloat16") or "bfloat16"
         async with load_lock:
-            if _local_llm is None or _local_llm_path != model_path:
+            if _local_llm is None or _local_llm_path != model_path or _local_llm_config != (device, dtype):
                 if _local_llm is not None:
                     offload_local_llm()
-                device = getattr(rt, "local_llm_device", "cuda") or "cuda"
-                dtype = getattr(rt, "local_llm_dtype", "bfloat16") or "bfloat16"
                 _local_llm = await loop.run_in_executor(
                     None,
                     _load_local_llm,
@@ -290,6 +295,7 @@ class LLMService:
                     dtype,
                 )
                 _local_llm_path = model_path
+                _local_llm_config = (device, dtype)
 
             state = _local_llm
             temperature = self._static_settings.temperature

@@ -141,7 +141,7 @@ class RuntimeSettings(BaseModel):
     # Qwen3-ASR GGUF, served by an ASR-owned llama.cpp process.
     llama_asr_model_path: str = ""
     llama_asr_mmproj_path: str = ""
-    llama_asr_device: Literal["auto", "cuda", "cpu"] = "auto"
+    llama_asr_device: str = "auto"
     llama_asr_concurrency: int = Field(default=8, ge=1, le=16)
     llama_asr_max_new_tokens: int = Field(default=512, ge=128, le=4096)
     llama_asr_timeout_sec: float = Field(default=120.0, gt=0)
@@ -158,6 +158,7 @@ class RuntimeSettings(BaseModel):
     asr_timestamp_mode: str = "auto"  # auto | native | vad | qwen_forced
     # Optional Safetensors model used as a postprocessor for any sherpa transcript.
     qwen3_aligner_model_path: str = ""
+    aligner_device: str = "auto"
 
     # Shared llama.cpp binary remains available to local LLM and VLM services.
     llama_cpp_binary_path: str = ""
@@ -195,8 +196,7 @@ class RuntimeSettings(BaseModel):
     pyannote_model_path: str = ""
     pyannote_segmentation_path: str = ""
     pyannote_embedding_path: str = ""
-    # Empty preserves legacy sherpa_device selection; MPS is PyTorch's Apple GPU backend.
-    pyannote_device: str = ""
+    pyannote_device: str = "auto"
     diarization_batch_size: int = 16
     diarization_clustering_strategy: Literal["largest", "native", "diverse", "kmeans++"] = "largest"
     diarization_clustering_threshold: float | None = Field(default=None, ge=0, le=2)
@@ -214,7 +214,7 @@ class RuntimeSettings(BaseModel):
 
     # UVR
     uvr_model: str = "UVR-MDX-NET-Inst_HQ_3"
-    uvr_device: str = "cuda"
+    uvr_device: str = "auto"
     uvr_model_dir: str = ""
     uvr_mdx_inst_hq3_path: str = ""
     uvr_hp_uvr_path: str = ""
@@ -232,7 +232,7 @@ class RuntimeSettings(BaseModel):
     local_llm_name: str = "Local LLM"
     local_llm_model_path: str = ""  # HF model directory or GGUF file
     local_llm_mmproj_path: str = ""  # llama.cpp multimodal projector
-    local_llm_device: str = "cuda"  # "cuda" | "cpu" | "auto"
+    local_llm_device: str = "auto"
     local_llm_dtype: str = "bfloat16"  # "bfloat16" | "float16" | "float32" | "auto"
     local_llm_max_new_tokens: int = 4096  # Cap per generate() call
     local_llm_thinking: bool = False  # llama.cpp text analysis; polish always disables thinking
@@ -397,13 +397,16 @@ class RuntimeSettings(BaseModel):
             raise ValueError("audio_processing_flow must be one of: asr, moss")
         return flow
 
-    @field_validator("moss_cpp_device")
+    @field_validator(
+        "llama_asr_device", "sherpa_device", "moss_cpp_device", "uvr_device",
+        "pyannote_device", "aligner_device", "local_llm_device",
+    )
     @classmethod
-    def _validate_moss_cpp_device(cls, value: str) -> str:
+    def _validate_compute_device(cls, value: str) -> str:
         device = value.strip().lower()
-        if device not in {"auto", "cuda", "cpu"}:
-            raise ValueError("moss_cpp_device must be one of: auto, cuda, cpu")
-        return device
+        if device not in {"", "auto", "gpu", "cpu", "cuda", "mps", "metal"}:
+            raise ValueError("device must be one of: auto, gpu, cpu, cuda, mps, metal")
+        return device or "auto"
 
     @field_validator("moss_cpp_max_new_tokens")
     @classmethod
@@ -425,30 +428,6 @@ class RuntimeSettings(BaseModel):
         if value < 0:
             raise ValueError("moss_cpp_chunk_overlap_sec must be non-negative")
         return value
-
-    @field_validator("sherpa_device")
-    @classmethod
-    def _validate_sherpa_device(cls, value: str) -> str:
-        device = value.strip().lower()
-        if device not in {"auto", "cuda", "cpu"}:
-            raise ValueError("sherpa_device must be one of: auto, cuda, cpu")
-        return device
-
-    @field_validator("pyannote_device")
-    @classmethod
-    def _validate_pyannote_device(cls, value: str) -> str:
-        device = value.strip().lower()
-        if device not in {"", "auto", "cuda", "cpu", "mps"}:
-            raise ValueError("pyannote_device must be one of: auto, cuda, cpu, mps")
-        return device
-
-    @field_validator("uvr_device")
-    @classmethod
-    def _validate_uvr_device(cls, value: str) -> str:
-        device = value.strip().lower()
-        if device not in {"cuda", "cpu"}:
-            raise ValueError("uvr_device must be one of: cuda, cpu")
-        return device
 
     @field_validator("sherpa_chunk_strategy")
     @classmethod

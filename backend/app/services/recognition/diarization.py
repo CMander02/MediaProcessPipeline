@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
+from app.core.compute_device import detect_compute_capabilities, resolve_compute_device
 from app.core.network import runtime_proxy_url
 from app.core.paths import get_workspace_paths
 from app.core.settings import get_runtime_settings
@@ -149,21 +150,9 @@ class DiarizationService:
         model_path = str(rt.pyannote_model_path or "")
         if not model_path:
             raise RuntimeError("Pyannote diarization is enabled but pyannote_model_path is empty")
-        configured_device = str(getattr(rt, "pyannote_device", "") or "")
-        if configured_device:
-            if configured_device == "auto":
-                device = (
-                    "cuda"
-                    if torch.cuda.is_available()
-                    else "mps"
-                    if torch.backends.mps.is_available()
-                    else "cpu"
-                )
-            else:
-                device = configured_device
-        else:
-            legacy_device = str(getattr(rt, "sherpa_device", "auto") or "auto")
-            device = "cuda" if legacy_device == "auto" else legacy_device
+        device = resolve_compute_device(
+            rt.pyannote_device or "auto", "torch", detect_compute_capabilities(),
+        )
         batch_size = max(1, int(getattr(rt, "diarization_batch_size", 16) or 16))
         key = (
             model_path,
@@ -177,13 +166,6 @@ class DiarizationService:
         )
         if self._pipeline is not None and self._pipeline_key == key:
             return self._pipeline
-
-        if device.startswith("cuda") and not torch.cuda.is_available():
-            raise RuntimeError("Pyannote device is CUDA but torch.cuda.is_available() is false")
-        if device == "mps" and not torch.backends.mps.is_available():
-            raise RuntimeError(
-                "Pyannote device is MPS but torch.backends.mps.is_available() is false"
-            )
 
         self._configure_huggingface_proxy()
         config_path = self._prepare_model_config(model_path)

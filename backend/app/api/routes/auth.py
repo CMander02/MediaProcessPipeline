@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
+from app.core.compute_device import detect_compute_capabilities
 from app.core.security import (
     SESSION_COOKIE_NAME,
     constant_time_token_matches,
@@ -89,6 +91,7 @@ async def capabilities(request: Request):
     return {
         "mode": "local" if local else "remote",
         "authenticated": request_is_authenticated(request, settings.api_token),
+        "compute_capabilities": (await run_in_threadpool(detect_compute_capabilities)).as_dict(),
         "url_submission": True,
         "browser_file_upload": True,
         "browser_folder_upload": True,

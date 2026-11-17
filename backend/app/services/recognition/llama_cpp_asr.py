@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 import httpx
 
+from app.core.compute_device import detect_compute_capabilities, resolve_compute_device
 from app.services.analysis.local_llm_runtime import LocalLlamaCppRuntime
 from app.services.recognition.chunking import ASRChunker, AudioChunk
 from app.services.recognition.sherpa_onnx_asr import (
@@ -115,9 +116,9 @@ class LlamaCppASRService:
             raise ValueError(f"Unsupported ASR chunk strategy: {strategy}")
         prepared = time.monotonic()
         parallel = max(1, min(16, int(config.get("parallel") or 8)))
-        device = str(config.get("device") or "auto")
-        if device == "auto":
-            device = LocalLlamaCppRuntime._resolve_device(device)
+        device = resolve_compute_device(
+            str(config.get("device") or "auto"), "llama_cpp", detect_compute_capabilities(),
+        )
         runtime_config = {
             **config, "device": device, "ctx": 4096, "parallel": parallel,
             "alias": "Qwen3-ASR", "keepalive_sec": 0, "cache_type": "f16", "cache_ram": 0,
@@ -213,7 +214,7 @@ class LlamaCppASRService:
                         units = aligner.align(
                             wav, segment["text"], detected,
                             model_path=config["aligner_model_path"],
-                            device="cpu" if device == "metal" else device,
+                            device=str(config.get("aligner_device") or "auto"),
                         )
                         if not units:
                             raise RuntimeError(f"Forced alignment returned no timestamps for segment {i + 1}")

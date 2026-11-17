@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
+from app.core.compute_device import detect_compute_capabilities, resolve_compute_device
 from app.core.paths import get_workspace_paths
 from app.core.settings import RuntimeSettings, get_runtime_settings
 
@@ -139,12 +140,21 @@ class UVRService:
     ) -> str:
         import torch
 
+        if device in {"auto", "gpu", "mps", "metal"}:
+            device = resolve_compute_device(
+                device, "uvr" if onnx_model else "torch", detect_compute_capabilities(),
+            )
         if device == "cpu":
             separator.torch_device_cpu = torch.device("cpu")
             separator.torch_device = separator.torch_device_cpu
             separator.onnx_execution_provider = ["CPUExecutionProvider"]
             logger.info("UVR device configured: cpu provider=CPUExecutionProvider")
             return "CPUExecutionProvider"
+
+        if device == "mps":
+            separator.torch_device = torch.device("mps")
+            separator.onnx_execution_provider = ["CoreMLExecutionProvider"]
+            return "CoreMLExecutionProvider" if onnx_model else "MPS"
 
         if not torch.cuda.is_available():
             raise RuntimeError(
@@ -456,7 +466,7 @@ async def separate_vocals(
     import asyncio
 
     rt = get_runtime_settings()
-    if os.name == "nt" and str(rt.uvr_device).lower() == "cuda":
+    if os.name == "nt" and resolve_compute_device(rt.uvr_device, "torch", detect_compute_capabilities()) == "cuda":
         return await asyncio.to_thread(
             _separate_vocals_in_subprocess,
             audio_path,

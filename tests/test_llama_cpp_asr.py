@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from app.services.recognition import llama_cpp_asr as module
 from app.core.model_router import resolve_asr_binding
 from app.core.settings import RuntimeSettings
+from app.core.compute_device import ComputeCapabilities
 
 
 @pytest.fixture
@@ -28,6 +29,7 @@ def config(tmp_path):
 
 @pytest.fixture
 def service(monkeypatch, config, tmp_path):
+    monkeypatch.setattr(module, "detect_compute_capabilities", lambda: ComputeCapabilities(cuda_available=True))
     svc = module.LlamaCppASRService()
     runtime = SimpleNamespace(config=None, stopped=False)
     def ensure(value):
@@ -234,12 +236,12 @@ def test_empty_alignment_fails_and_releases_model(monkeypatch, service, config):
     assert released == [True]
 
 
-def test_mac_auto_asr_uses_metal_and_cpu_alignment(monkeypatch, service, config, tmp_path):
+def test_mac_auto_asr_uses_metal_and_independent_alignment(monkeypatch, service, config, tmp_path):
     from app.services.recognition import alignment
 
     svc, audio, runtime, _ = service
     mock_client(monkeypatch)
-    monkeypatch.setattr(module.LocalLlamaCppRuntime, "_resolve_device", lambda value: "metal")
+    monkeypatch.setattr(module, "detect_compute_capabilities", lambda: ComputeCapabilities(metal_available=True, mps_available=True))
     alignment_devices = []
 
     def align(audio_path, text, language, **kwargs):
@@ -253,4 +255,4 @@ def test_mac_auto_asr_uses_metal_and_cpu_alignment(monkeypatch, service, config,
     assert runtime.config["device"] == "metal"
     assert result["runtime_provider"] == "metal"
     assert result["timestamp_source"] == "qwen_forced"
-    assert alignment_devices == ["cpu", "cpu", "cpu"]
+    assert alignment_devices == ["auto", "auto", "auto"]

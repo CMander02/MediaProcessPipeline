@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import logging
-import platform
 import shutil
 import socket
 import subprocess
-import sys
 import threading
 import time
 from contextvars import copy_context
@@ -17,6 +15,7 @@ from typing import Any, BinaryIO
 
 import httpx
 
+from app.core.compute_device import detect_compute_capabilities, resolve_compute_device
 from app.core.logging_setup import log_event
 from app.core.paths import get_workspace_paths
 
@@ -172,12 +171,9 @@ class LocalLlamaCppRuntime:
 
     @staticmethod
     def _resolve_device(value: str) -> str:
-        device = str(value or "auto").lower()
-        if device == "auto":
-            if sys.platform == "darwin" and platform.machine() == "arm64":
-                return "metal"
-            return "cuda" if LocalLlamaCppRuntime._has_nvidia_gpu() else "cpu"
-        return device
+        if value == "cpu":
+            return "cpu"
+        return resolve_compute_device(value or "auto", "llama_cpp", detect_compute_capabilities())
 
     @staticmethod
     def _device_args(config: dict[str, Any]) -> list[str]:
@@ -188,16 +184,6 @@ class LocalLlamaCppRuntime:
             )
             return ["-fa", "on", "-ngl", str(layers)]
         return ["-ngl", "0"]
-
-    @staticmethod
-    def _has_nvidia_gpu() -> bool:
-        try:
-            result = subprocess.run(
-                ["nvidia-smi", "-L"], capture_output=True, text=True, timeout=3, check=False,
-            )
-            return result.returncode == 0 and "GPU" in result.stdout
-        except Exception:
-            return False
 
     @staticmethod
     def _free_port() -> int:

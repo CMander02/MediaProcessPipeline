@@ -1,4 +1,4 @@
-import { type ReactNode } from "react"
+import { useId, type ReactNode } from "react"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { OptionSelect, SettingRow } from "../setting-controls"
@@ -202,10 +202,11 @@ export function SelectSettingRow({
   onChange: (value: string) => void | Promise<void>
   children: ReactNode
 }) {
+  const id = useId()
   return (
     <div className="flex items-center gap-3">
-      <Label className="w-24 shrink-0 text-sm text-muted-foreground" htmlFor={`select-${label}`}>{label}</Label>
-      <OptionSelect id={`select-${label}`} value={value} onValueChange={(next) => void onChange(next)}>
+      <Label className="w-24 shrink-0 text-sm text-muted-foreground" htmlFor={id}>{label}</Label>
+      <OptionSelect id={id} value={value} onValueChange={(next) => void onChange(next)}>
         {children}
       </OptionSelect>
     </div>

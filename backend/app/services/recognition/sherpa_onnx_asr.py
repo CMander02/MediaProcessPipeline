@@ -267,7 +267,7 @@ class SherpaOnnxASRService:
                     language=language_hint,
                     timestamp_mode=timestamp_mode,
                     aligner_path=aligner_path,
-                    aligner_device=device,
+                    aligner_device=str(config.get("aligner_device") or rt.aligner_device),
                 )
                 segments.extend(chunk_segments)
                 timestamp_sources.append(source)

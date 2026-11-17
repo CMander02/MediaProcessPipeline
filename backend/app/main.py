@@ -79,7 +79,7 @@ async def lifespan(app: FastAPI):
     if (
         sys.platform == "win32"
         and rt.asr_provider == "sherpa_onnx"
-        and rt.sherpa_device in {"auto", "cuda"}
+        and rt.sherpa_device in {"auto", "gpu", "cuda"}
     ):
         try:
             from app.services.recognition.sherpa_catalog import resolve_model

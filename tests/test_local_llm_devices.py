@@ -8,6 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from app.services.analysis import local_llm_runtime as module
+from app.core.compute_device import ComputeCapabilities
 
 
 @pytest.mark.parametrize(
@@ -23,9 +24,9 @@ from app.services.analysis import local_llm_runtime as module
 def test_desktop_acceleration(
     monkeypatch, system, machine, nvidia, device, layers, expected_layers
 ):
-    monkeypatch.setattr(module.sys, "platform", system)
-    monkeypatch.setattr(module.platform, "machine", lambda: machine)
-    monkeypatch.setattr(module.LocalLlamaCppRuntime, "_has_nvidia_gpu", lambda: nvidia)
+    monkeypatch.setattr(module, "detect_compute_capabilities", lambda: ComputeCapabilities(
+        cuda_available=nvidia, metal_available=system == "darwin" and machine == "arm64",
+    ))
     args = module.LocalLlamaCppRuntime._device_args({"device": device, "n_gpu_layers": layers})
     assert args[args.index("-ngl") + 1] == expected_layers
 

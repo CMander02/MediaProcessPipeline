@@ -873,6 +873,7 @@ def resolve_asr_binding(
             "chunk_strategy": chunk_strategy,
             "timestamp_mode": _clean_text(options.get("asr_timestamp_mode") or rt.asr_timestamp_mode).lower(),
             "aligner_model_path": rt.qwen3_aligner_model_path,
+            "aligner_device": rt.aligner_device,
         }
         reason = validate_llama_asr_config(config)
         return ASRBinding(
@@ -931,6 +932,7 @@ def resolve_asr_binding(
                     options.get("asr_timestamp_mode") or rt.asr_timestamp_mode
                 ).lower(),
                 "aligner_model_path": rt.qwen3_aligner_model_path,
+                "aligner_device": rt.aligner_device,
                 "diarize": diarize,
                 "num_speakers": num_speakers,
             },

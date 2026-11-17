@@ -110,6 +110,26 @@ def test_runtime_reuses_same_recognizer_and_releases_on_option_change(tmp_path, 
     assert third_info.model_id == spec.id
 
 
+
+def test_runtime_reloads_when_requested_device_changes(tmp_path, monkeypatch):
+    spec = resolve_model("qwen3-asr-1.7b-onnx", _fake_qwen_bundle(tmp_path).parent)
+    created = []
+
+    def create(_spec, options, provider):
+        created.append(provider)
+        return object()
+
+    monkeypatch.setattr(SherpaRuntime, "_create", staticmethod(create))
+    monkeypatch.setattr(SherpaRuntime, "_provider_candidates", staticmethod(
+        lambda device: ("cpu",) if device == "cpu" else ("cuda",),
+    ))
+    runtime = SherpaRuntime()
+    first, _ = runtime.get(spec, SherpaRuntimeOptions(device="cpu"))
+    second, info = runtime.get(spec, SherpaRuntimeOptions(device="gpu"))
+    assert second is not first
+    assert info.provider == "cuda"
+    assert created == ["cpu", "cuda"]
+
 def test_runtime_auto_falls_back_from_cuda_to_cpu(tmp_path, monkeypatch):
     spec = resolve_model("qwen3-asr-1.7b-onnx", _fake_qwen_bundle(tmp_path).parent)
     calls = []
@@ -133,7 +153,7 @@ def test_runtime_auto_falls_back_from_cuda_to_cpu(tmp_path, monkeypatch):
     assert info.provider == "cpu"
 
 
-def test_runtime_auto_honors_model_default_device(tmp_path, monkeypatch):
+def test_runtime_auto_uses_host_resolution_over_model_default(tmp_path, monkeypatch):
     directory = _fake_qwen_bundle(tmp_path)
     manifest_path = directory / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -151,7 +171,7 @@ def test_runtime_auto_honors_model_default_device(tmp_path, monkeypatch):
 
     _, info = SherpaRuntime().get(spec, SherpaRuntimeOptions(device="auto"))
 
-    assert requested == ["cpu"]
+    assert requested == ["auto"]
     assert info.provider == "cpu"
 
 

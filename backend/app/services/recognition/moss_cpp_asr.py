@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from app.core.compute_device import detect_compute_capabilities, resolve_compute_device
 from app.models import TranscriptSegment
 
 logger = logging.getLogger(__name__)
@@ -432,10 +433,9 @@ class MossCppASRService:
         binary = resolve_moss_cpp_binary(binary_path)
         model = resolve_moss_cpp_model(model_path)
         env = os.environ.copy()
-        if device and device != "auto":
-            env["MTD_DEVICE"] = device
-        else:
-            env.pop("MTD_DEVICE", None)
+        env["MTD_DEVICE"] = resolve_compute_device(
+            device or "auto", "moss_cpp", detect_compute_capabilities(),
+        )
         env["MTD_THREADS"] = str(max(1, int(threads)))
         binary_dir = Path(binary).parent
         dependency_dirs = [
