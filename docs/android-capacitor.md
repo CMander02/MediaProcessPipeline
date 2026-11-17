@@ -87,12 +87,14 @@ Keystore、密码和 APK/AAB 均保持在仓库外。Release 编译检查可独�
 
 建议使用 GitHub Releases 发布 APK，再用 [Obtainium](https://github.com/ImranR98/Obtainium) 在手机检查更新和接收新版本提醒。GitHub 保存安装包；Obtainium 从 Release 下载并调用 Android 安装流程。安装是否需要点确认取决于 Android 版本和安装权限。
 
-`.github/workflows/android-release.yml` 提供两个入口：
+`.github/workflows/release.yml` 为 Windows、macOS、服务端和 Android 构建发布产物。
 
-- Actions → Android APK → Run workflow：检查前端、运行原生测试与 Lint、构建签名 APK，保存为工作流产物。
-- 发布 `vX.Y.Z` Release：构建同一标签的代码，检查标签与 `pyproject.toml` 一致，然后将 `MPP-android.apk` 上传到该 Release。上传失败时查看 Actions 日志；构建完成前 Release 中还没有 APK。
+- 在 Actions 的 Release packages 页面选择 Run workflow。各平台安装包、服务端包和 `SHA256SUMS.txt` 可从对应运行下载。
+- 发布 `vX.Y.Z` Release 后，工作流构建该标签对应的代码，并将产物及校验清单上传至 Release。有 Android 签名密钥时，工作流验证 APK 签名并上传 `MPP-android.apk` 和 `MPP-android-X.Y.Z.apk`。
 
-首次需要在仓库 Settings → Secrets and variables → Actions 配置以下 Secrets：
+缺少 `MPP_ANDROID_KEYSTORE_BASE64` 时，工作流记录警告并跳过签名 APK。Windows、macOS 和服务端产物仍可上传。Android 单元测试由 `.github/workflows/ci.yml` 运行，无需正式签名密钥。
+
+在仓库 Settings → Secrets and variables → Actions 配置以下 Secrets 后可生成签名 APK。
 
 | Secret | 内容 |
 | --- | --- |
@@ -103,7 +105,9 @@ Keystore、密码和 APK/AAB 均保持在仓库外。Release 编译检查可独�
 
 密钥应单独备份。不要将密钥或密码提交到仓库。不要在每次构建时生成新密钥。
 
-每次正式更新先增加 `pyproject.toml` 的版本号，再创建同名标签和 Release。当前 Android `versionCode` 按 `major * 10000 + minor * 100 + patch` 生成，minor 和 patch 应小于 100，新的 versionCode 必须递增。包名保持 `com.mpp.remote`。覆盖安装需要相同签名；现有 Debug APK 与新的正式签名 APK 通常不能互相覆盖。首次切换前先核对已安装 APK 的签名，保留需要的离线资料。
+正式发版时，在仓库根目录运行 `python3 scripts/bump_version.py X.Y.Z`。提交版本改动后创建 `vX.Y.Z` 标签并发布 Release。当前 Android `versionCode` 按 `major * 10000 + minor * 100 + patch` 生成，minor 和 patch 应小于 100，新的 versionCode 必须递增。包名保持 `com.mpp.remote`。覆盖安装需要相同签名。首次切换前核对已安装 APK 的签名，并备份需要保留的离线资料。
+
+部署服务端包时，在解压后的目录运行 `uv sync`。配置 API Token 后运行 `./scripts/start-web.sh --server --no-browser`。服务端包包含 `web/dist`，启动服务无需安装 Node.js。
 
 手机安装 Obtainium 后添加仓库 `https://github.com/CMander02/MediaProcessPipeline`，APK 筛选设为 `^MPP-android\.apk$`，按需要启用后台检查和更新通知。正式用户默认排除预发布版本。
 

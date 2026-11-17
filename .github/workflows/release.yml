@@ -1,0 +1,247 @@
+name: Release packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Expected tag, for example v0.6.6
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Check release version
+        id: check
+        env:
+          EXPECTED_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          if [[ -n "$EXPECTED_TAG" ]]; then
+            export RELEASE_TAG="$EXPECTED_TAG"
+          fi
+          node web/scripts/check-release-version.mjs
+          version="$(node -p 'require("./desktop/package.json").version')"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    env:
+      RELEASE_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            desktop/package-lock.json
+      - run: npm ci --prefix web
+      - run: npm ci --prefix desktop
+      - run: npm run dist --prefix desktop
+      - run: npm run portable --prefix desktop
+      - name: Collect Windows installers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release-output
+          $setup = "MPP-Desktop-${env:RELEASE_VERSION}-Setup.exe"
+          Copy-Item "desktop/dist/$setup" "release-output/$setup"
+          Copy-Item MPP.exe "release-output/MPP-Desktop-${env:RELEASE_VERSION}-win-x64-Portable.exe"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-windows
+          path: release-output/
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    needs: version
+    runs-on: macos-15
+    env:
+      RELEASE_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            desktop/package-lock.json
+      - run: npm ci --prefix web
+      - run: npm ci --prefix desktop
+      - run: npm run dist --prefix desktop
+      - name: Collect Apple Silicon disk image
+        run: |
+          test "$(uname -m)" = arm64
+          set -- desktop/dist/*.dmg
+          test "$#" -eq 1
+          mkdir release-output
+          cp "$1" "release-output/MPP-Desktop-$RELEASE_VERSION-mac-arm64.dmg"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-macos
+          path: release-output/
+          if-no-files-found: error
+          retention-days: 7
+
+  server:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web
+      - run: npm run build --prefix web
+      - name: Package server source and built frontend
+        run: |
+          bundle="MPP-server-bundle-$RELEASE_VERSION"
+          mkdir -p "$RUNNER_TEMP/$bundle/web" release-output
+          git archive HEAD backend scripts deploy pyproject.toml .python-version |
+            tar -xf - -C "$RUNNER_TEMP/$bundle"
+          if [[ -f uv.lock ]]; then
+            cp uv.lock "$RUNNER_TEMP/$bundle/"
+          fi
+          cp -a web/dist "$RUNNER_TEMP/$bundle/web/"
+          tar -czf "release-output/$bundle.tar.gz" -C "$RUNNER_TEMP" "$bundle"
+          output="$PWD/release-output/$bundle.zip"
+          (cd "$RUNNER_TEMP" && zip -qr "$output" "$bundle")
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-server
+          path: release-output/
+          if-no-files-found: error
+          retention-days: 7
+
+  android:
+    needs: version
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    env:
+      RELEASE_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Check Android signing configuration
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.MPP_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [[ -z "$KEYSTORE_BASE64" ]]; then
+            echo '::warning title=Android APK skipped::MPP_ANDROID_KEYSTORE_BASE64 is not configured.'
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          fi
+        working-directory: .
+      - uses: actions/checkout@v7
+        if: steps.signing.outputs.enabled == 'true'
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        if: steps.signing.outputs.enabled == 'true'
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-java@v6
+        if: steps.signing.outputs.enabled == 'true'
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: npm ci
+        if: steps.signing.outputs.enabled == 'true'
+      - name: Prepare Android SDK
+        if: steps.signing.outputs.enabled == 'true'
+        run: |
+          sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+          chmod +x android/gradlew
+      - name: Build and verify signed APK
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.MPP_ANDROID_KEYSTORE_BASE64 }}
+          MPP_ANDROID_KEYSTORE: ${{ runner.temp }}/mpp-release.jks
+          MPP_ANDROID_STORE_PASSWORD: ${{ secrets.MPP_ANDROID_STORE_PASSWORD }}
+          MPP_ANDROID_KEY_ALIAS: ${{ secrets.MPP_ANDROID_KEY_ALIAS }}
+          MPP_ANDROID_KEY_PASSWORD: ${{ secrets.MPP_ANDROID_KEY_PASSWORD }}
+        run: |
+          : "${MPP_ANDROID_STORE_PASSWORD:?Missing MPP_ANDROID_STORE_PASSWORD}"
+          : "${MPP_ANDROID_KEY_ALIAS:?Missing MPP_ANDROID_KEY_ALIAS}"
+          : "${MPP_ANDROID_KEY_PASSWORD:?Missing MPP_ANDROID_KEY_PASSWORD}"
+          umask 077
+          trap 'rm -f "$MPP_ANDROID_KEYSTORE"' EXIT
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$MPP_ANDROID_KEYSTORE"
+          unset KEYSTORE_BASE64
+          npm run android:sync
+          node scripts/android-gradle.mjs testDebugUnitTest lintRelease assembleRelease
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$apk"
+          mkdir release-output
+          cp "$apk" release-output/MPP-android.apk
+          cp "$apk" "release-output/MPP-android-$RELEASE_VERSION.apk"
+      - uses: actions/upload-artifact@v7
+        if: steps.signing.outputs.enabled == 'true'
+        with:
+          name: release-android
+          path: web/release-output/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [windows, macos, server, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: release-output
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: release-output
+        run: |
+          sha256sum MPP-* > SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+      - uses: actions/upload-artifact@v7
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          name: release-checksums
+          path: release-output/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
+      - name: Attach files to the GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" release-output/MPP-* release-output/SHA256SUMS.txt
