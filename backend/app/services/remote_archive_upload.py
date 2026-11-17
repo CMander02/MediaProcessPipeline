@@ -13,7 +13,7 @@ import socket
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 
 import httpx
@@ -48,11 +48,22 @@ _PORTABLE_RESULT_FIELDS = {
 def _normalized_server_url(raw_url: str) -> str:
     value = str(raw_url or "").strip().rstrip("/")
     parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("remote_server_url must be a complete HTTP or HTTPS URL")
     if parsed.username or parsed.password:
         raise ValueError("remote_server_url cannot contain credentials")
-    return value[:-4] if value.endswith("/api") else value
+    if parsed.query or parsed.fragment:
+        raise ValueError("remote_server_url cannot contain a query or fragment")
+    host = parsed.hostname.lower()
+    if ":" in host:
+        host = f"[{host}]"
+    port = parsed.port
+    if port and port != {"http": 80, "https": 443}[parsed.scheme]:
+        host = f"{host}:{port}"
+    path = parsed.path.rstrip("/")
+    if path.endswith("/api"):
+        path = path[:-4]
+    return urlunparse((parsed.scheme.lower(), host, path, "", "", ""))
 
 
 def _portable_result(result: Any) -> dict[str, Any]:
@@ -158,8 +169,8 @@ class RemoteArchiveUploadService:
         data_root = Path(settings.data_root).resolve()
         store = self._store_getter()
         for task in store.list(status=TaskStatus.COMPLETED, limit=10_000):
-            if task.options.get("_remote_origin"):
-                continue  # The task worker owns its fenced result upload.
+            if task.options.get("_remote_origin") or task.options.get("_remote_pull"):
+                continue
             output_dir = self._archive_dir(task, data_root)
             if output_dir is None or self._already_uploaded(task, server_url):
                 continue

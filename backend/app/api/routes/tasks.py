@@ -32,7 +32,7 @@ from app.core.pipeline import (
     create_task_dir,
     pipeline_steps_schema,
 )
-from app.core.queue import get_task_queue
+from app.core.queue import get_task_queue, task_is_read_only
 from app.core.security import filesystem_access_allowed
 from app.core.settings import get_runtime_settings
 from app.core.source_resolver import resolve_source_flow
@@ -471,6 +471,8 @@ async def resume_task(task_id: UUID):
     task = store.get(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
+    if task_is_read_only(task):
+        raise HTTPException(409, "同步归档为只读记录，无法在本机重新执行")
     raise HTTPException(400, f"Cannot resume task in status: {task.status}")
 
 
@@ -485,6 +487,8 @@ async def checkpoint_rerun_task(task_id: UUID):
     task = store.get(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
+    if task_is_read_only(task):
+        raise HTTPException(409, "同步归档为只读记录，无法在本机重新执行")
     raise HTTPException(400, f"Cannot checkpoint-rerun task in status: {task.status}")
 
 
@@ -496,6 +500,8 @@ async def full_rerun_task(task_id: UUID):
     task = get_task_store().get(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
+    if task_is_read_only(task):
+        raise HTTPException(409, "同步归档为只读记录，无法在本机重新执行")
     raise HTTPException(400, "请等待任务停止后再完整重做")
 
 

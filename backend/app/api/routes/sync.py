@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import quote, unquote
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
@@ -135,9 +136,20 @@ async def sync_status():
 
 
 @router.get('/library')
-async def sync_library():
+async def sync_library(x_mpp_workspace_id: str | None = Header(default=None)):
     from app.core.library import get_library_service
+    _check_workspace(x_mpp_workspace_id)
     return await run_in_thread(get_library_service().sync_snapshot)
+
+
+@router.post('/pull')
+async def pull_remote_archives():
+    from app.services.remote_archive_pull import get_remote_archive_pull_service
+
+    try:
+        return await get_remote_archive_pull_service().sync_once()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(502, f"Remote synchronization failed: {exc}") from exc
 
 
 @router.get("/archives/{archive_id}/manifest")

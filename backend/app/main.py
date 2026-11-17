@@ -142,6 +142,9 @@ async def lifespan(app: FastAPI):
 
     remote_archive_upload = get_remote_archive_upload_service()
     await remote_archive_upload.start()
+    from app.services.remote_archive_pull import get_remote_archive_pull_service
+    remote_archive_pull = get_remote_archive_pull_service()
+    await remote_archive_pull.start()
     from app.services.remote_task_worker import get_remote_task_worker
     remote_task_worker = get_remote_task_worker()
     await remote_task_worker.start()
@@ -163,6 +166,7 @@ async def lifespan(app: FastAPI):
         # fallback for interrupted Windows exits.
         try:
             await remote_task_worker.stop()
+            await remote_archive_pull.stop()
             await remote_archive_upload.stop()
             await queue.stop()
         finally:

@@ -33,9 +33,13 @@ from app.core.logging_setup import (
     task_id_var,
     worker_var,
 )
-from app.models.task import TaskStatus, TaskType
+from app.models.task import Task, TaskStatus, TaskType
 
 logger = logging.getLogger(__name__)
+
+
+def task_is_read_only(task: Task) -> bool:
+    return task.options.get("read_only") is True and bool(task.options.get("_remote_pull"))
 
 
 def _flush_gpu_models() -> None:
@@ -190,6 +194,8 @@ class TaskQueue:
         bus = get_event_bus()
         from app.core.library import task_is_deleting
         task = store.get(task_id)
+        if task and task_is_read_only(task):
+            raise ValueError("Pulled archive records are read-only")
         if task and task_is_deleting(task):
             raise ValueError('content_deleting')
         if task and task.task_type == TaskType.PIPELINE:
@@ -352,7 +358,7 @@ class TaskQueue:
         resumable = {TaskStatus.PAUSED, TaskStatus.FAILED}
         if force:
             resumable.update({TaskStatus.CANCELLED, TaskStatus.COMPLETED})
-        if not task or task.status not in resumable:
+        if not task or task_is_read_only(task) or task.status not in resumable:
             return False
         # Pause only requests cancellation. The old pipeline still owns its
         # checkpoint and cancellation status until its cleanup has finished.
@@ -363,7 +369,7 @@ class TaskQueue:
             if finished is not None:
                 await finished.wait()
             task = store.get(task_id)
-            if not task or task.status not in resumable:
+            if not task or task_is_read_only(task) or task.status not in resumable:
                 return False
         from app.core.library import task_is_deleting
         if task_is_deleting(task):
@@ -425,7 +431,7 @@ class TaskQueue:
         from app.services.analysis.speaker_repair import repair_inputs
         store = get_task_store()
         task = store.get(task_id)
-        if not task or task.status not in {TaskStatus.COMPLETED, TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+        if not task or task_is_read_only(task) or task.status not in {TaskStatus.COMPLETED, TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
             return False
         # Filling in speakers works on the finished transcript.
         if mode == "auto" and task.status != TaskStatus.COMPLETED:
@@ -450,7 +456,7 @@ class TaskQueue:
         """Restart all processing stages in the task's existing directory."""
         store = get_task_store()
         task = store.get(task_id)
-        if not task or task.status not in {
+        if not task or task_is_read_only(task) or task.status not in {
             TaskStatus.FAILED, TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.PAUSED,
         } or task_id in self._running_tasks:
             return False

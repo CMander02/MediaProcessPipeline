@@ -159,6 +159,31 @@ CREATE TABLE IF NOT EXISTS archive_sync_changes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_archive_sync_changes_archive ON archive_sync_changes(archive_id, revision);
+
+CREATE TABLE IF NOT EXISTS remote_sync_cursors (
+    server_url TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    cursor INTEGER NOT NULL DEFAULT 0,
+    library_revision INTEGER NOT NULL DEFAULT -1,
+    PRIMARY KEY (server_url, workspace_id)
+);
+CREATE TABLE IF NOT EXISTS remote_sync_archives (
+    server_url TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    archive_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    archive_path TEXT NOT NULL,
+    files TEXT NOT NULL,
+    owned INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (server_url, workspace_id, archive_id)
+);
+CREATE TABLE IF NOT EXISTS remote_sync_folders (
+    server_url TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    remote_folder_id TEXT NOT NULL,
+    local_folder_id TEXT NOT NULL UNIQUE,
+    PRIMARY KEY (server_url, workspace_id, remote_folder_id)
+);
 """
 
 # Columns added after initial schema — applied idempotently via ALTER TABLE

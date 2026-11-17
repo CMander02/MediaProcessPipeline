@@ -74,6 +74,7 @@ class ArchiveSyncService:
     """Build and persist a server-owned, monotonically revisioned archive view."""
 
     def __init__(self) -> None:
+        self.instance_id = str(uuid4())
         self._reconcile_lock = threading.Lock()
         self._dirty_lock = threading.Lock()
         self._dirty_paths: set[tuple[str, str]] = set()
@@ -193,6 +194,7 @@ class ArchiveSyncService:
             "SELECT current_revision,last_reconciled_at FROM archive_sync_meta WHERE id=1"
         ).fetchone()
         return {"workspace_id": str(Path(get_runtime_settings().data_root).resolve()),
+                "instance_id": self.instance_id,
                 "revision": row["current_revision"], "last_reconciled_at": row["last_reconciled_at"],
                 "indexing": self._indexing}
 
