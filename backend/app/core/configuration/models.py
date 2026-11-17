@@ -346,6 +346,17 @@ class RuntimeSettings(BaseModel):
     # Security
     api_token: str = ""  # Bearer token for API auth; empty = auth disabled
     allow_remote_filesystem: bool = False
+    update_repo: str = "CMander02/MediaProcessPipeline"
+
+    @field_validator("update_repo")
+    @classmethod
+    def _validate_update_repo(cls, value: str) -> str:
+        import re
+
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", value):
+            raise ValueError("update_repo must be a GitHub owner/repository pair")
+        return value
 
     # Remote archive synchronization. A desktop daemon uploads each completed
     # local archive once; the remote daemon accepts it into its own data_root.

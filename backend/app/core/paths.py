@@ -88,6 +88,7 @@ class WorkspacePaths:
             "download",
             "uvr",
             "search",
+            "updates",
         }:
             raise ValueError(f"Unknown temporary directory owner: {owner}")
         if self.version == 2:
@@ -96,7 +97,7 @@ class WorkspacePaths:
             return self.root / owner
         if owner in {"pyannote", "search"}:
             return self.root / ".cache" / owner
-        if owner in {"download", "uvr", "asr-alignment"}:
+        if owner in {"download", "uvr", "asr-alignment", "updates"}:
             return self.root / "tmp" / owner
         return self.root / f"_{owner}"
 

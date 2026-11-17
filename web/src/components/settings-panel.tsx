@@ -11,6 +11,7 @@ import { usePreferences } from "@/hooks/use-preferences"
 import { systemNotificationsAvailable } from "@/hooks/use-task-notifications"
 import { OptionSelect, ProxySetting, SettingRow } from "@/components/settings/setting-controls"
 import { MultiDeviceSettings } from "@/components/settings/multi-device"
+import { SoftwareUpdates } from "@/components/settings/software-updates"
 import { LibraryLocation } from "@/components/settings/library-location"
 import { SourceOverview } from "@/components/settings/source-overview"
 import { SettingsSaveErrors } from "@/components/settings/save-errors"
@@ -32,7 +33,7 @@ import { buildHash, navigate, useRoute } from "@/lib/router"
 
 // --- Groups ---
 
-type GroupId = "general" | "pipeline" | "providers" | "sources" | "storage" | "devices" | "advanced"
+type GroupId = "general" | "pipeline" | "providers" | "sources" | "storage" | "devices" | "advanced" | "system"
 
 interface SectionDef {
   id: string
@@ -123,6 +124,12 @@ const GROUPS: GroupDef[] = [
       { id: "access", title: "访问控制", keywords: "访问控制 API Token 令牌 远程文件系统" },
       { id: "logs", title: "日志", mobile: true, keywords: "日志 错误 后端" },
     ],
+  },
+  {
+    id: "system",
+    label: "关于与系统",
+    description: "查看软件版本、检查更新并下载更新包。",
+    sections: [{ id: "software-updates", title: "软件更新", mobile: true, keywords: "软件版本 检查更新 下载 校验 GitHub Release 更新日志" }],
   },
 ]
 
@@ -450,6 +457,8 @@ export function SettingsPanel() {
 
   const sectionContent = (id: string): ReactNode => {
     switch (id) {
+      case "software-updates":
+        return <SoftwareUpdates mobile={platform.isNative || narrow} />
       case "multi-device":
         return <MultiDeviceSettings {...sourceProps} mobile={platform.isNative || narrow} />
       case "appearance":

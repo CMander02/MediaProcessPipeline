@@ -132,6 +132,7 @@ vi.mock("@/lib/api", () => ({
   getApiToken: vi.fn(() => ""),
   persistApiToken: vi.fn(),
   api: {
+    health: vi.fn().mockResolvedValue({ status: "ok", version: "0.9.0" }),
     execution: { nodes: vi.fn().mockResolvedValue({ enabled: false, preferred_worker_id: "", offline_policy: "fallback_server", nodes: [] }) },
     sync: { pull: vi.fn().mockResolvedValue({ enabled: true, upserted: 0, deleted: 0, skipped: 0 }) },
     settings: {
@@ -419,7 +420,7 @@ describe("SettingsPanel", () => {
     const nav = await screen.findByRole("navigation", { name: "设置分组" })
     const labels = within(nav).getAllByRole("button").map((button) => button.textContent?.trim())
 
-    expect(labels).toEqual(["常规", "处理流程", "模型服务商", "来源与账号", "存储与网络", "多设备与同步", "高级"])
+    expect(labels).toEqual(["常规", "处理流程", "模型服务商", "来源与账号", "存储与网络", "多设备与同步", "高级", "关于与系统"])
     expect(screen.getByRole("heading", { name: "常规" })).toBeInTheDocument()
     expect(screen.getByText("循环播放")).toBeInTheDocument()
   })
@@ -430,6 +431,15 @@ describe("SettingsPanel", () => {
     fireEvent.click(within(nav).getByRole("button", { name: "多设备与同步" }))
     expect(await screen.findByRole("textbox", { name: "本机节点 ID" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "立即拉取同步" })).toBeInTheDocument()
+    navigate("#/settings", { replace: true })
+  })
+
+  it("opens software updates from the system group", async () => {
+    render(<SettingsPanel />)
+    const nav = await screen.findByRole("navigation", { name: "设置分组" })
+    fireEvent.click(within(nav).getByRole("button", { name: "关于与系统" }))
+    expect(await screen.findByText("当前后端版本：0.9.0")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "检查更新" })).toBeEnabled()
     navigate("#/settings", { replace: true })
   })
 

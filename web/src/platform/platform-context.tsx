@@ -18,6 +18,7 @@ export function PlatformProvider({ adapter, children }: { adapter: PlatformAdapt
   useEffect(() => {
     if (!adapter.isNative) return
     const handleAnchor = (event: MouseEvent) => {
+      if (event.defaultPrevented) return
       const target = event.target as Element | null
       const anchor = target?.closest("a")
       if (!(anchor instanceof HTMLAnchorElement) || !anchor.href) return

@@ -4,6 +4,7 @@
  */
 
 import { createSettingsPatch, type SettingsPatchInput } from "./settings-patch"
+import { parseUpdateCheck, parseUpdateDownload } from "./software-update"
 import type { DeviceValue, ProviderConfig, ProviderModelRecord, RemoteOfflinePolicy, RuntimeSettings } from "./settings-schema"
 import type { ArchivePage, ArchiveQuery, ArchiveIndexStatus } from "@/repositories/archive-types"
 import type { LibraryDirectory, LibraryFolder, BatchAction, BatchScope, BatchPreview, BatchTarget, ImportDestination } from "./library-types"
@@ -624,6 +625,11 @@ export const api = {
   health: () => get<HealthInfo>("/health"),
 
   system: () => get<SystemStatus>("/api/system"),
+
+  updates: {
+    check: async (force = false) => parseUpdateCheck(await get<unknown>(`/api/system/update/check?force=${force}`)),
+    download: async (assetName?: string) => parseUpdateDownload(await post<unknown>("/api/system/update/download", { asset_name: assetName })),
+  },
 
   searchTranscripts: (query: string, limit = 20) =>
     get<TranscriptSearchResult>(`/api/search/transcripts?${new URLSearchParams({ q: query, limit: String(limit) })}`),
