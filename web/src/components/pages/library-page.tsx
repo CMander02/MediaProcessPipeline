@@ -3,6 +3,8 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import { ArrowDown01Icon, ArrowLeft01Icon, ArrowRight01Icon, FolderOpenIcon, MoreHorizontalIcon } from "@hugeicons/core-free-icons"
 import { FilesPage } from "./files-page"
 import { useArchivePage } from "@/hooks/use-archive-page"
+import { useListPosition } from "@/hooks/use-view-position"
+import { archiveCacheScope } from "@/lib/archive-cache-scope"
 import { useActiveTasks } from "@/hooks/use-active-tasks"
 import { archiveQueryFilters, libraryStateFromParams, useLibraryControls } from "@/hooks/use-library-controls"
 import { useLibraryDirectory } from "@/hooks/use-library-directory"
@@ -27,6 +29,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 
 interface Props { filters: LibraryFilters; page: number; onPageChange: (page: number) => void }
 const EMPTY_FOLDERS: LibraryFolder[] = []
+const expandedFolders = new Map<string, Set<string>>()
 const ResultPageComplete = lazy(() => import("./result-page-complete").then((module) => ({ default: module.ResultPageComplete })))
 const ResultPageLive = lazy(() => import("./result-page-live").then((module) => ({ default: module.ResultPageLive })))
 export function LibraryPage(props: Props) {
@@ -44,11 +47,11 @@ function SplitViewGroup({ folderId, all = false, filters, active, onOpen, onFirs
   renderFolder?: (folder: LibraryFolder) => ReactNode; onMoved: OnLibraryMoved;
   selectionMode: boolean; selected: Set<string>; onSelect: (key: string) => void; onDragging: (value: boolean) => void
 }) {
-  const [limit, setLimit] = useState(40)
+  const sentinelRef = useRef<HTMLDivElement>(null)
   const { folders: directoryFolders } = useLibraryDirectory()
   const folderNames = new Map(directoryFolders.map((folder) => [folder.id, folder.name]))
   const scope = all ? {} : folderId ? { folder_id: folderId } : { unclassified: true, include_folders: !!renderFolder }
-  const { archives, folders = EMPTY_FOLDERS, entries, total, loading, error, refresh, indexing } = useArchivePage({ page: 1, page_size: limit, ...archiveQueryFilters(filters), ...scope })
+  const { archives, folders = EMPTY_FOLDERS, entries, loading, error, refresh, indexing, hasMore, loadingMore, loadMore } = useArchivePage({ page: 1, page_size: 40, ...archiveQueryFilters(filters), ...scope }, "split")
   const { online, capabilities } = useAppAccess()
   const canMove = online && capabilities.archive_mutation
   const [moveKeys, setMoveKeys] = useState<string[] | null>(null)
@@ -67,13 +70,18 @@ function SplitViewGroup({ folderId, all = false, filters, active, onOpen, onFirs
     const timer = window.setInterval(() => void refresh(true), 5000)
     return () => window.clearInterval(timer)
   }, [processing, indexing, refresh])
-  const snapshotKey = JSON.stringify({ filters, folderId })
-  const [last, setLast] = useState({ key: snapshotKey, archives, folders, entries })
-  if (!loading && !error && (last.key !== snapshotKey || last.archives !== archives || last.folders !== folders || last.entries !== entries)) setLast({ key: snapshotKey, archives, folders, entries })
-  const held = loading && last.key === snapshotKey ? last : null
-  const shown = held?.archives ?? archives
-  const shownFolders = held?.folders ?? folders
-  const shownEntries = held?.entries ?? entries
+  const shown = archives
+  const shownFolders = folders
+  const shownEntries = entries
+  useEffect(() => {
+    const sentinel = sentinelRef.current
+    if (!sentinel || !hasMore || loadingMore || error || typeof IntersectionObserver === "undefined") return
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) void loadMore()
+    }, { root: sentinel.closest("[data-split-scroll]"), rootMargin: "200px" })
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [hasMore, loadingMore, error, loadMore])
   const archiveMap = new Map(shown.map((item) => [item.archive_id ?? item.path, item]))
   const folderMap = new Map(shownFolders.map((folder) => [folder.id, folder]))
   const visibleEntries = shownEntries ?? shown.map((item) => ({ kind: "archive" as const, id: item.archive_id ?? item.path }))
@@ -104,13 +112,17 @@ function SplitViewGroup({ folderId, all = false, filters, active, onOpen, onFirs
     {loading && <p className="px-2 py-1 text-xs text-muted-foreground">正在加载…</p>}
     {error && <p role="alert" className="px-2 py-1 text-xs text-destructive">{error}</p>}
     {!loading && !visibleEntries.length && <p className="px-2 py-1 text-xs text-muted-foreground">没有匹配的内容</p>}
-    {visibleEntries.length < total && <Button size="sm" variant="ghost" className="w-full text-xs" disabled={limit >= 500} onClick={() => setLimit((value) => Math.min(500, value + 40))}>{limit >= 500 ? "使用搜索查看其他内容" : "加载更多"}</Button>}
+    {hasMore && <div ref={sentinelRef}><Button size="sm" variant="ghost" className="w-full text-xs" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? "正在加载…" : "加载更多"}</Button></div>}
     {moveKeys?.length ? <MoveContentsDialog contentKeys={moveKeys} sourceFolderId={folderId} onClose={() => setMoveKeys(null)} onMoved={moved} /> : null}
   </div>
 }
 
 function FilesSplitView({ filters, onOpen }: { filters: LibraryFilters; onOpen: (item: ArchiveItem) => void }) {
   const library = useLibraryControls()
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const platform = usePlatform()
+  const positionKey = `${archiveCacheScope()}:${platform.kind}:split:${JSON.stringify({ filters: archiveQueryFilters(filters), scope: library.scope })}`
+  useListPosition(positionKey, scrollRef)
   const { online, capabilities } = useAppAccess()
   const [selectionMode, setSelectionMode] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
@@ -132,7 +144,14 @@ function FilesSplitView({ filters, onOpen }: { filters: LibraryFilters; onOpen: 
   }
   const { busy: moving, move } = useLibraryMove(onMoved)
   const groupProps = { filters, active: library.item, onMoved, selectionMode, selected, onSelect, onDragging: setDragging }
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(library.folder ? [library.folder] : []))
+  const [expanded, setExpanded] = useState<Set<string>>(() => expandedFolders.get(positionKey) ?? new Set(library.folder ? [library.folder] : []))
+  useEffect(() => {
+    expandedFolders.set(positionKey, expanded)
+    if (expandedFolders.size > 80) {
+      const oldest = expandedFolders.keys().next().value
+      if (oldest !== undefined) expandedFolders.delete(oldest)
+    }
+  }, [positionKey, expanded])
   const [lastFolder, setLastFolder] = useState(library.folder)
   const [autoSelect, setAutoSelect] = useState(true)
   const narrow = useMediaQuery("(max-width: 1099px)")
@@ -146,7 +165,7 @@ function FilesSplitView({ filters, onOpen }: { filters: LibraryFilters; onOpen: 
   }, [narrow, selectedItem, setLocation, autoSelect])
   return <div className="relative flex h-full min-w-0">
       <aside aria-label="文件列表" hidden={narrow && !!library.item} className={cn("flex h-full shrink-0 flex-col overflow-hidden bg-background p-2", narrow ? "w-full" : "w-[21.333rem] border-r", narrow && !!library.item && "hidden")}>
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div ref={scrollRef} data-split-scroll className="min-h-0 flex-1 overflow-y-auto">
         {library.scope === "all" ? <SplitViewGroup {...groupProps} all onOpen={onOpen} onFirst={first} /> : <SplitViewGroup {...groupProps} onOpen={onOpen} onFirst={!library.folder ? first : undefined} renderFolder={(folder) => <section className="mb-1" data-folder-id={folder.id}>
           <LibraryDropTarget label={folder.name} disabled={moving} onDropContents={(keys) => void move(keys, folder.id)}>
             <button type="button" aria-expanded={expanded.has(folder.id)} aria-controls={`folder-${folder.id}`} className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-muted" onClick={() => setExpanded((current) => { const next = new Set(current); if (next.has(folder.id)) next.delete(folder.id); else next.add(folder.id); return next })}>

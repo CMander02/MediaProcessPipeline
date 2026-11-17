@@ -12,6 +12,10 @@ const mocks = vi.hoisted(() => ({
   resolve: vi.fn(),
   refresh: vi.fn(),
   updatePreferences: vi.fn(),
+  server: "http://localhost",
+  hasMore: false,
+  loadMore: vi.fn(),
+  intersect: () => {},
   platform: { kind: "web", isNative: false },
 }))
 
@@ -51,6 +55,7 @@ vi.mock("@/hooks/use-archive-page", () => ({
       // Archive-only API responses may omit folders entirely.
       ...(query.include_folders ? { folders, entries: folderEntries } : {}),
       total: pageArchives.length + (query.include_folders ? folders.length : 0), loading: false,
+      hasMore: mocks.hasMore, loadingMore: false, loadMore: mocks.loadMore,
       refresh: mocks.refresh, removeArchive: vi.fn(), lastReconciledAt: new Date().toISOString(),
     }
   },
@@ -67,7 +72,7 @@ vi.mock("@/hooks/use-app-access-context", () => ({
 vi.mock("@/platform/use-platform", () => ({ usePlatform: () => mocks.platform }))
 vi.mock("@/hooks/use-preferences", () => ({ usePreferences: () => ({ update: mocks.updatePreferences }) }))
 vi.mock("@/lib/api", () => ({
-  getApiClientConfig: () => ({ baseUrl: "http://localhost" }),
+  getApiClientConfig: () => ({ baseUrl: mocks.server }),
   api: { library: { resolve: mocks.resolve }, archives: { thumbnailUrl: () => "/thumbnail.jpg" }, tasks: {} },
 }))
 vi.mock("./result-page-complete", () => ({
@@ -106,9 +111,13 @@ function openLibrary(hash: string) {
   return render(<RoutedLibrary />)
 }
 
+let observerRoot: Element | null = null
+let session = 0
 beforeEach(() => {
   vi.clearAllMocks()
+  mocks.server = `http://localhost/session-${++session}`
   viewport(1440)
+  mocks.hasMore = false
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} })
   mocks.resolve.mockImplementation(async (key: string) => ({
     archive: archives.find((archive) => archive.content_key === key) ?? null,
@@ -212,6 +221,45 @@ describe("library view navigation", () => {
     expect(screen.getByRole("complementary", { name: "文件列表" })).toBeTruthy()
     expect(screen.queryByRole("region", { name: "内容详情" })).toBeNull()
     expect(previousHash()).toBe("#/settings")
+  })
+
+  it("keeps the split list scroll position when opening an archive in an expanded folder", async () => {
+    openLibrary("#/files?view=split")
+    fireEvent.click(screen.getByRole("button", { name: /课程/ }))
+    const list = document.querySelector<HTMLElement>("[data-split-scroll]")!
+    fireEvent.scroll(list, { target: { scrollTop: 900 } })
+    fireEvent.click(screen.getByRole("button", { name: /视频 b/ }))
+    await screen.findByRole("region", { name: "内容详情" })
+    expect(list.scrollTop).toBe(900)
+  })
+
+  it("loads from a sentinel rooted in the split scroll container and retains a fallback button", () => {
+    mocks.hasMore = true
+    vi.stubGlobal("IntersectionObserver", class {
+      constructor(callback: (entries: { isIntersecting: boolean }[]) => void, options: { root: Element | null }) {
+        observerRoot = options.root
+        mocks.intersect = () => callback([{ isIntersecting: true }])
+      }
+      observe() {}
+      disconnect() {}
+    })
+    openLibrary("#/files?view=split&scope=all")
+    expect(observerRoot).toBe(document.querySelector("[data-split-scroll]"))
+    act(() => mocks.intersect())
+    expect(mocks.loadMore).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole("button", { name: "加载更多" }))
+    expect(mocks.loadMore).toHaveBeenCalledTimes(2)
+  })
+
+  it("restores the split list position and expanded folders after remount", () => {
+    const first = openLibrary("#/files?view=split")
+    fireEvent.click(screen.getByRole("button", { name: /课程/ }))
+    fireEvent.scroll(document.querySelector("[data-split-scroll]")!, { target: { scrollTop: 810 } })
+    first.unmount()
+    render(<RoutedLibrary />)
+    expect(document.querySelector("[data-split-scroll]")?.scrollTop).toBe(810)
+    expect(screen.getByRole("button", { name: /课程/ }).getAttribute("aria-expanded")).toBe("true")
+    expect(screen.getByRole("button", { name: /视频 b/ })).toBeTruthy()
   })
 
   it("opens a mobile detail link directly and clears its selected version when returning to the list", async () => {

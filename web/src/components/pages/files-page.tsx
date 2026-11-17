@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef, typ
 import { HugeiconsIcon } from "@hugeicons/react"
 import { CheckListIcon, Loading03Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons"
 import { useArchivePage } from "@/hooks/use-archive-page"
+import { useListPosition } from "@/hooks/use-view-position"
 import { usePreferences } from "@/hooks/use-preferences"
 import { useActiveTasks, refreshActiveTasks } from "@/hooks/use-active-tasks"
 import { useMediaQuery } from "@/hooks/use-media-query"
@@ -58,9 +59,8 @@ import { RerunConfirmDialog } from "@/components/rerun-confirm-dialog"
 import { notifyError, notifySuccess } from "@/lib/notify"
 
 const PAGE_SIZE = 28
-const PHONE_BATCH = 12
-// Largest page the archive API serves
-const MAX_QUERY = 500
+const PHONE_BATCH = 24
+const RETRY_BATCH = 500
 const AUTO_CHECK_AFTER_MS = 30 * 60 * 1000
 const EMPTY_FOLDERS: LibraryFolder[] = []
 
@@ -92,7 +92,7 @@ export function FilesPage({
   const isPhone = useMediaQuery("(max-width: 767px)")
   const { update: updatePrefs } = usePreferences()
   // Fallback local page state for embeddings that don't route the page through the URL (tests).
-  const filterKey = JSON.stringify({ ...filters, folderId, scope })
+  const filterKey = JSON.stringify({ ...archiveQueryFilters(filters), folderId, scope })
   const [pagination, setPagination] = useState({ filterKey, page: 1 })
   if (!onPageChange && pagination.filterKey !== filterKey) setPagination({ filterKey, page: 1 })
   const page = onPageChange ? (pageProp ?? 1) : (pagination.filterKey === filterKey ? pagination.page : 1)
@@ -101,16 +101,13 @@ export function FilesPage({
     else setPagination({ filterKey, page: value })
   }, [filterKey, onPageChange])
   const [pageSize, setPageSize] = useState(PAGE_SIZE)
-  const [phoneState, setPhoneState] = useState({ filterKey, limit: PHONE_BATCH })
-  if (phoneState.filterKey !== filterKey) setPhoneState({ filterKey, limit: PHONE_BATCH })
-  const phoneLimit = Math.min(MAX_QUERY, phoneState.filterKey === filterKey ? phoneState.limit : PHONE_BATCH)
   const [rerunTarget, setRerunTarget] = useState<ArchiveItem | null>(null)
   const [gridLayout, setGridLayout] = useState<{ columns: number; rowGap: number } | null>(null)
-  const limit = isPhone ? phoneLimit : pageSize
+  const limit = isPhone ? PHONE_BATCH : pageSize
   const folderScope = all ? {} : folderId ? { folder_id: folderId } : { unclassified: true, include_folders: true }
   const query = { page: isPhone ? 1 : page, page_size: limit, ...folderScope }
   const { archives, folders: pageFolders = EMPTY_FOLDERS, entries, total, archiveTotal = total, loading, error, indexing, lastReconciledAt, facets,
-    refresh, removeArchive } = useArchivePage({ ...query, ...archiveQueryFilters(filters) })
+    refresh, removeArchive, loadMore, loadingMore, hasMore, sessionKey } = useArchivePage({ ...query, ...archiveQueryFilters(filters) }, isPhone ? "phone-grid" : undefined)
   const [checking, setChecking] = useState(false)
   const [paginationRangeSize, setPaginationRangeSize] = useState(7)
   const [deleteTarget, setDeleteTarget] = useState<{ title: string; path: string; taskId?: string; taskDelete?: boolean } | null>(null)
@@ -146,15 +143,10 @@ export function FilesPage({
   const [cleanup, setCleanup] = useState<{ count: number; busy: boolean } | null>(null)
   const gridRef = useRef<HTMLDivElement>(null)
   const sentinelRef = useRef<HTMLDivElement>(null)
-  const [lastPage, setLastPage] = useState({ filterKey, archives, folders: pageFolders, entries })
-  if (isPhone && !loading && !error && (lastPage.filterKey !== filterKey || lastPage.archives !== archives || lastPage.folders !== pageFolders || lastPage.entries !== entries)) {
-    setLastPage({ filterKey, archives, folders: pageFolders, entries })
-  }
-  // On phones "load more" grows one query; keep showing what we had while it reloads.
-  const held = loading && isPhone && lastPage.filterKey === filterKey ? lastPage : null
-  const shown = held?.archives ?? archives
-  const shownFolders = held?.folders ?? pageFolders
-  const shownEntries = held?.entries ?? entries
+  const hasSavedPosition = useListPosition(sessionKey ?? `grid:${filterKey}`, gridRef, !loading)
+  const shown = archives
+  const shownFolders = pageFolders
+  const shownEntries = entries
   const archiveMap = new Map(shown.map((item) => [item.archive_id ?? item.path, item]))
   const folderMap = new Map(shownFolders.map((folder) => [folder.id, folder]))
   const visibleEntries = shownEntries ?? [
@@ -178,9 +170,9 @@ export function FilesPage({
     returnFocusPath = null
     if (target) {
       target.focus({ preventScroll: true })
-      target.scrollIntoView({ block: "nearest" })
+      if (!isPhone || !hasSavedPosition) target.scrollIntoView({ block: "nearest" })
     }
-  }, [loading, archives])
+  }, [loading, archives, isPhone, hasSavedPosition])
 
   // A task leaving the active list has finished, failed or been removed: reload the cards.
   const activeIds = activeTasks.map((task) => task.id).sort().join(",")
@@ -266,13 +258,11 @@ export function FilesPage({
     const grid = gridRef.current
     if (!isPhone || !sentinel || !grid || typeof IntersectionObserver === "undefined") return
     const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting) && !loading && shown.length + pageFolders.length < total && phoneLimit < MAX_QUERY) {
-        setPhoneState({ filterKey, limit: phoneLimit + PHONE_BATCH })
-      }
+      if (entries.some((entry) => entry.isIntersecting) && hasMore && !loadingMore && !error) void loadMore()
     }, { root: grid, rootMargin: "400px" })
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [filterKey, isPhone, loading, phoneLimit, shown.length, pageFolders.length, total])
+  }, [isPhone, loading, loadingMore, hasMore, error, loadMore])
 
   // ---------- selection ----------
   const exitSelection = useCallback(() => {
@@ -327,7 +317,7 @@ export function FilesPage({
       const found: ArchiveItem[] = []
       for (let next = 1; ; next += 1) {
         const result = await api.archives.page({
-          page: next, page_size: MAX_QUERY, ...archiveQueryFilters({ ...filters, statuses: ["failed"], duplicates: false }),
+          page: next, page_size: RETRY_BATCH, ...archiveQueryFilters({ ...filters, statuses: ["failed"], duplicates: false }),
           ...(all ? {} : folderId ? { folder_id: folderId } : { unclassified: true }),
         })
         found.push(...(result.archives as ArchiveItem[]))
@@ -493,7 +483,7 @@ export function FilesPage({
         <div
           ref={gridRef}
           data-testid="archive-grid"
-          className="grid h-full min-h-0 grid-cols-2 content-start items-start gap-3 overflow-x-hidden overflow-y-auto max-md:*:[contain-intrinsic-size:auto_220px] max-md:*:[content-visibility:auto] sm:gap-x-5 sm:gap-y-4 lg:grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] min-[1972px]:grid-cols-7"
+          className="grid h-full min-h-0 grid-cols-2 content-start items-start gap-3 overflow-x-hidden overflow-y-auto max-md:[overflow-anchor:none] max-md:*:[contain-intrinsic-size:auto_220px] max-md:*:[content-visibility:auto] sm:gap-x-5 sm:gap-y-4 lg:grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] min-[1972px]:grid-cols-7"
           style={gridLayout ? { gridTemplateColumns: `repeat(${gridLayout.columns}, minmax(0, 1fr))`, rowGap: gridLayout.rowGap } : undefined}
         >
           {visibleEntries.map((entry) => {
@@ -545,8 +535,10 @@ export function FilesPage({
           {isPhone && (
             <div ref={sentinelRef} className="col-span-full flex min-h-10 items-center justify-center py-2 text-xs text-muted-foreground">
               {shown.length + shownFolders.length < total
-                ? (loading ? "正在加载…" : phoneLimit >= MAX_QUERY ? `已显示前 ${shown.length + shownFolders.length} 项，用搜索或筛选缩小范围` : `已显示 ${shown.length + shownFolders.length} / ${total}`)
+                ? (loadingMore ? "正在加载…" : `已显示 ${shown.length + shownFolders.length} / ${total}`)
                 : `共 ${total} 项`}
+              {hasMore && <Button size="sm" variant="ghost" disabled={loadingMore} onClick={() => void loadMore()}>加载更多</Button>}
+              {error && <span role="alert">{error}</span>}
             </div>
           )}
         </div>

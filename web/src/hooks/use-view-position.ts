@@ -3,7 +3,29 @@
  * - media playback time (seconds)
  * - active tab
  */
-import { useCallback, useEffect, useRef } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from "react"
+
+const listPositions = new Map<string, number>()
+
+export function useListPosition(key: string, ref: RefObject<HTMLElement | null>, ready = true) {
+  const hasSavedPosition = listPositions.has(key)
+  useLayoutEffect(() => {
+    const element = ref.current
+    if (!ready || !element) return
+    element.scrollTop = listPositions.get(key) ?? 0
+    const save = () => {
+      listPositions.delete(key)
+      listPositions.set(key, element.scrollTop)
+      if (listPositions.size > 200) {
+        const oldest = listPositions.keys().next().value
+        if (oldest !== undefined) listPositions.delete(oldest)
+      }
+    }
+    element.addEventListener("scroll", save, { passive: true })
+    return () => { save(); element.removeEventListener("scroll", save) }
+  }, [key, ready, ref])
+  return hasSavedPosition
+}
 
 interface ViewPosition {
   mediaTime: number // seconds

@@ -5,50 +5,111 @@ import { usePlatform } from "@/platform/use-platform"
 import { archiveCacheScope, archiveServerKey, rememberArchiveWorkspace } from "@/lib/archive-cache-scope"
 import { preloadThumbnails } from "@/hooks/use-archives"
 
-const pages = new Map<string, ArchivePage>()
+interface CachedPage {
+  value: ArchivePage
+  pageCount: number
+}
+
+const pages = new Map<string, CachedPage>()
 const requests = new Map<string, Promise<ArchivePage>>()
 const MAX_CACHED_PAGES = 80
 const EMPTY_ARCHIVES: ArchivePage["archives"] = []
 const EMPTY_FOLDERS: NonNullable<ArchivePage["folders"]> = []
 
-export function useArchivePage(query: ArchiveQuery) {
+function mergePages(results: ArchivePage[]): ArchivePage {
+  const first = results[0]
+  if (results.length === 1) return first
+  const archives = new Map<string, ArchivePage["archives"][number]>()
+  const folders = new Map<string, NonNullable<ArchivePage["folders"]>[number]>()
+  const entries = new Map<string, NonNullable<ArchivePage["entries"]>[number]>()
+  for (const result of results) {
+    for (const archive of result.archives) archives.set(archive.archive_id ?? archive.path, archive)
+    for (const folder of result.folders ?? []) folders.set(folder.id, folder)
+    for (const entry of result.entries ?? result.archives.map((archive) => ({ kind: "archive" as const, id: archive.archive_id ?? archive.path }))) {
+      entries.set(`${entry.kind}:${entry.id}`, entry)
+    }
+  }
+  return { ...first, archives: [...archives.values()], folders: [...folders.values()], entries: [...entries.values()] }
+}
+
+export function useArchivePage(query: ArchiveQuery, infiniteView?: string) {
   const platform = usePlatform()
   const repository = useMemo(() => createArchiveRepository(platform), [platform])
   const [generation, setGeneration] = useState(0)
   const server = archiveServerKey()
   const queryKey = JSON.stringify(query)
-  const requestKey = `${server}:${platform.kind}:${generation}:${queryKey}`
+  const viewKey = infiniteView ?? "page"
+  const requestKey = `${server}:${platform.kind}:${viewKey}:${generation}:${queryKey}`
   const activeKey = useRef(requestKey)
   useLayoutEffect(() => { activeKey.current = requestKey }, [requestKey])
-  const cacheKey = `${archiveCacheScope(server)}:${platform.kind}:${queryKey}`
-  const [snapshot, setSnapshot] = useState<{ key: string; value: ArchivePage } | null>(null)
+  const cacheKey = `${archiveCacheScope(server)}:${platform.kind}:${viewKey}:${queryKey}`
+  const [snapshot, setSnapshot] = useState<{ key: string; cached: CachedPage } | null>(null)
+  const [pendingKey, setPendingKey] = useState<string | null>(null)
+  const pending = useRef<string | null>(null)
+  const queuedRefresh = useRef<string | null>(null)
   const [error, setError] = useState<{ key: string; message: string } | null>(null)
-  const data = snapshot?.key === requestKey ? snapshot.value : pages.get(cacheKey)
+  const cached = snapshot?.key === requestKey ? snapshot.cached : pages.get(cacheKey)
+  const data = cached?.value
+  const cachedRef = useRef(cached)
+  useLayoutEffect(() => { cachedRef.current = cached }, [cached])
+  useLayoutEffect(() => () => { activeKey.current = "" }, [requestKey])
 
-  const refresh = useCallback((silent = false) => {
-    const queryValue: ArchiveQuery = JSON.parse(queryKey)
-    const key = `${archiveCacheScope(server)}:${platform.kind}:${queryKey}`
-    let request = requests.get(key)
-    if (!request) {
-      request = repository.listPage(queryValue)
-      requests.set(key, request)
-      const clear = () => { if (requests.get(key) === request) requests.delete(key) }
-      void request.then(clear, clear)
+  const load = useCallback(async function loadPages(append: boolean, silent = false) {
+    if (pending.current === requestKey) {
+      if (!append) queuedRefresh.current = requestKey
+      return
     }
-    return request.then((result) => {
+    const previous = cachedRef.current
+    if (append && (!previous || previous.pageCount * query.page_size >= previous.value.total)) return
+    pending.current = requestKey
+    setPendingKey(requestKey)
+    const queryValue: ArchiveQuery = JSON.parse(queryKey)
+    const count = infiniteView ? (previous?.pageCount ?? 1) : 1
+    const pageNumbers = append ? [count + 1] : Array.from({ length: count }, (_, index) => index + 1)
+    try {
+      const results = await Promise.all(pageNumbers.map((page) => {
+        const pageQuery = infiniteView ? { ...queryValue, page, offset: (page - 1) * queryValue.page_size } : queryValue
+        const key = `${archiveCacheScope(server)}:${platform.kind}:${JSON.stringify(pageQuery)}`
+        let request = requests.get(key)
+        if (!request) {
+          request = repository.listPage(pageQuery)
+          requests.set(key, request)
+          const clear = () => { if (requests.get(key) === request) requests.delete(key) }
+          void request.then(clear, clear)
+        }
+        return request
+      }))
       if (activeKey.current !== requestKey) return
-      const scope = platform.isNative && result.workspace_id === "offline" ? archiveCacheScope(server) : rememberArchiveWorkspace(server, result.workspace_id)
-      const resolvedKey = `${scope}:${platform.kind}:${queryKey}`
+      const first = results[0]
+      const scope = platform.isNative && first.workspace_id === "offline" ? archiveCacheScope(server) : rememberArchiveWorkspace(server, first.workspace_id)
+      const resolvedKey = `${scope}:${platform.kind}:${viewKey}:${queryKey}`
+      const value = append && previous
+        ? mergePages([{ ...previous.value, total: first.total, archive_total: first.archive_total }, ...results])
+        : mergePages(results)
+      const next = { value, pageCount: append ? count + 1 : count }
       pages.delete(resolvedKey)
-      pages.set(resolvedKey, result)
-      if (pages.size > MAX_CACHED_PAGES) pages.delete(pages.keys().next().value!)
-      setSnapshot({ key: requestKey, value: result })
+      pages.set(resolvedKey, next)
+      if (pages.size > MAX_CACHED_PAGES) {
+        const oldest = pages.keys().next().value
+        if (oldest !== undefined) pages.delete(oldest)
+      }
+      cachedRef.current = next
+      setSnapshot({ key: requestKey, cached: next })
       setError(null)
-      if (!silent) preloadThumbnails(result.archives)
-    }, (reason) => {
+      if (!silent) preloadThumbnails(first.archives)
+    } catch (reason) {
       if (activeKey.current === requestKey) setError({ key: requestKey, message: String(reason) })
-    })
-  }, [platform.kind, platform.isNative, queryKey, repository, requestKey, server])
+    } finally {
+      if (pending.current === requestKey) pending.current = null
+      if (activeKey.current === requestKey) setPendingKey(null)
+      if (activeKey.current === requestKey && queuedRefresh.current === requestKey) {
+        queuedRefresh.current = null
+        void loadPages(false, true)
+      }
+    }
+  }, [infiniteView, platform.kind, platform.isNative, query.page_size, queryKey, repository, requestKey, server, viewKey])
+  const refresh = useCallback((silent = false) => load(false, silent), [load])
+  const loadMore = useCallback(() => load(true), [load])
 
   useEffect(() => { void refresh() }, [refresh])
   useEffect(() => { if (platform.isNative) repository.triggerSync() }, [platform.isNative, repository])
@@ -92,5 +153,7 @@ export function useArchivePage(query: ArchiveQuery) {
     total: data?.total ?? 0, page: data?.page ?? query.page,
     loading: !data && error?.key !== requestKey, error: error?.key === requestKey ? error.message : null,
     indexing: data?.indexing ?? false, lastReconciledAt: data?.last_reconciled_at, facets: data?.facets,
-    refresh, removeArchive }
+    refresh, removeArchive, loadMore, loadingMore: pendingKey === requestKey,
+    loadedPages: cached?.pageCount ?? 0, hasMore: !!infiniteView && !!cached && cached.pageCount * query.page_size < (data?.total ?? 0),
+    sessionKey: cacheKey }
 }
