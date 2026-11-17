@@ -58,6 +58,7 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install ffmpeg --no-progress -y
       - run: uv sync --extra dev
+      - run: uv pip install --torch-backend cpu "torch~=2.8.0" "torchaudio~=2.8.0"
       - run: uv run --no-sync pytest tests -q -p no:cacheprovider
 
   desktop:

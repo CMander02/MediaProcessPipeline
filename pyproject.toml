@@ -19,8 +19,8 @@ dependencies = [
     "opencc>=1.4.0,<2",
     # Unified local ASR runtime. CUDA wheels installed by setup keep this version identity.
     "sherpa-onnx==1.13.4",
-    # The macOS wheel delegates its native runtime to a separate core wheel.
-    "sherpa-onnx-core==1.13.4; sys_platform == 'darwin'",
+    # uv may resolve sherpa-onnx from source metadata that omits this dependency.
+    "sherpa-onnx-core==1.13.4",
     # CLI
     "typer>=0.15.0",
     "rich>=13.0.0",
@@ -40,9 +40,12 @@ mpp = "app.cli:_entry"
 
 [project.optional-dependencies]
 dev = [
+    "pandas",
+    "pillow",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.8.0",
+    "scikit-learn",
     "soundfile>=0.12.1",
 ]
 asr-api-vad = [
