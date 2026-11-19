@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any, Generator
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import httpx
 
@@ -210,6 +210,9 @@ class MppClient:
     def capabilities(self) -> dict[str, Any]:
         return self.request("GET", "/api/capabilities")
 
+    def execution_nodes(self) -> dict[str, Any]:
+        return self.request("GET", "/api/execution/nodes")
+
     # Tasks
 
     def create_task(
@@ -217,6 +220,7 @@ class MppClient:
         source: str,
         options: dict[str, Any] | None = None,
         webhook_url: str | None = None,
+        target_worker_id: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "task_type": "pipeline",
@@ -225,6 +229,8 @@ class MppClient:
         }
         if webhook_url:
             payload["webhook_url"] = webhook_url
+        if target_worker_id:
+            payload["target_worker_id"] = target_worker_id
         return self.request("POST", "/api/tasks", json_body=payload)
 
     def create_tasks_batch(
@@ -232,6 +238,7 @@ class MppClient:
         sources: list[str],
         options: dict[str, Any] | None = None,
         webhook_url: str | None = None,
+        target_worker_id: str | None = None,
     ) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {
             "task_type": "pipeline",
@@ -240,6 +247,8 @@ class MppClient:
         }
         if webhook_url:
             payload["webhook_url"] = webhook_url
+        if target_worker_id:
+            payload["target_worker_id"] = target_worker_id
         return self.request("POST", "/api/tasks/batch", json_body=payload)
 
     def get_task(self, task_id: str) -> dict[str, Any]:
@@ -644,12 +653,17 @@ class MppClient:
         include_media: bool = False,
     ) -> dict[str, Any]:
         encoded_task = quote(task_id, safe="")
-        return self.download_to(
+        exported = self.download_to(
             f"/api/sync/tasks/{encoded_task}/archive",
             destination,
             params={"include_media": str(include_media).lower()},
             timeout=3600.0,
         )
+
+        folder_meta = exported["headers"].get("x-mpp-folder-meta")
+        if folder_meta:
+            exported["folder_json"] = unquote(folder_meta)
+        return exported
 
     def import_task_archive(
         self,
@@ -659,6 +673,7 @@ class MppClient:
         archive_name: str,
         archive_sha256: str,
         worker_id: str = "mpp-cli",
+        folder_json: str | None = None,
     ) -> dict[str, Any]:
         with archive_path.open("rb") as archive:
             return self.request(
@@ -669,6 +684,7 @@ class MppClient:
                     "archive_name": archive_name,
                     "archive_sha256": archive_sha256,
                     "worker_id": worker_id,
+                    **({"folder_json": folder_json} if folder_json else {}),
                 },
                 files={"archive": ("archive.zip", archive, "application/zip")},
                 timeout=3600.0,

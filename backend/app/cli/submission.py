@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.cli.client import MppClient, MppClientError
-from app.cli.context import get_cli_context
+from app.cli.context import get_cli_context, route_to_configured_server
 from app.cli.output import emit_error, parse_assignments
 
 MEDIA_EXTENSIONS = {
@@ -190,8 +190,40 @@ def expand_bilibili_collections(
     return result
 
 
+def configure_submission_route(raw_target: str | None, remote: bool | None) -> str:
+    from app.core.settings import get_runtime_settings
+
+    settings = get_runtime_settings()
+    target = (raw_target if raw_target is not None else settings.cli_default_worker_id).strip()
+    route_to_configured_server(remote=remote, target=target, settings=settings)
+    return target
+
+
+def resolve_worker_target(api: MppClient, raw_target: str) -> str:
+    target = raw_target.strip()
+    if not target or target == "local":
+        return target
+    try:
+        nodes = api.execution_nodes().get("nodes") or []
+    except MppClientError:
+        return target
+    if any(node["node_id"] == target for node in nodes):
+        return target
+    folded = target.casefold()
+    candidates = sorted({node["node_id"] for node in nodes
+                         if folded in {node["node_id"].casefold(), node["display_name"].casefold()}})
+    if len(candidates) > 1:
+        emit_error(
+            "ambiguous_worker_target",
+            f"Worker {target!r} matches multiple nodes. Use a node ID: {', '.join(candidates)}.",
+            detail={"candidate_node_ids": candidates},
+            exit_code=2,
+        )
+    return candidates[0] if candidates else target
+
+
 def prepare_sources_for_server(
-    api: MppClient, sources: list[str], upload_mode: str = "auto"
+    api: MppClient, sources: list[str], upload_mode: str = "auto", *, target_worker_id: str = ""
 ) -> tuple[list[str], list[dict[str, Any]], list[dict[str, Any]]]:
     if upload_mode not in {"auto", "always", "never"}:
         emit_error("invalid_upload_mode", f"Unknown upload mode: {upload_mode}", exit_code=2)
@@ -206,7 +238,11 @@ def prepare_sources_for_server(
             continue
         should_upload = upload_mode == "always" or (
             upload_mode == "auto"
-            and (not get_cli_context().is_local or not capabilities.get("local_path_submission"))
+            and (
+                target_worker_id not in {"", "local"}
+                or not get_cli_context().is_local
+                or not capabilities.get("local_path_submission")
+            )
         )
         if should_upload:
             try:
@@ -235,7 +271,9 @@ def submit_sources(
     webhook_url: str | None = None,
     upload_mode: str = "auto",
     collection: str | None = None,
+    target_worker: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    target_worker_id = resolve_worker_target(api, target_worker)
     expanded = expand_bilibili_collections(api, sources, collection)
     if len(expanded) > 100:
         emit_error(
@@ -243,7 +281,9 @@ def submit_sources(
             f"A collection-expanded batch accepts at most 100 sources; received {len(expanded)}.",
             exit_code=2,
         )
-    prepared, staged, errors = prepare_sources_for_server(api, expanded, upload_mode)
+    prepared, staged, errors = prepare_sources_for_server(
+        api, expanded, upload_mode, target_worker_id=target_worker_id,
+    )
     if not prepared:
         emit_error(
             "staging_failed",
@@ -252,7 +292,8 @@ def submit_sources(
             exit_code=1,
         )
     try:
-        return api.create_tasks_batch(prepared, options, webhook_url), errors
+        routing = {"target_worker_id": target_worker_id} if target_worker_id else {}
+        return api.create_tasks_batch(prepared, options, webhook_url, **routing), errors
     except Exception:
         for item in staged:
             staging_id = item.get("staging_id")

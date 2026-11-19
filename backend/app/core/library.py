@@ -220,6 +220,19 @@ def catalog(conn) -> dict:
     return contents
 
 
+def save_membership(conn, key, folder_id, origin, added_at):
+    conn.execute(
+        'DELETE FROM library_folder_covers WHERE folder_id IS NOT ? AND content_key=? '
+        'AND folder_id=(SELECT folder_id FROM library_folder_members WHERE content_key=?)',
+        (folder_id, key, key),
+    )
+    conn.execute(
+        'INSERT INTO library_folder_members VALUES (?,?,?,?) ON CONFLICT(content_key) DO UPDATE '
+        'SET folder_id=excluded.folder_id,origin=excluded.origin,added_at=excluded.added_at',
+        (key, folder_id, origin, added_at),
+    )
+
+
 def assign_import(conn, key, folder_id=None, *, explicit=False, move_existing=False):
     """Automatic imports respect manual choices, including an explicit move out."""
     if conn.execute('SELECT 1 FROM library_deletions WHERE content_key=?', (key,)).fetchone():
@@ -242,11 +255,7 @@ def assign_import(conn, key, folder_id=None, *, explicit=False, move_existing=Fa
         return {'folder_id': folder_id, 'folder_outcome': 'unchanged'}
     if previous and not move_existing:
         return {'folder_id': previous['folder_id'], 'folder_outcome': 'kept_other'}
-    conn.execute(
-        'INSERT INTO library_folder_members VALUES (?,?,?,?) ON CONFLICT(content_key) DO UPDATE '
-        'SET folder_id=excluded.folder_id,origin=excluded.origin,added_at=excluded.added_at',
-        (key, folder_id, 'manual' if explicit else 'collection', _now()),
-    )
+    save_membership(conn, key, folder_id, 'manual' if explicit else 'collection', _now())
     changed(conn)
     return {'folder_id': folder_id, 'folder_outcome': 'moved'}
 
@@ -350,7 +359,8 @@ class LibraryService:
             require_folder(conn, folder_id)
             released = conn.execute('SELECT COUNT(*) FROM library_folder_members WHERE folder_id=?', (folder_id,)).fetchone()[0]
             # Keep an explicit unclassified choice so future automatic imports cannot undo it.
-            conn.execute("UPDATE library_folder_members SET origin='manual' WHERE folder_id=?", (folder_id,))
+            conn.execute("UPDATE library_folder_members SET origin='manual',added_at=? WHERE folder_id=?",
+                         (_now(), folder_id))
             conn.execute('DELETE FROM library_folder_covers WHERE folder_id=?', (folder_id,))
             conn.execute('DELETE FROM library_folders WHERE id=?', (folder_id,))
             changed(conn)
@@ -429,7 +439,13 @@ class LibraryService:
                 try:
                     # An unchanged manual move also opts out of later automatic reassignment.
                     result = assign_import(conn, key, folder_id, explicit=True, move_existing=True)
-                    conn.execute("UPDATE library_folder_members SET origin='manual' WHERE content_key=?", (key,))
+                    if result['folder_outcome'] == 'unchanged':
+                        updated = conn.execute(
+                            "UPDATE library_folder_members SET origin='manual',added_at=? "
+                            "WHERE content_key=? AND origin!='manual'", (_now(), key),
+                        )
+                        if updated.rowcount:
+                            changed(conn)
                     results.append({'content_key': key, 'previous_folder_id': previous[0] if previous else None,
                                     'outcome': result['folder_outcome'], **result})
                 except ValueError as exc:
@@ -481,12 +497,53 @@ class LibraryService:
         with _db_lock:
             conn = _get_conn()
             contents = catalog(conn)
-            mapping = {row['content_key']: row['folder_id'] for row in conn.execute('SELECT * FROM library_folder_members')}
+            members = [dict(row) for row in conn.execute('SELECT * FROM library_folder_members')]
+            mapping = {member['content_key']: member['folder_id'] for member in members}
             return {'library_revision': revision(conn),
                     'folders': [dict(row) for row in conn.execute('SELECT * FROM library_folders ORDER BY created_at,id')],
-                    'members': [{'content_key': key, 'folder_id': folder_id} for key, folder_id in mapping.items()],
+                    'members': members,
                     'archives': [{'archive_id': item['archive_id'], 'content_key': key, 'folder_id': mapping.get(key)}
-                                 for key, entry in contents.items() for item in entry['archives']]}
+                                 for key, entry in contents.items() for item in entry['archives']],
+                    'covers': [dict(row) for row in conn.execute('SELECT * FROM library_folder_covers')],
+                    'collections': collection_metadata(conn)}
+
+    @uses_workspace
+    def merge_sync_snapshot(self, payload):
+        from app.core.database import task_write_transaction
+        from app.core.library_sync import merge_push
+
+        with task_write_transaction() as conn:
+            archive_keys = {}
+            if any(member.archive_id for member in payload.members) or any(cover.archive_id for cover in payload.covers):
+                archive_keys = {item['archive_id']: key for key, entry in catalog(conn).items()
+                                for item in entry['archives']}
+            before = revision(conn)
+            mapping = merge_push(conn, payload, archive_keys)
+            after = revision(conn)
+        return {'ok': True, 'library_revision': after, 'folder_id_map': mapping}, after != before
+
+    @uses_workspace
+    def archive_classification(self, key):
+        with _db_lock:
+            conn = _get_conn()
+            member = conn.execute(
+                'SELECT folder_id,origin,added_at FROM library_folder_members WHERE content_key=?', (key,),
+            ).fetchone()
+            if not member or member['folder_id'] is None:
+                return None
+            folder_id = member['folder_id']
+            cover = conn.execute(
+                'SELECT updated_at FROM library_folder_covers WHERE folder_id=? AND content_key=?', (folder_id, key),
+            ).fetchone()
+            return {'folder': require_folder(conn, folder_id), 'origin': member['origin'],
+                    'added_at': member['added_at'], 'cover_updated_at': cover['updated_at'] if cover else None}
+
+
+def collection_metadata(conn):
+    return [dict(row) for row in conn.execute(
+        'SELECT collection_key,title,owner_name,owner_avatar_url,checked_at FROM library_collections'
+    )]
+
 
 
 _service = LibraryService()

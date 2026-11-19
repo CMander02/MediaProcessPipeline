@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS remote_sync_cursors (
     workspace_id TEXT NOT NULL,
     cursor INTEGER NOT NULL DEFAULT 0,
     library_revision INTEGER NOT NULL DEFAULT -1,
+    pushed_library_revision INTEGER NOT NULL DEFAULT -1,
     PRIMARY KEY (server_url, workspace_id)
 );
 CREATE TABLE IF NOT EXISTS remote_sync_archives (
@@ -199,6 +200,7 @@ CREATE TABLE IF NOT EXISTS remote_sync_folders (
 
 # Columns added after initial schema — applied idempotently via ALTER TABLE
 _MIGRATIONS = [
+    "ALTER TABLE remote_sync_cursors ADD COLUMN pushed_library_revision INTEGER NOT NULL DEFAULT -1",
     "ALTER TABLE archive_sync_meta ADD COLUMN last_reconciled_at TEXT",
     "ALTER TABLE archive_sync_index ADD COLUMN file_state TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE archive_sync_index ADD COLUMN task_id TEXT",

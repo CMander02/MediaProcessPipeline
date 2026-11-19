@@ -192,7 +192,7 @@ def _global_options(
             emit_error(
                 "token_env_missing", f"Environment variable {token_env!r} is empty.", exit_code=2
             )
-    from app.cli.context import configure_cli_context, normalize_server_url
+    from app.cli.context import configure_cli_context, normalize_server_url, route_to_configured_server
 
     try:
         server_url = normalize_server_url(server)
@@ -206,6 +206,8 @@ def _global_options(
     configure_cli_context(
         server_url=server_url,
         api_token=token_value,
+        explicit_server=server is not None,
+        explicit_token=token is not None or token_env is not None,
         timeout=timeout,
         output_mode=output_mode,
         plain=_plain_mode,
@@ -214,6 +216,12 @@ def _global_options(
         assume_yes=assume_yes,
         debug=debug,
     )
+
+    if ctx.invoked_subcommand not in {
+        None, "help", "serve", "doctor", "upgrade-ytdlp", "run", "submit",
+        "config", "server", "storage", "sync",
+    }:
+        route_to_configured_server()
 
     # Apply to display module so Rich output adapts
     if plain or _plain_mode:

@@ -28,7 +28,11 @@ from app.core.archive_sync import (
     safe_extract_zip,
     stream_upload_to_path,
 )
+from app.core.content_identity import archive_content_key
 from app.core.database import get_task_store
+from app.core.events import TaskEvent, get_event_bus
+from app.core.library import get_library_service
+from app.core.library_sync import ArchiveClassification, LibraryPush, merge_archive_classification
 from app.core.settings import get_runtime_settings
 from app.models import Task, TaskStatus
 
@@ -137,9 +141,17 @@ async def sync_status():
 
 @router.get('/library')
 async def sync_library(x_mpp_workspace_id: str | None = Header(default=None)):
-    from app.core.library import get_library_service
     _check_workspace(x_mpp_workspace_id)
     return await run_in_thread(get_library_service().sync_snapshot)
+
+
+@router.post("/library")
+async def push_library(payload: LibraryPush, x_mpp_workspace_id: str | None = Header(default=None)):
+    _check_workspace(x_mpp_workspace_id)
+    outcome, updated = await run_in_thread(get_library_service().merge_sync_snapshot, payload)
+    if updated:
+        await get_event_bus().publish(TaskEvent("library", "library_changed"), persist=False)
+    return outcome
 
 
 @router.post('/pull')
@@ -221,19 +233,23 @@ async def export_completed_archive(
             zip_path,
             include_media=include_media,
         )
+        key = archive_content_key({"metadata": _read_metadata(archive_dir)}, task)
+        classification = get_library_service().archive_classification(key)
     except Exception:
         await run_in_thread(shutil.rmtree, staging_dir, True)
         raise
-    encoded_name = quote(archive_dir.name, safe="")
+    headers = {
+        "Cache-Control": "no-store",
+        "X-MPP-Archive-Name": quote(archive_dir.name, safe=""),
+        "X-MPP-Include-Media": str(include_media).lower(),
+    }
+    if classification:
+        headers["X-MPP-Folder-Meta"] = quote(json.dumps(classification, separators=(",", ":")), safe="")
     return FileResponse(
         zip_path,
         media_type="application/zip",
         filename=f"{archive_dir.name}.zip",
-        headers={
-            "Cache-Control": "no-store",
-            "X-MPP-Archive-Name": encoded_name,
-            "X-MPP-Include-Media": str(include_media).lower(),
-        },
+        headers=headers,
         background=BackgroundTask(shutil.rmtree, staging_dir, True),
     )
 
@@ -246,6 +262,8 @@ async def import_completed_archive(
     worker_id: str = Form(""),
     execution_id: str = Form(""),
     archive: UploadFile = File(...),
+    folder_json: str | None = Form(None),
+    x_mpp_workspace_id: str | None = Header(default=None),
 ):
     """Import a completed local task and its portable archive idempotently."""
     if len(task_json.encode("utf-8")) > _MAX_TASK_JSON_BYTES:
@@ -257,6 +275,12 @@ async def import_completed_archive(
         raise HTTPException(400, "Invalid task metadata") from exc
     if task.status != TaskStatus.COMPLETED:
         raise HTTPException(400, "Only completed tasks can be synchronized")
+
+    _check_workspace(x_mpp_workspace_id)
+    try:
+        classification = ArchiveClassification.model_validate_json(folder_json) if folder_json else None
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid folder metadata") from exc
 
     expected_sha256 = archive_sha256.strip().casefold()
     if expected_sha256 and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
@@ -284,18 +308,22 @@ async def import_completed_archive(
 
         # No await inside the commit: queue commands on this event loop cannot
         # read the old task and then enqueue it halfway through replacement.
+        _check_workspace(x_mpp_workspace_id)
         outcome = _commit_import(task, extracted_root, metadata, data_root, archive_name,
-                                 upload_sha256, upload_size, worker_id.strip(), execution_id.strip())
+                                 upload_sha256, upload_size, worker_id.strip(), execution_id.strip(),
+                                 classification=classification)
+        library_changed = outcome.pop("library_changed")
         if not outcome["already_synced"]:
             from app.core.media_retention import cleanup_completed_task
 
             cleanup_completed_task(task)
         if execution_id:
-            from app.core.events import TaskEvent, get_event_bus
             from app.core.remote_execution import cleanup_completed_upload
 
             cleanup_completed_upload(store.get(task.id), data_root)
             await get_event_bus().publish(TaskEvent(task.id, "completed", {"progress": 1.0}))
+        if library_changed:
+            await get_event_bus().publish(TaskEvent("library", "library_changed"), persist=False)
         return outcome
     finally:
         await archive.close()
@@ -316,7 +344,7 @@ def _require_importable(task_id: UUID, existing: Task | None, worker_id="", exec
 
 
 def _commit_import(task, extracted_root, metadata, data_root, archive_name,
-                   upload_sha256, upload_size, worker_id, execution_id=""):
+                   upload_sha256, upload_size, worker_id, execution_id="", *, classification=None):
     from app.core.artifacts import _write_lock, get_artifact_store
     from app.core.database import _save_task_row, task_write_transaction
     from app.services.archiving.archive import get_archive_service
@@ -331,7 +359,7 @@ def _commit_import(task, extracted_root, metadata, data_root, archive_name,
             with task_write_transaction() as conn:
                 existing = store.get(task.id)
                 _require_importable(task.id, existing, worker_id, execution_id)
-                from app.core.content_identity import archive_content_key, task_content_key
+                from app.core.content_identity import task_content_key
                 deleting = {row[0] for row in conn.execute("SELECT content_key FROM library_deletions")}
                 task_keys = {task_content_key(existing or task)}
                 if deleting:
@@ -346,8 +374,12 @@ def _commit_import(task, extracted_root, metadata, data_root, archive_name,
                     output_dir = (existing.result or {}).get("output_dir")
                     if output_dir and Path(output_dir).is_dir():
                         repairs = artifacts.import_mirrors(conn, task.id, Path(output_dir))
+                        library_changed = False
+                        if classification:
+                            key = archive_content_key({"metadata": _read_metadata(Path(output_dir))}, existing)
+                            library_changed = merge_archive_classification(conn, classification, key)
                         return {"ok": True, "task_id": str(task.id), "already_synced": True,
-                                "artifacts": repairs, "sync": existing_sync}
+                                "artifacts": repairs, "sync": existing_sync, "library_changed": library_changed}
 
                 destination = _destination_for(data_root, archive_name, str(task.id))
                 archive_id = str(task.id)
@@ -363,7 +395,7 @@ def _commit_import(task, extracted_root, metadata, data_root, archive_name,
                 metadata.update(task_id=str(task.id), archive_id=archive_id, status="completed")
                 artifacts.write(None, extracted_root, "metadata.json",
                                 json.dumps(metadata, ensure_ascii=False, indent=2), notify_index=False)
-                sync_info = {"worker_id": worker_id, "archive_sha256": upload_sha256,
+                sync_info = {"worker_id": worker_id, "archive_id": archive_id, "archive_sha256": upload_sha256,
                              "archive_size": upload_size, "import_id": str(uuid4()),
                              "synced_at": datetime.now().astimezone().isoformat()}
                 publication = publish_archive(extracted_root, destination, data_root,
@@ -401,6 +433,7 @@ def _commit_import(task, extracted_root, metadata, data_root, archive_name,
                     raise ValueError("Imported archive cannot be indexed")
                 service._upsert_if_changed(archive_id, destination, service._file_state(destination),
                                            item, transaction=conn)
+                library_changed = merge_archive_classification(conn, classification, archive_content_key(item, task))
         except BaseException:
             if publication is not None:
                 current = store.get(task.id)
@@ -414,4 +447,4 @@ def _commit_import(task, extracted_root, metadata, data_root, archive_name,
             raise
         publication.finish()
     return {"ok": True, "task_id": str(task.id), "already_synced": False,
-            "artifacts": repairs, "sync": sync_info}
+            "artifacts": repairs, "sync": sync_info, "library_changed": library_changed}

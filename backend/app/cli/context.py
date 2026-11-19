@@ -32,6 +32,8 @@ def is_local_server_url(value: str) -> bool:
 class CliContext:
     server_url: str = DEFAULT_SERVER_URL
     api_token: str = ""
+    explicit_server: bool = False
+    explicit_token: bool = False
     timeout: float = 30.0
     output_mode: str = "text"
     plain: bool = False
@@ -52,6 +54,8 @@ class CliContext:
 _context = CliContext(
     server_url=normalize_server_url(os.environ.get("MPP_SERVER_URL")),
     api_token=os.environ.get("MPP_API_TOKEN", ""),
+    explicit_server=bool(os.environ.get("MPP_SERVER_URL")),
+    explicit_token=bool(os.environ.get("MPP_API_TOKEN")),
     timeout=float(os.environ.get("MPP_TIMEOUT", "30") or 30),
     no_input=os.environ.get("MPP_NO_INPUT", "").strip().lower() in {"1", "true", "yes"},
 )
@@ -65,3 +69,29 @@ def configure_cli_context(**updates: object) -> CliContext:
     global _context
     _context = replace(_context, **updates)
     return _context
+
+
+def route_to_configured_server(*, remote: bool | None = None, target: str | None = None, settings=None) -> None:
+    from app.cli.output import emit_error
+    from app.core.settings import get_runtime_settings
+
+    ctx = get_cli_context()
+    if ctx.explicit_server or remote is False:
+        return
+    settings = settings if settings is not None else get_runtime_settings()
+    url = settings.remote_server_url.strip()
+    if remote and not url:
+        emit_error("remote_target_missing", "remote_server_url is not configured.", exit_code=2)
+    if not url or not (
+        remote or settings.cli_use_remote_server
+        or (target and target != "local" and not settings.remote_execution_enabled)
+    ):
+        return
+    try:
+        server_url = normalize_server_url(url)
+    except ValueError as exc:
+        emit_error("invalid_server_url", str(exc), exit_code=2)
+    configure_cli_context(
+        server_url=server_url,
+        api_token=ctx.api_token if ctx.explicit_token else settings.remote_api_token,
+    )

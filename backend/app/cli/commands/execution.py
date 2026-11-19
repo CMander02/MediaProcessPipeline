@@ -33,6 +33,12 @@ def run(
     direct: bool = typer.Option(
         False, "--direct", help="不启动 daemon，在当前 CLI 进程直接跑完整流程"
     ),
+    target_worker: Optional[str] = typer.Option(
+        None, "--target-worker", "-W", help="节点 ID、显示名称（如 SilentField）或 local",
+    ),
+    remote: Optional[bool] = typer.Option(
+        None, "--remote/--local", help="本次连接配置的协调服务器或本机 daemon",
+    ),
     api_flow: bool = typer.Option(
         False, "--api-flow", help="纯 API 流程：跳过 UVR/本地分离，使用 API ASR"
     ),
@@ -42,8 +48,14 @@ def run(
     from app.cli.commands.common import api_call
     from app.cli.context import get_cli_context
     from app.cli.output import emit
-    from app.cli.submission import batch_text, expand_sources, submit_sources, task_options
+    from app.cli.submission import (
+        batch_text, configure_submission_route, expand_sources, submit_sources, task_options,
+    )
 
+    if direct and (target_worker is not None or remote is True):
+        from app.cli.output import emit_error
+
+        emit_error("direct_option_conflict", "--direct cannot be combined with --target-worker or --remote.", exit_code=2)
     expanded = expand_sources(sources or [], from_file=from_file, recursive=recursive)
     options = task_options(
         force_asr=force_asr,
@@ -80,6 +92,7 @@ def run(
             _print_final(finals[0], quiet=quiet)
         raise typer.Exit(0 if all(item.get("status") == "completed" for item in finals) else 1)
 
+    target = configure_submission_route(target_worker, remote)
     client = _require_daemon(auto_start=True)
     tasks_created, submission_errors = api_call(
         lambda: submit_sources(
@@ -89,6 +102,7 @@ def run(
             webhook_url=webhook,
             upload_mode=upload,
             collection=collection,
+            target_worker=target,
         )
     )
     if detach:
@@ -152,6 +166,12 @@ def submit(
     webhook: Optional[str] = typer.Option(None, "--webhook"),
     option: list[str] = typer.Option(None, "--option", help="额外任务选项 KEY=VALUE，可重复"),
     wait: bool = typer.Option(False, "--wait", help="等待全部任务到达终态"),
+    target_worker: Optional[str] = typer.Option(
+        None, "--target-worker", "-W", help="节点 ID、显示名称（如 SilentField）或 local",
+    ),
+    remote: Optional[bool] = typer.Option(
+        None, "--remote/--local", help="本次连接配置的协调服务器或本机 daemon",
+    ),
     api_flow: bool = typer.Option(
         False, "--api-flow", help="纯 API 流程：跳过 UVR/本地分离，使用 API ASR"
     ),
@@ -167,7 +187,9 @@ def submit(
     from app.cli.commands.common import api_call
     from app.cli.context import get_cli_context
     from app.cli.output import emit
-    from app.cli.submission import batch_text, expand_sources, submit_sources, task_options
+    from app.cli.submission import (
+        batch_text, configure_submission_route, expand_sources, submit_sources, task_options,
+    )
 
     expanded = expand_sources(sources or [], from_file=from_file, recursive=recursive)
     options = task_options(
@@ -180,6 +202,7 @@ def submit(
         api_flow=api_flow,
         assignments=option or [],
     )
+    target = configure_submission_route(target_worker, remote)
     client = _require_daemon(auto_start=True)
     tasks_created, submission_errors = api_call(
         lambda: submit_sources(
@@ -189,6 +212,7 @@ def submit(
             webhook_url=webhook,
             upload_mode=upload,
             collection=collection,
+            target_worker=target,
         )
     )
     result_tasks = (
@@ -468,7 +492,11 @@ def retry(
     source = original.get("source", "")
     options = original.get("options") or {}
 
-    new_task = api_call(lambda: client.create_task(source, options=options))
+    from app.core.remote_execution import KEY
+
+    target = (options.get(KEY) or {}).get("target_worker_id")
+    routing = {"target_worker_id": target} if target else {}
+    new_task = api_call(lambda: client.create_task(source, options=options, **routing))
     new_id = new_task["id"]
 
     if not quiet and not (_command_context().output_mode in {"json", "jsonl"}):

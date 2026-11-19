@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.core.user_paths import default_data_root
 from app.core.workflow import WorkflowConfig
+from app.models.task import WorkerTarget
 
 
 class CustomLLMProfile(BaseModel):
@@ -374,15 +375,17 @@ class RuntimeSettings(BaseModel):
     remote_execution_offline_policy: Literal["fallback_server", "wait", "fallback_any_online"] = "fallback_server"
     remote_execution_worker_enabled: bool = False  # Desktop: pull server tasks.
     remote_execution_wait_sec: float = Field(default=120.0, ge=30.0)
+    cli_use_remote_server: bool = False
+    cli_default_worker_id: WorkerTarget | Literal[""] = ""
 
     # Paths
     data_root: str = Field(default_factory=lambda: str(default_data_root()))
     media_retention_policy: Literal["all", "playback", "text"] = "all"
 
-    @field_validator("remote_worker_id", "remote_preferred_worker_id")
+    @field_validator("remote_worker_id", "remote_preferred_worker_id", "cli_default_worker_id", mode="before")
     @classmethod
-    def _normalize_remote_node_id(cls, value: str) -> str:
-        return value.strip()
+    def _normalize_remote_node_id(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def _validate_kb_chunk_window(self):

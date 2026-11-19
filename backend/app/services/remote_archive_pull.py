@@ -29,6 +29,21 @@ from app.core.archive_sync import (
 )
 from app.core.database import _get_conn, _save_task_row, get_task_store, task_write_transaction
 from app.core.events import TaskEvent, get_event_bus
+from app.core.library_sync import (
+    LibraryPush,
+    RemoteArchiveFolder,
+    RemoteFolder as RemoteFolder,
+    RemoteMembership,
+    folder_mappings,
+    library_sync_lock,
+    merge_collections,
+    merge_cover,
+    merge_folder,
+    remember_folder,
+    remote_origin,
+    replica_folder_id,
+    write_member,
+)
 from app.core.network import httpx_client_kwargs
 from app.core.paths import ACTIVE_STATUSES, archive_directory, get_workspace_paths
 from app.core.settings import RuntimeSettings, get_runtime_settings
@@ -108,34 +123,9 @@ class RemoteChanges(BaseModel):
         return self
 
 
-class RemoteFolder(BaseModel):
-    id: str = Field(min_length=1, max_length=1024)
-    name: str = Field(min_length=1, max_length=1024)
-    created_at: str
-    updated_at: str
-
-
-class RemoteMembership(BaseModel):
-    content_key: str = Field(min_length=1, max_length=4096)
-    folder_id: str | None
-
-
-class RemoteLibrary(BaseModel):
+class RemoteLibrary(LibraryPush):
     library_revision: int = Field(ge=0)
-    folders: list[RemoteFolder] = Field(max_length=100_000)
-    members: list[RemoteMembership] = Field(max_length=1_000_000)
-
-    @model_validator(mode="after")
-    def valid_memberships(self):
-        ids = [folder.id for folder in self.folders]
-        if len(ids) != len(set(ids)):
-            raise ValueError("Remote library contains duplicate folders")
-        if any(member.folder_id and member.folder_id not in ids for member in self.members):
-            raise ValueError("Remote library membership references an unknown folder")
-        keys = [member.content_key for member in self.members]
-        if len(keys) != len(set(keys)):
-            raise ValueError("Remote library contains duplicate memberships")
-        return self
+    archives: list[RemoteArchiveFolder] = Field(default_factory=list)
 
 
 def _is_self_server(server_url: str, workspace_id: str, data_root: Path) -> bool:
@@ -157,6 +147,12 @@ def _is_self_server(server_url: str, workspace_id: str, data_root: Path) -> bool
         for addresses in psutil.net_if_addrs().values()
         for item in addresses
     )
+
+
+async def is_self_workspace(server_url: str, status: RemoteStatus, root: Path) -> bool:
+    if status.instance_id is not None:
+        return status.instance_id == UUID(get_archive_sync_service().instance_id)
+    return await run_in_thread(_is_self_server, server_url, status.workspace_id, root)
 
 
 def _cursor(server_url: str, workspace_id: str) -> tuple[int, int]:
@@ -401,66 +397,102 @@ def _delete_archive(server_url: str, workspace_id: str, archive_id: UUID, root: 
     return removed
 
 
-def _merge_library(server_url: str, workspace_id: str, library: RemoteLibrary) -> bool:
-    from app.core.library import changed
+def _pull_members(conn, members, mapping, origin):
+    from app.core.archive_index import timestamp
 
-    origin = "remote:" + uuid5(NAMESPACE_URL, f"{server_url}/{workspace_id}").hex
+    existing = {row["content_key"]: row for row in conn.execute("SELECT * FROM library_folder_members")}
+    for key, row in existing.items():
+        if row["origin"] == origin and key not in members:
+            conn.execute("DELETE FROM library_folder_covers WHERE folder_id=? AND content_key=?",
+                         (row["folder_id"], key))
+            conn.execute("DELETE FROM library_folder_members WHERE content_key=?", (key,))
+    for key, member in members.items():
+        folder_id = mapping.get(member.folder_id)
+        row = existing.get(key)
+        if row:
+            if row["origin"] == origin:
+                if row["folder_id"] == folder_id and (
+                    member.added_at is None or row["added_at"] == member.added_at
+                ):
+                    continue
+            else:
+                if row["folder_id"] == folder_id:
+                    continue
+                if row["origin"] == "manual" and (
+                    member.origin != "manual" or timestamp(member.added_at) <= timestamp(row["added_at"])
+                ):
+                    continue
+                if folder_id is None and member.origin != "manual":
+                    continue
+        write_member(conn, key, folder_id, origin, member.added_at or "")
+
+
+def _merge_library(server_url: str, workspace_id: str, library: RemoteLibrary) -> bool:
+    from app.core.library import catalog, changed
+
+    origin = remote_origin(server_url, workspace_id)
     with task_write_transaction() as conn:
         before = conn.total_changes
+        previous = folder_mappings(conn, server_url, workspace_id)
         mapping = {}
         for folder in library.folders:
-            local_id = str(uuid5(NAMESPACE_URL, f"{server_url}/{workspace_id}/folders/{folder.id}"))
-            mapping[folder.id] = local_id
-            conn.execute(
-                "INSERT OR IGNORE INTO remote_sync_folders VALUES(?,?,?,?)",
-                (server_url, workspace_id, folder.id, local_id),
-            )
-            conn.execute(
-                "INSERT INTO library_folders(id,name,created_at,updated_at) VALUES(?,?,?,?) "
-                "ON CONFLICT(id) DO UPDATE SET name=excluded.name,updated_at=excluded.updated_at "
-                "WHERE name!=excluded.name OR updated_at!=excluded.updated_at",
-                (local_id, folder.name, folder.created_at, folder.updated_at),
-            )
-        members = {
-            member.content_key: mapping[member.folder_id]
-            for member in library.members
-            if member.folder_id
-        }
-        existing = {
-            row["content_key"]: row["folder_id"]
-            for row in conn.execute(
-                "SELECT content_key,folder_id FROM library_folder_members WHERE origin=?",
-                (origin,),
-            )
-        }
-        for content_key in existing.keys() - members.keys():
-            conn.execute(
-                "DELETE FROM library_folder_members WHERE content_key=? AND origin=?",
-                (content_key, origin),
-            )
-        now = datetime.now().astimezone().isoformat()
-        for content_key, folder_id in members.items():
-            conn.execute(
-                "INSERT INTO library_folder_members(content_key,folder_id,origin,added_at) "
-                "VALUES(?,?,?,?) ON CONFLICT(content_key) DO UPDATE SET "
-                "folder_id=excluded.folder_id,added_at=excluded.added_at "
-                "WHERE origin=excluded.origin AND folder_id IS NOT excluded.folder_id",
-                (content_key, folder_id, origin, now),
-            )
-        for row in conn.execute(
-            "SELECT remote_folder_id,local_folder_id FROM remote_sync_folders "
-            "WHERE server_url=? AND workspace_id=?",
-            (server_url, workspace_id),
-        ).fetchall():
-            if row["remote_folder_id"] not in mapping:
-                conn.execute("DELETE FROM library_folders WHERE id=?", (row["local_folder_id"],))
-                conn.execute(
-                    "DELETE FROM remote_sync_folders WHERE local_folder_id=?",
-                    (row["local_folder_id"],),
-                )
+            replica_id = replica_folder_id(server_url, workspace_id, folder.id)
+            local_id = previous.get(folder.id)
+            if local_id is None and not folder.source_collection_key:
+                # A successful push may lose its response before the mapping is written.
+                same_folder = conn.execute(
+                    "SELECT 1 FROM library_folders WHERE id=? AND created_at=? AND source_collection_key IS NULL",
+                    (folder.id, folder.created_at),
+                ).fetchone()
+                if same_folder:
+                    local_id = folder.id
+            mapping[folder.id] = merge_folder(conn, folder, local_id or replica_id, replica_id)
+
+        direct_members = {member.content_key: member for member in library.members}
+        members = direct_members.copy()
+        cover_keys = {}
+        if library.archives:
+            archive_keys = {item["archive_id"]: key for key, entry in catalog(conn).items()
+                            for item in entry["archives"]}
+            for archive in library.archives:
+                key = archive_keys.get(archive.archive_id)
+                source_member = direct_members.get(archive.content_key)
+                folder_id = source_member.folder_id if source_member else archive.folder_id
+                if key is None or (folder_id is not None and folder_id not in mapping):
+                    continue
+                if archive.content_key:
+                    cover_keys.setdefault(archive.content_key, set()).add(key)
+                if source_member or folder_id is not None:
+                    members.setdefault(key, source_member or RemoteMembership(content_key=key, folder_id=folder_id))
+
+        _pull_members(conn, members, mapping, origin)
+        for cover in library.covers:
+            folder_id = mapping.get(cover.folder_id)
+            if folder_id is not None:
+                for key in sorted(cover_keys.get(cover.content_key, {cover.content_key})):
+                    merge_cover(conn, folder_id, key, cover.updated_at)
+        merge_collections(conn, library.collections)
+        local_ids = set(mapping.values())
+        for remote_id, local_id in previous.items():
+            if remote_id in mapping or local_id in local_ids:
+                continue
+            if local_id == replica_folder_id(server_url, workspace_id, remote_id):
+                local_member = conn.execute(
+                    "SELECT 1 FROM library_folder_members WHERE folder_id=? AND origin!=?", (local_id, origin),
+                ).fetchone()
+                if not local_member:
+                    conn.execute("DELETE FROM library_folders WHERE id=?", (local_id,))
+
         updated = conn.total_changes != before
         if updated:
             changed(conn)
+        for remote_id in previous.keys() - mapping.keys():
+            conn.execute(
+                "DELETE FROM remote_sync_folders WHERE server_url=? AND workspace_id=? AND remote_folder_id=?",
+                (server_url, workspace_id, remote_id),
+            )
+        for remote_id, local_id in mapping.items():
+            remember_folder(conn, server_url, workspace_id, remote_id, local_id)
         conn.execute(
             "INSERT INTO remote_sync_cursors(server_url,workspace_id,library_revision) "
             "VALUES(?,?,?) ON CONFLICT(server_url,workspace_id) DO UPDATE SET "
@@ -532,12 +564,7 @@ class RemoteArchivePullService:
                 status = RemoteStatus.model_validate(
                     await self._json(client, f"{server}/api/sync/status")
                 )
-                is_self = (
-                    status.instance_id == UUID(get_archive_sync_service().instance_id)
-                    if status.instance_id is not None
-                    else await run_in_thread(_is_self_server, server, status.workspace_id, root)
-                )
-                if is_self:
+                if await is_self_workspace(server, status, root):
                     return {
                         "enabled": False,
                         "reason": "self_workspace",
@@ -579,13 +606,14 @@ class RemoteArchivePullService:
                             )
                     if not page.has_more:
                         break
-                if library_revision != page.library_revision:
-                    library = RemoteLibrary.model_validate(
-                        await self._json(client, f"{server}/api/sync/library")
-                    )
-                    outcome["library_changed"] = await run_in_thread(
-                        _merge_library, server, status.workspace_id, library
-                    )
+                if library_revision != page.library_revision or outcome["upserted"]:
+                    async with library_sync_lock:
+                        library = RemoteLibrary.model_validate(
+                            await self._json(client, f"{server}/api/sync/library")
+                        )
+                        outcome["library_changed"] = await run_in_thread(
+                            _merge_library, server, status.workspace_id, library
+                        )
                     if outcome["library_changed"]:
                         await get_event_bus().publish(
                             TaskEvent("library", "library_changed"), persist=False

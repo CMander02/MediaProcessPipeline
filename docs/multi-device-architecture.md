@@ -2,9 +2,9 @@
 
 本文说明 MediaProcessPipeline 在云服务器、多台个人电脑与手机之间分发任务、选择计算设备并同步结构化文本结果的设计契约，用于指导后续多端改造。
 
-## 为什么现有实现未能跑通完整闭环
+## 初始设计背景
 
-仓库目前已有 `app.core.remote_execution`、`services/remote_task_worker.py`、`services/remote_archive_upload.py` 与 `app.core.archive_sync`，仍有四项待实现：
+初始设计记录了四项缺口，以下内容描述当时的实现。
 
 1. **电脑端缺少拉取同步服务**。`RuntimeSettings` 定义了 `remote_sync_download_results: bool = True`，但后端没有任何消费者。目前只有电脑向服务器单向推送，以及 Android 原生插件单向拉取；另一台电脑无法自动拉取已完成归档。
 2. **服务器只能绑定唯一一台远程电脑**。`remote_execution.py` 仅校验单一字符串 `remote_worker_id`，在线心跳只保存在进程内存变量 `_last_seen` 中，无法同时接入多台个人电脑，也无法按任务选择目标节点。
@@ -106,5 +106,18 @@ flowchart TB
   1. 手机或轻薄本提交任务至 Linux 服务器。对上传的音视频文件，服务器使用 `tmp/staging/{staging_id}/` 暂存。旧版资料库使用 `_staging/{staging_id}/`。
   2. 目标执行节点（例如主力 PC，或服务器自身）拉取来源并完成识别与总结，在本机按 `media_retention_policy` 管理本机媒体文件。
   3. 远程电脑调用 `/api/sync/import` 回传 ZIP 时使用 `remote_sync_include_media`，默认值为 `False`。任务可以通过布尔值 `options.keep_server_media` 覆盖此设置。纯文本归档提交后，如果任务不要求保留媒体且没有其他任务引用暂存目录，服务器删除上传源文件。
-  4. 开启了 `remote_sync_download_results=True` 的其他电脑通过新增后台服务 `RemoteArchivePullService` 轮询或监听 SSE 事件，按本地持久化的 `(server_url, workspace_id) -> cursor` 拉取增量变更、文件夹映射（`/api/sync/library`）与删除 tombstone，落入各自的本地 `archives/` 与 SQLite 索引。
+  4. 开启了 `remote_sync_download_results=True` 的其他电脑由后台服务 `RemoteArchivePullService` 定期轮询，按本地持久化的 `(server_url, workspace_id) -> cursor` 拉取增量变更、文件夹映射（`/api/sync/library`）与删除 tombstone，落入各自的本地 `archives/` 与 SQLite 索引。
   5. 阅读端打开无本地媒体文件的归档时，结果页直接呈现摘要、导图、润色文稿与时间轴字幕，并在播放器区域提供原视频链接（`metadata.source_url`）带时间戳跳转入口，不将“无本地媒体”视为异常状态。
+
+
+### 4. 文件夹分类同步
+
+开启 `remote_sync_enabled` 和 `remote_sync_upload_results` 的桌面节点先上传待同步归档，再按本机文件夹修订号向协调服务器推送元数据。推送包括本机创建的文件夹、本机分类、显式移回未分类的记录、固定封面和相关合集文本。协调服务器提交数据后返回文件夹 ID 映射，桌面节点保存映射和推送游标。旧版协调服务器可继续接收归档 ZIP。
+
+阅读端通过 `GET /api/sync/library` 拉取文件夹、分类、固定封面和合集文本。桌面节点优先使用已保存的文件夹映射，再按合集标识匹配已有文件夹。归档 ID 可用于匹配本机的内容标识。归属相同的本机记录保留原来源，较新的本机手动分类会保留。合集头像缓存保留在本机。
+
+`mpp sync transfer TASK_REF --to URL` 随单个归档传输所属文件夹。目标端在导入归档的事务中合并文件夹、归属和固定封面。
+
+### 5. CLI 投递入口
+
+`mpp server nodes` 显示执行节点、在线状态、设备和离线策略。`mpp run` 和 `mpp submit` 通过 `--target-worker` 传入节点 ID、显示名称或 `local`。`cli_use_remote_server` 控制默认连接，`cli_default_worker_id` 控制默认目标节点。单次提交可用 `--remote` 或 `--local` 选择连接地址。全局 `--server` 和 `MPP_SERVER_URL` 优先。

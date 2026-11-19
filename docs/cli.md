@@ -25,7 +25,7 @@ $env:MPP_TOKEN = "..."
 ```text
 mpp ping
 mpp doctor
-mpp server start|status|stop
+mpp server start|status|stop|nodes
 mpp auth check
 mpp auth unlock [--token TOKEN]
 mpp auth logout
@@ -76,6 +76,22 @@ mpp submit URL --collection ITEM_ID_1,ITEM_ID_2
 显式 staging 管理命令为 `mpp stage upload LOCAL_FILE` 和 `mpp stage delete STAGING_ID`。
 
 `run --direct` 在当前进程执行。`server start` 启动可持续处理 `submit` 任务的独立后台进程。
+
+### 指定执行节点
+
+```powershell
+mpp server nodes
+mpp --json server nodes
+mpp run URL --target-worker SilentField
+mpp submit URL --remote --target-worker local
+mpp submit URL --local
+```
+
+`--target-worker` 接受节点 ID、唯一显示名称或 `local`。显示名称匹配忽略大小写。多个节点同名时，CLI 会列出候选 ID。`local` 指当前连接的 daemon 所在机器。
+
+显式提供的 `--server` 或 `MPP_SERVER_URL` 优先。省略这两项时，`--remote` 使用 `remote_server_url`，`--local` 使用本机 daemon。启用 `cli_use_remote_server` 后，任务提交和查询默认使用 `remote_server_url`。连接配置的协调服务器时，CLI 默认使用 `remote_api_token`，显式提供的 token 优先。
+
+省略 `--target-worker` 时，`run` 和 `submit` 使用 `cli_default_worker_id`。如果本机未开启 `remote_execution_enabled`，指定非 `local` 的目标会自动使用已配置的协调服务器。可通过 `mpp config list --group remote` 查看相关配置。`run --direct` 与 `--target-worker`、`--remote` 互斥。
 
 ## 任务
 
@@ -213,6 +229,7 @@ mpp sync changes [--cursor N] [--limit N]
 mpp sync manifest ARCHIVE_ID
 mpp sync download ARCHIVE_ID RELATIVE_PATH --output PATH
 mpp sync rebuild --yes
+mpp sync transfer TASK_REF --to URL [--include-media]
 
 mpp pipeline download URL
 mpp pipeline scan
@@ -224,6 +241,8 @@ mpp pipeline mindmap [--text TEXT|--from FILE] [--language LANG]
 ```
 
 `fs drives/list/scan/open` 会读取 `/api/capabilities`。远程实例通过 `allow_remote_filesystem` 控制服务端文件系统能力。
+
+`sync transfer` 随已完成归档传输所属文件夹、归属关系和该归档的固定封面状态。使用 `--to remote` 可连接已配置的协调服务器。可用全局 `--server` 指定归档来源。
 
 ## 输出与退出码
 

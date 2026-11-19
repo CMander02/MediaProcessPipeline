@@ -15,7 +15,7 @@ import typer
 
 from app.cli.client import MppClient
 from app.cli.commands.common import api_call, client, resolve_task_ref
-from app.cli.context import get_cli_context, normalize_server_url
+from app.cli.context import get_cli_context, normalize_server_url, route_to_configured_server
 from app.cli.daemon import daemon_status, start_daemon, stop_daemon
 from app.cli.output import confirm_action, emit, emit_error
 
@@ -29,6 +29,18 @@ storage_app = typer.Typer(help="数据目录使用量与清理", no_args_is_help
 fs_app = typer.Typer(help="服务端文件系统高级操作", no_args_is_help=True)
 sync_app = typer.Typer(help="端间任务传输与移动端归档同步", no_args_is_help=True)
 pipeline_app = typer.Typer(help="原子媒体处理操作", no_args_is_help=True)
+
+
+@storage_app.callback()
+def storage_route(ctx: typer.Context):
+    if ctx.invoked_subcommand not in {None, "migrate"}:
+        route_to_configured_server()
+
+
+@sync_app.callback()
+def sync_route(ctx: typer.Context):
+    if ctx.invoked_subcommand not in {None, "transfer"}:
+        route_to_configured_server()
 
 
 @storage_app.command("migrate")
@@ -63,9 +75,39 @@ def storage_migrate(
 @server_app.command("status")
 def server_status():
     """显示 daemon 健康状态与 CLI 管理的 PID。"""
+    route_to_configured_server()
     ctx = get_cli_context()
     result = daemon_status(ctx.server_url, ctx.api_token)
     emit(result, text=json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+
+@server_app.command("nodes")
+def server_nodes(
+    remote: Optional[bool] = typer.Option(
+        None, "--remote/--local", help="本次连接配置的协调服务器或本机 daemon"
+    ),
+    json_out: bool = typer.Option(False, "--json", help="JSON 输出"),
+):
+    """列出执行节点、在线状态和计算设备。"""
+    from app.cli.commands.root_support import _emit_json_compat
+
+    route_to_configured_server(remote=remote)
+    api = client()
+    payload = api_call(api.execution_nodes)
+    if json_out or get_cli_context().output_mode in {"json", "jsonl"}:
+        _emit_json_compat(payload, legacy_json=json_out)
+        return
+    rows = [
+        f"enabled={payload['enabled']}  preferred_worker_id={payload['preferred_worker_id']}  "
+        f"offline_policy={payload['offline_policy']}",
+        "NODE ID\tDISPLAY NAME\tONLINE\tBUSY\tPLATFORM\tCOMPUTE DEVICES",
+    ]
+    for node in payload["nodes"]:
+        rows.append("\t".join(str(value) for value in (
+            node["node_id"], node["display_name"], node["online"], node["busy"],
+            node["platform"], ", ".join(node["compute_devices"]),
+        )))
+    emit(payload, text="\n".join(rows))
 
 
 @server_app.command("start")
@@ -663,6 +705,8 @@ def sync_transfer(
         headers = exported.get("headers") if isinstance(exported, dict) else {}
         encoded_name = headers.get("x-mpp-archive-name") if isinstance(headers, dict) else ""
         archive_name = unquote(encoded_name) if encoded_name else _archive_name_from_task(task)
+        folder_json = exported.get("folder_json")
+        folder = {"folder_json": folder_json} if folder_json else {}
         target = MppClient(base_url=target_url, api_token=target_token, timeout=3600.0)
         try:
             imported = api_call(
@@ -671,6 +715,7 @@ def sync_transfer(
                     archive_path,
                     archive_name=archive_name,
                     archive_sha256=str(exported["sha256"]),
+                    **folder,
                 )
             )
         finally:

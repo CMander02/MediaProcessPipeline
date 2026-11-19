@@ -97,7 +97,7 @@ def test_every_public_leaf_command_renders_help():
 
     collect(root, [])
 
-    assert len(leaves) == 124
+    assert len(leaves) == 125
     failures = []
     for path in leaves:
         result = runner.invoke(app, ["--skip-version-check", "--plain", *path, "--help"])
@@ -134,6 +134,7 @@ def test_sync_transfer_streams_one_completed_task_without_media_by_default(
                 "size": 8,
                 "sha256": "a" * 64,
                 "headers": {"x-mpp-archive-name": "%E8%A7%86%E9%A2%91%E4%BB%BB%E5%8A%A1"},
+                "folder_json": '{"folder": {"name": "课程"}}',
             }
 
     captured: dict[str, object] = {}
@@ -176,6 +177,7 @@ def test_sync_transfer_streams_one_completed_task_without_media_by_default(
     assert captured["base_url"] == "https://target.example"
     assert captured["api_token"] == "target-secret"
     assert captured["archive"] == b"portable"
+    assert json.loads(captured["folder_json"]) == {"folder": {"name": "课程"}}
     assert captured["closed"] is True
 
 

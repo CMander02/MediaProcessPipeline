@@ -105,8 +105,27 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "pyannote_embedding_path",
         "local_llm_model_path",
     ],
+    "remote": [
+        "remote_sync_enabled",
+        "remote_server_url",
+        "remote_api_token",
+        "remote_worker_id",
+        "remote_worker_name",
+        "remote_sync_interval_sec",
+        "remote_sync_upload_results",
+        "remote_sync_download_results",
+        "remote_sync_include_media",
+        "remote_execution_enabled",
+        "remote_preferred_worker_id",
+        "remote_execution_offline_policy",
+        "remote_execution_worker_enabled",
+        "remote_execution_wait_sec",
+        "cli_use_remote_server",
+        "cli_default_worker_id",
+    ],
     "security": [
         "api_token",
+        "remote_api_token",
         "anthropic_api_key",
         "openai_api_key",
         "custom_api_key",
@@ -137,6 +156,7 @@ _SECRET_KEYS = {
     "hf_token",
     "hf_proxy",
     "api_token",
+    "remote_api_token",
     "jina_reader_api_key",
     "bilibili_sessdata",
     "bilibili_bili_jct",
@@ -151,12 +171,13 @@ def _mask(key: str, value) -> str:
 
 
 def _read_settings() -> dict:
+    from app.cli.output import redact
+
     client = _get_client()
     if client.ping():
         from app.cli.commands.common import api_call
 
-        return api_call(client.get_settings)
-    from app.cli.output import redact
+        return redact(api_call(client.get_settings))
     from app.core.settings import get_runtime_settings
 
     return redact(get_runtime_settings().model_dump())
@@ -180,7 +201,7 @@ def config_list(
         None,
         "--group",
         "-g",
-        help="分组: llm/asr/uvr/diarization/subtitle/paths/security/bilibili/concurrency",
+        help="分组: llm/asr/uvr/diarization/subtitle/paths/security/bilibili/concurrency/remote",
     ),
     json_out: bool = typer.Option(False, "--json", help="JSON 输出"),
 ):
@@ -309,6 +330,8 @@ def config_set(
             except ValueError:
                 typed_value = value
 
+    from app.cli.output import redact
+
     client = _get_client()
     if client.ping():
         from app.cli.commands.common import api_call
@@ -375,6 +398,8 @@ def config_preset(
             ),
         )
         return
+
+    from app.cli.output import redact
 
     client = _get_client()
     if client.ping():
