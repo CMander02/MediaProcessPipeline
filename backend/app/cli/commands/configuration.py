@@ -18,6 +18,7 @@ from app.cli.output import (
     read_json_file,
     redact,
 )
+from app.cli.renderers import render_fields, render_source_collection, render_source_probe
 
 provider_app = typer.Typer(help="Provider 连接与状态管理", no_args_is_help=True)
 model_app = typer.Typer(help="模型目录、模型记录与运行绑定", no_args_is_help=True)
@@ -607,7 +608,7 @@ def source_probe(url: str = typer.Argument(...)):
     """提取 URL 元数据。"""
     api = client()
     result = api_call(lambda: api.probe_source(url))
-    emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
+    emit(result, text=lambda: render_source_probe(result))
 
 
 @source_app.command("collection")
@@ -615,7 +616,7 @@ def source_collection(url: str = typer.Argument(...)):
     """检查 Bilibili 分 P 或合集条目。"""
     api = client()
     result = api_call(lambda: api.bilibili_collection(url))
-    emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
+    emit(result, text=lambda: render_source_collection(result))
 
 
 @source_app.command("ytdlp-status")
@@ -623,7 +624,7 @@ def source_ytdlp_status():
     """显示 daemon 使用的 yt-dlp 版本状态。"""
     api = client()
     result = api_call(api.ytdlp_status)
-    emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
+    emit(result, text=lambda: render_fields(result))
 
 
 @source_app.command("ytdlp-upgrade")
@@ -655,7 +656,7 @@ def source_auth_status(platform: str = typer.Argument(...)):
     """检查来源平台认证状态。"""
     api = client()
     result = api_call(lambda: api.source_auth_status(platform.lower()))
-    emit(result, text=json.dumps(result, ensure_ascii=False, indent=2), redact_secrets=True)
+    emit(result, text=lambda: render_fields(redact(result)), redact_secrets=True)
 
 
 @source_auth_app.command("login")

@@ -376,6 +376,7 @@ class RuntimeSettings(BaseModel):
     remote_execution_worker_enabled: bool = False  # Desktop: pull server tasks.
     remote_execution_wait_sec: float = Field(default=120.0, ge=30.0)
     cli_use_remote_server: bool = False
+    cli_local_files_stay_local: bool = True
     cli_default_worker_id: WorkerTarget | Literal[""] = ""
 
     # Paths

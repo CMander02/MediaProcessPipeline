@@ -12,6 +12,7 @@ import typer
 from app.cli.commands.common import api_call, client, resolve_archive_ref, resolve_task_ref
 from app.cli.context import get_cli_context
 from app.cli.output import confirm_action, emit, emit_error
+from app.cli.renderers import render_archive
 
 archive_app = typer.Typer(help="归档浏览、读取、导出与修改", no_args_is_help=True)
 transcript_app = typer.Typer(help="归档字幕导入与导出", no_args_is_help=True)
@@ -100,7 +101,7 @@ def show(ref: str = typer.Argument(...)):
     """显示完整归档元数据与分析结果。"""
     api = client()
     archive = api_call(lambda: resolve_archive_ref(ref, api))
-    emit(archive, text=json.dumps(archive, ensure_ascii=False, indent=2, default=str))
+    emit(archive, text=lambda: render_archive(archive))
 
 
 @archive_app.command("files")

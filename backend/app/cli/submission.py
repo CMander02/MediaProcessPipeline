@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import glob
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from app.cli.client import MppClient, MppClientError
-from app.cli.context import get_cli_context, route_to_configured_server
+from app.cli.context import configure_cli_context, get_cli_context, route_to_configured_server
 from app.cli.output import emit_error, parse_assignments
 
 MEDIA_EXTENSIONS = {
@@ -54,6 +55,9 @@ def expand_sources(
         source = source.strip()
         if not source:
             continue
+        if _is_url(source):
+            expanded.append(source)
+            continue
         path = Path(source).expanduser()
         if path.is_dir():
             iterator = path.rglob("*") if recursive else path.glob("*")
@@ -76,11 +80,7 @@ def expand_sources(
                 elif item.is_file() and item.suffix.lower() in MEDIA_EXTENSIONS:
                     expanded.append(str(item.resolve()))
             continue
-        if (
-            not _is_url(source)
-            and not path.is_file()
-            and (path.is_absolute() or path.suffix.lower() in MEDIA_EXTENSIONS)
-        ):
+        if not path.is_file() and (path.is_absolute() or path.suffix.lower() in MEDIA_EXTENSIONS):
             emit_error(
                 "source_not_found", f"Local media source does not exist: {source}", exit_code=2
             )
@@ -190,13 +190,80 @@ def expand_bilibili_collections(
     return result
 
 
-def configure_submission_route(raw_target: str | None, remote: bool | None) -> str:
+def submit_to_servers(
+    connect: Callable[[], MppClient],
+    sources: list[str],
+    *,
+    options: dict[str, Any],
+    webhook_url: str | None,
+    upload_mode: str,
+    collection: str | None,
+    raw_target: str | None,
+    remote: bool | None,
+) -> tuple[list[tuple[dict[str, Any], MppClient]], list[dict[str, Any]]]:
     from app.core.settings import get_runtime_settings
 
     settings = get_runtime_settings()
+    ctx = get_cli_context()
+    effective_remote = remote if remote is not None else ctx.remote_preference
     target = (raw_target if raw_target is not None else settings.cli_default_worker_id).strip()
-    route_to_configured_server(remote=remote, target=target, settings=settings)
-    return target
+    stay_local = (
+        not ctx.explicit_server
+        and effective_remote is None
+        and raw_target is None
+        and settings.cli_use_remote_server
+        and settings.cli_local_files_stay_local
+        and upload_mode == "auto"
+    )
+    local_sources = set()
+    if stay_local:
+        local_sources = {
+            source for source in sources if not _is_url(source) and Path(source).is_file()
+        }
+    local_only = bool(local_sources) and len(local_sources) == len(sources)
+    if local_only:
+        effective_remote, target, upload_mode = False, "local", "never"
+    route_to_configured_server(remote=effective_remote, target=target, settings=settings)
+    api = connect()
+    if not local_sources or local_only:
+        tasks, errors = submit_sources(
+            api, sources, options=options, webhook_url=webhook_url,
+            upload_mode=upload_mode, collection=collection, target_worker=target,
+        )
+        return [(task, api) for task in tasks], errors
+
+    target_worker_id = resolve_worker_target(api, target)
+    sources = expand_bilibili_collections(api, sources, collection)
+    _check_expanded_batch_size(sources)
+    local_indices = [index for index, source in enumerate(sources) if source in local_sources]
+    remote_indices = [index for index, source in enumerate(sources) if source not in local_sources]
+    coordinator = get_cli_context()
+    route_to_configured_server(remote=False, settings=settings)
+    try:
+        local_api = connect()
+        local_tasks, local_errors = _submit_expanded_sources(
+            local_api, [sources[index] for index in local_indices],
+            options=options, webhook_url=webhook_url, upload_mode="never", target_worker_id="local",
+        )
+    finally:
+        configure_cli_context(server_url=coordinator.server_url, api_token=coordinator.api_token)
+
+    ordered = dict(zip(local_indices, ((task, local_api) for task in local_tasks), strict=True))
+    remote_errors = []
+    if remote_indices:
+        try:
+            remote_tasks, remote_errors = _submit_expanded_sources(
+                api, [sources[index] for index in remote_indices],
+                options=options, webhook_url=webhook_url,
+                upload_mode=upload_mode, target_worker_id=target_worker_id,
+            )
+        except MppClientError as exc:
+            exc.detail = {"remote_error": exc.detail, "local_tasks": [
+                {"id": task["id"], "source": task.get("source")} for task in local_tasks
+            ]}
+            raise
+        ordered.update(zip(remote_indices, ((task, api) for task in remote_tasks), strict=True))
+    return [ordered[index] for index in range(len(sources))], local_errors + remote_errors
 
 
 def resolve_worker_target(api: MppClient, raw_target: str) -> str:
@@ -210,8 +277,11 @@ def resolve_worker_target(api: MppClient, raw_target: str) -> str:
     if any(node["node_id"] == target for node in nodes):
         return target
     folded = target.casefold()
-    candidates = sorted({node["node_id"] for node in nodes
-                         if folded in {node["node_id"].casefold(), node["display_name"].casefold()}})
+    candidates = sorted({
+        node["node_id"]
+        for node in nodes
+        if folded in {node["node_id"].casefold(), node["display_name"].casefold()}
+    })
     if len(candidates) > 1:
         emit_error(
             "ambiguous_worker_target",
@@ -227,13 +297,13 @@ def prepare_sources_for_server(
 ) -> tuple[list[str], list[dict[str, Any]], list[dict[str, Any]]]:
     if upload_mode not in {"auto", "always", "never"}:
         emit_error("invalid_upload_mode", f"Unknown upload mode: {upload_mode}", exit_code=2)
-    capabilities = api.capabilities()
+    capabilities = api.capabilities() if upload_mode != "never" else {}
     prepared: list[str] = []
     staged: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     for source in sources:
         path = Path(source)
-        if not path.is_file():
+        if _is_url(source) or not path.is_file():
             prepared.append(source)
             continue
         should_upload = upload_mode == "always" or (
@@ -263,6 +333,15 @@ def prepare_sources_for_server(
     return prepared, staged, errors
 
 
+def _check_expanded_batch_size(sources: list[str]) -> None:
+    if len(sources) > 100:
+        emit_error(
+            "too_many_sources",
+            f"A collection-expanded batch accepts at most 100 sources; received {len(sources)}.",
+            exit_code=2,
+        )
+
+
 def submit_sources(
     api: MppClient,
     sources: list[str],
@@ -275,14 +354,24 @@ def submit_sources(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     target_worker_id = resolve_worker_target(api, target_worker)
     expanded = expand_bilibili_collections(api, sources, collection)
-    if len(expanded) > 100:
-        emit_error(
-            "too_many_sources",
-            f"A collection-expanded batch accepts at most 100 sources; received {len(expanded)}.",
-            exit_code=2,
-        )
+    _check_expanded_batch_size(expanded)
+    return _submit_expanded_sources(
+        api, expanded, options=options, webhook_url=webhook_url,
+        upload_mode=upload_mode, target_worker_id=target_worker_id,
+    )
+
+
+def _submit_expanded_sources(
+    api: MppClient,
+    sources: list[str],
+    *,
+    options: dict[str, Any],
+    webhook_url: str | None,
+    upload_mode: str,
+    target_worker_id: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     prepared, staged, errors = prepare_sources_for_server(
-        api, expanded, upload_mode, target_worker_id=target_worker_id,
+        api, sources, upload_mode, target_worker_id=target_worker_id,
     )
     if not prepared:
         emit_error(

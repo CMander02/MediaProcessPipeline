@@ -9,6 +9,7 @@ import typer
 
 from app.cli.commands.root_support import _emit_json_compat, _get_client
 from app.cli.context import get_cli_context as _command_context
+from app.cli.output import is_secret_key, mask_secret
 
 _CONFIG_GROUPS: dict[str, list[str]] = {
     "llm": [
@@ -39,12 +40,30 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "deepseek_mindmap_model",
         "deepseek_mindmap_thinking",
         "deepseek_mindmap_effort",
+        "local_llm_engine",
+        "local_llm_name",
         "local_llm_model_path",
+        "local_llm_mmproj_path",
+        "local_llm_device",
+        "local_llm_dtype",
+        "local_llm_max_new_tokens",
+        "local_llm_thinking",
         "local_llm_n_gpu_layers",
         "local_llm_n_ctx",
         "local_llm_n_batch",
+        "local_llm_timeout_sec",
+        "local_llm_keepalive_sec",
+        "local_llm_concurrency",
         "polish_provider",
         "llm_polish_concurrency",
+        "codex_max_concurrency",
+    ],
+    "providers": [
+        "service_connections",
+        "service_models",
+        "providers",
+        "deleted_provider_ids",
+        "runtime_model_bindings",
     ],
     "asr": [
         "asr_provider",
@@ -66,6 +85,34 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "siliconflow_asr_timeout_sec",
         "siliconflow_asr_chunk_strategy",
     ],
+    "local_asr": [
+        "llama_cpp_binary_path",
+        "llama_asr_model_path",
+        "llama_asr_mmproj_path",
+        "llama_asr_device",
+        "llama_asr_concurrency",
+        "llama_asr_max_new_tokens",
+        "llama_asr_timeout_sec",
+        "sherpa_model_id",
+        "sherpa_model_root",
+        "sherpa_device",
+        "sherpa_num_threads",
+        "sherpa_chunk_strategy",
+        "sherpa_max_chunk_sec",
+        "sherpa_vad_model_path",
+        "sherpa_debug",
+        "asr_timestamp_mode",
+        "qwen3_aligner_model_path",
+        "aligner_device",
+        "moss_cpp_binary_path",
+        "moss_cpp_model_path",
+        "moss_cpp_device",
+        "moss_cpp_threads",
+        "moss_cpp_max_new_tokens",
+        "moss_cpp_chunk_duration_sec",
+        "moss_cpp_chunk_overlap_sec",
+        "moss_cpp_timeout_sec",
+    ],
     "diarization": [
         "enable_diarization",
         "hf_token",
@@ -75,6 +122,13 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "pyannote_embedding_path",
         "pyannote_device",
         "diarization_batch_size",
+        "diarization_clustering_strategy",
+        "diarization_clustering_threshold",
+    ],
+    "voiceprint": [
+        "enable_voiceprint",
+        "voiceprint_match_threshold",
+        "voiceprint_suggest_threshold",
     ],
     "subtitle": [
         "prefer_platform_subtitles",
@@ -92,6 +146,7 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "uvr_deecho_dereverb_path",
         "uvr_htdemucs_path",
         "uvr_chunk_duration_sec",
+        "uvr_mdx_segment_size",
     ],
     "paths": [
         "data_root",
@@ -121,6 +176,7 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "remote_execution_worker_enabled",
         "remote_execution_wait_sec",
         "cli_use_remote_server",
+        "cli_local_files_stay_local",
         "cli_default_worker_id",
     ],
     "security": [
@@ -135,46 +191,92 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "bilibili_sessdata",
         "bilibili_bili_jct",
         "bilibili_dede_user_id",
+        "allow_remote_filesystem",
+        "siliconflow_api_key",
+        "vlm_api_key",
+        "kb_embedding_api_key",
+        "jina_reader_api_key",
+        "xiaohongshu_cookie",
+        "network_proxy",
+        "youtube_proxy",
     ],
     "bilibili": [
         "bilibili_sessdata",
         "bilibili_bili_jct",
         "bilibili_dede_user_id",
+        "bilibili_preferred_quality",
+        "bilibili_subtitle_engine",
+        "bilibili_subtitle_strict_validation",
+        "bilibili_subtitle_min_coverage",
+        "bilibili_subtitle_allow_legacy_fallback",
     ],
     "concurrency": [
         "max_download_concurrency",
     ],
-}
-
-
-_SECRET_KEYS = {
-    "anthropic_api_key",
-    "openai_api_key",
-    "custom_api_key",
-    "deepseek_api_key",
-    "siliconflow_api_key",
-    "hf_token",
-    "hf_proxy",
-    "api_token",
-    "remote_api_token",
-    "jina_reader_api_key",
-    "bilibili_sessdata",
-    "bilibili_bili_jct",
+    "platforms": [
+        "network_proxy",
+        "youtube_cookies_file",
+        "youtube_cookies_browser",
+        "youtube_proxy",
+        "youtube_preferred_quality",
+        "ytdlp_auto_update",
+        "xiaohongshu_cookie",
+        "xiaohongshu_storage_state_path",
+        "twitter_storage_state_path",
+        "zhihu_browser_mode",
+        "defuddle_enabled",
+        "playwright_enabled",
+        "jina_reader_enabled",
+        "jina_reader_api_base",
+        "jina_reader_api_key",
+        "jina_reader_bypass_cache",
+        "web_scrape_timeout_sec",
+        "platform_configs",
+    ],
+    "vlm": [
+        "vlm_api_base",
+        "vlm_api_key",
+        "vlm_model",
+        "vlm_max_tokens",
+        "vlm_concurrency",
+        "vlm_timeout_sec",
+    ],
+    "kb": [
+        "kb_enabled",
+        "kb_embedding_api_base",
+        "kb_embedding_api_key",
+        "kb_embedding_model",
+        "kb_embedding_dim",
+        "kb_chunk_size_chars",
+        "kb_chunk_overlap_chars",
+    ],
+    "storage": ["data_root", "media_retention_policy"],
+    "workflow": [
+        "pipeline_workflow",
+        "generate_video_detail",
+        "audio_processing_flow",
+        "pipeline_overlap",
+        "flow_profiles",
+        "active_flow_defaults",
+    ],
+    "system": ["update_repo"],
 }
 
 
 def _mask(key: str, value) -> str:
-    if key in _SECRET_KEYS and value:
-        s = str(value)
-        return s[:4] + "..." if len(s) > 4 else "***"
-    return str(value)
+    return str(mask_secret(value) if is_secret_key(key) else value)
+
+
+def _use_daemon(client) -> bool:
+    ctx = _command_context()
+    return not ctx.is_local or ctx.remote_preference is True or client.ping()
 
 
 def _read_settings() -> dict:
     from app.cli.output import redact
 
     client = _get_client()
-    if client.ping():
+    if _use_daemon(client):
         from app.cli.commands.common import api_call
 
         return redact(api_call(client.get_settings))
@@ -192,8 +294,7 @@ def _all_valid_keys() -> list[str]:
 def _config_default(ctx: typer.Context):
     """查看/修改配置。子命令: list / get / set"""
     if ctx.invoked_subcommand is None:
-        # Bare `mpp config` → show all (same as `mpp config list`)
-        _config_list_impl(group=None)
+        config_list(group=None, json_out=False)
 
 
 def config_list(
@@ -228,6 +329,7 @@ def config_list(
 
 def _config_list_impl(group: str | None) -> None:
     from rich.table import Table
+    from rich.text import Text
 
     from app.cli.display import console
 
@@ -254,7 +356,13 @@ def _config_list_impl(group: str | None) -> None:
 
     for k in keys_to_show:
         v = settings.get(k, "")
-        table.add_row(k, _mask(k, v))
+        if isinstance(v, list):
+            value = f"[{len(v)} items]" if v else "[]"
+        elif isinstance(v, dict):
+            value = f"{{{len(v)} keys}}" if v else "{}"
+        else:
+            value = _mask(k, v)
+        table.add_row(k, Text(value))
 
     console.print(table)
 
@@ -330,10 +438,8 @@ def config_set(
             except ValueError:
                 typed_value = value
 
-    from app.cli.output import redact
-
     client = _get_client()
-    if client.ping():
+    if _use_daemon(client):
         from app.cli.commands.common import api_call
 
         api_call(lambda: client.patch_settings({key: typed_value}))
@@ -399,10 +505,8 @@ def config_preset(
         )
         return
 
-    from app.cli.output import redact
-
     client = _get_client()
-    if client.ping():
+    if _use_daemon(client):
         from app.cli.commands.common import api_call
 
         api_call(lambda: client.patch_settings(updates))

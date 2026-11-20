@@ -8,6 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+from app.cli.client import MppClientError
 from app.cli.commands import execution
 from app.cli.context import get_cli_context
 from app.cli.main import app
@@ -193,3 +194,289 @@ def test_config_masks_remote_api_token(group, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "the-complete-token" not in result.stdout
     assert json.loads(result.stdout)["data"]["remote_api_token"] == "the-..."
+
+
+@pytest.mark.parametrize(
+    "global_opts,command,default_remote,server_kind",
+    [
+        (["--remote"], ["status"], False, "remote"),
+        (["--local"], ["status"], True, "local"),
+        (["--remote"], ["server", "status"], False, "remote"),
+        (["--local"], ["server", "nodes"], True, "local"),
+        (["--local"], ["sync", "status"], True, "local"),
+        (["--remote"], ["sync", "status"], False, "remote"),
+        (["--local"], ["storage", "usage"], True, "local"),
+        (["--local"], ["server", "nodes", "--remote"], True, "remote"),
+        (["--remote"], ["server", "nodes", "--local"], False, "local"),
+    ],
+)
+def test_global_daemon_routing(monkeypatch, global_opts, command, default_remote, server_kind):
+    from app.cli.commands import common, operations
+    from app.core import settings
+
+    local = ("http://localhost:18000", "local-secret")
+    remote = ("https://coordinator.example", "remote-secret")
+    monkeypatch.setattr(settings, "_runtime_settings", settings.RuntimeSettings(
+        cli_use_remote_server=default_remote,
+        api_token=local[1],
+        remote_server_url=remote[0],
+        remote_api_token=remote[1],
+    ))
+    calls = []
+
+    class Api:
+        def ping(self):
+            return True
+
+        def task_stats(self):
+            return {"queued": 1}
+
+        def list_tasks(self, **kwargs):
+            return []
+
+        def execution_nodes(self):
+            return {"nodes": []}
+
+        def sync_changes(self, cursor, limit):
+            return {"server_revision": 12}
+
+        def disk_usage(self):
+            return {"total_size": 1}
+
+    def connect():
+        ctx = get_cli_context()
+        calls.append((ctx.server_url, ctx.api_token))
+        return Api()
+
+    def daemon_status(server, token):
+        calls.append((server, token))
+        return {"online": True}
+
+    monkeypatch.setattr(common, "client", connect)
+    monkeypatch.setattr(operations, "client", connect)
+    monkeypatch.setattr(operations, "daemon_status", daemon_status)
+    result = CliRunner().invoke(
+        app, ["--json", *global_opts, *command],
+        env={"MPP_SERVER_URL": None, "MPP_API_TOKEN": None},
+    )
+    assert result.exit_code == 0, result.output
+    expected = remote if server_kind == "remote" else local
+    assert calls == [expected]
+    assert json.loads(result.stdout)["meta"]["server"] == expected[0]
+
+
+def test_remote_config_commands_and_bare_config_routing(monkeypatch):
+    from app.cli.commands import config_values
+    from app.core import settings
+
+    monkeypatch.setattr(settings, "_runtime_settings", settings.RuntimeSettings(
+        remote_server_url="https://coordinator.example",
+        remote_api_token="remote-secret",
+        cli_use_remote_server=True,
+    ))
+    calls = []
+
+    class Api:
+        def ping(self):
+            return True
+
+        def get_settings(self):
+            return {"vlm_max_tokens": 4096}
+
+        def patch_settings(self, payload):
+            assert payload == {"vlm_max_tokens": 1024}
+            return payload
+
+    def connect():
+        ctx = get_cli_context()
+        calls.append((ctx.server_url, ctx.api_token, ctx.remote_preference))
+        return Api()
+
+    monkeypatch.setattr(config_values, "_get_client", connect)
+    runner = CliRunner()
+    env = {"MPP_SERVER_URL": None, "MPP_API_TOKEN": None}
+    for command in (["list"], ["get", "vlm_max_tokens"], ["set", "vlm_max_tokens", "1024"]):
+        result = runner.invoke(app, ["--remote", "--json", "config", *command], env=env)
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["meta"]["server"] == "https://coordinator.example"
+    result = runner.invoke(app, ["config"], env=env)
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        *[("https://coordinator.example", "remote-secret", True)] * 3,
+        ("http://localhost:18000", "", None),
+    ]
+
+
+def test_unreachable_remote_config_does_not_write_local_settings(monkeypatch):
+    from app.cli.commands import config_values
+    from app.core import settings
+
+    original = settings.RuntimeSettings(remote_server_url="https://coordinator.example")
+    monkeypatch.setattr(settings, "_runtime_settings", original)
+    writes = []
+
+    class Api:
+        def ping(self):
+            return False
+
+        def patch_settings(self, payload):
+            raise MppClientError("connection_failed", "offline", retryable=True, exit_code=3)
+
+    monkeypatch.setattr(config_values, "_get_client", Api)
+    monkeypatch.setattr(settings, "patch_runtime_settings", writes.append)
+    result = CliRunner().invoke(
+        app, ["--remote", "--json", "config", "set", "vlm_max_tokens", "1024"],
+        env={"MPP_SERVER_URL": None, "MPP_API_TOKEN": None},
+    )
+    assert result.exit_code == 3, result.output
+    assert json.loads(result.stdout)["error"]["code"] == "connection_failed"
+    assert writes == []
+
+
+@pytest.mark.parametrize(
+    "command,global_opts,options,stay_local,base_url,target,uploaded",
+    [
+        ("submit", [], [], {}, "http://localhost:18000", "local", False),
+        ("run", [], ["--detach"], {}, "http://localhost:18000", "local", False),
+        ("submit", [], ["--remote"], {}, "https://coordinator.example", "exe-silentfield", True),
+        ("submit", [], ["-W", "silentfield"], {},
+         "https://coordinator.example", "exe-silentfield", True),
+        ("submit", [], [], {"cli_local_files_stay_local": False},
+         "https://coordinator.example", "exe-silentfield", True),
+        ("submit", [], ["--upload", "always"], {},
+         "https://coordinator.example", "exe-silentfield", True),
+        ("submit", ["--remote"], [], {}, "https://coordinator.example", "exe-silentfield", True),
+        ("submit", ["--local"], ["--remote"], {},
+         "https://coordinator.example", "exe-silentfield", True),
+        ("submit", ["--server", "https://explicit.example"], [], {},
+         "https://explicit.example", "exe-silentfield", True),
+    ],
+)
+def test_local_submission_policy(
+    monkeypatch, tmp_path, command, global_opts, options, stay_local, base_url, target, uploaded,
+):
+    from app.core import settings
+
+    source = tmp_path / "素材🎧.wav"
+    source.write_bytes(b"fixture")
+    monkeypatch.setattr(settings, "_runtime_settings", settings.RuntimeSettings(
+        remote_server_url="https://coordinator.example",
+        remote_api_token="remote-secret",
+        api_token="local-secret",
+        cli_use_remote_server=True,
+        cli_default_worker_id="exe-silentfield",
+        **stay_local,
+    ))
+    connections, uploads, batches = [], [], []
+
+    class Api:
+        def capabilities(self):
+            return {"local_path_submission": False}
+
+        def execution_nodes(self):
+            return {"nodes": [{"node_id": "exe-silentfield", "display_name": "SilentField"}]}
+
+        def stage_file(self, path):
+            uploads.append(path)
+            return {"path": "/remote/staged.wav"}
+
+        def create_tasks_batch(self, sources, options, webhook_url, target_worker_id):
+            batches.append((sources, target_worker_id))
+            return [{"id": "fixture", "status": "queued", "source": sources[0]}]
+
+    def connect(**kwargs):
+        ctx = get_cli_context()
+        connections.append((ctx.server_url, ctx.api_token))
+        return Api()
+
+    monkeypatch.setattr(execution, "_require_daemon", connect)
+    result = CliRunner().invoke(
+        app, ["--json", *global_opts, command, str(tmp_path / "*.wav"), *options],
+        env={"MPP_SERVER_URL": None, "MPP_API_TOKEN": None},
+    )
+    assert result.exit_code == 0, result.output
+    tokens = {
+        "http://localhost:18000": "local-secret",
+        "https://coordinator.example": "remote-secret",
+    }
+    assert connections == [(base_url, tokens.get(base_url, ""))]
+    assert uploads == ([source.resolve()] if uploaded else [])
+    assert batches == [(["/remote/staged.wav" if uploaded else str(source.resolve())], target)]
+
+
+@pytest.mark.parametrize("command,options,remote_failure", [
+    ("submit", [], False),
+    ("submit", ["--wait"], False),
+    ("run", ["--detach"], False),
+    ("run", [], False),
+    ("submit", [], True),
+])
+def test_mixed_batch_routes_and_waits_in_source_order(
+    monkeypatch, tmp_path, command, options, remote_failure,
+):
+    from app.core import settings
+
+    source = tmp_path / "素材🎧.wav"
+    source.write_bytes(b"fixture")
+    source_list = tmp_path / "sources.txt"
+    sources = ["https://example.com/video?list[]=1", str(source.resolve()), "https://example.com/2"]
+    source_list.write_text("\n".join(sources), encoding="utf-8")
+    local = "http://localhost:18000"
+    remote = "https://coordinator.example"
+    monkeypatch.setattr(settings, "_runtime_settings", settings.RuntimeSettings(
+        remote_server_url=remote,
+        remote_api_token="remote-secret",
+        cli_use_remote_server=True,
+        cli_default_worker_id="exe-silentfield",
+    ))
+    calls, waits = [], []
+
+    class Api:
+        def __init__(self):
+            self.url = get_cli_context().server_url
+            self.tasks = {}
+
+        def capabilities(self):
+            return {}
+
+        def execution_nodes(self):
+            return {"nodes": []}
+
+        def create_tasks_batch(self, sources, options, webhook_url, target_worker_id):
+            ctx = get_cli_context()
+            assert ctx.server_url == self.url
+            calls.append((self.url, ctx.api_token, sources, target_worker_id))
+            if self.url == remote and remote_failure:
+                raise MppClientError("invalid_request", "Server rejected URL", exit_code=2)
+            self.tasks = {
+                item: {"id": item, "source": item, "status": "queued"} for item in sources
+            }
+            return list(self.tasks.values())
+
+        def get_task(self, task_id):
+            waits.append((self.url, task_id))
+            return {**self.tasks[task_id], "status": "completed"}
+
+    monkeypatch.setattr(execution, "_require_daemon", lambda **kwargs: Api())
+    result = CliRunner().invoke(
+        app, ["--json", command, "--from-file", str(source_list), *options],
+        env={"MPP_SERVER_URL": None, "MPP_API_TOKEN": None},
+    )
+    assert calls == [
+        (local, "", [sources[1]], "local"),
+        (remote, "remote-secret", [sources[0], sources[2]], "exe-silentfield"),
+    ]
+    payload = json.loads(result.stdout)
+    if remote_failure:
+        assert result.exit_code == 2, result.output
+        assert payload["error"]["code"] == "invalid_request"
+        assert payload["error"]["detail"]["local_tasks"] == [
+            {"id": sources[1], "source": sources[1]},
+        ]
+        return
+    assert result.exit_code == 0, result.output
+    assert [task["source"] for task in payload["data"]] == sources
+    assert payload["meta"]["server"] == remote
+    waiting = options == ["--wait"] or (command == "run" and not options)
+    assert waits == ([(remote, sources[0]), (local, sources[1]), (remote, sources[2])]
+                     if waiting else [])

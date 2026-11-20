@@ -18,6 +18,12 @@ from app.cli.commands.common import api_call, client, resolve_task_ref
 from app.cli.context import get_cli_context, normalize_server_url, route_to_configured_server
 from app.cli.daemon import daemon_status, start_daemon, stop_daemon
 from app.cli.output import confirm_action, emit, emit_error
+from app.cli.renderers import (
+    render_fields,
+    render_storage_clean,
+    render_storage_media,
+    render_storage_usage,
+)
 
 server_app = typer.Typer(help="本地 daemon 进程管理", no_args_is_help=True)
 auth_app = typer.Typer(help="API 认证检查", no_args_is_help=True)
@@ -78,7 +84,7 @@ def server_status():
     route_to_configured_server()
     ctx = get_cli_context()
     result = daemon_status(ctx.server_url, ctx.api_token)
-    emit(result, text=json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    emit(result, text=lambda: render_fields(result))
 
 
 @server_app.command("nodes")
@@ -91,7 +97,8 @@ def server_nodes(
     """列出执行节点、在线状态和计算设备。"""
     from app.cli.commands.root_support import _emit_json_compat
 
-    route_to_configured_server(remote=remote)
+    effective_remote = remote if remote is not None else get_cli_context().remote_preference
+    route_to_configured_server(remote=effective_remote)
     api = client()
     payload = api_call(api.execution_nodes)
     if json_out or get_cli_context().output_mode in {"json", "jsonl"}:
@@ -143,7 +150,7 @@ def auth_check():
     status = api_call(api.auth_status)
     capabilities = api_call(api.capabilities)
     result = {"auth": status, "capabilities": capabilities}
-    emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
+    emit(result, text=lambda: render_fields(result))
 
 
 @auth_app.command("unlock")
@@ -376,7 +383,7 @@ def storage_usage():
     """统计 data_root 文件数量与类型占用。"""
     api = client()
     result = api_call(api.disk_usage)
-    emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
+    emit(result, text=lambda: render_storage_usage(result))
 
 
 @storage_app.command("media")
@@ -390,15 +397,22 @@ def storage_media(
     if policy is not None and policy not in {"all", "playback", "text"}:
         emit_error("invalid_policy", "Choose all, playback, or text.", exit_code=2)
     api = client()
-    result = api_call(lambda: api.media_retention(path, policy))
-    emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
-    files = [item["path"] for item in result["entries"] if item["delete"]]
-    if apply and files:
-        confirm_action("Delete the media files shown in this preview?", explicit_yes=yes)
-        result = api_call(lambda: api.media_retention(path, result["policy"], files))
-        emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
-        if result.get("errors"):
-            raise typer.Exit(5)
+    preview = api_call(lambda: api.media_retention(path, policy))
+    files = [item["path"] for item in preview["entries"] if item["delete"]]
+    if not apply or not files:
+        emit(preview, text=lambda: render_storage_media(preview))
+        return
+    ctx = get_cli_context()
+    if ctx.output_mode == "text" and ctx.interactive and not (yes or ctx.assume_yes):
+        typer.echo(render_storage_media(preview), err=True)
+    confirm_action("Delete the media files shown in this preview?", explicit_yes=yes)
+    applied = api_call(lambda: api.media_retention(path, preview["policy"], files))
+    emit(
+        {"preview": preview, "applied": applied},
+        text=lambda: render_storage_media(preview, applied),
+    )
+    if applied.get("errors"):
+        raise typer.Exit(5)
 
 
 @storage_app.command("clean")
@@ -424,7 +438,7 @@ def storage_clean(
         emit_error(
             "cleanup_refused", "No eligible cleanup target was found.", detail=errors, exit_code=4
         )
-    emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
+    emit(result, text=lambda: render_storage_clean(result))
     if errors:
         raise typer.Exit(5)
 
@@ -871,4 +885,4 @@ def register_misc_commands(app: typer.Typer) -> None:
         """显示当前连接的服务端能力。"""
         api = client()
         result = api_call(api.capabilities)
-        emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
+        emit(result, text=lambda: render_fields(result))

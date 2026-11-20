@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -28,6 +29,16 @@ SECRET_MARKERS = (
 
 def is_secret_key(key: str) -> bool:
     normalized = key.lower()
+    if normalized.endswith(("_max_tokens", "_max_new_tokens", "_token_limit", "_tokens")):
+        return False
+    if normalized in {
+        "enable_token_timestamps",
+        "token_timestamps",
+        "youtube_cookies_browser",
+        "youtube_cookies_file",
+        "cookies_from_browser",
+    }:
+        return False
     return any(marker in normalized for marker in SECRET_MARKERS)
 
 
@@ -58,7 +69,9 @@ def envelope(data: Any = None, *, meta: dict[str, Any] | None = None) -> dict[st
     }
 
 
-def emit(data: Any, *, text: str | None = None, redact_secrets: bool = False) -> None:
+def emit(
+    data: Any, *, text: str | Callable[[], str] | None = None, redact_secrets: bool = False,
+) -> None:
     ctx = get_cli_context()
     safe = redact(data) if redact_secrets else data
     if ctx.output_mode == "json":
@@ -68,7 +81,7 @@ def emit(data: Any, *, text: str | None = None, redact_secrets: bool = False) ->
         for item in items:
             typer.echo(json.dumps(item, ensure_ascii=False, default=str))
     elif text is not None:
-        typer.echo(text)
+        typer.echo(text() if callable(text) else text)
     elif isinstance(safe, str):
         typer.echo(safe)
     else:

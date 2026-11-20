@@ -213,6 +213,17 @@ class MppClient:
     def execution_nodes(self) -> dict[str, Any]:
         return self.request("GET", "/api/execution/nodes")
 
+    def get_system_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/system")
+
+    def check_update(self, *, force: bool = False) -> dict[str, Any]:
+        return self.request("GET", "/api/system/update/check", params={"force": force})
+
+    def download_update(self, asset_name: str | None = None) -> dict[str, Any]:
+        return self.request(
+            "POST", "/api/system/update/download", json_body={"asset_name": asset_name},
+        )
+
     # Tasks
 
     def create_task(
@@ -253,6 +264,26 @@ class MppClient:
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         return self.request("GET", f"/api/tasks/{task_id}")
+
+    def import_tasks(
+        self,
+        sources: list[str],
+        options: dict[str, Any] | None = None,
+        *,
+        target_worker_id: str | None = None,
+        folder_id: str | None = None,
+        move_existing: bool = False,
+        collection_folders: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "sources": sources,
+            "options": options or {},
+            "target_worker_id": target_worker_id,
+            "folder_id": folder_id,
+            "move_existing": move_existing,
+            "collection_folders": collection_folders or [],
+        }
+        return self.request("POST", "/api/tasks/import", json_body=payload)
 
     def list_tasks(
         self,
@@ -308,7 +339,23 @@ class MppClient:
         return self.task_action(task_id, "resume")
 
     def checkpoint_rerun_task(self, task_id: str) -> dict[str, Any]:
-        return self.task_action(task_id, "checkpoint-rerun")
+        return self.checkpoint_rerun(task_id)
+
+    def checkpoint_rerun(
+        self,
+        task_id: str,
+        *,
+        from_step: str | None = None,
+        workflow: dict[str, bool] | None = None,
+    ) -> dict[str, Any]:
+        if from_step is None and workflow is None:
+            return self.task_action(task_id, "checkpoint-rerun")
+        body: dict[str, Any] = {}
+        if from_step is not None:
+            body["from_step"] = from_step
+        if workflow is not None:
+            body["workflow"] = workflow
+        return self.request("POST", f"/api/tasks/{task_id}/checkpoint-rerun", json_body=body)
 
     def full_rerun_task(self, task_id: str) -> dict[str, Any]:
         return self.task_action(task_id, "full-rerun")
@@ -436,6 +483,24 @@ class MppClient:
         payload = self.request("GET", "/api/pipeline/archives", params={"lite": str(lite).lower()})
         return payload.get("archives", [])
 
+    def list_archives_paged(self, **params: Any) -> dict[str, Any]:
+        return self.request("GET", "/api/pipeline/archives", params=params)
+
+    def lookup_archives(self, sources: list[str]) -> dict[str, Any]:
+        return self.request("POST", "/api/pipeline/archives/lookup", json_body={"sources": sources})
+
+    def archive_index_status(self) -> dict[str, Any]:
+        return self.request("GET", "/api/pipeline/archives/index")
+
+    def reconcile_archives(self) -> dict[str, Any]:
+        return self.request("POST", "/api/pipeline/archives/reconcile")
+
+    def duplicate_cleanup_preview(self) -> dict[str, Any]:
+        return self.request("GET", "/api/pipeline/archives/duplicates/cleanup")
+
+    def duplicate_cleanup_apply(self) -> dict[str, Any]:
+        return self.request("POST", "/api/pipeline/archives/duplicates/cleanup")
+
     def get_archive(self, path: str) -> dict[str, Any]:
         payload = self.request("GET", "/api/pipeline/archives/detail", params={"path": path})
         return payload.get("archive", payload)
@@ -527,6 +592,14 @@ class MppClient:
             timeout=timeout_sec + 30,
         )
 
+    def bilibili_qr_generate(self) -> dict[str, Any]:
+        return self.request("POST", "/api/pipeline/bilibili/auth/qr")
+
+    def bilibili_qr_poll(self, session_id: str) -> dict[str, Any]:
+        return self.request(
+            "POST", "/api/pipeline/bilibili/auth/qr/poll", json_body={"session_id": session_id},
+        )
+
     # Filesystem
 
     def fs_drives(self) -> dict[str, Any]:
@@ -556,6 +629,54 @@ class MppClient:
     def fs_open(self, path: str) -> dict[str, Any]:
         return self.request("POST", "/api/filesystem/open-folder", json_body={"path": path})
 
+    def artifacts_status(self, task_id: str | None = None) -> dict[str, Any]:
+        params = {"task_id": task_id} if task_id is not None else None
+        return self.request("GET", "/api/filesystem/artifacts/status", params=params)
+
+    def artifacts_repair(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.request("POST", "/api/filesystem/artifacts/repair", json_body=payload)
+
+    def list_library_folders(self) -> dict[str, Any]:
+        return self.request("GET", "/api/library/folders")
+
+    def create_library_folder(self, name: str) -> dict[str, Any]:
+        return self.request("POST", "/api/library/folders", json_body={"name": name})
+
+    def rename_library_folder(self, folder_id: str, name: str) -> dict[str, Any]:
+        folder = quote(folder_id, safe="")
+        return self.request("PATCH", f"/api/library/folders/{folder}", json_body={"name": name})
+
+    def delete_library_folder(self, folder_id: str) -> dict[str, Any]:
+        folder = quote(folder_id, safe="")
+        return self.request("DELETE", f"/api/library/folders/{folder}")
+
+    def move_library_members(
+        self, content_keys: list[str], folder_id: str | None,
+    ) -> dict[str, Any]:
+        return self.request(
+            "POST", "/api/library/folder-members/move",
+            json_body={"content_keys": content_keys, "folder_id": folder_id},
+        )
+
+    def resolve_library_content(self, content_key: str) -> dict[str, Any]:
+        return self.request(
+            "GET", "/api/library/contents/resolve", params={"content_key": content_key},
+        )
+
+    def task_library_content(self, task_id: str) -> dict[str, Any]:
+        return self.request("GET", f"/api/library/contents/task/{task_id}")
+
+    def preview_library_batch(self, action: str, scope: dict[str, Any]) -> dict[str, Any]:
+        return self.request(
+            "POST", "/api/library/batch/preview", json_body={"action": action, "scope": scope},
+        )
+
+    def delete_library_content(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.request("POST", "/api/library/contents/delete", json_body=payload)
+
+    def search_transcripts(self, q: str, *, limit: int = 20) -> dict[str, Any]:
+        return self.request("GET", "/api/search/transcripts", params={"q": q, "limit": limit})
+
     # Voiceprints and speaker updates
 
     def voiceprint_persons(self) -> list[dict[str, Any]]:
@@ -574,6 +695,35 @@ class MppClient:
 
     def voiceprint_sample(self, sample_id: str) -> bytes:
         return self.download(f"/api/voiceprints/samples/{sample_id}/clip")
+
+    def list_voiceprint_samples(self, person_id: str) -> list[dict[str, Any]]:
+        return self.request("GET", f"/api/voiceprints/persons/{person_id}/samples")
+
+    def delete_voiceprint_sample(self, sample_id: str) -> dict[str, Any]:
+        return self.request("DELETE", f"/api/voiceprints/samples/{sample_id}")
+
+    def enroll_voiceprint(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.request("POST", "/api/voiceprints/enroll", json_body=payload)
+
+    def get_task_speakers(self, task_id: str) -> dict[str, Any]:
+        return self.request("GET", f"/api/tasks/{task_id}/speakers")
+
+    def repair_task_speakers(self, task_id: str, mode: str) -> dict[str, Any]:
+        return self.request(
+            "POST", f"/api/tasks/{task_id}/speakers/repair", json_body={"mode": mode},
+        )
+
+    def get_speaker_repair_preview(self, task_id: str) -> dict[str, Any]:
+        return self.request("GET", f"/api/tasks/{task_id}/speakers/repair-preview")
+
+    def assign_task_speakers(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.request("POST", f"/api/tasks/{task_id}/speakers/assign", json_body=payload)
+
+    def reconcile_task_speakers(self, task_id: str, expected_srt: str) -> dict[str, Any]:
+        return self.request(
+            "POST", f"/api/tasks/{task_id}/speakers/reconcile",
+            json_body={"expected_srt": expected_srt},
+        )
 
     def rename_task_speaker(
         self, task_id: str, old_name: str, new_name: str, on_conflict: str
@@ -628,6 +778,15 @@ class MppClient:
         return self.request("GET", "/api/logs", params=params)
 
     # Sync
+
+    def sync_status_info(self) -> dict[str, Any]:
+        return self.request("GET", "/api/sync/status")
+
+    def sync_pull(self) -> dict[str, Any]:
+        return self.request("POST", "/api/sync/pull")
+
+    def sync_push(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self.request("POST", "/api/sync/push", json_body=payload)
 
     def sync_changes(self, cursor: int = 0, limit: int = 100) -> dict[str, Any]:
         return self.request("GET", "/api/sync/changes", params={"cursor": cursor, "limit": limit})

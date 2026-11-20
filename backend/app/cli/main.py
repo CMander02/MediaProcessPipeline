@@ -73,7 +73,7 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 
-config_app = typer.Typer(help="查看/修改配置", no_args_is_help=True)
+config_app = typer.Typer(help="查看/修改配置")
 app.add_typer(config_app, name="config")
 
 # Resource-oriented command groups. High-frequency top-level commands below
@@ -146,6 +146,9 @@ def _global_options(
     server: Optional[str] = typer.Option(
         None, "--server", help="daemon URL", envvar="MPP_SERVER_URL"
     ),
+    remote: Optional[bool] = typer.Option(
+        None, "--remote/--local", help="路由至协调服务器或强制使用本机 daemon"
+    ),
     token: Optional[str] = typer.Option(
         None, "--token", help="Bearer token", envvar="MPP_API_TOKEN"
     ),
@@ -192,7 +195,11 @@ def _global_options(
             emit_error(
                 "token_env_missing", f"Environment variable {token_env!r} is empty.", exit_code=2
             )
-    from app.cli.context import configure_cli_context, normalize_server_url, route_to_configured_server
+    from app.cli.context import (
+        configure_cli_context,
+        normalize_server_url,
+        route_to_configured_server,
+    )
 
     try:
         server_url = normalize_server_url(server)
@@ -208,6 +215,7 @@ def _global_options(
         api_token=token_value,
         explicit_server=server is not None,
         explicit_token=token is not None or token_env is not None,
+        remote_preference=remote,
         timeout=timeout,
         output_mode=output_mode,
         plain=_plain_mode,
@@ -217,9 +225,11 @@ def _global_options(
         debug=debug,
     )
 
-    if ctx.invoked_subcommand not in {
+    if ctx.invoked_subcommand == "config":
+        route_to_configured_server(remote=remote is True)
+    elif ctx.invoked_subcommand not in {
         None, "help", "serve", "doctor", "upgrade-ytdlp", "run", "submit",
-        "config", "server", "storage", "sync",
+        "server", "storage", "sync",
     }:
         route_to_configured_server()
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, NoReturn, TypeVar
 from uuid import UUID
 
 from app.cli.client import MppClient, MppClientError
@@ -17,18 +17,22 @@ def client() -> MppClient:
     return MppClient()
 
 
+def emit_client_error(exc: MppClientError) -> NoReturn:
+    print_debug_exception(exc)
+    emit_error(
+        exc.code,
+        exc.message,
+        detail=exc.detail,
+        retryable=exc.retryable,
+        exit_code=exc.exit_code,
+    )
+
+
 def api_call(operation: Callable[[], T]) -> T:
     try:
         return operation()
     except MppClientError as exc:
-        print_debug_exception(exc)
-        emit_error(
-            exc.code,
-            exc.message,
-            detail=exc.detail,
-            retryable=exc.retryable,
-            exit_code=exc.exit_code,
-        )
+        emit_client_error(exc)
     except (OSError, ValueError) as exc:
         print_debug_exception(exc)
         emit_error("local_error", str(exc), exit_code=2)

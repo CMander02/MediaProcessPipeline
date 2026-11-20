@@ -34,6 +34,7 @@ class CliContext:
     api_token: str = ""
     explicit_server: bool = False
     explicit_token: bool = False
+    remote_preference: bool | None = None
     timeout: float = 30.0
     output_mode: str = "text"
     plain: bool = False
@@ -71,19 +72,28 @@ def configure_cli_context(**updates: object) -> CliContext:
     return _context
 
 
-def route_to_configured_server(*, remote: bool | None = None, target: str | None = None, settings=None) -> None:
+def route_to_configured_server(
+    *, remote: bool | None = None, target: str = "", settings=None,
+) -> None:
     from app.cli.output import emit_error
     from app.core.settings import get_runtime_settings
 
     ctx = get_cli_context()
-    if ctx.explicit_server or remote is False:
+    if ctx.explicit_server:
         return
+    effective_remote = remote if remote is not None else ctx.remote_preference
     settings = settings if settings is not None else get_runtime_settings()
+    if effective_remote is False:
+        configure_cli_context(
+            server_url=DEFAULT_SERVER_URL,
+            api_token=ctx.api_token if ctx.explicit_token else settings.api_token,
+        )
+        return
     url = settings.remote_server_url.strip()
-    if remote and not url:
+    if effective_remote and not url:
         emit_error("remote_target_missing", "remote_server_url is not configured.", exit_code=2)
     if not url or not (
-        remote or settings.cli_use_remote_server
+        effective_remote or settings.cli_use_remote_server
         or (target and target != "local" and not settings.remote_execution_enabled)
     ):
         return

@@ -59,7 +59,7 @@ def upgrade_ytdlp():
         emit(result, text=f"updated\t{result.get('old')}\t{result.get('new')}")
         return
     emit_error(
-        "ytdlp_upgrade_failed", str(result.get("output", "yt-dlp upgrade failed")), details=result
+        "ytdlp_upgrade_failed", str(result.get("output", "yt-dlp upgrade failed")), detail=result
     )
 
 

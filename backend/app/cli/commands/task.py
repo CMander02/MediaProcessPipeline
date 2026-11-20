@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any, Optional
 
 import typer
 
-from app.cli.commands.common import api_call, client, resolve_many_task_refs, resolve_task_ref
+from app.cli.client import MppClientError
+from app.cli.commands.common import (
+    api_call,
+    client,
+    emit_client_error,
+    resolve_many_task_refs,
+    resolve_task_ref,
+)
 from app.cli.context import get_cli_context
-from app.cli.output import confirm_action, emit, emit_event
+from app.cli.output import confirm_action, emit, emit_error, emit_event
+from app.cli.renderers import render_task, render_timeline, render_timeline_event
 
 task_app = typer.Typer(help="任务查询、观察与生命周期控制", no_args_is_help=True)
 
@@ -35,8 +42,6 @@ def list_tasks(
 ):
     """列出任务，支持状态过滤、分页和事件观察。"""
     if watch and get_cli_context().output_mode == "json":
-        from app.cli.output import emit_error
-
         emit_error("jsonl_required", "Use --jsonl with --watch.", exit_code=2)
     api = client()
     statuses = ["pending", "queued", "processing", "paused"] if active else (status or None)
@@ -52,8 +57,6 @@ def list_tasks(
             for item in get_task_store().list(limit=limit, offset=offset, statuses=statuses)
         ]
     else:
-        from app.cli.output import emit_error
-
         emit_error(
             "daemon_unavailable", f"Cannot reach {get_cli_context().server_url}.", exit_code=3
         )
@@ -74,6 +77,8 @@ def list_tasks(
                     f"{event.get('type', '')}\t"
                     f"{str(event.get('task_id', ''))[:8]}\t{data.get('message', '')}"
                 )
+    except MppClientError as exc:
+        emit_client_error(exc)
     except KeyboardInterrupt:
         raise typer.Exit(130)
 
@@ -91,8 +96,6 @@ def stats():
         data = get_task_store().stats()
         data["total"] = sum(data.values())
     else:
-        from app.cli.output import emit_error
-
         emit_error(
             "daemon_unavailable", f"Cannot reach {get_cli_context().server_url}.", exit_code=3
         )
@@ -164,7 +167,7 @@ def show(
                     result["files"] = []
         else:
             result["files"] = []
-    emit(result, text=json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    emit(result, text=lambda: render_task(result))
 
 
 @task_app.command("timeline")
@@ -175,16 +178,12 @@ def timeline(
 ):
     """输出持久化任务时间线，并可继续观察实时事件。"""
     if follow and get_cli_context().output_mode == "json":
-        from app.cli.output import emit_error
-
         emit_error("jsonl_required", "Use --jsonl with --follow.", exit_code=2)
     api = client()
     task_id = api_call(lambda: resolve_task_ref(ref, api))
     data = api_call(lambda: api.task_timeline(task_id, limit))
     events = data.get("events", [])
-    emit(
-        events, text="\n".join(json.dumps(item, ensure_ascii=False, default=str) for item in events)
-    )
+    emit(events, text=lambda: render_timeline(events))
     if follow:
         current = api_call(lambda: api.get_task(task_id))
         if current.get("status") in {"completed", "failed", "cancelled"}:
@@ -193,9 +192,11 @@ def timeline(
             for event in api.stream_task_events(task_id):
                 emit_event(event)
                 if get_cli_context().output_mode == "text":
-                    typer.echo(json.dumps(event, ensure_ascii=False, default=str))
+                    typer.echo(render_timeline_event(event))
                 if event.get("type") in {"completed", "failed", "cancelled", "deleted"}:
                     break
+        except MppClientError as exc:
+            emit_client_error(exc)
         except KeyboardInterrupt:
             raise typer.Exit(130)
 
@@ -221,6 +222,8 @@ def watch(ref: str = typer.Argument(...)):
             if event.get("type") in {"completed", "failed", "cancelled", "deleted"}:
                 terminal = True
                 break
+    except MppClientError as exc:
+        emit_client_error(exc)
     except KeyboardInterrupt:
         raise typer.Exit(130)
     if terminal or get_cli_context().output_mode == "json":
@@ -268,8 +271,6 @@ def rerun(
 ):
     """在原文件夹执行 checkpoint 重跑或完整重跑。"""
     if checkpoint and full:
-        from app.cli.output import emit_error
-
         emit_error("invalid_options", "Choose one of --checkpoint or --full.", exit_code=2)
     api = client()
     task_id = api_call(lambda: resolve_task_ref(ref, api))
@@ -284,6 +285,8 @@ def rerun(
             for event in api.stream_task_events(rerun_id):
                 if event.get("type") in {"completed", "failed", "cancelled", "deleted"}:
                     break
+        except MppClientError as exc:
+            emit_client_error(exc)
         except KeyboardInterrupt:
             raise typer.Exit(130)
         final = api_call(lambda: api.get_task(rerun_id))

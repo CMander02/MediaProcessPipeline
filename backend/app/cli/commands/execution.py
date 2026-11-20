@@ -48,14 +48,17 @@ def run(
     from app.cli.commands.common import api_call
     from app.cli.context import get_cli_context
     from app.cli.output import emit
-    from app.cli.submission import (
-        batch_text, configure_submission_route, expand_sources, submit_sources, task_options,
-    )
+    from app.cli.submission import batch_text, expand_sources, submit_to_servers, task_options
 
-    if direct and (target_worker is not None or remote is True):
+    effective_remote = remote if remote is not None else get_cli_context().remote_preference
+    if direct and (target_worker is not None or effective_remote is True):
         from app.cli.output import emit_error
 
-        emit_error("direct_option_conflict", "--direct cannot be combined with --target-worker or --remote.", exit_code=2)
+        emit_error(
+            "direct_option_conflict",
+            "--direct cannot be combined with --target-worker or --remote.",
+            exit_code=2,
+        )
     expanded = expand_sources(sources or [], from_file=from_file, recursive=recursive)
     options = task_options(
         force_asr=force_asr,
@@ -92,19 +95,19 @@ def run(
             _print_final(finals[0], quiet=quiet)
         raise typer.Exit(0 if all(item.get("status") == "completed" for item in finals) else 1)
 
-    target = configure_submission_route(target_worker, remote)
-    client = _require_daemon(auto_start=True)
-    tasks_created, submission_errors = api_call(
-        lambda: submit_sources(
-            client,
+    submitted, submission_errors = api_call(
+        lambda: submit_to_servers(
+            lambda: _require_daemon(auto_start=True),
             expanded,
             options=options,
             webhook_url=webhook,
             upload_mode=upload,
             collection=collection,
-            target_worker=target,
+            raw_target=target_worker,
+            remote=effective_remote,
         )
     )
+    tasks_created = [task for task, _ in submitted]
     if detach:
         payload = (
             {"tasks": tasks_created, "errors": submission_errors}
@@ -119,7 +122,7 @@ def run(
         return
     if (
         not quiet
-        and not (_command_context().output_mode in {"json", "jsonl"})
+        and _command_context().output_mode not in {"json", "jsonl"}
         and len(tasks_created) == 1
     ):
         from app.cli.display import console
@@ -127,8 +130,8 @@ def run(
         console.print(f"已提交  [bold]{str(tasks_created[0]['id'])[:8]}[/bold]")
     if get_cli_context().output_mode in {"json", "jsonl"}:
         finals = [
-            api_call(lambda task=task: _wait_for_task(str(task["id"]), client))
-            for task in tasks_created
+            api_call(lambda: _wait_for_task(str(task["id"]), client))
+            for task, client in submitted
         ]
         payload = {"tasks": finals, "errors": submission_errors} if submission_errors else finals
         emit(payload)
@@ -137,9 +140,9 @@ def run(
             raise typer.Exit(5 if any(task.get("status") == "completed" for task in finals) else 1)
         return
     finals = []
-    for task in tasks_created:
+    for task, client in submitted:
         finals.append(
-            api_call(lambda task=task: _do_attach(str(task["id"]), client=client, quiet=quiet))
+            api_call(lambda: _do_attach(str(task["id"]), client=client, quiet=quiet))
         )
     if submission_errors:
         for item in submission_errors:
@@ -187,9 +190,7 @@ def submit(
     from app.cli.commands.common import api_call
     from app.cli.context import get_cli_context
     from app.cli.output import emit
-    from app.cli.submission import (
-        batch_text, configure_submission_route, expand_sources, submit_sources, task_options,
-    )
+    from app.cli.submission import batch_text, expand_sources, submit_to_servers, task_options
 
     expanded = expand_sources(sources or [], from_file=from_file, recursive=recursive)
     options = task_options(
@@ -202,26 +203,26 @@ def submit(
         api_flow=api_flow,
         assignments=option or [],
     )
-    target = configure_submission_route(target_worker, remote)
-    client = _require_daemon(auto_start=True)
-    tasks_created, submission_errors = api_call(
-        lambda: submit_sources(
-            client,
+    effective_remote = remote if remote is not None else get_cli_context().remote_preference
+    submitted, submission_errors = api_call(
+        lambda: submit_to_servers(
+            lambda: _require_daemon(auto_start=True),
             expanded,
             options=options,
             webhook_url=webhook,
             upload_mode=upload,
             collection=collection,
-            target_worker=target,
+            raw_target=target_worker,
+            remote=effective_remote,
         )
     )
     result_tasks = (
         [
-            api_call(lambda task=task: _wait_for_task(str(task["id"]), client))
-            for task in tasks_created
+            api_call(lambda: _wait_for_task(str(task["id"]), client))
+            for task, client in submitted
         ]
         if wait
-        else tasks_created
+        else [task for task, _ in submitted]
     )
     payload = (
         {"tasks": result_tasks, "errors": submission_errors} if submission_errors else result_tasks

@@ -17,13 +17,20 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.api.routes import tasks as task_routes  # noqa: E402
 from app.cli.client import MppClient, MppClientError  # noqa: E402
+from app.cli.commands import config_values, configuration  # noqa: E402
 from app.cli.commands import operations as operation_commands  # noqa: E402
 from app.cli.commands import task as task_commands  # noqa: E402
 from app.cli.commands.common import resolve_task_ref  # noqa: E402
 from app.cli.context import configure_cli_context  # noqa: E402
 from app.cli.daemon import _managed_process_matches  # noqa: E402
 from app.cli.main import app  # noqa: E402
-from app.cli.output import redact  # noqa: E402
+from app.cli.output import is_secret_key, redact  # noqa: E402
+from app.cli.renderers import (  # noqa: E402
+    fmt_ms_timestamp,
+    render_chapters,
+    render_mindmap_tree,
+    render_note_with_image_descriptions,
+)
 from app.cli.submission import expand_sources, submit_sources, task_options  # noqa: E402
 from app.core import database  # noqa: E402
 from app.core import settings as settings_module  # noqa: E402
@@ -331,6 +338,247 @@ def test_secret_redaction_covers_nested_provider_data():
     assert "provider-key" not in rendered
     assert "Bearer private" not in rendered
     assert "user:password" not in rendered
+
+
+@pytest.mark.parametrize("key,value", [
+    ("vlm_max_tokens", 4096),
+    ("llama_asr_max_new_tokens", 512),
+    ("local_llm_max_new_tokens", 4096),
+    ("moss_cpp_max_new_tokens", 8192),
+    ("llm_token_limit", 100),
+    ("total_tokens", 100),
+    ("enable_token_timestamps", True),
+    ("token_timestamps", False),
+    ("youtube_cookies_browser", "chrome"),
+    ("youtube_cookies_file", "cookies.txt"),
+    ("cookies_from_browser", "firefox"),
+])
+def test_non_secret_settings_keep_their_values(key, value):
+    assert not is_secret_key(key)
+    assert redact({key: value}) == {key: value}
+
+
+@pytest.mark.parametrize("key", [
+    "vlm_api_key", "kb_embedding_api_key", "xiaohongshu_cookie", "network_proxy",
+    "youtube_proxy", "hf_proxy", "remote_api_token", "api_token", "jina_reader_api_key",
+])
+def test_credential_settings_are_masked(key):
+    assert is_secret_key(key)
+    assert redact({key: "sensitive-value"}) == {key: "sens..."}
+    assert config_values._mask(key, "sensitive-value") == "sens..."
+
+
+def test_config_groups_cover_all_runtime_settings():
+    assert {key for keys in config_values._CONFIG_GROUPS.values() for key in keys} == set(
+        RuntimeSettings.model_fields
+    )
+
+
+def test_config_list_summarizes_complex_values_in_text_only(monkeypatch):
+    settings = {
+        "service_connections": [],
+        "providers": [{"name": "fixture-provider"}, {"name": "second-provider"}],
+        "runtime_model_bindings": {"llm": {"provider_id": "fixture-provider"}},
+    }
+    monkeypatch.setattr(config_values, "_read_settings", lambda: settings)
+    args = ["--local", "config", "list", "--group", "providers"]
+    human = runner.invoke(app, args)
+    assert human.exit_code == 0, human.output
+    assert all(item in human.stdout for item in ("[]", "[2 items]", "{1 keys}"))
+    assert "fixture-provider" not in human.stdout
+    machine = runner.invoke(app, ["--json", *args])
+    assert machine.exit_code == 0, machine.output
+    assert json.loads(machine.stdout)["data"] == settings
+    single = runner.invoke(app, ["--local", "config", "get", "providers"])
+    assert single.exit_code == 0, single.output
+    assert "fixture-provider" in single.stdout
+
+
+def test_storage_media_apply_emits_one_json_object(monkeypatch):
+    preview = {
+        "path": "/archive",
+        "policy": "text",
+        "entries": [
+            {"path": "movie.mp4", "delete": True, "bytes": 200},
+            {"path": "reference.wav", "delete": False, "bytes": 100},
+        ],
+        "reclaimable_bytes": 200,
+    }
+    applied = {"cleaned": [preview["entries"][0]], "errors": [], "reclaimed_bytes": 200}
+    calls = []
+
+    class Api:
+        def media_retention(self, path, policy, files=None):
+            calls.append((path, policy, files))
+            return preview if files is None else applied
+
+    monkeypatch.setattr(operation_commands, "client", Api)
+    result = runner.invoke(app, [
+        "--json", "--local", "storage", "media", "/archive", "--apply", "--yes",
+    ])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["data"] == {"preview": preview, "applied": applied}
+    assert calls == [("/archive", None, None), ("/archive", "text", ["movie.mp4"])]
+
+
+def test_upgrade_ytdlp_failure_emits_structured_error(monkeypatch):
+    from app.services.ingestion import ytdlp_version
+
+    failure = {"ok": False, "output": "upgrade unavailable"}
+    monkeypatch.setattr(ytdlp_version, "upgrade", lambda: failure)
+    result = runner.invoke(app, ["--json", "upgrade-ytdlp"])
+    assert result.exit_code == 1, result.output
+    assert json.loads(result.stdout)["error"] == {
+        "code": "ytdlp_upgrade_failed",
+        "message": "upgrade unavailable",
+        "detail": failure,
+        "retryable": False,
+    }
+
+
+@pytest.mark.parametrize(("mode", "command"), [
+    ("--jsonl", ["list", "--watch"]),
+    ("--jsonl", ["timeline", "@last", "--follow"]),
+    ("--json", ["watch", "@last"]),
+    ("--json", ["rerun", "@last", "--wait"]),
+])
+def test_task_sse_failure_is_reported_as_cli_error(monkeypatch, mode, command):
+    task_id = str(uuid4())
+    task = {"id": task_id, "status": "processing"}
+
+    class Api(FakeTaskApi):
+        def task_timeline(self, task_id, limit):
+            return {"events": []}
+
+        def checkpoint_rerun_task(self, task_id):
+            return {"task_id": task_id}
+
+        def stream_all_events(self):
+            yield {"type": "heartbeat"}
+            raise MppClientError("connection_failed", "stream disconnected", exit_code=3)
+
+        def stream_task_events(self, task_id):
+            yield from self.stream_all_events()
+
+    monkeypatch.setattr(task_commands, "client", lambda: Api([task]))
+    result = runner.invoke(app, [mode, "--local", "task", *command])
+    assert result.exit_code == 3, result.output
+    assert json.loads(result.stdout.splitlines()[-1])["error"]["code"] == "connection_failed"
+    assert "Traceback" not in result.stderr
+
+
+def test_source_collection_text_lists_selectable_ids_and_preserves_machine_output(monkeypatch):
+    source = "https://example.com/collection"
+    payload = {
+        "title": "合集",
+        "items": [{"id": "BV123:p2", "title": "第二集\n标题", "duration": 75, "url": source}],
+    }
+
+    class Api:
+        def bilibili_collection(self, url):
+            assert url == source
+            return payload
+
+    monkeypatch.setattr(configuration, "client", Api)
+    command = ["--local", "source", "collection", source]
+    human = runner.invoke(app, ["--plain", *command])
+    assert human.exit_code == 0, human.output
+    assert human.stdout == "ID\tDURATION\tTITLE\nBV123:p2\t00:01:15.000\t第二集 标题\n"
+    machine = runner.invoke(app, ["--json", *command])
+    assert machine.exit_code == 0, machine.output
+    assert json.loads(machine.stdout)["data"] == payload
+    lines = runner.invoke(app, ["--jsonl", *command])
+    assert lines.exit_code == 0, lines.output
+    assert json.loads(lines.stdout) == payload
+
+
+@pytest.mark.parametrize("milliseconds,expected", [
+    (0, "00:00:00.000"), (3_661_023, "01:01:01.023"), (-1, "-00:00:00.001"),
+])
+def test_format_millisecond_timestamp(milliseconds, expected):
+    assert fmt_ms_timestamp(milliseconds) == expected
+
+
+def test_render_mindmap_tree_has_ascii_connectors_in_plain_mode():
+    tree = {
+        "title": "访谈",
+        "children": [
+            {"title": "开场", "start": 0, "children": [{"title": "介绍", "start": 1.5}]},
+            {"title": "结尾", "start": 62},
+        ],
+    }
+    assert render_mindmap_tree(tree, plain=True).splitlines() == [
+        "访谈",
+        "|-- 开场\t00:00:00.000",
+        "|   `-- 介绍\t00:00:01.500",
+        "`-- 结尾\t00:01:02.000",
+    ]
+    assert "│   └── 介绍" in render_mindmap_tree(tree)
+
+
+def test_render_chapters_supports_metadata_and_timed_tree_fields():
+    assert render_chapters([
+        {"title": "Intro", "start_time": 0, "children": [{"title": "Detail", "start_ms": 803}]},
+        {"title": "Finale", "start": 125.25},
+    ]).splitlines() == [
+        "START\tTITLE",
+        "00:00:00.000\tIntro",
+        "00:00:00.803\t  Detail",
+        "00:02:05.250\tFinale",
+    ]
+
+
+def test_render_note_keeps_markdown_and_adds_available_image_descriptions():
+    note = "# Note\n\n![Cover](images/01.jpg)\n"
+    assert render_note_with_image_descriptions(note, [
+        {"index": 1, "text": "A cover.\nSecond line.", "status": "completed"},
+        {"index": 2, "status": "skipped", "error": "VLM unavailable"},
+    ]) == "# Note\n\n![Cover](images/01.jpg)\n\nImage 1\nA cover.\nSecond line."
+
+
+def test_new_client_methods_send_api_request_payloads():
+    requests = []
+    page = {"archives": [{"id": "fixture"}], "total": 1, "page": 2}
+
+    def handler(request):
+        body = json.loads(request.content) if request.content else None
+        requests.append((request.method, request.url.path, dict(request.url.params), body))
+        return httpx.Response(200, json=page)
+
+    api = MppClient(base_url="https://mpp.example")
+    api.close()
+    with httpx.Client(base_url=api.base_url, transport=httpx.MockTransport(handler)) as transport:
+        api._client = transport
+        assert api.list_archives_paged(page=2, search="访谈") == page
+        assert api.list_archives() == page["archives"]
+        api.import_tasks(
+            ["https://example.com"], {"force_asr": True},
+            target_worker_id="local", folder_id="folder-a", move_existing=True,
+            collection_folders=[{"source": "https://example.com", "create_folder": True}],
+        )
+        api.checkpoint_rerun_task("task-a")
+        api.checkpoint_rerun("task-a", from_step="polish", workflow={"polish": False})
+        api.checkpoint_rerun("task-a", workflow={})
+        api.move_library_members(["source-a"], None)
+        api.reconcile_task_speakers("task-a", "SRT")
+        api.download_update()
+    assert requests == [
+        ("GET", "/api/pipeline/archives", {"page": "2", "search": "访谈"}, None),
+        ("GET", "/api/pipeline/archives", {"lite": "false"}, None),
+        ("POST", "/api/tasks/import", {}, {
+            "sources": ["https://example.com"], "options": {"force_asr": True},
+            "target_worker_id": "local", "folder_id": "folder-a", "move_existing": True,
+            "collection_folders": [{"source": "https://example.com", "create_folder": True}],
+        }),
+        ("POST", "/api/tasks/task-a/checkpoint-rerun", {}, {}),
+        ("POST", "/api/tasks/task-a/checkpoint-rerun", {},
+         {"from_step": "polish", "workflow": {"polish": False}}),
+        ("POST", "/api/tasks/task-a/checkpoint-rerun", {}, {"workflow": {}}),
+        ("POST", "/api/library/folder-members/move", {},
+         {"content_keys": ["source-a"], "folder_id": None}),
+        ("POST", "/api/tasks/task-a/speakers/reconcile", {}, {"expected_srt": "SRT"}),
+        ("POST", "/api/system/update/download", {}, {"asset_name": None}),
+    ]
 
 
 def test_source_expansion_supports_emoji_directories_and_globs(tmp_path: Path):
