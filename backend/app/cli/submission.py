@@ -5,8 +5,11 @@ from __future__ import annotations
 import glob
 import re
 from collections.abc import Callable
+from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from app.cli.client import MppClient, MppClientError
 from app.cli.context import configure_cli_context, get_cli_context, route_to_configured_server
@@ -32,6 +35,20 @@ MEDIA_EXTENSIONS = {
 
 def _is_url(value: str) -> bool:
     return value.lower().startswith(("http://", "https://"))
+
+
+def _is_bilibili_source(source: str) -> bool:
+    host = urlsplit(source).hostname or "" if _is_url(source) else ""
+    return host in {"bilibili.com", "b23.tv"} or host.endswith(".bilibili.com")
+
+
+@dataclass(frozen=True)
+class ImportOptions:
+    folder: str | None = None
+    move_existing: bool = False
+    collection_folder: bool = False
+    force_duplicate: bool = False
+    episodes: str | None = None
 
 
 def expand_sources(
@@ -113,6 +130,8 @@ def task_options(
     legacy_hotwords: str | None = None,
     api_flow: bool = False,
     assignments: list[str] | None = None,
+    workflow: dict[str, bool | None] | None = None,
+    only_transcribe: bool = False,
 ) -> dict[str, Any]:
     options = parse_assignments(assignments or [])
     if force_asr and prefer_subtitles:
@@ -147,11 +166,21 @@ def task_options(
                 "disable_voiceprint": True,
             }
         )
+    overrides = {key: value for key, value in (workflow or {}).items() if value is not None}
+    if only_transcribe:
+        overrides.update(
+            dict.fromkeys(("polish", "analyze", "summary", "mindmap", "detail"), False)
+        )
+    if overrides:
+        existing = options.get("workflow", {})
+        if not isinstance(existing, dict):
+            emit_error("invalid_workflow", "The workflow option must be an object.", exit_code=2)
+        options["workflow"] = {**existing, **overrides}
     return options
 
 
 def expand_bilibili_collections(
-    api: MppClient, sources: list[str], selection: str | None
+    api: MppClient, sources: list[str], selection: str | None, *, positional: bool = False,
 ) -> list[str]:
     if not selection:
         return sources
@@ -162,27 +191,41 @@ def expand_bilibili_collections(
         else None
     )
     for source in sources:
-        if not _is_url(source) or not any(
-            host in source.lower() for host in ("bilibili.com", "b23.tv")
-        ):
+        if not _is_bilibili_source(source):
             result.append(source)
             continue
         collection = api.bilibili_collection(source)
         items = collection.get("items") or []
-        if not collection.get("is_collection") or len(items) <= 1:
+        if not positional and (not collection.get("is_collection") or len(items) <= 1):
             result.append(source)
             continue
-        selected = [item for item in items if wanted is None or str(item.get("id")) in wanted]
-        if wanted is not None:
-            missing = wanted - {str(item.get("id")) for item in selected}
-            if missing:
+        if wanted is None and not items:
+            result.append(source)
+            continue
+        indices = set(range(len(items))) if wanted is None else set()
+        ids = {str(item["id"]): index for index, item in enumerate(items)}
+        for token in sorted(wanted or ()):
+            if token in ids:
+                indices.add(ids[token])
+                continue
+            bounds = re.fullmatch(r"(\d+)(?:-(\d+))?", token) if positional else None
+            if bounds:
+                start, end = int(bounds[1]), int(bounds[2] or bounds[1])
+                if 1 <= start <= end <= len(items):
+                    indices.update(range(start - 1, end))
+                    continue
+            if token:
                 emit_error(
                     "collection_item_not_found",
-                    f"Unknown collection item IDs: {', '.join(sorted(missing))}",
-                    detail={"available": [item.get("id") for item in items]},
+                    f"Unknown collection item or range: {token}",
+                    detail={"available": list(ids)},
                     exit_code=2,
                 )
-        result.extend(str(item.get("url")) for item in selected if item.get("url"))
+        result.extend(
+            str(item["url"])
+            for index, item in enumerate(items)
+            if index in indices and item.get("url")
+        )
     if not result:
         emit_error(
             "empty_collection_selection", "The collection selection contains no items.", exit_code=2
@@ -200,6 +243,7 @@ def submit_to_servers(
     collection: str | None,
     raw_target: str | None,
     remote: bool | None,
+    import_options: ImportOptions = ImportOptions(),
 ) -> tuple[list[tuple[dict[str, Any], MppClient]], list[dict[str, Any]]]:
     from app.core.settings import get_runtime_settings
 
@@ -229,26 +273,31 @@ def submit_to_servers(
         tasks, errors = submit_sources(
             api, sources, options=options, webhook_url=webhook_url,
             upload_mode=upload_mode, collection=collection, target_worker=target,
+            import_options=import_options,
         )
         return [(task, api) for task in tasks], errors
 
     target_worker_id = resolve_worker_target(api, target)
-    sources = expand_bilibili_collections(api, sources, collection)
+    collection_folders = _collection_folders(sources, import_options)
+    sources = _expand_selected(api, sources, collection, import_options)
     _check_expanded_batch_size(sources)
     local_indices = [index for index, source in enumerate(sources) if source in local_sources]
     remote_indices = [index for index, source in enumerate(sources) if source not in local_sources]
+    remote_folder_id = _import_folder_id(api, import_options.folder) if remote_indices else None
     coordinator = get_cli_context()
     route_to_configured_server(remote=False, settings=settings)
     try:
         local_api = connect()
+        local_folder_id = _import_folder_id(local_api, import_options.folder)
         local_tasks, local_errors = _submit_expanded_sources(
             local_api, [sources[index] for index in local_indices],
             options=options, webhook_url=webhook_url, upload_mode="never", target_worker_id="local",
+            import_options=import_options, collection_folders=[], folder_id=local_folder_id,
         )
     finally:
         configure_cli_context(server_url=coordinator.server_url, api_token=coordinator.api_token)
 
-    ordered = dict(zip(local_indices, ((task, local_api) for task in local_tasks), strict=True))
+    ordered = {local_indices[index]: (task, local_api) for index, task in local_tasks.items()}
     remote_errors = []
     if remote_indices:
         try:
@@ -256,23 +305,31 @@ def submit_to_servers(
                 api, [sources[index] for index in remote_indices],
                 options=options, webhook_url=webhook_url,
                 upload_mode=upload_mode, target_worker_id=target_worker_id,
+                import_options=import_options, collection_folders=collection_folders,
+                folder_id=remote_folder_id,
             )
         except MppClientError as exc:
-            exc.detail = {"remote_error": exc.detail, "local_tasks": [
-                {"id": task["id"], "source": task.get("source")} for task in local_tasks
-            ]}
+            exc.detail = {
+                "remote_error": exc.detail,
+                "local_tasks": [
+                    {"id": task.get("id"), "source": task.get("source")}
+                    for task in local_tasks.values()
+                ],
+            }
             raise
-        ordered.update(zip(remote_indices, ((task, api) for task in remote_tasks), strict=True))
-    return [ordered[index] for index in range(len(sources))], local_errors + remote_errors
+        ordered.update({remote_indices[index]: (task, api) for index, task in remote_tasks.items()})
+    return [ordered[index] for index in sorted(ordered)], local_errors + remote_errors
 
 
-def resolve_worker_target(api: MppClient, raw_target: str) -> str:
+def resolve_worker_target(api: MppClient, raw_target: str, *, required: bool = False) -> str:
     target = raw_target.strip()
     if not target or target == "local":
         return target
     try:
         nodes = api.execution_nodes().get("nodes") or []
     except MppClientError:
+        if required:
+            raise
         return target
     if any(node["node_id"] == target for node in nodes):
         return target
@@ -289,6 +346,8 @@ def resolve_worker_target(api: MppClient, raw_target: str) -> str:
             detail={"candidate_node_ids": candidates},
             exit_code=2,
         )
+    if required and not candidates:
+        emit_error("worker_not_found", f"No worker matches {target!r}.", exit_code=4)
     return candidates[0] if candidates else target
 
 
@@ -351,14 +410,49 @@ def submit_sources(
     upload_mode: str = "auto",
     collection: str | None = None,
     target_worker: str = "",
+    import_options: ImportOptions = ImportOptions(),
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     target_worker_id = resolve_worker_target(api, target_worker)
-    expanded = expand_bilibili_collections(api, sources, collection)
+    expanded = _expand_selected(api, sources, collection, import_options)
     _check_expanded_batch_size(expanded)
-    return _submit_expanded_sources(
-        api, expanded, options=options, webhook_url=webhook_url,
-        upload_mode=upload_mode, target_worker_id=target_worker_id,
+    tasks, errors = _submit_expanded_sources(
+        api,
+        expanded,
+        options=options,
+        webhook_url=webhook_url,
+        upload_mode=upload_mode,
+        target_worker_id=target_worker_id,
+        import_options=import_options,
+        collection_folders=_collection_folders(sources, import_options),
+        folder_id=_import_folder_id(api, import_options.folder),
     )
+    return list(tasks.values()), errors
+
+
+def _expand_selected(api, sources, collection, import_options):
+    if collection is not None and import_options.episodes is not None:
+        emit_error("invalid_options", "Choose one of --collection or --episodes.", exit_code=2)
+    return expand_bilibili_collections(
+        api,
+        sources,
+        import_options.episodes or collection,
+        positional=import_options.episodes is not None,
+    )
+
+
+def _collection_folders(sources: list[str], options: ImportOptions) -> list[dict[str, Any]]:
+    return [
+        {"source": source, "create_folder": True}
+        for source in sources if options.collection_folder and _is_bilibili_source(source)
+    ]
+
+
+def _import_folder_id(api: MppClient, folder: str | None) -> str | None:
+    from app.cli.commands.library import resolve_folder_ref
+
+    if folder:
+        return resolve_folder_ref(folder, api.list_library_folders())["id"]
+    return None
 
 
 def _submit_expanded_sources(
@@ -369,32 +463,79 @@ def _submit_expanded_sources(
     webhook_url: str | None,
     upload_mode: str,
     target_worker_id: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    import_options: ImportOptions,
+    collection_folders: list[dict[str, Any]],
+    folder_id: str | None,
+) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
+    routing = {"target_worker_id": target_worker_id} if target_worker_id else {}
+    classification = {}
+    if folder_id is not None:
+        classification["folder_id"] = folder_id
+    if import_options.move_existing:
+        classification["move_existing"] = True
+    if collection_folders:
+        classification["collection_folders"] = collection_folders
+
     prepared, staged, errors = prepare_sources_for_server(
         api, sources, upload_mode, target_worker_id=target_worker_id,
     )
     if not prepared:
-        emit_error(
-            "staging_failed",
-            "Every local source failed to upload.",
-            detail=errors,
-            exit_code=1,
-        )
+        return {}, errors
+    owned: set[str] = set()
     try:
-        routing = {"target_worker_id": target_worker_id} if target_worker_id else {}
-        return api.create_tasks_batch(prepared, options, webhook_url, **routing), errors
-    except Exception:
+        if not import_options.force_duplicate and hasattr(api, "import_tasks"):
+            webhook = {"webhook_url": webhook_url} if webhook_url else {}
+            response = api.import_tasks(prepared, options, **webhook, **routing, **classification)
+            items = response["items"]
+        else:
+            batch = api.create_tasks_batch(
+                prepared, options, webhook_url, **routing, **classification
+            )
+            items = [{"outcome": "created", "task": task} for task in batch]
+
+        original_indices = [index for index, source in enumerate(sources)
+                            if source not in {error["source"] for error in errors}]
+        tasks = {}
+        for index, submitted_source, item in zip(original_indices, prepared, items, strict=True):
+            task = item.get("task")
+            outcome = item["outcome"]
+            if task and (outcome == "created" or item.get("reason") == "queue_notification_failed"):
+                owned.add(submitted_source)
+            if outcome == "failed":
+                errors.append({
+                    "source": sources[index], "code": item.get("reason") or "import_failed",
+                    "message": item.get("error") or "Import failed",
+                    **({"task_id": task["id"]} if task else {}),
+                })
+                continue
+            match = item.get("match") or {}
+            entry = dict(task) if task else {
+                "id": match.get("task_id") or match.get("archive_id"),
+                "source": sources[index], "status": match.get("status"),
+            }
+            if outcome != "created":
+                entry.update(
+                    outcome=outcome, match=match, reason=item.get("reason"), source=sources[index]
+                )
+            if item.get("folder_error"):
+                entry["folder_error"] = item["folder_error"]
+            if item.get("folder_outcome") and classification:
+                entry.update(folder_id=item.get("folder_id"), folder_outcome=item["folder_outcome"])
+            tasks[index] = entry
+        return tasks, errors
+    finally:
         for item in staged:
             staging_id = item.get("staging_id")
-            if staging_id:
-                try:
+            if staging_id and str(item["path"]) not in owned:
+                with suppress(MppClientError, OSError):
                     api.delete_staged(str(staging_id))
-                except Exception:
-                    pass
-        raise
 
 
 def batch_text(tasks: list[dict[str, Any]]) -> str:
     return "\n".join(
-        f"{task.get('id')}\t{task.get('status')}\t{task.get('source')}" for task in tasks
+        "\t".join(str(value) for value in (
+            task.get("id") or "", task.get("outcome") or task.get("status"),
+            task.get("source"), *([task["reason"]] if task.get("reason") else []),
+            *([task["folder_error"]] if task.get("folder_error") else []),
+        )) for task in tasks
     )

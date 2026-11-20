@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import time
+from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import unquote
@@ -14,7 +15,7 @@ from urllib.parse import unquote
 import typer
 
 from app.cli.client import MppClient
-from app.cli.commands.common import api_call, client, resolve_task_ref
+from app.cli.commands.common import api_call, client, resolve_many_task_refs, resolve_task_ref
 from app.cli.commands.read import task_archive_reader
 from app.cli.context import get_cli_context, normalize_server_url, route_to_configured_server
 from app.cli.daemon import daemon_status, start_daemon, stop_daemon
@@ -27,6 +28,7 @@ from app.cli.renderers import (
     render_voiceprint_person,
     render_voiceprint_samples,
 )
+from app.cli.submission import resolve_worker_target
 
 server_app = typer.Typer(help="本地 daemon 进程管理", no_args_is_help=True)
 auth_app = typer.Typer(help="API 认证检查", no_args_is_help=True)
@@ -38,6 +40,37 @@ storage_app = typer.Typer(help="数据目录使用量与清理", no_args_is_help
 fs_app = typer.Typer(help="服务端文件系统高级操作", no_args_is_help=True)
 sync_app = typer.Typer(help="端间任务传输与移动端归档同步", no_args_is_help=True)
 pipeline_app = typer.Typer(help="原子媒体处理操作", no_args_is_help=True)
+
+
+class OfflinePolicy(str, Enum):
+    fallback_server = "fallback_server"
+    wait = "wait"
+    fallback_any_online = "fallback_any_online"
+
+
+@server_app.command("prefer")
+def server_prefer(
+    worker_ref: str = typer.Argument(...),
+    offline_policy: Optional[OfflinePolicy] = typer.Option(None, "--offline-policy"),
+):
+    """设置服务端优先执行节点及离线处理策略。"""
+    route_to_configured_server()
+    api = client()
+    ref = worker_ref.strip()
+    if not ref:
+        emit_error("invalid_worker_ref", "Provide a worker ID, name, local, or auto.", exit_code=2)
+    if ref.casefold() in {"none", "auto", "local"}:
+        worker_id = "local" if ref.casefold() == "local" else ""
+    else:
+        worker_id = api_call(lambda: resolve_worker_target(api, ref, required=True))
+    updates = {"remote_preferred_worker_id": worker_id}
+    if offline_policy:
+        updates["remote_execution_offline_policy"] = offline_policy.value
+    result = api_call(lambda: api.patch_settings(updates))
+    payload = {key: result.get(key, value) for key, value in updates.items()}
+    emit(payload, text=lambda: render_fields({
+        **payload, "remote_preferred_worker_id": worker_id or "auto",
+    }))
 
 
 @storage_app.callback()
@@ -634,13 +667,33 @@ def sync_changes(
 def sync_status():
     """显示服务端归档同步 revision 和待同步变更概况。"""
     api = client()
-    result = api_call(lambda: api.sync_changes(0, 1))
-    summary = {
-        "server_revision": result.get("server_revision", 0),
-        "has_changes": bool(result.get("changes")),
-        "has_more": bool(result.get("has_more")),
-    }
-    emit(summary, text=json.dumps(summary, ensure_ascii=False, indent=2))
+    result = api_call(api.sync_status_info)
+    emit(result, text=lambda: render_fields(result), redact_secrets=True)
+
+
+@sync_app.command("pull")
+def sync_pull():
+    """从配置的远程服务拉取归档及文件夹变更。"""
+    api = client()
+    result = api_call(api.sync_pull)
+    emit(result, text=lambda: render_fields(result))
+
+
+@sync_app.command("push")
+def sync_push(
+    refs: list[str] = typer.Argument(None),
+    all_pending: bool = typer.Option(False, "--all", help="推送待同步的归档和文件夹变更"),
+):
+    """推送指定任务的归档，或推送全部待同步内容。"""
+    if refs and all_pending:
+        emit_error("invalid_options", "Choose task references or --all.", exit_code=2)
+    api = client()
+    if refs:
+        task_ids = api_call(lambda: resolve_many_task_refs(refs, api))
+        result = api_call(lambda: api.sync_push({"task_ids": task_ids}))
+    else:
+        result = api_call(api.sync_push)
+    emit(result, text=lambda: render_fields(result))
 
 
 @sync_app.command("manifest")

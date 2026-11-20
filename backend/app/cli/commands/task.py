@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from enum import Enum
+from typing import Any, Callable, Optional
 
 import typer
 
@@ -19,6 +20,19 @@ from app.cli.output import confirm_action, emit, emit_error, emit_event
 from app.cli.renderers import render_task, render_timeline, render_timeline_event
 
 task_app = typer.Typer(help="任务查询、观察与生命周期控制", no_args_is_help=True)
+
+_ACTIVE = ["pending", "queued", "processing", "paused"]
+
+
+class RerunStep(str, Enum):
+    speaker_review = "speaker_review"
+    polish = "polish"
+    analyze = "analyze"
+
+
+class DeletableStatus(str, Enum):
+    failed = "failed"
+    cancelled = "cancelled"
 
 
 def _task_text(task: dict[str, Any]) -> str:
@@ -233,21 +247,60 @@ def watch(ref: str = typer.Argument(...)):
             raise typer.Exit(1)
 
 
-def _action(action: str, refs: list[str]) -> None:
+def select_task_ids(api, refs: list[str], statuses: list[str] | None = None) -> list[str]:
+    if not refs and not statuses:
+        emit_error(
+            "task_selection_required", "Provide task references or a bulk selector.", exit_code=2
+        )
+    task_ids = resolve_many_task_refs(refs, api)
+    if statuses:
+        offset = 0
+        while True:
+            page = api.list_tasks(statuses=statuses, limit=500, offset=offset)
+            task_ids.extend(str(task["id"]) for task in page)
+            if len(page) < 500:
+                break
+            offset += len(page)
+    return list(dict.fromkeys(task_ids))
+
+
+def _action(action: str, refs: list[str], statuses: list[str] | None = None) -> None:
     api = client()
-    task_ids = api_call(lambda: resolve_many_task_refs(refs, api))
-    results = []
-    for task_id in task_ids:
-        results.append(api_call(lambda task_id=task_id: api.task_action(task_id, action)))
+    task_ids = api_call(lambda: select_task_ids(api, refs, statuses))
+    results = apply_task_actions(task_ids, lambda task_id: api.task_action(task_id, action), action)
     emit(
-        results, text="\n".join(f"{action}\t{str(item.get('task_id', ''))[:8]}" for item in results)
+        results,
+        text="\n".join(f"{action}\t{str(item.get('task_id', ''))[:8]}" for item in results)
+        or "No matching tasks.",
     )
 
 
+def apply_task_actions(
+    task_ids: list[str], operation: Callable[[str], dict], action: str,
+) -> list[dict]:
+    if len(task_ids) == 1:
+        return [api_call(lambda: operation(task_ids[0]))]
+    results, errors = [], []
+    for task_id in task_ids:
+        try:
+            results.append(operation(task_id))
+        except MppClientError as exc:
+            errors.append({"task_id": task_id, "code": exc.code, "message": exc.message})
+    if errors:
+        rows = [f"{action}\t{item['task_id']}" for item in results]
+        rows += [f"failed\t{item['task_id']}\t{item['message']}" for item in errors]
+        emit({"applied": results, "errors": errors}, text="\n".join(rows))
+        raise typer.Exit(5 if results else 1)
+    return results
+
+
 @task_app.command("cancel")
-def cancel(refs: list[str] = typer.Argument(...)):
+def cancel(
+    refs: list[str] = typer.Argument(None),
+    all_active: bool = typer.Option(False, "--all-active"),
+):
     """取消 pending、queued、processing 或 paused 任务。"""
-    _action("cancel", refs)
+    _action("cancel", refs or [], _ACTIVE if all_active else None)
 
 
 @task_app.command("pause")
@@ -257,9 +310,12 @@ def pause(refs: list[str] = typer.Argument(...)):
 
 
 @task_app.command("resume")
-def resume(refs: list[str] = typer.Argument(...)):
+def resume(
+    refs: list[str] = typer.Argument(None),
+    all_paused: bool = typer.Option(False, "--all-paused"),
+):
     """从 paused 或 failed 任务的 checkpoint 续做。"""
-    _action("resume", refs)
+    _action("resume", refs or [], ["paused"] if all_paused else None)
 
 
 @task_app.command("rerun")
@@ -267,19 +323,23 @@ def rerun(
     ref: str = typer.Argument(...),
     checkpoint: bool = typer.Option(False, "--checkpoint", help="在原任务上复用 checkpoint"),
     full: bool = typer.Option(False, "--full", help="在原文件夹完整运行"),
+    from_step: Optional[RerunStep] = typer.Option(None, "--from"),
     wait: bool = typer.Option(False, "--wait"),
 ):
     """在原文件夹执行 checkpoint 重跑或完整重跑。"""
-    if checkpoint and full:
-        emit_error("invalid_options", "Choose one of --checkpoint or --full.", exit_code=2)
+    if full and (checkpoint or from_step):
+        emit_error(
+            "invalid_options", "--full cannot be combined with --checkpoint or --from.", exit_code=2
+        )
     api = client()
     task_id = api_call(lambda: resolve_task_ref(ref, api))
     if full:
         result = api_call(lambda: api.full_rerun_task(task_id))
-        rerun_id = task_id
+    elif from_step:
+        result = api_call(lambda: api.checkpoint_rerun(task_id, from_step=from_step.value))
     else:
         result = api_call(lambda: api.checkpoint_rerun_task(task_id))
-        rerun_id = task_id
+    rerun_id = task_id
     if wait and get_cli_context().output_mode == "json":
         try:
             for event in api.stream_task_events(rerun_id):
@@ -301,14 +361,58 @@ def rerun(
 
 @task_app.command("delete")
 def delete(
-    refs: list[str] = typer.Argument(...),
+    refs: list[str] = typer.Argument(None),
+    status: Optional[DeletableStatus] = typer.Option(None, "--status"),
     yes: bool = typer.Option(False, "--yes", help="确认删除任务及其输出目录"),
 ):
     """删除任务记录与 data_root 内输出目录。"""
-    confirm_action(f"Delete {len(refs)} task(s) and their output directories?", explicit_yes=yes)
+    if status is None and refs:
+        confirm_action(
+            f"Delete {len(refs)} task(s) and their output directories?", explicit_yes=yes
+        )
     api = client()
-    task_ids = api_call(lambda: resolve_many_task_refs(refs, api))
-    results = [api_call(lambda task_id=task_id: api.delete_task(task_id)) for task_id in task_ids]
+    task_ids = api_call(
+        lambda: select_task_ids(api, refs or [], [status.value] if status else None)
+    )
+    if not task_ids:
+        emit([], text="No matching tasks.")
+        return
+    if status:
+        confirm_action(
+            f"Delete {len(task_ids)} task(s) and their output directories?", explicit_yes=yes
+        )
+    results = apply_task_actions(task_ids, api.delete_task, "deleted")
     emit(
         results, text="\n".join(f"deleted\t{str(item.get('task_id', ''))[:8]}" for item in results)
     )
+
+
+@task_app.command("cleanup-duplicates")
+def cleanup_duplicates(
+    apply: bool = typer.Option(False, "--apply"),
+    yes: bool = typer.Option(False, "--yes"),
+):
+    """预览或删除已有成功归档的失败任务。"""
+    api = client()
+    preview = api_call(api.duplicate_cleanup_preview)
+    if not apply or not preview.get("count"):
+        emit(
+            preview,
+            text="\n".join(
+                [f"Duplicate failed attempts\t{preview.get('count', 0)}"]
+                + [
+                    f"{item.get('title', '')}\t{item.get('path', '')}"
+                    for item in preview.get("items", [])
+                ]
+            ),
+        )
+        return
+    confirm_action(f"Delete {preview['count']} duplicate failed attempts?", explicit_yes=yes)
+    result = api_call(api.duplicate_cleanup_apply)
+    errors = result.get("errors") or []
+    emit(result, text="\n".join(
+        [f"Deleted\t{result.get('deleted', 0)}"]
+        + [f"{item.get('path', '')}\t{item.get('error', '')}" for item in errors]
+    ))
+    if errors:
+        raise typer.Exit(5 if result.get("deleted") else 1)

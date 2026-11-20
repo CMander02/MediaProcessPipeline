@@ -11,6 +11,13 @@ import typer
 from app.cli.commands.direct_execution import _run_direct
 from app.cli.commands.root_support import _require_daemon, _resolve_ref
 from app.cli.context import get_cli_context as _command_context
+from app.cli.submission import (
+    ImportOptions,
+    batch_text,
+    expand_sources,
+    submit_to_servers,
+    task_options,
+)
 
 
 def run(
@@ -27,6 +34,20 @@ def run(
     recursive: bool = typer.Option(False, "--recursive", "-r", help="递归展开目录和 glob"),
     upload: str = typer.Option("auto", "--upload", help="auto/always/never"),
     collection: Optional[str] = typer.Option(None, "--collection", help="all 或合集条目 ID 列表"),
+    folder: Optional[str] = typer.Option(None, "--folder"),
+    move_existing: bool = typer.Option(False, "--move-existing"),
+    collection_folder: bool = typer.Option(False, "--collection-folder"),
+    force_duplicate: bool = typer.Option(False, "--force-duplicate"),
+    episodes: Optional[str] = typer.Option(
+        None, "--episodes", help="1-based ranges or collection item IDs"
+    ),
+    diarize: Optional[bool] = typer.Option(None, "--diarize/--no-diarize"),
+    speaker_review: Optional[bool] = typer.Option(None, "--speaker-review/--no-speaker-review"),
+    polish: Optional[bool] = typer.Option(None, "--polish/--no-polish"),
+    summary: Optional[bool] = typer.Option(None, "--summary/--no-summary"),
+    mindmap: Optional[bool] = typer.Option(None, "--mindmap/--no-mindmap"),
+    detail: Optional[bool] = typer.Option(None, "--detail/--no-detail"),
+    only_transcribe: bool = typer.Option(False, "--only-transcribe"),
     webhook: Optional[str] = typer.Option(None, "--webhook"),
     option: list[str] = typer.Option(None, "--option", help="额外任务选项 KEY=VALUE，可重复"),
     detach: bool = typer.Option(False, "--detach", help="提交后立即返回"),
@@ -34,10 +55,15 @@ def run(
         False, "--direct", help="不启动 daemon，在当前 CLI 进程直接跑完整流程"
     ),
     target_worker: Optional[str] = typer.Option(
-        None, "--target-worker", "-W", help="节点 ID、显示名称（如 SilentField）或 local",
+        None,
+        "--target-worker",
+        "-W",
+        help="节点 ID、显示名称（如 SilentField）或 local",
     ),
     remote: Optional[bool] = typer.Option(
-        None, "--remote/--local", help="本次连接配置的协调服务器或本机 daemon",
+        None,
+        "--remote/--local",
+        help="本次连接配置的协调服务器或本机 daemon",
     ),
     api_flow: bool = typer.Option(
         False, "--api-flow", help="纯 API 流程：跳过 UVR/本地分离，使用 API ASR"
@@ -48,7 +74,6 @@ def run(
     from app.cli.commands.common import api_call
     from app.cli.context import get_cli_context
     from app.cli.output import emit
-    from app.cli.submission import batch_text, expand_sources, submit_to_servers, task_options
 
     effective_remote = remote if remote is not None else get_cli_context().remote_preference
     if direct and (target_worker is not None or effective_remote is True):
@@ -69,15 +94,21 @@ def run(
         legacy_hotwords=hotwords,
         api_flow=api_flow,
         assignments=option or [],
+        workflow=dict(diarize=diarize, speaker_review=speaker_review, polish=polish,
+                      summary=summary, mindmap=mindmap, detail=detail),
+        only_transcribe=only_transcribe,
     )
 
     if direct:
-        if upload != "auto" or collection or webhook:
+        if (
+            upload != "auto" or collection or webhook or folder or move_existing
+            or collection_folder or episodes or force_duplicate
+        ):
             from app.cli.output import emit_error
 
             emit_error(
                 "direct_option_conflict",
-                "--direct does not use --upload, --collection, or --webhook.",
+                "--direct does not support daemon submission and library options.",
                 exit_code=2,
             )
         finals: list[dict] = []
@@ -105,51 +136,29 @@ def run(
             collection=collection,
             raw_target=target_worker,
             remote=effective_remote,
+            import_options=ImportOptions(
+                folder, move_existing, collection_folder, force_duplicate, episodes
+            ),
         )
     )
-    tasks_created = [task for task, _ in submitted]
-    if detach:
-        payload = (
-            {"tasks": tasks_created, "errors": submission_errors}
-            if submission_errors
-            else tasks_created
-        )
-        emit(payload, text=batch_text(tasks_created))
-        if submission_errors:
-            for item in submission_errors:
-                sys.stderr.write(f"upload failed\t{item['source']}\t{item['message']}\n")
-            raise typer.Exit(5)
-        return
-    if (
-        not quiet
-        and _command_context().output_mode not in {"json", "jsonl"}
-        and len(tasks_created) == 1
-    ):
-        from app.cli.display import console
-
-        console.print(f"已提交  [bold]{str(tasks_created[0]['id'])[:8]}[/bold]")
-    if get_cli_context().output_mode in {"json", "jsonl"}:
-        finals = [
-            api_call(lambda: _wait_for_task(str(task["id"]), client))
-            for task, client in submitted
-        ]
-        payload = {"tasks": finals, "errors": submission_errors} if submission_errors else finals
-        emit(payload)
-        failed = [task for task in finals if task.get("status") != "completed"]
-        if submission_errors or failed:
-            raise typer.Exit(5 if any(task.get("status") == "completed" for task in finals) else 1)
-        return
-    finals = []
-    for task, client in submitted:
-        finals.append(
-            api_call(lambda: _do_attach(str(task["id"]), client=client, quiet=quiet))
-        )
-    if submission_errors:
-        for item in submission_errors:
-            sys.stderr.write(f"upload failed\t{item['source']}\t{item['message']}\n")
-    failed = [task for task in finals if task.get("status") != "completed"]
-    if submission_errors or failed:
-        raise typer.Exit(5 if any(task.get("status") == "completed" for task in finals) else 1)
+    output_mode = _command_context().output_mode
+    if detach or output_mode != "text":
+        finals = _submission_finals(submitted, wait=not detach)
+        _emit_submission(finals, submission_errors)
+    else:
+        finals = []
+        for task, client in submitted:
+            if task.get("outcome"):
+                typer.echo(batch_text([task]))
+            elif _waitable_submission(task):
+                if not quiet and len(submitted) == 1:
+                    typer.echo(f"已提交  {str(task['id'])[:8]}")
+                task = api_call(lambda: _do_attach(str(task["id"]), client=client, quiet=quiet))
+            else:
+                _print_final(task, quiet=quiet)
+            finals.append(task)
+        _report_submission_errors(submission_errors)
+    _check_submission_exit(finals, submission_errors, waited=not detach)
 
 
 def submit(
@@ -166,14 +175,33 @@ def submit(
     recursive: bool = typer.Option(False, "--recursive", "-r"),
     upload: str = typer.Option("auto", "--upload", help="auto/always/never"),
     collection: Optional[str] = typer.Option(None, "--collection", help="all 或合集条目 ID 列表"),
+    folder: Optional[str] = typer.Option(None, "--folder"),
+    move_existing: bool = typer.Option(False, "--move-existing"),
+    collection_folder: bool = typer.Option(False, "--collection-folder"),
+    force_duplicate: bool = typer.Option(False, "--force-duplicate"),
+    episodes: Optional[str] = typer.Option(
+        None, "--episodes", help="1-based ranges or collection item IDs"
+    ),
+    diarize: Optional[bool] = typer.Option(None, "--diarize/--no-diarize"),
+    speaker_review: Optional[bool] = typer.Option(None, "--speaker-review/--no-speaker-review"),
+    polish: Optional[bool] = typer.Option(None, "--polish/--no-polish"),
+    summary: Optional[bool] = typer.Option(None, "--summary/--no-summary"),
+    mindmap: Optional[bool] = typer.Option(None, "--mindmap/--no-mindmap"),
+    detail: Optional[bool] = typer.Option(None, "--detail/--no-detail"),
+    only_transcribe: bool = typer.Option(False, "--only-transcribe"),
     webhook: Optional[str] = typer.Option(None, "--webhook"),
     option: list[str] = typer.Option(None, "--option", help="额外任务选项 KEY=VALUE，可重复"),
     wait: bool = typer.Option(False, "--wait", help="等待全部任务到达终态"),
     target_worker: Optional[str] = typer.Option(
-        None, "--target-worker", "-W", help="节点 ID、显示名称（如 SilentField）或 local",
+        None,
+        "--target-worker",
+        "-W",
+        help="节点 ID、显示名称（如 SilentField）或 local",
     ),
     remote: Optional[bool] = typer.Option(
-        None, "--remote/--local", help="本次连接配置的协调服务器或本机 daemon",
+        None,
+        "--remote/--local",
+        help="本次连接配置的协调服务器或本机 daemon",
     ),
     api_flow: bool = typer.Option(
         False, "--api-flow", help="纯 API 流程：跳过 UVR/本地分离，使用 API ASR"
@@ -189,8 +217,6 @@ def submit(
     """
     from app.cli.commands.common import api_call
     from app.cli.context import get_cli_context
-    from app.cli.output import emit
-    from app.cli.submission import batch_text, expand_sources, submit_to_servers, task_options
 
     expanded = expand_sources(sources or [], from_file=from_file, recursive=recursive)
     options = task_options(
@@ -202,6 +228,9 @@ def submit(
         legacy_hotwords=hotwords,
         api_flow=api_flow,
         assignments=option or [],
+        workflow=dict(diarize=diarize, speaker_review=speaker_review, polish=polish,
+                      summary=summary, mindmap=mindmap, detail=detail),
+        only_transcribe=only_transcribe,
     )
     effective_remote = remote if remote is not None else get_cli_context().remote_preference
     submitted, submission_errors = api_call(
@@ -214,38 +243,63 @@ def submit(
             collection=collection,
             raw_target=target_worker,
             remote=effective_remote,
+            import_options=ImportOptions(
+                folder, move_existing, collection_folder, force_duplicate, episodes
+            ),
         )
     )
-    result_tasks = (
-        [
-            api_call(lambda: _wait_for_task(str(task["id"]), client))
-            for task, client in submitted
-        ]
-        if wait
-        else [task for task, _ in submitted]
-    )
-    payload = (
-        {"tasks": result_tasks, "errors": submission_errors} if submission_errors else result_tasks
-    )
+    result_tasks = _submission_finals(submitted, wait=wait)
     if (
-        wait
-        or submission_errors
-        or get_cli_context().output_mode in {"json", "jsonl"}
-        or len(result_tasks) > 1
+        not wait and not submission_errors and get_cli_context().output_mode == "text"
+        and len(result_tasks) == 1 and not result_tasks[0].get("outcome")
     ):
-        emit(payload, text=batch_text(result_tasks))
+        task = result_tasks[0]
+        typer.echo(task["id"])
+        typer.echo(f"queued  {str(task['id'])[:8]}", err=True)
+        if task.get("folder_error"):
+            typer.echo(task["folder_error"], err=True)
     else:
-        task_id = str(result_tasks[0]["id"])
-        print(task_id)
-        sys.stderr.write(f"queued  {task_id[:8]}\n")
-    if submission_errors:
-        for item in submission_errors:
-            sys.stderr.write(f"upload failed\t{item['source']}\t{item['message']}\n")
-    failed = [task for task in result_tasks if wait and task.get("status") != "completed"]
-    if submission_errors or failed:
-        raise typer.Exit(
-            5 if any(task.get("status") == "completed" for task in result_tasks) else 1
-        )
+        _emit_submission(result_tasks, submission_errors)
+    _check_submission_exit(result_tasks, submission_errors, waited=wait)
+
+
+def _waitable_submission(task: dict) -> bool:
+    return not task.get("outcome") and task.get("status") in {"pending", "queued", "processing"}
+
+
+def _submission_finals(submitted, *, wait: bool) -> list[dict]:
+    from app.cli.commands.common import api_call
+
+    results = []
+    for task, client in submitted:
+        if wait and _waitable_submission(task):
+            final = api_call(lambda: _wait_for_task(str(task["id"]), client))
+            task = {**task, **final}
+        results.append(task)
+    return results
+
+
+def _report_submission_errors(errors: list[dict]) -> None:
+    if _command_context().output_mode == "text":
+        for item in errors:
+            typer.echo(f"{item['code']}\t{item['source']}\t{item['message']}", err=True)
+
+
+def _emit_submission(tasks: list[dict], errors: list[dict]) -> None:
+    from app.cli.output import emit
+
+    emit({"tasks": tasks, "errors": errors} if errors else tasks, text=batch_text(tasks))
+    _report_submission_errors(errors)
+
+
+def _check_submission_exit(tasks: list[dict], errors: list[dict], *, waited: bool) -> None:
+    failed = [
+        task
+        for task in tasks
+        if waited and not task.get("outcome") and task.get("status") != "completed"
+    ]
+    if errors or failed:
+        raise typer.Exit(5 if len(tasks) > len(failed) else 1)
 
 
 def attach(
@@ -479,30 +533,58 @@ def _maybe_stop_daemon(console) -> None:
 
 
 def retry(
-    task_ref: str = typer.Argument(..., help="Task ID、前缀或 @last / @fail"),
+    task_ref: Optional[str] = typer.Argument(None, help="Task ID、前缀或 @last / @fail"),
+    all_failed: bool = typer.Option(False, "--all-failed"),
+    force_new: bool = typer.Option(False, "--new", help="按原参数创建新任务"),
     quiet: bool = typer.Option(False, "--quiet", "-q"),
 ):
-    """按原参数重新提交失败任务，然后 attach。"""
+    """恢复暂停任务，或从失败和取消任务的 checkpoint 重跑。"""
     from app.cli.commands.common import api_call
-    from app.cli.display import console
-
-    client = _require_daemon(auto_start=True)
-    task_id = api_call(lambda: _resolve_ref(task_ref, client=client))
-    original = api_call(lambda: client.get_task(task_id))
-
-    source = original.get("source", "")
-    options = original.get("options") or {}
-
+    from app.cli.commands.task import apply_task_actions, select_task_ids
+    from app.cli.output import emit, emit_error
     from app.core.remote_execution import KEY
 
-    target = (options.get(KEY) or {}).get("target_worker_id")
-    routing = {"target_worker_id": target} if target else {}
-    new_task = api_call(lambda: client.create_task(source, options=options, **routing))
-    new_id = new_task["id"]
+    if bool(task_ref) == all_failed:
+        emit_error("invalid_options", "Provide a task reference or --all-failed.", exit_code=2)
+    client = _require_daemon(auto_start=True)
+    if all_failed:
+        task_ids = api_call(lambda: select_task_ids(client, [], ["failed"]))
+    else:
+        task_ids = [api_call(lambda: _resolve_ref(task_ref, client=client))]
+    def enqueue_retry(task_id: str) -> dict:
+        from app.cli.client import MppClientError
 
-    if not quiet and not (_command_context().output_mode in {"json", "jsonl"}):
-        console.print(f"重新提交  [bold]{new_id[:8]}[/bold]  (原: {task_id[:8]})")
+        original = client.get_task(task_id)
+        status = original.get("status")
+        if force_new:
+            options = original.get("options") or {}
+            target = (options.get(KEY) or {}).get("target_worker_id")
+            routing = {"target_worker_id": target} if target else {}
+            webhook = (
+                {"webhook_url": original["webhook_url"]} if original.get("webhook_url") else {}
+            )
+            new_task = client.create_task(original["source"], options=options, **routing, **webhook)
+            task_id = new_task["id"]
+        elif status == "paused":
+            client.resume_task(task_id)
+        elif status in {"failed", "cancelled"}:
+            client.checkpoint_rerun(task_id)
+        else:
+            raise MppClientError(
+                "invalid_task_status", f"Cannot retry a task in status {status}.", exit_code=2,
+            )
+        return {"task_id": str(task_id)}
 
-    final = api_call(lambda: _do_attach(new_id, client=client, quiet=quiet))
-    if final.get("status") != "completed":
+    retried = [row["task_id"] for row in apply_task_actions(task_ids, enqueue_retry, "queued")]
+
+    if _command_context().output_mode in {"json", "jsonl"}:
+        finals = [api_call(lambda: _wait_for_task(task_id, client)) for task_id in retried]
+        emit(finals if all_failed else finals[0])
+    else:
+        if not retried:
+            typer.echo("No failed tasks.")
+        finals = [
+            api_call(lambda: _do_attach(task_id, client=client, quiet=quiet)) for task_id in retried
+        ]
+    if any(task.get("status") != "completed" for task in finals):
         raise typer.Exit(1)

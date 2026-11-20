@@ -144,9 +144,32 @@ async def run_pipeline(
         from app.services.analysis.speaker_repair import run_speaker_repair
         await run_speaker_repair(task)
         return
+    scoped_rerun = (task.result or {}).get("_checkpoint_rerun_from")
+    if scoped_rerun:
+        from app.core.queue import finish_checkpoint_cleanup
+
+        finish_checkpoint_cleanup(task)
     context = await create_context(
         task, get_runtime_settings(), _download_worker_call, _stop_after_transcribe
     )
+    if scoped_rerun:
+        from app.services.analysis.source_context import source_context_to_analysis
+
+        if not context.restore_metadata() or not context.restore_transcript():
+            raise ValueError("The transcript checkpoint or its metadata is missing")
+        context.subtitle_source = (
+            task.result.get("subtitle_source")
+            or context.metadata.extra.get("subtitle_source")
+            or "asr"
+        )
+        context.has_subtitle = context.subtitle_source == "platform"
+        context.restore_audio_paths()
+        context.source_context = await _prepare_source_context(
+            task, context.task_dir, context.metadata,
+        )
+        context.analysis = source_context_to_analysis(context.source_context)
+        await postprocess(context)
+        return
     if await prepare_download(context):
         return
     await transcribe(context)

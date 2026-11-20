@@ -16,8 +16,9 @@ from functools import partial
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, ValidationError
 
 from app.core.atomic_file import atomic_write_text
 from app.core.database import get_task_store
@@ -32,7 +33,7 @@ from app.core.pipeline import (
     create_task_dir,
     pipeline_steps_schema,
 )
-from app.core.queue import get_task_queue, task_is_read_only
+from app.core.queue import CheckpointStep, get_task_queue, task_is_read_only
 from app.core.security import filesystem_access_allowed
 from app.core.settings import get_runtime_settings
 from app.core.source_resolver import resolve_source_flow
@@ -148,6 +149,12 @@ def _initialize_task(task: Task, *, metadata: dict) -> None:
 @router.post("", response_model=Task)
 async def create_task(task_create: TaskCreate, request: Request):
     """Create a new processing task and submit it to the queue."""
+    return await _create_task(task_create, request)
+
+
+async def _create_task(
+    task_create, request, *, folder_id=None, explicit_folder=False, move_existing=False
+):
     from app.services.ingestion.ytdlp import normalize_bilibili_source_url
 
     source = normalize_bilibili_source_url(_clean_source_path(task_create.source))
@@ -162,7 +169,11 @@ async def create_task(task_create: TaskCreate, request: Request):
     try:
         with task_write_transaction() as conn:
             _save_task_row(conn, task)
-            assign_import(conn, task.options['content_key'])
+            try:
+                assign_import(conn, task.options['content_key'], folder_id,
+                              explicit=explicit_folder, move_existing=move_existing)
+            except LookupError as exc:
+                raise HTTPException(404, str(exc)) from exc
     except BaseException:
         task_dir = Path(task.result['output_dir'])
         (task_dir / 'metadata.json').unlink(missing_ok=True)
@@ -179,6 +190,9 @@ async def create_task(task_create: TaskCreate, request: Request):
 @router.post("/batch", response_model=list[Task])
 async def create_tasks_batch(batch_create: TaskBatchCreate, request: Request):
     """Create multiple tasks with one shared option set."""
+    from app.core.archive_index import source_key
+    from app.core.database import task_write_transaction
+    from app.core.library import require_folder
     from app.services.ingestion.ytdlp import normalize_bilibili_source_url
 
     normalized_sources = [
@@ -187,11 +201,23 @@ async def create_tasks_batch(batch_create: TaskBatchCreate, request: Request):
     for source in normalized_sources:
         if source.lower().startswith(("http://", "https://")):
             await run_in_thread(_validate_public_http_url, source)
+    try:
+        if batch_create.folder_id is not None:
+            with task_write_transaction() as conn:
+                require_folder(conn, batch_create.folder_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    destinations, errors = await _collection_destinations(batch_create)
+    if errors:
+        raise HTTPException(400, list(errors.values()))
 
     tasks_created: list[Task] = []
     for source in normalized_sources:
+        key = source_key(source) if destinations else None
         tasks_created.append(
-            await create_task(
+            await _create_task(
                 TaskCreate(
                     task_type=batch_create.task_type,
                     source=source,
@@ -200,27 +226,24 @@ async def create_tasks_batch(batch_create: TaskBatchCreate, request: Request):
                     target_worker_id=batch_create.target_worker_id,
                 ),
                 request,
+                folder_id=destinations.get(key, batch_create.folder_id),
+                explicit_folder=(
+                    "folder_id" in batch_create.model_fields_set or key in destinations
+                ),
+                move_existing=batch_create.move_existing,
             )
         )
     return tasks_created
 
 
-@router.post("/import", response_model=TaskImportResponse)
-async def import_tasks(batch_create: TaskBatchCreate, request: Request):
-    """Import selected sources with per-item results and submit-time deduplication."""
-    from app.core.archive_index import source_key
-    from app.core.archive_sync import get_archive_sync_service
-    from app.core.task_import import import_task, normalize_import_source, detect_import_collection
+async def _collection_destinations(
+    batch_create: TaskBatchCreate,
+) -> tuple[dict[str, str], dict[str, str]]:
     from app.core.library import get_library_service
+    from app.core.task_import import normalize_import_source
     from app.services.ingestion.platform.bilibili.collection import inspect_bilibili_collection
 
-    await run_in_thread(get_archive_sync_service().flush_changes)
-    items: list[TaskImportItem] = []
-    seen: dict[str, TaskImportItem] = {}
-    # Resolve explicitly selected collections once; clients cannot claim arbitrary membership.
-    collection_errors = {}
-    selected_collection_destinations = {}
-    create_collection_errors = []
+    destinations, errors = {}, {}
     for selection in batch_create.collection_folders:
         if not selection.create_folder:
             continue
@@ -231,10 +254,26 @@ async def import_tasks(batch_create: TaskBatchCreate, request: Request):
             folder = await run_in_thread(get_library_service().register_collection, collection, create=True)
             for member in collection.get('items') or []:
                 if member.get('content_key'):
-                    selected_collection_destinations[member['content_key']] = folder['id']
+                    destinations[member['content_key']] = folder['id']
         except Exception as exc:
-            collection_errors[selection.source] = str(exc)
-            create_collection_errors.append(str(exc))
+            errors[selection.source] = str(exc)
+    return destinations, errors
+
+
+@router.post("/import", response_model=TaskImportResponse)
+async def import_tasks(batch_create: TaskBatchCreate, request: Request):
+    """Import selected sources with per-item results and submit-time deduplication."""
+    from app.core.archive_index import source_key
+    from app.core.archive_sync import get_archive_sync_service
+    from app.core.task_import import import_task, normalize_import_source, detect_import_collection
+
+    await run_in_thread(get_archive_sync_service().flush_changes)
+    items: list[TaskImportItem] = []
+    seen: dict[str, TaskImportItem] = {}
+    selected_collection_destinations, collection_errors = await _collection_destinations(
+        batch_create
+    )
+    create_collection_errors = list(collection_errors.values())
     inspected_bvs = set()
     for source in batch_create.sources:
         content_key = None
@@ -482,12 +521,25 @@ async def resume_task(task_id: UUID):
     raise HTTPException(400, f"Cannot resume task in status: {task.status}")
 
 
+class CheckpointRerunRequest(BaseModel):
+    from_step: CheckpointStep | None = None
+    workflow: dict[str, bool] | None = None
+
+
 @router.post("/{task_id}/checkpoint-rerun")
-async def checkpoint_rerun_task(task_id: UUID):
+async def checkpoint_rerun_task(
+    task_id: UUID, body: CheckpointRerunRequest | None = Body(default=None)
+):
     """Rerun a task in place from durable checkpointed files."""
     queue = get_task_queue()
-    if await queue.rerun_from_checkpoint(task_id):
-        return {"message": "Checkpoint rerun queued", "task_id": str(task_id)}
+    try:
+        options = body.model_dump(exclude_none=True) if body else {}
+        if await queue.rerun_from_checkpoint(task_id, **options):
+            return {"message": "Checkpoint rerun queued", "task_id": str(task_id)}
+    except ValidationError as exc:
+        raise HTTPException(422, exc.errors(include_url=False, include_context=False)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     store = get_task_store()
     task = store.get(task_id)

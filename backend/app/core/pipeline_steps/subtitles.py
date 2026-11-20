@@ -132,3 +132,60 @@ def restore_validated_subtitles(task_dir: Path) -> tuple[bool, dict | None]:
         },
         tracks,
     )
+
+
+def restore_checkpoint_srt(task_dir: Path, metadata: dict) -> str | None:
+    from app.core.paths import managed_child
+    from app.services.recognition.subtitle_processor import _segments_to_original_srt
+
+    validated, subtitle = restore_validated_subtitles(task_dir)
+    extra = metadata.get("extra") or {}
+    archived_tracks = [
+        {**track, "path": str(task_dir / Path(track["filename"]).name)}
+        for track in extra.get("subtitle_tracks", [])
+        if track.get("filename") and track.get("type") != "asr"
+    ]
+    selected_lang = extra.get("selected_subtitle_lang") or next(
+        (track.get("lang") for track in archived_tracks if track.get("polished")), None,
+    )
+    tracks = [*subtitle_tracks(subtitle or {}), *archived_tracks]
+    if not tracks and not validated:
+        tracks = [
+            {"path": str(path), "format": path.suffix[1:]}
+            for path in sorted((task_dir / "subtitles").glob("*"))
+            if path.suffix.lower() in {".srt", ".vtt", ".json3"}
+        ]
+    if selected_lang:
+        tracks = [track for track in tracks if track.get("lang") == selected_lang]
+    for track in tracks:
+        path = managed_child(track["path"], task_dir)
+        if path.is_file():
+            fmt = track.get("format") or "srt"
+            if fmt == "srt":
+                with path.open(encoding="utf-8-sig") as stream:
+                    header = stream.read(256).lstrip()
+                if header.startswith("{"):
+                    fmt = "json3"
+                elif header.startswith("WEBVTT"):
+                    fmt = "vtt"
+            if fmt not in {"srt", "json3", "vtt"}:
+                continue
+            segments = parse_subtitle_file(str(path), fmt)
+            if segments:
+                return _segments_to_original_srt(segments)
+    return None
+
+
+def has_checkpoint_cues(content: str | None) -> bool:
+    from app.services.analysis.transcript_outputs import (
+        _parse_srt,
+        _timestamp_bounds,
+        _timestamp_to_seconds,
+    )
+
+    normalized = (content or "").removeprefix("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+    for cue in _parse_srt(normalized):
+        start, end = map(_timestamp_to_seconds, _timestamp_bounds(cue["timestamp"]))
+        if start is not None and end is not None and end > start and cue["text"].strip():
+            return True
+    return False

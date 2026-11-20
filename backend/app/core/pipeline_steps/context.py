@@ -24,6 +24,19 @@ from dataclasses import dataclass, field
 from app.core.settings import RuntimeSettings
 
 
+def parse_archive_metadata(raw: dict, fallback_title: str) -> MediaMetadata:
+    if not isinstance(raw, dict):
+        raise ValueError("Archive metadata must be a JSON object")
+    raw = raw.copy()
+    raw.pop("status", None)
+    if "duration" in raw and "duration_seconds" not in raw:
+        raw["duration_seconds"] = raw.pop("duration")
+    if raw.get("media_type") == "unknown":
+        raw["media_type"] = "other"
+    raw.setdefault("title", fallback_title)
+    return MediaMetadata.model_validate(raw)
+
+
 @dataclass
 class PipelineContext:
     task: Task
@@ -70,13 +83,7 @@ class PipelineContext:
             import json as _json
 
             raw = _json.loads(meta_path.read_text(encoding="utf-8"))
-            raw.pop("status", None)
-            if "duration" in raw and "duration_seconds" not in raw:
-                raw["duration_seconds"] = raw.pop("duration")
-            if raw.get("media_type") == "unknown":
-                raw["media_type"] = "other"
-            raw.setdefault("title", self.task_dir.name)
-            self.metadata = MediaMetadata.model_validate(raw)
+            self.metadata = parse_archive_metadata(raw, self.task_dir.name)
             return True
         except Exception as e:
             log_event(logger, logging.WARNING, "pipeline.restore.metadata_failed", error=e)

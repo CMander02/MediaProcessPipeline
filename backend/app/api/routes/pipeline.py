@@ -909,6 +909,11 @@ async def update_platform_config(platform_id: str, config: dict):
     """Update per-platform download strategy."""
     from app.core.settings import patch_runtime_settings
     rt = get_runtime_settings()
+    if platform_id in {"twitter", "youtube"} and "cookie" in config:
+        await run_in_thread(_save_platform_cookie, platform_id, config["cookie"], rt.data_root)
+        if len(config) == 1:
+            return {"ok": True}
+        config = {key: value for key, value in config.items() if key != "cookie"}
     try:
         stored = json.loads(rt.platform_configs or "{}")
     except Exception:
@@ -933,3 +938,38 @@ async def update_platform_config(platform_id: str, config: dict):
         updates["youtube_preferred_quality"] = config["preferred_quality"]
     patch_runtime_settings(updates)
     return {"ok": True}
+
+
+def _save_platform_cookie(platform_id: str, text: str, data_root: str) -> None:
+    from http.cookies import CookieError, SimpleCookie
+
+    from app.core.atomic_file import atomic_write_text
+    from app.core.paths import managed_child
+    from app.core.settings import patch_runtime_settings
+
+    if not isinstance(text, str) or not text.strip() or len(text) > 1024 * 1024:
+        raise HTTPException(400, "Expected nonempty cookie data up to 1 MiB")
+    auth_dir = get_workspace_paths(data_root).auth
+    if platform_id == "youtube":
+        if not text.startswith(("# Netscape HTTP Cookie File", "# HTTP Cookie File")):
+            raise HTTPException(400, "Expected a Netscape cookies.txt file")
+        path = managed_child(auth_dir / "youtube_cli_cookies.txt", data_root)
+        updates = {"youtube_cookies_file": str(path), "youtube_cookies_browser": ""}
+    else:
+        parsed = SimpleCookie()
+        try:
+            parsed.load(text)
+        except CookieError:
+            raise HTTPException(400, "Expected an X Cookie header") from None
+        if any(name not in parsed or not parsed[name].value for name in ("auth_token", "ct0")):
+            raise HTTPException(400, "The X Cookie header must contain auth_token and ct0")
+        cookies = [
+            {"name": name, "value": cookie.value, "domain": ".x.com", "path": "/",
+             "expires": -1, "httpOnly": name == "auth_token", "secure": True, "sameSite": "Lax"}
+            for name, cookie in parsed.items()
+        ]
+        text = json.dumps({"cookies": cookies, "origins": []})
+        path = managed_child(auth_dir / "twitter_cli_storage_state.json", data_root)
+        updates = {"twitter_storage_state_path": str(path)}
+    atomic_write_text(path, text.rstrip() + "\n")
+    patch_runtime_settings(updates)

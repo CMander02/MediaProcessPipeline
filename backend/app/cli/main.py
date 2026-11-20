@@ -80,6 +80,7 @@ app.add_typer(config_app, name="config")
 # remain as compatibility aliases.
 from app.cli.commands.archive import archive_app  # noqa: E402
 from app.cli.commands.configuration import (  # noqa: E402
+    device_app,
     flow_app,
     model_app,
     provider_app,
@@ -103,6 +104,7 @@ from app.cli.commands.operations import (  # noqa: E402
 from app.cli.commands.read import read  # noqa: E402
 from app.cli.commands.search import search  # noqa: E402
 from app.cli.commands.speaker import speaker_app  # noqa: E402
+from app.cli.commands.system import system_app, update_app  # noqa: E402
 from app.cli.commands.task import task_app  # noqa: E402
 
 app.add_typer(server_app, name="server")
@@ -114,6 +116,9 @@ app.add_typer(folder_app, name="library", hidden=True)
 app.add_typer(speaker_app, name="speaker")
 app.add_typer(stage_app, name="stage")
 app.add_typer(provider_app, name="provider")
+app.add_typer(device_app, name="device")
+app.add_typer(system_app, name="system")
+app.add_typer(update_app, name="update")
 app.add_typer(model_app, name="model")
 app.add_typer(flow_app, name="flow")
 app.add_typer(source_app, name="source")

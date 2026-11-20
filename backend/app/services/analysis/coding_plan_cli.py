@@ -145,8 +145,11 @@ def _resolve_agy_executable(cli_path: str = "") -> Path | None:
         return configured
 
     discovered = shutil.which("agy.exe") or shutil.which("agy")
-    if discovered and Path(discovered).suffix.lower() == ".exe":
+    if discovered and Path(discovered).suffix.lower() not in {".cmd", ".bat", ".ps1"}:
         return Path(discovered)
+    if os.name != "nt":
+        candidate = Path.home() / ".local" / "bin" / "agy"
+        return candidate if candidate.is_file() and os.access(candidate, os.X_OK) else None
 
     local_app_data = os.environ.get("LOCALAPPDATA", "")
     candidate = Path(local_app_data) / "agy" / "bin" / "agy.exe"

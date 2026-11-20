@@ -12,8 +12,9 @@ from urllib.parse import quote, unquote
 from uuid import UUID, uuid4
 
 import httpx
-from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from app.core.paths import get_workspace_paths
@@ -136,7 +137,16 @@ def _check_workspace(expected: str | None) -> None:
 
 @router.get("/status")
 async def sync_status():
-    return await run_in_thread(get_archive_sync_service().index_status)
+    status = await run_in_thread(get_archive_sync_service().index_status)
+    settings = get_runtime_settings()
+    return {
+        **status,
+        "remote_sync_enabled": settings.remote_sync_enabled,
+        "remote_server_configured": bool(settings.remote_server_url.strip()),
+        "remote_sync_upload_results": settings.remote_sync_upload_results,
+        "remote_sync_download_results": settings.remote_sync_download_results,
+        "remote_sync_include_media": settings.remote_sync_include_media,
+    }
 
 
 @router.get('/library')
@@ -161,6 +171,23 @@ async def pull_remote_archives():
     try:
         return await get_remote_archive_pull_service().sync_once()
     except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(502, f"Remote synchronization failed: {exc}") from exc
+
+
+class SyncPushRequest(BaseModel):
+    task_ids: list[UUID] | None = None
+
+
+@router.post("/push")
+async def push_remote_archives(body: SyncPushRequest | None = Body(default=None)):
+    from app.services.remote_archive_upload import get_remote_archive_upload_service
+
+    settings = get_runtime_settings()
+    if settings.remote_sync_enabled and not settings.remote_server_url.strip():
+        raise HTTPException(400, "remote_server_url is required")
+    try:
+        return await get_remote_archive_upload_service().push(body.task_ids if body else None)
+    except (httpx.HTTPError, ValueError, OSError) as exc:
         raise HTTPException(502, f"Remote synchronization failed: {exc}") from exc
 
 

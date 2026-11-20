@@ -320,10 +320,16 @@ def system_status(workers: dict[str, Any]) -> dict[str, Any]:
     from app.version import __version__
 
     since = datetime.now() - timedelta(hours=24)
+    started_at = _started_at()
     return {
         "version": __version__,
         "pid": os.getpid(),
-        "started_at": _started_at(),
+        "started_at": started_at,
+        "uptime_seconds": max(
+            0, int((datetime.now() - datetime.fromisoformat(started_at)).total_seconds())
+        )
+        if started_at
+        else None,
         "gpu": {**_cached("gpu", 2.0, gpu_status), "mpp_reserved_mb": _torch_reserved_mb()},
         "models": loaded_models(),
         "workers": workers,

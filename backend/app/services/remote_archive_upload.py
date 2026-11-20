@@ -10,25 +10,29 @@ import logging
 import re
 import shutil
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote, urlparse, urlunparse
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 
-from app.core.workspace_lifecycle import run_in_thread, uses_workspace
-
 from app.core.archive_sync import build_archive_zip
-from app.core.paths import get_workspace_paths
 from app.core.database import TaskStore, _db_lock, _get_conn, get_task_store, task_write_transaction
 from app.core.library import catalog, collection_metadata, revision
 from app.core.library_sync import (
-    folder_mappings, library_sync_lock, remember_folder, remote_origin, replica_folder_id,
+    folder_mappings,
+    library_sync_lock,
+    remember_folder,
+    remote_origin,
+    replica_folder_id,
 )
 from app.core.logging_setup import log_event
 from app.core.network import httpx_client_kwargs
+from app.core.paths import get_workspace_paths
 from app.core.settings import RuntimeSettings, get_runtime_settings
+from app.core.workspace_lifecycle import run_in_thread, uses_workspace
 from app.models import Task, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -171,6 +175,12 @@ def _acknowledge_library(server: str, workspace: str, pushed_revision: int, fold
         )
 
 
+@dataclass(frozen=True)
+class UploadResult:
+    task_id: UUID | None = None
+    library_pushed: bool = False
+
+
 class RemoteArchiveUploadService:
     """Upload completed archives and their library metadata."""
 
@@ -185,6 +195,7 @@ class RemoteArchiveUploadService:
         self._store_getter = store_getter
         self._client_factory = client_factory
         self._runner: asyncio.Task[None] | None = None
+        self._lock = asyncio.Lock()
 
     async def start(self) -> None:
         if self._runner and not self._runner.done():
@@ -238,26 +249,58 @@ class RemoteArchiveUploadService:
     @uses_workspace
     async def sync_once(self, settings: RuntimeSettings | None = None) -> bool:
         """Upload one archive or push changed library metadata."""
-        from app.services.remote_archive_pull import RemoteStatus, is_self_workspace
-
         settings = settings or self._settings_getter()
         if not (settings.remote_sync_enabled and settings.remote_sync_upload_results and settings.remote_server_url):
             return False
+        async with self._lock:
+            result = await self._sync_once(settings)
+        return result.task_id is not None or result.library_pushed
+
+    @uses_workspace
+    async def push(self, task_ids: list[UUID] | None = None) -> dict[str, Any]:
+        settings = self._settings_getter()
+        summary = {"enabled": settings.remote_sync_enabled, "uploaded": 0, "library_pushed": False}
+        if not settings.remote_sync_enabled:
+            return summary
+        if not settings.remote_server_url.strip():
+            raise ValueError("remote_server_url is required")
+        uploaded = []
+        async with self._lock:
+            if task_ids is not None:
+                for task_id in dict.fromkeys(task_ids):
+                    result = await self._sync_once(settings, task_id=task_id)
+                    if result.task_id is not None:
+                        uploaded.append(str(result.task_id))
+            else:
+                seen: set[UUID] = set()
+                while True:
+                    result = await self._sync_once(settings, exclude=seen)
+                    if result.task_id is None and not result.library_pushed:
+                        break
+                    if result.task_id is not None:
+                        seen.add(result.task_id)
+                        uploaded.append(str(result.task_id))
+                    summary["library_pushed"] |= result.library_pushed
+        return {**summary, "uploaded": len(uploaded), "task_ids": uploaded}
+
+    async def _sync_once(
+        self, settings: RuntimeSettings, *, task_id: UUID | None = None,
+        exclude: set[UUID] | None = None,
+    ) -> UploadResult:
+        from app.services.remote_archive_pull import (
+            RemoteStatus,
+            _is_self_server,
+            is_self_workspace,
+        )
+
         server_url = _normalized_server_url(settings.remote_server_url)
         data_root = Path(settings.data_root).resolve()
         store = self._store_getter()
-        pending = None
-        for task in store.list(status=TaskStatus.COMPLETED, limit=10_000):
-            if task.options.get("_remote_origin") or task.options.get("_remote_pull"):
-                continue
-            output_dir = self._archive_dir(task, data_root)
-            if output_dir is not None and not self._already_uploaded(task, server_url):
-                pending = (task, output_dir)
-                break
+        pending = self._pending_archive(store, data_root, server_url, task_id, exclude or set())
         if pending:
             await self._check_server_health(server_url)
-        elif await run_in_thread(_library_revision) == 0:
-            return False
+        elif task_id is not None or await run_in_thread(_library_revision) == 0:
+            return UploadResult()
 
         async with self._client_factory(
             headers=self._headers(settings),
@@ -271,20 +314,58 @@ class RemoteArchiveUploadService:
                 response.raise_for_status()
                 status = RemoteStatus.model_validate(response.json())
                 if await is_self_workspace(server_url, status, data_root):
-                    return False
+                    return UploadResult()
                 workspace = status.workspace_id
+            elif await run_in_thread(_is_self_server, server_url, str(data_root), data_root):
+                return UploadResult()
             if pending:
                 from app.core.media_retention import uploading_media
 
                 task, output_dir = pending
                 with uploading_media(output_dir):
                     await self._upload(task, output_dir, server_url, settings, store, workspace=workspace)
-                return True
+                return UploadResult(task_id=task.id)
             if workspace is not None:
                 client.headers["X-MPP-Workspace-ID"] = quote(workspace, safe="")
                 async with library_sync_lock:
-                    return await self._push_library(client, server_url, workspace)
-        return False
+                    pushed = await self._push_library(client, server_url, workspace)
+                    return UploadResult(library_pushed=pushed)
+        return UploadResult()
+
+    def _pending_archive(self, store, root, server, task_id, exclude) -> tuple[Task, Path] | None:
+        if task_id is not None:
+            task = store.get(task_id)
+            if (
+                task
+                and task.status == TaskStatus.COMPLETED
+                and not task.options.get("_remote_pull")
+            ):
+                if not task.options.get("_remote_origin") and (
+                    path := self._archive_dir(task, root)
+                ):
+                    return task, path
+            return None
+        page_size = 500
+        offset = 0
+        while True:
+            page = store.list(status=TaskStatus.COMPLETED, limit=page_size, offset=offset)
+            for task in page:
+                if (
+                    task.id in exclude
+                    or task.options.get("_remote_origin")
+                    or task.options.get("_remote_pull")
+                ):
+                    continue
+                marker = (task.result or {}).get("remote_sync") or {}
+                if marker.get("worker_id") and not marker.get("server_url"):
+                    continue
+                if not self._already_uploaded(task, server) and (
+                    path := self._archive_dir(task, root)
+                ):
+                    return task, path
+            if len(page) < page_size:
+                return None
+            offset += len(page)
 
     @staticmethod
     def _headers(settings: RuntimeSettings) -> dict[str, str]:
@@ -411,7 +492,14 @@ class RemoteArchiveUploadService:
             sync_info = payload.get("sync") if isinstance(payload, dict) else None
             if not isinstance(sync_info, dict):
                 raise ValueError("remote server returned an invalid sync response")
-            result = dict(task.result or {})
+            current = store.get(task.id)
+            if (
+                current is None
+                or current.status != TaskStatus.COMPLETED
+                or current.updated_at != task.updated_at
+            ):
+                return
+            result = dict(current.result or {})
             result["remote_sync"] = {
                 **sync_info,
                 "server_url": server_url,

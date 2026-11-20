@@ -222,6 +222,7 @@ class MppClient:
     def download_update(self, asset_name: str | None = None) -> dict[str, Any]:
         return self.request(
             "POST", "/api/system/update/download", json_body={"asset_name": asset_name},
+            timeout=max(self.timeout, 3600.0),
         )
 
     # Tasks
@@ -250,6 +251,10 @@ class MppClient:
         options: dict[str, Any] | None = None,
         webhook_url: str | None = None,
         target_worker_id: str | None = None,
+        *,
+        folder_id: str | None = None,
+        move_existing: bool = False,
+        collection_folders: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {
             "task_type": "pipeline",
@@ -260,6 +265,12 @@ class MppClient:
             payload["webhook_url"] = webhook_url
         if target_worker_id:
             payload["target_worker_id"] = target_worker_id
+        if folder_id is not None:
+            payload["folder_id"] = folder_id
+        if move_existing:
+            payload["move_existing"] = True
+        if collection_folders:
+            payload["collection_folders"] = collection_folders
         return self.request("POST", "/api/tasks/batch", json_body=payload)
 
     def get_task(self, task_id: str) -> dict[str, Any]:
@@ -270,6 +281,7 @@ class MppClient:
         sources: list[str],
         options: dict[str, Any] | None = None,
         *,
+        webhook_url: str | None = None,
         target_worker_id: str | None = None,
         folder_id: str | None = None,
         move_existing: bool = False,
@@ -279,10 +291,13 @@ class MppClient:
             "sources": sources,
             "options": options or {},
             "target_worker_id": target_worker_id,
-            "folder_id": folder_id,
             "move_existing": move_existing,
             "collection_folders": collection_folders or [],
         }
+        if folder_id is not None:
+            payload["folder_id"] = folder_id
+        if webhook_url:
+            payload["webhook_url"] = webhook_url
         return self.request("POST", "/api/tasks/import", json_body=payload)
 
     def list_tasks(
@@ -799,10 +814,12 @@ class MppClient:
         return self.request("GET", "/api/sync/status")
 
     def sync_pull(self) -> dict[str, Any]:
-        return self.request("POST", "/api/sync/pull")
+        return self.request("POST", "/api/sync/pull", timeout=max(self.timeout, 3600.0))
 
     def sync_push(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        return self.request("POST", "/api/sync/push", json_body=payload)
+        return self.request(
+            "POST", "/api/sync/push", json_body=payload, timeout=max(self.timeout, 3600.0)
+        )
 
     def sync_changes(self, cursor: int = 0, limit: int = 100) -> dict[str, Any]:
         return self.request("GET", "/api/sync/changes", params={"cursor": cursor, "limit": limit})

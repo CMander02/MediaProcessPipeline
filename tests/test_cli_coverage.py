@@ -76,6 +76,9 @@ def test_help_exposes_the_documented_command_tree():
         "speaker",
         "stage",
         "provider",
+        "device",
+        "system",
+        "update",
         "model",
         "flow",
         "source",
@@ -107,7 +110,7 @@ def test_every_public_leaf_command_renders_help():
 
     collect(root, [])
 
-    assert len(leaves) == 152
+    assert len(leaves) == 164
     failures = []
     for path in leaves:
         result = runner.invoke(app, ["--skip-version-check", "--plain", *path, "--help"])

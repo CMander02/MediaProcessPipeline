@@ -366,3 +366,30 @@ async def review_transcript_speakers(ctx: PipelineContext) -> None:
         )
     if not restored or PipelineStep.SPEAKER_REVIEW not in ctx.done:
         await _update_step(ctx.task, PipelineStep.SPEAKER_REVIEW, completed=True)
+
+
+def restore_reviewed_transcript(ctx: PipelineContext) -> None:
+    from app.services.analysis.speaker_identity import apply_speaker_names
+    from app.services.analysis.speaker_resolution import apply_resolutions
+
+    srt = ctx.srt
+    for filename, transform in (
+        ("subtitle_speakers.json", apply_subtitle_speakers),
+        ("speaker_review.json", apply_speaker_changes),
+    ):
+        path = ctx.task_dir / filename
+        if not path.is_file():
+            continue
+        report = json.loads(path.read_text(encoding="utf-8"))
+        if (report.get("input_contract") or {}).get("srt") == ctx.srt:
+            changes = report if filename == "subtitle_speakers.json" else report.get("changes", [])
+            srt = apply_resolutions(
+                transform(srt, changes), report.get("resolved_unassigned") or []
+            )
+            break
+    path = ctx.task_dir / "speaker_identity.json"
+    if path.is_file():
+        report = json.loads(path.read_text(encoding="utf-8"))
+        if report.get("status") in {"completed", "partial"} and srt == report.get("input_srt"):
+            srt = report.get("output_srt") or apply_speaker_names(srt, report.get("mappings") or [])
+    ctx.reviewed_srt = srt

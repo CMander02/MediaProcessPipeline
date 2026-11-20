@@ -36,6 +36,7 @@ mpp upgrade-ytdlp
 全局参数：
 
 - `--server URL`：daemon 地址。
+- `--remote`、`--local`：分别连接已配置的协调服务器和本机 daemon。
 - `--token TOKEN`、`--token-env NAME`：Bearer token。
 - `--timeout SEC`：普通 HTTP 请求超时。
 - `--json`：单结果 JSON envelope。
@@ -69,9 +70,16 @@ mpp submit SOURCE --webhook https://example.test/hook --wait
 mpp source collection URL
 mpp submit URL --collection all
 mpp submit URL --collection ITEM_ID_1,ITEM_ID_2
+mpp submit URL --episodes 1-5,8 --collection-folder
+mpp submit URL --folder "课程笔记" --move-existing
+mpp run SOURCE --only-transcribe --no-diarize
 ```
 
-本机文件连接远程 daemon 时，`--upload auto` 会使用 staging。`--upload always` 强制上传，`--upload never` 按服务端路径提交。一次批量最多 100 个来源，成功上传的来源会在部分上传失败时继续提交，进程返回退出码 5。
+`run` 和 `submit` 默认按可识别的 URL 来源标识匹配已有任务或归档，并显示 `reused` 或 `skipped`。每次独立提交的本机文件使用各自的归档标识。等待模式仅跟踪新提交的任务。使用 `--force-duplicate` 可创建新任务。使用 `--folder` 指定虚拟文件夹，使用 `--move-existing` 可移动匹配的已有内容。
+
+使用 `--diarize/--no-diarize`、`--speaker-review/--no-speaker-review`、`--polish/--no-polish`、`--summary/--no-summary`、`--mindmap/--no-mindmap` 和 `--detail/--no-detail` 控制任务阶段。`--only-transcribe` 关闭润色、分析、摘要、导图和详情生成。
+
+启用 `cli_use_remote_server` 时，默认开启的 `cli_local_files_stay_local` 会将本机磁盘文件交给本机 daemon，将 URL 交给协调服务器。该规则适用于 `--upload auto` 且未显式指定连接或执行节点的提交。向远端提交本机文件时，`--upload auto` 会使用 staging。`--upload always` 强制上传，`--upload never` 按服务端路径提交。一次批量最多 100 个来源。部分来源处理失败时，CLI 会列出已接受的任务和错误，并使用退出码 5。
 
 显式 staging 管理命令为 `mpp stage upload LOCAL_FILE` 和 `mpp stage delete STAGING_ID`。
 
@@ -81,6 +89,7 @@ mpp submit URL --collection ITEM_ID_1,ITEM_ID_2
 
 ```powershell
 mpp server nodes
+mpp server prefer WORKER [--offline-policy fallback_server|wait|fallback_any_online]
 mpp --json server nodes
 mpp run URL --target-worker SilentField
 mpp submit URL --remote --target-worker local
@@ -103,35 +112,74 @@ mpp task steps
 mpp task show REF [--timeline] [--files]
 mpp task timeline REF [--follow]
 mpp task watch REF
-mpp task cancel REF...
+mpp task cancel [REF...] [--all-active]
 mpp task pause REF...
-mpp task resume REF...
-mpp task rerun REF [--checkpoint|--full] [--wait]
-mpp task delete REF... --yes
+mpp task resume [REF...] [--all-paused]
+mpp task rerun REF [--checkpoint|--full] [--from speaker_review|polish|analyze] [--wait]
+mpp task delete [REF...] [--status failed|cancelled] --yes
+mpp task cleanup-duplicates [--apply] [--yes]
+mpp retry REF [--new]
+mpp retry --all-failed
 ```
 
 任务引用支持完整 UUID、唯一 ID 前缀以及 `@last`、`@fail`、`@run`、`@queued`、`@paused`、`@completed`、`@active`。多匹配前缀会返回候选并使用退出码 4。
+
+`task rerun --from` 复用原始字幕或已选平台字幕，重新生成指定阶段及其下游产物。启用润色的任务使用 `--from analyze` 时需要已有润色稿。`retry` 恢复暂停任务，或从失败和取消任务的 checkpoint 重跑。`--new` 按原任务参数另建任务。
 
 兼容入口：`tasks`、`list`、`status`、`show`、`attach`、`retry`、`open`、`cancel`。
 
 ## 归档、字幕和说话人
 
 ```text
-mpp archive list [--media TYPE] [--source PLATFORM] [--sort KEY]
+mpp read REF [--view overview|summary|detail|mindmap|chapters|transcript|raw|notes|source|analysis]
+mpp read REF --at HH:MM:SS [--window SEC] [--speaker NAME]
+mpp search QUERY [--limit N] [--speaker NAME] [--refresh]
+mpp archive list [--search TEXT] [--folder FOLDER] [--media TYPE] [--source PLATFORM] [--sort KEY]
 mpp archive show REF
 mpp archive files REF
 mpp archive cat REF --file summary|transcript|analysis|metadata|mindmap|NAME
-mpp archive export REF --file NAME --output PATH
+mpp archive export REF [--file NAME|--format md|srt|txt|zip] --output PATH
+mpp archive slim [REF...] [--all] [--policy text|playback|all] [--apply] [--yes]
+mpp archive edit REF [TARGET] [--from FILE]
+mpp archive cue REF CUE_INDEX [--text TEXT] [--speaker NAME] [--delete] [--yes]
+mpp archive dedupe [--apply] [--yes]
+mpp archive reconcile [--status-only]
+mpp archive artifacts REF [--repair mirror|restore-file] [--names FILES] [--yes]
 mpp archive thumbnail REF --output PATH
 mpp archive open REF
 mpp archive rename REF TITLE
 mpp archive delete REF... --yes
 mpp archive transcript export REF [--format srt|md|txt] [--output PATH]
 mpp archive transcript import REF --from PATH [--dry-run] [--yes]
-mpp speaker rename TASK_REF OLD_NAME NEW_NAME [--on-conflict ask|merge|new]
+mpp speaker inspect REF [NAME]
+mpp speaker list REF
+mpp speaker pending REF
+mpp speaker rename REF OLD_NAME NEW_NAME [--on-conflict ask|merge|new] [--regenerate]
+mpp speaker autofill REF [--wait]
+mpp speaker repair REF [--mode all|failed] [--wait]
+mpp speaker preview REF
+mpp speaker assign REF NAME --cue 2,4-5
+mpp speaker apply-preview REF [--cues 2,4-5|--all] [--yes]
+mpp speaker confirm REF
 ```
 
 归档引用支持 archive ID、task ID、唯一前缀、精确路径、精确标题和 `@last`。字幕导入会校验 SRT 条目，并通过 filesystem write-through 同步 SQLite artifact。
+
+`read`、`search` 和 `speaker inspect` 支持本机 daemon 离线时读取本地资料库。`read --view transcript` 支持按时间范围、章节、字幕编号、说话人和文本筛选，也可用 `--bilingual zh,en` 显示双语。`archive slim` 默认预览将清理的媒体文件及空间，确认后保留文本产物。按文件夹执行时使用 `mpp folder batch slim --folder FOLDER`。
+
+### 虚拟文件夹
+
+```text
+mpp folder list
+mpp folder show [FOLDER] [--unclassified] [--page N] [--limit N] [--search QUERY]
+mpp folder create NAME
+mpp folder rename FOLDER NAME
+mpp folder delete FOLDER [--yes]
+mpp folder move REF... (--to FOLDER|--unclassified)
+mpp folder batch ACTION [REF...] [--folder FOLDER] [--apply] [--yes]
+```
+
+文件夹引用支持 ID、唯一 ID 前缀和名称。`list` 和 `show` 支持本机离线读取。`batch` 的操作包括 `retry`、`checkpoint-rerun`、`full-rerun`、`slim`、`export` 和 `delete`，默认只生成预览。删除文件夹会保留归档并移入未分类。使用 `batch delete --apply` 则会删除预览选中的内容记录和归档。
 
 ## 配置、Provider、模型和 flow
 
@@ -153,6 +201,7 @@ mpp provider add ID [--type TYPE] [--api-base URL] [--api-key KEY]
 mpp provider update ID KEY=VALUE...
 mpp provider delete ID --yes
 mpp provider oauth-status ID
+mpp provider login ID
 mpp provider balance ID
 
 mpp model list [--provider ID] [--capability TYPE]
@@ -175,6 +224,8 @@ mpp flow use ID [--source PLATFORM]
 
 `config set` 适合标量字段。`config patch`、Provider、模型和 binding 命令负责结构化字段。secret 在在线、离线、text 和 JSON 输出中统一掩码。
 
+`provider login` 在 daemon 所在机器的终端可启动 Provider CLI。连接远端 daemon 时，命令仅查询登录状态并在认证后同步模型。
+
 ## 来源平台
 
 ```text
@@ -183,11 +234,16 @@ mpp source show PLATFORM
 mpp source config set PLATFORM KEY VALUE
 mpp source probe URL
 mpp source collection URL
+mpp source lookup URL...
 mpp source auth status bilibili|xiaohongshu|twitter
-mpp source auth login xiaohongshu|twitter [--timeout SEC]
+mpp source auth login bilibili|xiaohongshu|twitter [--timeout SEC]
+mpp source auth set-cookie PLATFORM [--from FILE]
+mpp source auth set-cookie youtube --browser chrome|edge|firefox|safari
 mpp source ytdlp-status
 mpp source ytdlp-upgrade
 ```
+
+`source auth login bilibili` 在终端显示二维码和登录链接，并等待扫码确认。`set-cookie` 支持 `bilibili`、`xiaohongshu`、`twitter` 和 `youtube`。省略 `--from` 时从标准输入读取。YouTube 文件使用 Netscape cookies.txt 格式。`--browser` 指 daemon 所在机器上的浏览器。
 
 ## 知识库、声纹、日志和存储
 
@@ -202,6 +258,10 @@ mpp voiceprint update PERSON_ID [--name NAME] [--notes TEXT]
 mpp voiceprint merge DST_ID SRC_ID --yes
 mpp voiceprint delete PERSON_ID --yes
 mpp voiceprint sample SAMPLE_ID --output FILE
+mpp voiceprint samples PERSON
+mpp voiceprint sample-delete SAMPLE_ID [--yes]
+mpp voiceprint enroll NAME --from-task REF --speaker SPEAKER
+mpp voiceprint enroll NAME --from-file SERVER_AUDIO [--start SEC] [--end SEC]
 
 mpp logs list
 mpp logs show [FILE] [--cursor N] [--max-bytes N]
@@ -225,6 +285,8 @@ mpp fs download SERVER_PATH --output LOCAL_FILE
 mpp fs open SERVER_PATH
 
 mpp sync status
+mpp sync pull
+mpp sync push [REF...] [--all]
 mpp sync changes [--cursor N] [--limit N]
 mpp sync manifest ARCHIVE_ID
 mpp sync download ARCHIVE_ID RELATIVE_PATH --output PATH
@@ -243,6 +305,20 @@ mpp pipeline mindmap [--text TEXT|--from FILE] [--language LANG]
 `fs drives/list/scan/open` 会读取 `/api/capabilities`。远程实例通过 `allow_remote_filesystem` 控制服务端文件系统能力。
 
 `sync transfer` 随已完成归档传输所属文件夹、归属关系和该归档的固定封面状态。使用 `--to remote` 可连接已配置的协调服务器。可用全局 `--server` 指定归档来源。
+
+在归档来源机器上使用 `mpp --local sync push --all` 可向已配置的协调服务器推送待同步归档和文件夹。指定任务引用会重新上传对应的已完成归档。`sync pull` 从已配置的远端拉取归档与文件夹变更。默认同步文本、封面和图文配图。
+
+## 设备与系统
+
+```text
+mpp device list
+mpp device set all|uvr|asr|diarization|aligner|moss|llm auto|gpu|cpu|cuda|mps|metal
+mpp system status
+mpp update check [--force]
+mpp update download [--asset NAME]
+```
+
+`device list` 显示 daemon 硬件和各阶段的设备配置。`system status` 显示显存、已加载模型、队列、磁盘、运行时长和最近失败。`update download` 在 daemon 上下载并校验安装包，并输出文件路径、SHA-256 和安装说明。
 
 ## 输出与退出码
 

@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+import time
+from enum import Enum
+from functools import partial
+from http.cookies import CookieError, SimpleCookie
+from io import StringIO
 from pathlib import Path
 from typing import Any, Optional
 
 import typer
 
+from app.cli.client import MppClientError
 from app.cli.commands.common import api_call, client
+from app.cli.context import get_cli_context
 from app.cli.output import (
     confirm_action,
     emit,
@@ -27,6 +36,7 @@ flow_app = typer.Typer(help="处理 flow profile 与默认选择", no_args_is_he
 source_app = typer.Typer(help="来源平台、预检、合集与认证", no_args_is_help=True)
 source_config_app = typer.Typer(help="来源平台配置", no_args_is_help=True)
 source_auth_app = typer.Typer(help="来源平台认证", no_args_is_help=True)
+device_app = typer.Typer(help="计算设备查询与阶段设置", no_args_is_help=True)
 model_app.add_typer(binding_app, name="binding")
 source_app.add_typer(source_config_app, name="config")
 source_app.add_typer(source_auth_app, name="auth")
@@ -315,6 +325,62 @@ def provider_oauth_status(provider_id: str = typer.Argument(...)):
     api = client()
     result = api_call(lambda: api.provider_oauth_status(provider_id))
     emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
+
+
+@provider_app.command("login")
+def provider_login(provider_id: str = typer.Argument(...)):
+    """交互登录 CLI OAuth Provider 并同步模型。"""
+    from app.services.analysis.coding_plan_cli import resolve_coding_plan_executable
+
+    api = client()
+    provider = _provider(_settings(api), provider_id)
+    provider_type = provider.get("provider_type")
+    commands = {
+        "codex_oauth": ["login"],
+        "agy_oauth": [],
+        "kimi_oauth": ["login"],
+        "qoder_oauth": ["login"],
+    }
+    if provider_type not in commands:
+        emit_error("unsupported_provider", "This provider does not use CLI OAuth.", exit_code=2)
+    ctx = get_cli_context()
+    if ctx.is_local and ctx.interactive and sys.stdout.isatty():
+        executable = resolve_coding_plan_executable(provider_type, provider.get("cli_path") or "")
+        if executable is None:
+            emit_error(
+                "provider_cli_not_found",
+                "The provider executable was not found on this machine.",
+                exit_code=4,
+            )
+        if provider_type == "agy_oauth":
+            typer.echo("Sign in within Antigravity, then exit to sync models.", err=True)
+        command = [str(executable), *commands[provider_type]]
+        try:
+            result = subprocess.run(command, check=False)
+        except OSError:
+            emit_error("provider_login_failed", "Could not start the provider CLI.", exit_code=1)
+        except KeyboardInterrupt:
+            raise typer.Exit(130) from None
+        if result.returncode:
+            emit_error(
+                "provider_login_failed",
+                f"Provider CLI exited with code {result.returncode}.",
+                exit_code=1,
+            )
+    status = api_call(lambda: api.provider_oauth_status(provider_id))
+    if not status.get("authenticated"):
+        emit_error(
+            "provider_not_authenticated",
+            "Run provider login in a terminal on the daemon host under its account.",
+            exit_code=1,
+        )
+    synced = api_call(lambda: api.sync_provider_models(provider_id))
+    data = {"provider_id": provider_id, "authenticated": True, "models": synced.get("models") or []}
+    emit(
+        data,
+        text=f"{provider_id}\tauthenticated\t{len(data['models'])} model(s)",
+        redact_secrets=True,
+    )
 
 
 @provider_app.command("balance")
@@ -662,9 +728,231 @@ def source_auth_status(platform: str = typer.Argument(...)):
 @source_auth_app.command("login")
 def source_auth_login(
     platform: str = typer.Argument(...),
-    timeout: int = typer.Option(180, "--timeout", min=30, max=900),
+    timeout: int = typer.Option(180, "--timeout", min=1, max=900),
 ):
-    """启动小红书或 X 的交互登录。"""
+    """显示 B 站登录二维码，或启动小红书与 X 的浏览器登录。"""
     api = client()
+    if platform.lower() == "bilibili":
+        _bilibili_login(api, timeout)
+        return
     result = api_call(lambda: api.source_auth_login(platform.lower(), timeout))
-    emit(result, text=json.dumps(result, ensure_ascii=False, indent=2), redact_secrets=True)
+    emit(result, text=json.dumps(redact(result), ensure_ascii=False, indent=2), redact_secrets=True)
+
+
+def _bilibili_login(api, timeout: int) -> None:
+    import qrcode
+
+    data = api_call(api.bilibili_qr_generate)
+    url, session_id = data.get("url"), data.get("session_id")
+    if not url or not session_id:
+        emit_error(
+            "invalid_qr_response", "The daemon did not return a Bilibili QR login URL.", exit_code=1
+        )
+    deadline = time.monotonic() + min(timeout, data.get("expires_in") or timeout)
+    if get_cli_context().output_mode == "text":
+        qr = qrcode.QRCode()
+        qr.add_data(url)
+        qr.make()
+        buffer = StringIO()
+        qr.print_ascii(out=buffer, invert=True)
+        typer.echo(buffer.getvalue(), err=True, nl=False)
+    typer.echo(url, err=True)
+    previous_state = None
+    while time.monotonic() < deadline:
+        result = api_call(lambda: api.bilibili_qr_poll(session_id))
+        state = result.get("state")
+        if state == "success":
+            emit(
+                result,
+                text=result.get("message") or "Bilibili login succeeded.",
+                redact_secrets=True,
+            )
+            return
+        if state == "expired":
+            emit_error(
+                "qr_expired", "The Bilibili QR code expired. Request a new code.", exit_code=1
+            )
+        if state not in {"waiting", "scanned"}:
+            emit_error(
+                "qr_poll_failed", "The daemon returned an unexpected QR login state.", exit_code=1
+            )
+        if (
+            state != previous_state
+            and result.get("message")
+            and get_cli_context().output_mode == "text"
+        ):
+            typer.echo(result["message"], err=True)
+        previous_state = state
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(2.0, remaining))
+    emit_error("qr_timeout", "Bilibili login timed out.", exit_code=1)
+
+
+class CookiePlatform(str, Enum):
+    bilibili = "bilibili"
+    xiaohongshu = "xiaohongshu"
+    twitter = "twitter"
+    youtube = "youtube"
+
+
+class CookieBrowser(str, Enum):
+    chrome = "chrome"
+    edge = "edge"
+    firefox = "firefox"
+    safari = "safari"
+
+
+@source_auth_app.command("set-cookie")
+def source_auth_set_cookie(
+    platform: CookiePlatform = typer.Argument(...),
+    source_file: Optional[Path] = typer.Option(None, "--from", exists=True, dir_okay=False),
+    browser: Optional[CookieBrowser] = typer.Option(None, "--browser"),
+):
+    """从文件或标准输入配置 Cookie。YouTube 也支持服务端浏览器。"""
+    api = client()
+    if browser:
+        if platform != CookiePlatform.youtube or source_file:
+            emit_error(
+                "invalid_options",
+                "--browser requires YouTube and cannot be combined with --from.",
+                exit_code=2,
+            )
+        operation = partial(api.patch_settings, {
+            "youtube_cookies_browser": browser.value, "youtube_cookies_file": "",
+        })
+    else:
+        if source_file is None and sys.stdin.isatty():
+            emit_error(
+                "cookie_input_required", "Pipe cookie data into stdin or use --from.", exit_code=2
+            )
+        try:
+            text = (
+                source_file.read_text(encoding="utf-8-sig") if source_file else sys.stdin.read()
+            ).strip()
+        except (OSError, UnicodeError):
+            emit_error("cookie_read_failed", "Could not read UTF-8 cookie data.", exit_code=2)
+        if not text:
+            emit_error("cookie_input_required", "Cookie input is empty.", exit_code=2)
+        if text[:7].casefold() == "cookie:":
+            text = text[7:].strip()
+        if platform == CookiePlatform.bilibili:
+            cookies = SimpleCookie()
+            try:
+                cookies.load(text)
+            except CookieError:
+                emit_error("invalid_cookie", "Expected a Bilibili Cookie header.", exit_code=2)
+            if not cookies.get("SESSDATA") or not cookies["SESSDATA"].value:
+                emit_error(
+                    "invalid_cookie",
+                    "The Bilibili Cookie header must contain SESSDATA.",
+                    exit_code=2,
+                )
+            names = {
+                "SESSDATA": "bilibili_sessdata",
+                "bili_jct": "bilibili_bili_jct",
+                "DedeUserID": "bilibili_dede_user_id",
+            }
+            updates = {
+                key: cookies[name].value if name in cookies else "" for name, key in names.items()
+            }
+            operation = partial(api.patch_settings, updates)
+        elif platform == CookiePlatform.xiaohongshu:
+            operation = partial(api.patch_settings, {"xiaohongshu_cookie": text})
+        else:
+            operation = partial(api.update_platform, platform.value, {"cookie": text})
+    try:
+        operation()
+    except MppClientError as exc:
+        emit_error(
+            exc.code, f"Could not configure {platform.value} cookies.", exit_code=exc.exit_code
+        )
+    emit({"platform": platform.value, "configured": True}, text=f"{platform.value}\tconfigured")
+
+
+@source_app.command("lookup")
+def source_lookup(sources: list[str] = typer.Argument(...)):
+    """按来源 URL 查找已有任务和归档。"""
+    api = client()
+    result = api_call(lambda: api.lookup_archives(sources))
+    matches = result.get("matches") or {}
+    errors = result.get("errors") or {}
+    lines = []
+    for source in sources:
+        if source in errors:
+            lines.append(f"{source}\terror\t{errors[source]}")
+        elif not matches.get(source):
+            lines.append(f"{source}\tno match")
+        else:
+            for item in matches[source]:
+                identifier = item.get("task_id") or item.get("archive_id") or ""
+                lines.append(
+                    f"{source}\t{item.get('status', '')}\t{identifier}\t"
+                    f"{item.get('title', '')}\t{item.get('path', '')}"
+                )
+    emit(result, text="\n".join(lines))
+    if errors:
+        raise typer.Exit(5 if len(errors) < len(sources) else 1)
+
+
+_DEVICE_FIELDS = {
+    "uvr": ("uvr_device",),
+    "asr": ("sherpa_device", "llama_asr_device"),
+    "diarization": ("pyannote_device",),
+    "aligner": ("aligner_device",),
+    "moss": ("moss_cpp_device",),
+    "llm": ("local_llm_device",),
+}
+
+
+class DeviceStage(str, Enum):
+    all = "all"
+    uvr = "uvr"
+    asr = "asr"
+    diarization = "diarization"
+    aligner = "aligner"
+    moss = "moss"
+    llm = "llm"
+
+
+class ComputeDevice(str, Enum):
+    auto = "auto"
+    gpu = "gpu"
+    cpu = "cpu"
+    cuda = "cuda"
+    mps = "mps"
+    metal = "metal"
+
+
+@device_app.command("list")
+def device_list():
+    """显示服务端可用硬件及各阶段配置。"""
+    api = client()
+    hardware = api_call(api.capabilities).get("compute_capabilities") or {}
+    settings = _settings(api)
+    configured = {
+        field: settings.get(field, "auto") for fields in _DEVICE_FIELDS.values() for field in fields
+    }
+    data = {"compute_capabilities": hardware, "devices": configured}
+    emit(data, text=lambda: render_fields(data))
+
+
+@device_app.command("set")
+def device_set(
+    stage: DeviceStage = typer.Argument(...), device: ComputeDevice = typer.Argument(...)
+):
+    """设置一个或全部本地推理阶段的计算设备。"""
+    from app.core.settings import patch_runtime_settings
+
+    api = client()
+    fields = _DEVICE_FIELDS.get(stage.value) or tuple(
+        field for values in _DEVICE_FIELDS.values() for field in values
+    )
+    updates = dict.fromkeys(fields, device.value)
+    if get_cli_context().is_local and not api.ping():
+        result = api_call(lambda: patch_runtime_settings(updates).model_dump())
+    else:
+        result = api_call(lambda: api.patch_settings(updates))
+    configured = {field: result.get(field, updates[field]) for field in fields}
+    emit(configured, text=lambda: render_fields(configured))

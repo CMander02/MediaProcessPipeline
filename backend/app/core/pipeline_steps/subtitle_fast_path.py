@@ -168,6 +168,7 @@ async def _run_subtitle_fast_path(
         task_dir=task_dir,
         metadata=metadata,
         srt=srt,
+        transcript=transcript,
         has_subtitle=True,
         subtitle_source="platform",
         source_context=source_context,
@@ -178,6 +179,21 @@ async def _run_subtitle_fast_path(
     if video_ready is not None:
         await video_ready.wait()
         await _raise_if_cancelled(task.id)
+    if task.options.get("workflow") is not None:
+        from app.core.pipeline_steps.postprocess import postprocess
+
+        await postprocess(caption_context, finalize_archive=False)
+        return {
+            "transcript": caption_context.transcript,
+            "srt": caption_context.srt,
+            "polished": caption_context.polished or "",
+            "polished_md": caption_context.polished_md or "",
+            "recognition_segments": caption_context.recognition_segments,
+            "analysis": caption_context.analysis,
+            "summary": caption_context.summary,
+            "mindmap": caption_context.mindmap,
+            "subtitle_source": "platform",
+        }
     await review_transcript_speakers(caption_context)
     await identify_transcript_speakers(caption_context)
     await _update_step(task, PipelineStep.POLISH)

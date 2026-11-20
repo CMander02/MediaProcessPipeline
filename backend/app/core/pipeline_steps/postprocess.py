@@ -19,6 +19,7 @@ from app.core.pipeline_steps.artifacts import (
 from app.core.pipeline_steps.context import PipelineContext
 from app.core.pipeline_steps.speaker_review import (
     identify_transcript_speakers,
+    restore_reviewed_transcript,
     review_transcript_speakers,
 )
 from app.core.pipeline_steps.state import PipelineStep, _raise_if_cancelled, _update_step
@@ -27,7 +28,7 @@ from app.core.pipeline_steps.transcript import _plain_text_from_srt, _user_langu
 logger = logging.getLogger(__name__)
 
 
-async def postprocess(ctx: PipelineContext) -> None:
+async def postprocess(ctx: PipelineContext, *, finalize_archive: bool = True) -> None:
     from app.services.analysis import (
         analyze_content,
         generate_detail,
@@ -50,7 +51,6 @@ async def postprocess(ctx: PipelineContext) -> None:
         await _update_step(ctx.task, PipelineStep.SPEAKER_REVIEW, completed=True)
         await _update_step(ctx.task, PipelineStep.ANALYZE, completed=True)
 
-        await _update_step(ctx.task, PipelineStep.ARCHIVE)
         empty_analysis = {
             "language": "unknown",
             "content_type": "unknown",
@@ -66,6 +66,11 @@ async def postprocess(ctx: PipelineContext) -> None:
             "action_items": [],
             "topics": [],
         }
+        if not finalize_archive:
+            ctx.analysis = empty_analysis
+            ctx.summary = empty_summary
+            return
+        await _update_step(ctx.task, PipelineStep.ARCHIVE)
         archive = await archive_result(
             ctx.metadata,
             polished_srt="",
@@ -89,7 +94,11 @@ async def postprocess(ctx: PipelineContext) -> None:
         }
         return
 
-    if stage_enabled(ctx.task, "speaker_review"):
+    scoped_rerun = (ctx.task.result or {}).get("_checkpoint_rerun_from")
+    if scoped_rerun and PipelineStep.SPEAKER_REVIEW in ctx.done:
+        if PipelineStep.POLISH not in ctx.done:
+            restore_reviewed_transcript(ctx)
+    elif stage_enabled(ctx.task, "speaker_review"):
         await review_transcript_speakers(ctx)
         await identify_transcript_speakers(ctx)
     else:
@@ -107,7 +116,8 @@ async def postprocess(ctx: PipelineContext) -> None:
             step=PipelineStep.POLISH,
             reason="already_done",
         )
-        ctx.restore_transcript()  # picks up polished if present
+        if not scoped_rerun:
+            ctx.restore_transcript()
     else:
         await _update_step(ctx.task, PipelineStep.POLISH)
         if ctx.has_subtitle and ctx.polished:
@@ -141,9 +151,9 @@ async def postprocess(ctx: PipelineContext) -> None:
             await _write_text_artifact(
                 ctx.task, ctx.task_dir, "transcript_polished.srt", ctx.polished
             )
-            polished_md_content = srt_to_markdown(ctx.polished, ctx.metadata.title)
+            ctx.polished_md = srt_to_markdown(ctx.polished, ctx.metadata.title)
             await _write_text_artifact(
-                ctx.task, ctx.task_dir, "transcript_polished.md", polished_md_content
+                ctx.task, ctx.task_dir, "transcript_polished.md", ctx.polished_md
             )
             selected_lang = str(ctx.metadata.extra.get("selected_subtitle_lang") or "")
             for track in ctx.metadata.extra.get("subtitle_tracks") or []:
@@ -305,6 +315,9 @@ async def postprocess(ctx: PipelineContext) -> None:
         await _update_step(ctx.task, PipelineStep.ANALYZE, completed=True)
     # end if ANALYZE not in done
 
+
+    if not finalize_archive:
+        return
 
     # Step 6: Archive (finalize — writes any missing files, sets status to completed)
     await _raise_if_cancelled(ctx.task.id)

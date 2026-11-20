@@ -56,7 +56,7 @@ class BilibiliLoginService:
             self._sessions = {key: value for key, value in self._sessions.items()
                               if value["expires"] > now}
             self._sessions[session_id] = {"key": data["qrcode_key"], "expires": now + 180}
-        return {"session_id": session_id, "image": image, "expires_in": 180}
+        return {"session_id": session_id, "image": image, "expires_in": 180, "url": data["url"]}
 
     def poll(self, session_id: str) -> dict:
         with self._lock:

@@ -17,9 +17,10 @@ directly into the GPU queue so they skip re-downloading.
 import asyncio
 import json
 import logging
+import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable, Coroutine, Literal
 from uuid import UUID
 
 from app.core.database import get_task_store
@@ -36,6 +37,65 @@ from app.core.logging_setup import (
 from app.models.task import Task, TaskStatus, TaskType
 
 logger = logging.getLogger(__name__)
+
+CheckpointStep = Literal["speaker_review", "polish", "analyze"]
+_CHECKPOINT_PREREQUISITES = {
+    "speaker_review": ["download", "separate", "transcribe"],
+    "polish": ["download", "separate", "transcribe", "speaker_review"],
+    "analyze": ["download", "separate", "transcribe", "speaker_review", "polish"],
+}
+_ANALYSIS_OUTPUTS = (
+    "summary.md", "summary.json", "mindmap.md", "mindmap.json", "detail.md", "analysis.json",
+    "content_selection.json",
+)
+_POLISH_OUTPUTS = ("transcript_polished.srt", "transcript_polished.md", "transcript_lineage.json")
+_SPEAKER_OUTPUTS = (
+    "speaker_review.json",
+    "subtitle_speakers.json",
+    "speaker_identity.json",
+    "speaker_quality.json",
+    "speaker_review.checkpoint.json",
+    "subtitle_speakers.checkpoint.json",
+    "speaker_identity.checkpoint.json",
+    "identity_evidence.checkpoint.json",
+    "participant_evidence.json",
+    "speaker_repair.checkpoint.json",
+    "speaker_repair.preview.json",
+)
+
+
+def _checkpoint_outputs(task_dir: Path, from_step: CheckpointStep) -> list[Path]:
+    filenames = _ANALYSIS_OUTPUTS
+    if from_step != "analyze":
+        filenames += _POLISH_OUTPUTS
+    if from_step == "speaker_review":
+        filenames += _SPEAKER_OUTPUTS
+    paths = [task_dir / name for name in filenames]
+    if any(path.is_symlink() or (path.exists() and not path.is_file()) for path in paths):
+        raise ValueError("A generated artifact is not a regular file")
+    return paths
+
+
+def finish_checkpoint_cleanup(task: Task) -> None:
+    from app.core.artifacts import _write_lock
+    from app.core.database import _save_task_row, task_write_transaction
+    from app.core.paths import managed_child
+    from app.core.settings import get_runtime_settings
+
+    result = dict(task.result or {})
+    if not result.pop("_checkpoint_cleanup_pending", False):
+        return
+    task_dir = managed_child(result["output_dir"], get_runtime_settings().data_root)
+    with _write_lock, task_write_transaction() as conn:
+        paths = _checkpoint_outputs(task_dir, result["_checkpoint_rerun_from"])
+        for path in paths:
+            path.unlink(missing_ok=True)
+        conn.executemany(
+            "DELETE FROM task_artifacts WHERE task_id=? AND filename=?",
+            [(str(task.id), path.name) for path in paths],
+        )
+        _save_task_row(conn, task.model_copy(update={"result": result}))
+    task.result = result
 
 
 def task_is_read_only(task: Task) -> bool:
@@ -209,11 +269,19 @@ class TaskQueue:
         await bus.publish(TaskEvent(task_id, "queued"))
         task = store.get(task_id)
         from app.core.remote_execution import defer
-        if task is not None and defer(task):
+
+        if (
+            task is not None
+            and not (task.result or {}).get("_checkpoint_rerun_from")
+            and defer(task)
+        ):
             return
         t_token = set_task_context(str(task_id))
         try:
-            if task is not None and task.options.get("speaker_repair", {}).get("status") in {"queued", "running"}:
+            if task is not None and (
+                (task.result or {}).get("_checkpoint_rerun_from")
+                or task.options.get("speaker_repair", {}).get("status") in {"queued", "running"}
+            ):
                 await self.advance_to_postprocess(task_id)
             elif task is not None and not _needs_download_queue(task):
                 await self._gpu_queue.put(task_id)
@@ -346,7 +414,10 @@ class TaskQueue:
             reset_context(t_token, task_id_var)
         return True
 
-    async def resume(self, task_id: UUID, *, force: bool = False) -> bool:
+    async def resume(
+        self, task_id: UUID, *, force: bool = False,
+        from_step: CheckpointStep | None = None, workflow: dict[str, bool] | None = None,
+    ) -> bool:
         """Resume a task by putting it back on the queue.
 
         Normal resume accepts paused/failed tasks. ``force=True`` is used by
@@ -374,6 +445,21 @@ class TaskQueue:
         from app.core.library import task_is_deleting
         if task_is_deleting(task):
             return False
+
+        if workflow is not None:
+            from app.core.settings import get_runtime_settings
+            from app.core.workflow import snapshot_workflow
+
+            task.options = snapshot_workflow({
+                **task.options, "workflow": {**(task.options.get("workflow") or {}), **workflow},
+            }, get_runtime_settings())
+        if from_step is not None:
+            self._reset_checkpoint(task, from_step)
+            await get_event_bus().publish(TaskEvent(task_id, "resumed", {"status": "queued"}))
+            await self.advance_to_postprocess(task_id)
+            return True
+        if workflow is not None:
+            store.save(task)
 
         completed_steps = task.completed_steps
         current_step = task.current_step
@@ -421,9 +507,90 @@ class TaskQueue:
         await self.submit(task_id)
         return True
 
-    async def rerun_from_checkpoint(self, task_id: UUID) -> bool:
+    async def rerun_from_checkpoint(
+        self, task_id: UUID, *, from_step: CheckpointStep | None = None,
+        workflow: dict[str, bool] | None = None,
+    ) -> bool:
         """Queue an in-place checkpoint rerun from any durable stopped state."""
-        return await self.resume(task_id, force=True)
+        return await self.resume(task_id, force=True, from_step=from_step, workflow=workflow)
+
+    def _reset_checkpoint(self, task: Task, from_step: CheckpointStep) -> None:
+        from app.core.artifacts import _write_lock, get_artifact_store
+        from app.core.paths import managed_child
+        from app.core.pipeline import update_metadata_status
+        from app.core.pipeline_steps.context import parse_archive_metadata
+        from app.core.pipeline_steps.subtitles import has_checkpoint_cues, restore_checkpoint_srt
+        from app.core.settings import get_runtime_settings
+        from app.core.workflow import stage_enabled
+
+        result = task.result or {}
+        archive = result.get("archive") or {}
+        output_dir = result.get("output_dir") or archive.get("output_dir")
+        if task.task_type != TaskType.PIPELINE or not output_dir:
+            raise ValueError("A step-scoped rerun requires a pipeline transcript checkpoint")
+        root = get_runtime_settings().data_root
+        task_dir = managed_child(output_dir, root)
+        if not task_dir.is_dir():
+            raise ValueError("The checkpoint directory is missing")
+        artifacts = get_artifact_store()
+        def checkpoint(name: str) -> str | None:
+            try:
+                return artifacts.read(task.id, task_dir, name)["content"]
+            except FileNotFoundError:
+                return None
+
+        with _write_lock:
+            _checkpoint_outputs(task_dir, from_step)
+            metadata_text = checkpoint("metadata.json")
+            metadata = (
+                json.loads(metadata_text) if metadata_text is not None else result.get("metadata")
+            )
+            if metadata is None:
+                raise ValueError("The checkpoint metadata is missing")
+            parse_archive_metadata(metadata, task_dir.name)
+            raw = checkpoint("transcript.srt")
+            subtitle = (
+                None if has_checkpoint_cues(raw) else restore_checkpoint_srt(task_dir, metadata)
+            )
+            if not has_checkpoint_cues(subtitle or raw):
+                raise ValueError("A raw transcript or platform subtitle checkpoint is required")
+            polished = None
+            if from_step == "analyze":
+                polished = checkpoint("transcript_polished.srt")
+                if not has_checkpoint_cues(polished) and stage_enabled(task, "polish"):
+                    raise ValueError("A polished transcript is required; rerun from polish first")
+            if not (task_dir / "metadata.json").is_file():
+                artifacts.write(task.id, task_dir, "metadata.json", json.dumps(metadata))
+            if subtitle or not (task_dir / "transcript.srt").is_file():
+                artifacts.write(task.id, task_dir, "transcript.srt", subtitle or raw)
+            if polished and not (task_dir / "transcript_polished.srt").is_file():
+                artifacts.write(task.id, task_dir, "transcript_polished.srt", polished)
+
+            task.result = {
+                **result, "output_dir": str(task_dir), "_checkpoint_rerun_from": from_step,
+                "_checkpoint_cleanup_pending": True,
+            }
+            for key in ("analysis", "archive", "remote_sync"):
+                task.result.pop(key, None)
+            if subtitle:
+                task.result["subtitle_source"] = "platform"
+            task.options.pop("speaker_repair", None)
+            task.completed_steps = list(_CHECKPOINT_PREREQUISITES[from_step])
+            task.current_step = from_step
+            task.progress = self._checkpoint_progress(task.completed_steps)
+            task.flow = None
+            task.status = TaskStatus.QUEUED
+            task.message = "已重新排队，将基于已有文件断点续做"
+            task.completed_at = None
+            task.error = None
+            task.updated_at = datetime.now()
+            # The worker can finish cleanup after an interruption once the intent is durable.
+            get_task_store().save(task)
+            try:
+                finish_checkpoint_cleanup(task)
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                log_event(logger, logging.WARNING, "queue.checkpoint_cleanup_deferred", error=exc)
+        update_metadata_status(task_dir, "queued")
 
     async def repair_speakers(self, task_id: UUID, mode: str) -> bool:
         """Run a speaker-only proposal through the existing serial GPU worker."""
@@ -716,12 +883,16 @@ class TaskQueue:
                 continue
             if task.options.get("_remote_origin") and get_runtime_settings().remote_execution_worker_enabled:
                 continue  # Reconnect and validate ownership before restoring remote work.
+            scoped_rerun = (task.result or {}).get("_checkpoint_rerun_from")
             from app.core.remote_execution import defer
-            if defer(task):
+            if not scoped_rerun and defer(task):
                 continue
             if task.status == TS.PROCESSING:
                 store.update_status(task.id, TS.QUEUED, message="已重新排队")
-            if task.options.get("speaker_repair", {}).get("status") in {"queued", "running"}:
+            if scoped_rerun or task.options.get("speaker_repair", {}).get("status") in {
+                "queued",
+                "running",
+            }:
                 await self._postprocess_queue.put(task.id)
                 continue
             # If download was already done, skip straight to GPU queue

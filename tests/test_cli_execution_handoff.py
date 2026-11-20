@@ -237,8 +237,8 @@ def test_global_daemon_routing(monkeypatch, global_opts, command, default_remote
         def execution_nodes(self):
             return {"nodes": []}
 
-        def sync_changes(self, cursor, limit):
-            return {"server_revision": 12}
+        def sync_status_info(self):
+            return {"revision": 12}
 
         def disk_usage(self):
             return {"total_size": 1}
