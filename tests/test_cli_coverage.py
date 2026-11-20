@@ -70,6 +70,7 @@ def test_help_exposes_the_documented_command_tree():
         "auth",
         "task",
         "archive",
+        "folder",
         "read",
         "search",
         "speaker",
@@ -106,7 +107,7 @@ def test_every_public_leaf_command_renders_help():
 
     collect(root, [])
 
-    assert len(leaves) == 133
+    assert len(leaves) == 140
     failures = []
     for path in leaves:
         result = runner.invoke(app, ["--skip-version-check", "--plain", *path, "--help"])

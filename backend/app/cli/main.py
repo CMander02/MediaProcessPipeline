@@ -86,6 +86,7 @@ from app.cli.commands.configuration import (  # noqa: E402
     register_config_extensions,
     source_app,
 )
+from app.cli.commands.library import folder_app  # noqa: E402
 from app.cli.commands.operations import (  # noqa: E402
     auth_app,
     fs_app,
@@ -107,6 +108,8 @@ app.add_typer(server_app, name="server")
 app.add_typer(auth_app, name="auth")
 app.add_typer(task_app, name="task")
 app.add_typer(archive_app, name="archive")
+app.add_typer(folder_app, name="folder")
+app.add_typer(folder_app, name="library", hidden=True)
 app.add_typer(speaker_app, name="speaker")
 app.add_typer(stage_app, name="stage")
 app.add_typer(provider_app, name="provider")

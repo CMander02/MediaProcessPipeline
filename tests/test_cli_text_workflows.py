@@ -5,6 +5,7 @@ import shlex
 import sys
 from pathlib import Path
 from uuid import uuid4
+from zipfile import ZipFile
 
 import httpx
 import pytest
@@ -14,13 +15,22 @@ from typer.testing import CliRunner
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
+from app.api.routes import filesystem as filesystem_routes  # noqa: E402
+from app.api.routes import library as library_routes  # noqa: E402
+from app.api.routes import pipeline as pipeline_routes  # noqa: E402
 from app.api.routes import search as search_routes  # noqa: E402
+from app.api.routes import sync as sync_routes  # noqa: E402
+from app.api.routes import tasks as task_routes  # noqa: E402
 from app.cli.client import MppClient, MppClientError  # noqa: E402
 from app.cli.commands import archive, read, search, task_views  # noqa: E402
+from app.cli.commands import library as folder_commands  # noqa: E402
 from app.cli.main import app  # noqa: E402
-from app.core import archive_sync, database, settings  # noqa: E402
+from app.core import archive_sync, database, queue, settings  # noqa: E402
+from app.core.archive_lifecycle import get_archive_lifecycle  # noqa: E402
 from app.core.artifacts import get_artifact_store  # noqa: E402
+from app.core.content_identity import task_content_key  # noqa: E402
 from app.core.library import get_library_service  # noqa: E402
+from app.core.media_retention import record_media  # noqa: E402
 from app.models import Task, TaskStatus, TaskType  # noqa: E402
 from app.services import transcript_search  # noqa: E402
 
@@ -608,3 +618,317 @@ def test_client_filesystem_uses_existing_owner_and_optimistic_lock():
     assert json.loads(calls[1][3]) == {
         "path": "/foo.txt", "content": "new", "task_id": task_id, "expected_content": "",
     }
+
+
+@pytest.fixture
+def folder_api(library, monkeypatch):
+    task_queue = queue.TaskQueue()
+    monkeypatch.setattr(queue, "get_task_queue", lambda: task_queue)
+    monkeypatch.setattr(task_routes, "get_task_queue", lambda: task_queue)
+    server = FastAPI()
+    for module in (library_routes, pipeline_routes, task_routes, filesystem_routes, sync_routes):
+        server.include_router(module.router, prefix="/api")
+
+    @server.get("/health")
+    def health():
+        return {"status": "healthy"}
+
+    with TestClient(server) as http:
+        calls = []
+        http.event_hooks["request"].append(lambda request: calls.append(request.url.path))
+
+        def connect():
+            api = MppClient()
+            api.close()
+            api._client = http
+            return api
+
+        monkeypatch.setattr(folder_commands, "client", connect)
+        yield calls
+
+
+def _folder_data(*args, expected=0):
+    return json.loads(_invoke("folder", *args, json_mode=True, expected=expected))["data"]
+
+
+def _standalone_archive(tmp_path, title, source):
+    path = tmp_path / "archives" / title
+    path.mkdir()
+    archive_id = str(uuid4())
+    metadata = {
+        "archive_id": archive_id, "title": title, "source_url": source, "status": "completed",
+    }
+    (path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (path / "summary.md").write_text(f"# Summary for {title}", encoding="utf-8")
+    (path / "transcript.srt").write_text(RAW, encoding="utf-8")
+    archive_sync.get_archive_sync_service().reconcile()
+    return path, archive_id
+
+
+def test_folder_commands_and_local_offline_reads(library, folder_api, monkeypatch):
+    task, directory = library
+    sync = archive_sync.get_archive_sync_service()
+    initial_archive = sync.list_page()["archives"][0]
+    content_key = initial_archive["content_key"]
+
+    folder = _folder_data("create", "Interviews 🎤")
+    folder_id = folder["id"]
+    online = _invoke("folder", "list")
+    assert "folders=1  unclassified=1  revision=" in online
+    assert "ID\tCOUNT\tCOLLECTION\tUPDATED\tNAME" in online
+    assert _invoke("library", "list") == online
+
+    assert _folder_data("rename", "interviews 🎤", "Reports")["id"] == folder_id
+    assert _folder_data("rename", folder_id, "Workshop")["name"] == "Workshop"
+    moved = _folder_data(
+        "move", initial_archive["archive_id"][:8], content_key, str(directory), "--to", "Workshop",
+    )
+    assert [(item["content_key"], item["outcome"]) for item in moved["items"]] == [
+        (content_key, "moved"),
+    ]
+    listing = _folder_data("show", "Workshop", "--page", "1", "-q", "Quoted", "-n", "1")
+    assert listing["folder"]["id"] == folder_id
+    assert listing["page_size"] == listing["total"] == 1
+    assert [item["archive_id"] for item in listing["archives"]] == [initial_archive["archive_id"]]
+    assert TITLE in _invoke("folder", "show", folder_id[:8])
+    assert _folder_data("show", "unclassified")["archives"] == []
+
+    _folder_data("move", content_key, "--unclassified")
+    assert _folder_data("show", "Workshop")["archives"] == []
+    assert _folder_data("show", "--unclassified")["archives"][0]["content_key"] == content_key
+    _folder_data("move", content_key, "--to", "Workshop")
+
+    _folder_data("create", "Workshop")
+    ambiguous = json.loads(_invoke("folder", "show", "Workshop", json_mode=True, expected=4))
+    assert ambiguous["error"]["code"] == "ambiguous_folder_ref"
+    assert {item["count"] for item in ambiguous["error"]["detail"]} == {0, 1}
+    missing = json.loads(_invoke("folder", "show", "missing", json_mode=True, expected=4))
+    assert missing["error"]["code"] == "folder_not_found"
+    refused = json.loads(_invoke("folder", "delete", folder_id, json_mode=True, expected=2))
+    assert "Archives are kept" in refused["error"]["message"]
+    deleted = _invoke("folder", "delete", folder_id, "--yes")
+    assert "Moved 1 items to unclassified. Archives were kept." in deleted
+    assert directory.is_dir() and database.get_task_store().get(task.id)
+
+    online_directory = _folder_data("list")
+    online_archive = _folder_data("show", "unclassified")["archives"]
+    monkeypatch.setattr(folder_commands, "client", lambda: Daemon(running=False))
+    assert _folder_data("list") == online_directory
+    assert _folder_data("show", "unclassified")["archives"] == online_archive
+    assert _folder_data("show", "Workshop")["folder"]["count"] == 0
+
+
+@pytest.mark.parametrize("group", ["folder", "library"])
+def test_folder_groups_use_configured_default_server(group, folder_api, monkeypatch):
+    runtime = settings.get_runtime_settings()
+    monkeypatch.setattr(runtime, "remote_server_url", "https://library.example")
+    monkeypatch.setattr(runtime, "cli_use_remote_server", True)
+    result = runner.invoke(app, ["--json", group, "list"])
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert json.loads(result.stdout)["meta"]["server"] == "https://library.example"
+    assert folder_api[-1] == "/api/library/folders"
+
+
+@pytest.mark.parametrize("args", [
+    ("move", "ref"),
+    ("move", "ref", "--to", "here", "--unclassified"),
+    ("batch", "delete"),
+    ("batch", "delete", "ref", "--folder", "here"),
+])
+def test_folder_mutations_require_exactly_one_scope(args, folder_api):
+    result = json.loads(_invoke("folder", *args, json_mode=True, expected=2))
+    assert result["error"]["code"] == "invalid_options"
+    assert folder_api == []
+
+
+def test_folder_batch_delete_previews_then_removes_all_records(library, folder_api, tmp_path):
+    task, directory = library
+    _folder_data("create", "Interviews")
+    history = Task(task_type=TaskType.PIPELINE, source=YOUTUBE, status=TaskStatus.FAILED)
+    database.get_task_store().save(history)
+    historical_dir, history_archive_id = _standalone_archive(tmp_path, "Older archive", YOUTUBE)
+    key = task_content_key(task)
+    _folder_data("move", key, "--to", "Interviews")
+
+    text = _invoke("folder", "batch", "delete", "--folder", "Interviews")
+    assert "operation_id=" in text and "runnable=1  skipped=0" in text
+    assert "CONTENT_KEY\tSTATUS\tRECORDS\tTITLE" in text
+    preview = _folder_data("batch", "delete", "--folder", "Interviews")
+    target, = preview["targets"]
+    assert target["records"] == 3
+    assert set(target["task_ids"]) == {str(task.id), str(history.id)}
+    assert history_archive_id in target["archive_ids"]
+    assert directory.is_dir() and historical_dir.is_dir()
+    assert database.get_task_store().count() == 2
+    assert "/api/library/contents/delete" not in folder_api
+
+    result = _folder_data("batch", "delete", "--folder", "Interviews", "--apply", "--yes")
+    assert result["errors"] == []
+    deleted, = result["applied"]
+    assert deleted["outcome"] == "deleted" and deleted["deleted_records"] == 3
+    assert not directory.exists() and not historical_dir.exists()
+    database.close_db()
+    database.init_db(tmp_path)
+    assert database.get_task_store().count() == 0
+    assert archive_sync.get_archive_sync_service().list_page()["total"] == 0
+    assert _folder_data("show", "Interviews")["folder"]["count"] == 0
+
+
+def test_folder_batch_delete_keeps_partial_response_and_continues(
+    library, folder_api, tmp_path, monkeypatch,
+):
+    task, directory = library
+    blocked_path, blocked_id = _standalone_archive(
+        tmp_path, "Blocked", "https://www.youtube.com/watch?v=blocked",
+    )
+    blocked_key = get_library_service().directory()["archive_keys"][blocked_id]
+    lifecycle = get_archive_lifecycle()
+    delete_archive = lifecycle.delete
+
+    def delete(path):
+        if Path(path) == blocked_path:
+            raise OSError("Archive is in use")
+        return delete_archive(path)
+
+    monkeypatch.setattr(lifecycle, "delete", delete)
+    outcome = _folder_data(
+        "batch", "delete", blocked_key, task_content_key(task), "--apply", "--yes", expected=5,
+    )
+    error, = outcome["errors"]
+    completed, = outcome["applied"]
+    assert error["content_key"] == blocked_key and error["result"]["outcome"] == "partial"
+    assert error["result"]["errors"][0]["error"] == "Archive is in use"
+    assert completed["outcome"] == "deleted"
+    assert blocked_path.is_dir() and not directory.exists()
+    monkeypatch.setattr(lifecycle, "delete", delete_archive)
+    retried = _folder_data("batch", "delete", blocked_key, "--apply", "--yes")
+    assert retried["applied"][0]["outcome"] == "deleted"
+    assert not blocked_path.exists()
+
+
+def test_folder_batch_slim_text_keeps_artifacts_and_reports_protected_archives(
+    library, folder_api, tmp_path,
+):
+    task, directory = library
+    blocked_path, blocked_id = _standalone_archive(
+        tmp_path, "Protected", "https://www.youtube.com/watch?v=protected",
+    )
+    (blocked_path / "summary.md").unlink()
+    (blocked_path / "transcript.srt").unlink()
+    blocked_media = blocked_path / "video.mp4"
+    blocked_media.write_bytes(b"protected")
+    record_media(blocked_path, blocked_media, "source", playback=True)
+
+    metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
+    metadata.update(status="completed", media_removed=False, media_retention_applied=False)
+    get_artifact_store().write(task.id, directory, "metadata.json", json.dumps(metadata))
+    media = directory / "video.mp4"
+    media.write_bytes(b"video")
+    record_media(directory, media, "source", playback=True)
+    archive_sync.get_archive_sync_service().reconcile()
+    _folder_data("create", "Interviews")
+    key = task_content_key(task)
+    blocked_key = get_library_service().directory()["archive_keys"][blocked_id]
+    _folder_data("move", key, blocked_key, "--to", "Interviews")
+
+    result = _folder_data(
+        "batch", "slim", "--folder", "Interviews", "--policy", "text", "--apply", "--yes",
+        expected=5,
+    )
+    assert result["preview"]["action"] == "retention"
+    slimmed, = result["applied"]
+    assert slimmed["content_key"] == key and slimmed["reclaimed_bytes"] == len(b"video")
+    assert result["errors"][0]["content_key"] == blocked_key
+    assert result["errors"][0]["result"]["protected_reason"]
+    assert "/api/pipeline/media-retention/apply" in folder_api
+    assert (directory / "summary.md").is_file() and (directory / "transcript.srt").is_file()
+    assert blocked_media.is_file() and not media.exists()
+
+
+def test_folder_batch_retry_uses_preview_status(library, folder_api):
+    completed, _ = library
+    paused = Task(
+        task_type=TaskType.PIPELINE, source="https://example.com/paused", status=TaskStatus.PAUSED,
+    )
+    failed = Task(
+        task_type=TaskType.PIPELINE, source="https://example.com/failed", status=TaskStatus.FAILED,
+    )
+    store = database.get_task_store()
+    store.save(paused)
+    store.save(failed)
+    _folder_data("create", "Retries")
+    _folder_data(
+        "move", "@paused", str(failed.id)[:8], task_content_key(completed), "--to", "Retries",
+    )
+
+    preview = _invoke("folder", "batch", "retry", "--folder", "Retries")
+    assert "runnable=2  skipped=1" in preview and "not_retryable" in preview
+    assert store.get(paused.id).status == TaskStatus.PAUSED
+    assert store.get(failed.id).status == TaskStatus.FAILED
+
+    result = _folder_data("batch", "retry", "--folder", "Retries", "--apply", "--yes")
+    assert result["errors"] == []
+    assert {item["task_id"] for item in result["applied"]} == {str(paused.id), str(failed.id)}
+    assert f"/api/tasks/{paused.id}/resume" in folder_api
+    assert f"/api/tasks/{failed.id}/checkpoint-rerun" in folder_api
+    assert store.get(paused.id).status == store.get(failed.id).status == TaskStatus.QUEUED
+    assert store.get(completed.id).status == TaskStatus.COMPLETED
+
+
+def test_folder_batch_export_task_zip_and_standalone_bundle(library, folder_api, tmp_path):
+    task, _ = library
+    standalone, archive_id = _standalone_archive(
+        tmp_path, "Standalone", "https://www.youtube.com/watch?v=standalone",
+    )
+    destination = tmp_path / "exports"
+    result = _folder_data(
+        "batch", "export", archive_id, task_content_key(task),
+        "-o", str(destination), "--apply", "--yes",
+    )
+    assert result["errors"] == []
+    assert len(result["applied"]) == 2
+    assert f"/api/sync/tasks/{task.id}/archive" in folder_api
+    assert "/api/filesystem/read" in folder_api
+    with ZipFile(destination / f"{archive_id}.zip") as bundle:
+        assert set(bundle.namelist()) == {"summary.md", "transcript.srt"}
+        assert bundle.read("summary.md") == (standalone / "summary.md").read_bytes()
+        assert bundle.read("transcript.srt") == (standalone / "transcript.srt").read_bytes()
+    key = task_content_key(task)
+    task_zip = next(item for item in result["applied"] if item["content_key"] == key)
+    with ZipFile(task_zip["output"]) as bundle:
+        assert any(name.endswith("summary.md") for name in bundle.namelist())
+
+
+def test_folder_batch_export_historical_archive_uses_its_own_transcript(
+    library, folder_api, tmp_path,
+):
+    task, original = library
+    original_metadata = json.loads((original / "metadata.json").read_text(encoding="utf-8"))
+    original_metadata["task_id"] = str(task.id)
+    get_artifact_store().write(task.id, original, "metadata.json", json.dumps(original_metadata))
+    historical = tmp_path / "archives" / "Historical"
+    historical.mkdir()
+    archive_id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    metadata = {
+        "archive_id": archive_id, "task_id": str(task.id), "title": "Historical",
+        "source_url": YOUTUBE, "status": "completed",
+    }
+    (historical / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (historical / "transcript.srt").write_text(RAW, encoding="utf-8")
+    task.result["archive"] = {"output_dir": str(historical)}
+    database.get_task_store().save(task)
+    archive_sync.get_archive_sync_service().reconcile()
+
+    preview = _folder_data("batch", "export", str(task.id), str(task.id)[:8], archive_id)
+    assert [item["content_key"] for item in preview["targets"]] == [task_content_key(task)]
+
+    result = _folder_data(
+        "batch", "export", task_content_key(task), "-o", str(tmp_path / "exports"),
+        "--apply", "--yes",
+    )
+    target, = result["preview"]["targets"]
+    assert target["archive"]["archive_id"] == archive_id
+    exported, = result["applied"]
+    with ZipFile(exported["output"]) as bundle:
+        assert bundle.namelist() == ["transcript.srt"]
+        assert bundle.read("transcript.srt").decode("utf-8") == RAW

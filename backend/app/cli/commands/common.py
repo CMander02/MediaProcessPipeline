@@ -116,7 +116,10 @@ def resolve_many_task_refs(refs: list[str], api: MppClient) -> list[str]:
     return resolved
 
 
-def match_archive_ref(ref: str, archives: list[dict[str, Any]]) -> dict[str, Any] | None:
+def match_archive_ref(
+    ref: str, archives: list[dict[str, Any]], *,
+    group_key: Callable[[dict[str, Any]], str] | None = None,
+) -> dict[str, Any] | None:
     normalized = ref.strip()
     if not normalized:
         emit_error("invalid_archive_ref", "Archive reference is empty.", exit_code=2)
@@ -137,6 +140,11 @@ def match_archive_ref(ref: str, archives: list[dict[str, Any]]) -> dict[str, Any
         ):
             prefix.append(archive)
     matches = exact or prefix
+    if group_key is not None:
+        groups: dict[str, dict[str, Any]] = {}
+        for item in matches:
+            groups.setdefault(group_key(item), item)
+        matches = list(groups.values())
     if len(matches) > 1:
         emit_error(
             "ambiguous_archive_ref",
@@ -156,9 +164,10 @@ def match_archive_ref(ref: str, archives: list[dict[str, Any]]) -> dict[str, Any
 
 def resolve_archive_ref(
     ref: str, api: MppClient, *, missing_ok: bool = False,
+    group_key: Callable[[dict[str, Any]], str] | None = None,
 ) -> dict[str, Any] | None:
     archives = api.list_archives(lite=True)
-    match = match_archive_ref(ref, archives)
+    match = match_archive_ref(ref, archives, group_key=group_key)
     candidate = Path(ref.strip()).expanduser()
     path = match["path"] if match else None
     if path is None and (candidate.is_absolute() or PureWindowsPath(ref.strip()).is_absolute()):
