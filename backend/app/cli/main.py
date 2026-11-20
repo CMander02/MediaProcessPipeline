@@ -99,6 +99,8 @@ from app.cli.commands.operations import (  # noqa: E402
     sync_app,
     voiceprint_app,
 )
+from app.cli.commands.read import read  # noqa: E402
+from app.cli.commands.search import search  # noqa: E402
 from app.cli.commands.task import task_app  # noqa: E402
 
 app.add_typer(server_app, name="server")
@@ -266,6 +268,8 @@ app.command()(tasks)
 app.command(name="list")(list_alias)
 app.command(name="status")(status_alias)
 app.command()(show)
+app.command()(read)
+app.command()(search)
 app.command(name="open")(open_output)
 app.command()(cancel)
 config_app.callback(invoke_without_command=True)(_config_default)

@@ -615,13 +615,22 @@ class MppClient:
             params={"path": path, "recursive": str(recursive).lower()},
         )
 
-    def fs_read(self, path: str) -> dict[str, Any]:
-        return self.request("GET", "/api/filesystem/read", params={"path": path})
+    def fs_read(self, path: str, *, task_id: str | None = None) -> dict[str, Any]:
+        params = {"path": path}
+        if task_id is not None:
+            params["task_id"] = task_id
+        return self.request("GET", "/api/filesystem/read", params=params)
 
-    def fs_write(self, path: str, content: str) -> dict[str, Any]:
-        return self.request(
-            "POST", "/api/filesystem/write", json_body={"path": path, "content": content}
-        )
+    def fs_write(
+        self, path: str, content: str, *, expected_content: str | None = None,
+        task_id: str | None = None,
+    ) -> dict[str, Any]:
+        body = {"path": path, "content": content}
+        if expected_content is not None:
+            body["expected_content"] = expected_content
+        if task_id is not None:
+            body["task_id"] = task_id
+        return self.request("POST", "/api/filesystem/write", json_body=body)
 
     def fs_download(self, path: str) -> bytes:
         return self.download("/api/filesystem/media", params={"path": path})
@@ -674,8 +683,13 @@ class MppClient:
     def delete_library_content(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.request("POST", "/api/library/contents/delete", json_body=payload)
 
-    def search_transcripts(self, q: str, *, limit: int = 20) -> dict[str, Any]:
-        return self.request("GET", "/api/search/transcripts", params={"q": q, "limit": limit})
+    def search_transcripts(
+        self, q: str, *, limit: int = 20, speaker: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"q": q, "limit": limit}
+        if speaker is not None:
+            params["speaker"] = speaker
+        return self.request("GET", "/api/search/transcripts", params=params)
 
     # Voiceprints and speaker updates
 

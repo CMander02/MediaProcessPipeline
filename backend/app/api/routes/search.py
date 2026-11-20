@@ -14,7 +14,9 @@ router = APIRouter(prefix="/search", tags=["search"])
 async def search_transcripts(
     q: str = Query(..., max_length=200),
     limit: int = Query(20, ge=1, le=50),
+    speaker: str | None = Query(None),
 ) -> dict[str, Any]:
     from app.services.transcript_search import get_transcript_search_service
 
-    return await run_in_thread(get_transcript_search_service().search, q, limit=limit)
+    return await run_in_thread(get_transcript_search_service().search, q, limit=limit,
+                               speaker=speaker)

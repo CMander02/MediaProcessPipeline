@@ -220,6 +220,8 @@ class ArchiveSyncService:
             attempts = result["attempts"].get(row["archive_id"])
             if attempts and not result["duplicates"]:
                 item["attempts"] = attempts
+            if duplicate_count := result["duplicate_counts"].get(row["archive_id"]):
+                item["duplicate_count"] = duplicate_count
             archives.append(item)
         return {"archives": archives, "total": result["total"], "page": result["page"],
                 "page_size": page_size, "facets": result["facets"],

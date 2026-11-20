@@ -11,7 +11,6 @@ import typer
 from app.cli.commands.root_support import (
     _emit_json_compat,
     _get_client,
-    _list_tasks_any,
     _require_daemon,
     _resolve_ref,
 )
@@ -152,125 +151,82 @@ def show(
     task_ref: str = typer.Argument(..., help="Task ID、前缀或 @last / @fail / @run"),
     summary: bool = typer.Option(False, "--summary", help="打印摘要文件到 stdout"),
     transcript: bool = typer.Option(False, "--transcript", help="打印字幕/转录到 stdout"),
+    detail: bool = typer.Option(False, "--detail", help="打印详细摘要到 stdout"),
+    mindmap: bool = typer.Option(False, "--mindmap", help="打印导图文本到 stdout"),
     json_out: bool = typer.Option(False, "--json", help="JSON 输出"),
 ):
     """查看任务详情（步骤、输出文件、选项）。"""
+    from app.cli.commands.read import resolve_reader_task
+    from app.cli.context import configure_cli_context
     from app.cli.display import console, print_task_detail
 
-    use_json = json_out or (_command_context().output_mode in {"json", "jsonl"})
-
-    client = _get_client()
-    online = client.ping()
-
-    if online:
-        from app.cli.commands.common import api_call
-
-        task_id = api_call(lambda: _resolve_ref(task_ref, client=client))
-        task = api_call(lambda: client.get_task(task_id))
-    else:
-        # Offline: read from SQLite
-        from app.cli.context import get_cli_context
-        from app.cli.output import emit_error
-
-        if not get_cli_context().is_local:
-            emit_error(
-                "daemon_unavailable",
-                f"Cannot reach {get_cli_context().server_url}.",
-                exit_code=3,
-            )
-        try:
-            from app.core.database import init_db
-
-            init_db()
-            task_id = _resolve_ref(task_ref)
-            all_tasks = _list_tasks_any(limit=10000)
-            task = next(item for item in all_tasks if item["id"] == task_id)
-            if not use_json:
+    previous_mode = _command_context().output_mode
+    if json_out and previous_mode == "text":
+        configure_cli_context(output_mode="json")
+    try:
+        api = _get_client()
+        connected = api if api.ping() else None
+        task = resolve_reader_task(task_ref, connected)
+        flags = {
+            name for name, enabled in (
+                ("summary", summary), ("transcript", transcript), ("detail", detail),
+                ("mindmap", mindmap),
+            ) if enabled
+        }
+        artifacts = _cat_task(task, flags, connected) if flags else {}
+        if _command_context().output_mode in {"json", "jsonl"}:
+            _emit_json_compat({**task, "artifacts": artifacts} if flags else task)
+        elif flags:
+            typer.echo("\n".join(artifacts.values()))
+        else:
+            if connected is None:
                 console.print("[dim](offline)[/dim]")
-        except typer.Exit:
-            raise
-        except Exception as e:
-            console.print(f"[red]无法读取任务: {e}[/red]")
-            raise typer.Exit(1)
-
-    if use_json:
-        _emit_json_compat(task, legacy_json=json_out)
-        return
-
-    if summary or transcript:
-        _cat_task(task, summary=summary, transcript=transcript, client=client if online else None)
-        return
-
-    print_task_detail(task)
+            print_task_detail(task)
+    finally:
+        configure_cli_context(output_mode=previous_mode)
 
 
-def _cat_task(
-    task: dict,
-    summary: bool = False,
-    transcript: bool = False,
-    client=None,
-) -> None:
-    """Print summary or transcript file content to stdout."""
-    import pathlib
+def _cat_task(task: dict, flags: set[str], api=None) -> dict[str, str]:
+    from app.cli.commands.common import api_call
+    from app.cli.commands.read import ArtifactReader, mindmap
+    from app.cli.output import emit_error
 
-    result = task.get("result") or {}
-    output_dir = result.get("output_dir") or task.get("output_dir")
-    if not output_dir:
-        from app.cli.output import emit_error
-
+    reader = ArtifactReader.for_task(api, task)
+    if not reader.root:
         emit_error("task_output_missing", "The task has no output directory.", exit_code=4)
-
-    if client is not None:
-        from app.cli.commands.common import api_call
-        from app.cli.output import emit_error
-
-        listing = api_call(lambda: client.fs_list(str(output_dir), "file"))
-        names = [str(item.get("name") or "") for item in listing.get("items") or []]
-        wanted: list[str] = []
-        if summary:
-            wanted.extend(
-                name for name in names if "summary" in name.lower() and name.endswith(".md")
-            )
-        if transcript:
-            wanted.extend(
-                name
-                for name in names
-                if name.lower().endswith(".srt") or "transcript" in name.lower()
-            )
-        if not wanted:
-            emit_error("task_artifact_missing", "No matching task artifact was found.", exit_code=4)
-        separator = "\\" if "\\" in str(output_dir) else "/"
-        root = str(output_dir).rstrip("/\\")
-        contents: list[str] = []
-        for name in wanted:
-            path = f"{root}{separator}{name}"
-            result = api_call(lambda path=path: client.fs_read(path))
-            if result.get("success"):
-                contents.append(str(result.get("content") or ""))
-        if contents:
-            print("\n".join(contents))
-            return
-        emit_error("task_artifact_missing", "No readable task artifact was found.", exit_code=4)
-
-    od = pathlib.Path(output_dir)
-    if not od.exists():
-        sys.stderr.write(f"Output directory not found: {output_dir}\n")
-        raise typer.Exit(1)
-
-    if summary:
-        candidates = sorted(od.glob("*_summary.md")) + sorted(od.glob("*summary*.md"))
-        if not candidates:
-            sys.stderr.write(f"No summary file found in {output_dir}\n")
-            raise typer.Exit(1)
-        print(candidates[0].read_text(encoding="utf-8"))
-
-    if transcript:
-        # Prefer .srt, then .txt
-        candidates = sorted(od.glob("*.srt")) + sorted(od.glob("*transcript*.txt"))
-        if not candidates:
-            sys.stderr.write(f"No transcript/subtitle file found in {output_dir}\n")
-            raise typer.Exit(1)
-        print(candidates[0].read_text(encoding="utf-8"))
+    artifacts = {}
+    code = "task_artifact_missing"
+    candidates = {
+        "summary": ("summary.md",),
+        "transcript": ("transcript_polished.srt", "transcript_polished.md", "transcript.srt"),
+        "detail": ("detail.md",),
+    }
+    available = None
+    for name, files in candidates.items():
+        if name not in flags:
+            continue
+        found = reader.first(*files)
+        if found is None and name in {"summary", "transcript"}:
+            if available is None:
+                available = api_call(reader.names)
+            legacy = [path for path in available if path not in files and "/" not in path]
+            if name == "summary":
+                matches = [path for path in legacy
+                           if "summary" in path.lower() and path.lower().endswith(".md")]
+                matches.sort(key=lambda path: not path.lower().endswith("_summary.md"))
+            else:
+                matches = [path for path in legacy if path.lower().endswith(".srt")]
+                matches.extend(path for path in legacy if "transcript" in path.lower()
+                               and path.lower().endswith((".txt", ".md")))
+            found = reader.first(*matches)
+        if found is None:
+            emit_error(code, f"No readable {name} artifact was found.", exit_code=4)
+        artifacts[name] = found[1].removeprefix("\ufeff")
+    if "mindmap" in flags:
+        artifacts["mindmap"] = mindmap(
+            reader, plain=_command_context().plain, code=code,
+        ).removeprefix("\ufeff")
+    return artifacts
 
 
 def open_output(

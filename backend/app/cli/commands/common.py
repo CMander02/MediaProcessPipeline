@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, NoReturn, TypeVar
 from uuid import UUID
 
@@ -116,13 +116,12 @@ def resolve_many_task_refs(refs: list[str], api: MppClient) -> list[str]:
     return resolved
 
 
-def resolve_archive_ref(ref: str, api: MppClient) -> dict[str, Any]:
-    archives = api.list_archives(lite=True)
-    if not archives:
-        emit_error("archive_not_found", "No archives are available.", exit_code=4)
+def match_archive_ref(ref: str, archives: list[dict[str, Any]]) -> dict[str, Any] | None:
     normalized = ref.strip()
+    if not normalized:
+        emit_error("invalid_archive_ref", "Archive reference is empty.", exit_code=2)
     if normalized == "@last":
-        return api.get_archive(str(archives[0]["path"]))
+        return archives[0] if archives else None
 
     exact: list[dict[str, Any]] = []
     prefix: list[dict[str, Any]] = []
@@ -138,11 +137,6 @@ def resolve_archive_ref(ref: str, api: MppClient) -> dict[str, Any]:
         ):
             prefix.append(archive)
     matches = exact or prefix
-    if not matches:
-        candidate = Path(normalized).expanduser()
-        if candidate.is_absolute():
-            return api.get_archive(str(candidate))
-        emit_error("archive_not_found", f"No archive matches {normalized!r}.", exit_code=4)
     if len(matches) > 1:
         emit_error(
             "ambiguous_archive_ref",
@@ -157,7 +151,32 @@ def resolve_archive_ref(ref: str, api: MppClient) -> dict[str, Any]:
             ],
             exit_code=4,
         )
-    return api.get_archive(str(matches[0]["path"]))
+    return matches[0] if matches else None
+
+
+def resolve_archive_ref(
+    ref: str, api: MppClient, *, missing_ok: bool = False,
+) -> dict[str, Any] | None:
+    archives = api.list_archives(lite=True)
+    match = match_archive_ref(ref, archives)
+    candidate = Path(ref.strip()).expanduser()
+    path = match["path"] if match else None
+    if path is None and (candidate.is_absolute() or PureWindowsPath(ref.strip()).is_absolute()):
+        path = str(candidate)
+    if path is not None:
+        try:
+            details = api.get_archive(str(path))
+            if match and not details.get("archive_id"):
+                details = {**details, "archive_id": match.get("archive_id")}
+            return {**(match or {}), **details}
+        except MppClientError as exc:
+            if not missing_ok or exc.status_code != 404:
+                raise
+    if missing_ok:
+        return None
+    if not archives:
+        emit_error("archive_not_found", "No archives are available.", exit_code=4)
+    emit_error("archive_not_found", f"No archive matches {ref.strip()!r}.", exit_code=4)
 
 
 ARCHIVE_FILES = {

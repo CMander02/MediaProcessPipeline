@@ -184,22 +184,36 @@ def _node_time(node: Mapping[str, Any]) -> str | None:
     return _seconds_timestamp(node.get("start", node.get("start_time")))
 
 
-def render_mindmap_tree(root: Mapping[str, Any], *, plain: bool = False) -> str:
+def render_mindmap_tree(
+    root: Mapping[str, Any], *, plain: bool = False, depth: int | None = None,
+    timestamps: bool = True,
+) -> str:
     branch, last_branch, vertical = ("|-- ", "`-- ", "|   ") if plain else ("├── ", "└── ", "│   ")
     lines = []
 
-    def visit(node: Mapping[str, Any], indent: str, connector: str, child_indent: str) -> None:
-        start = _node_time(node)
+    def visit(node: Mapping[str, Any], connector: str, child_indent: str, level: int) -> None:
+        start = _node_time(node) if timestamps else None
         title = _cell(node.get("title"))
-        lines.append(f"{indent}{connector}{title}" + (f"\t{start}" if start else ""))
+        lines.append(f"{connector}{title}" + (f"\t{start}" if start else ""))
+        if depth is not None and level >= depth:
+            return
         children = node.get("children") or []
         for index, child in enumerate(children):
             last = index == len(children) - 1
-            visit(child, child_indent, last_branch if last else branch,
-                  child_indent + ("    " if last else vertical))
+            visit(child, child_indent + (last_branch if last else branch),
+                  child_indent + ("    " if last else vertical), level + 1)
 
-    visit(root, "", "", "")
+    visit(root, "", "", 0)
     return "\n".join(lines)
+
+
+def render_chapter_table(chapters: Sequence[Mapping[str, Any]], *, timestamps: bool = True) -> str:
+    return _table("INDEX\tSTART\tEND\tTITLE\tSUMMARY", (
+        _row(item["index"], _seconds_timestamp(item["start"]) if timestamps else None,
+             _seconds_timestamp(item["end"]) if timestamps else None,
+             "  " * item["depth"] + _cell(item["title"]), item["summary"])
+        for item in chapters
+    ))
 
 
 def render_chapters(chapters: Sequence[Mapping[str, Any]]) -> str:

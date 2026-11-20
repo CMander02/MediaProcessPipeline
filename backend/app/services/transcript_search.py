@@ -227,13 +227,30 @@ class TranscriptSearchService:
 
     # -- searching ----------------------------------------------------------------------
 
-    def search(self, query: str, *, limit: int = 30, per_archive: int = 3) -> dict[str, Any]:
+    def search_offline(
+        self, query: str, *, limit: int, speaker: str | None = None, refresh: bool = False,
+    ) -> dict[str, Any]:
+        with self._connect() as conn:
+            empty = conn.execute("SELECT 1 FROM archive LIMIT 1").fetchone() is None
+        if refresh or (empty and next(iter_archive_directories(
+            get_workspace_paths(self._root).root,
+        ), None) is not None):
+            self.refresh()
+        return self.search(query, limit=limit, speaker=speaker, background=False)
+
+    def search(
+        self, query: str, *, limit: int = 30, per_archive: int = 3,
+        speaker: str | None = None, background: bool = True,
+    ) -> dict[str, Any]:
         text = " ".join(query.split())
-        self._refresh_in_background()
+        if background:
+            self._refresh_in_background()
         result: dict[str, Any] = {
             "query": text, "groups": [], "speakers": [],
             "indexing": self._progress is not None, "progress": self._progress,
         }
+        if speaker is not None:
+            result["speaker_filter"] = speaker
         if not text:
             return result
         with self._connect() as conn:
@@ -254,7 +271,11 @@ class TranscriptSearchService:
                     (_like(text),),
                 )
             groups: dict[int, dict[str, Any]] = {}
+            folded_speaker = speaker.casefold() if speaker is not None else None
             for row in rows:
+                label = (row["speaker"] or "").casefold()
+                if folded_speaker is not None and label != folded_speaker:
+                    continue
                 group = groups.get(row["id"])
                 if group is None:
                     if len(groups) >= limit:

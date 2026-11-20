@@ -386,6 +386,8 @@ class ArchiveService:
             "duration",
             "duration_seconds",
             "media_type",
+            "media_removed",
+            "media_retention_applied",
             "content_subtype",
             "status",
             "error",
@@ -410,10 +412,19 @@ class ArchiveService:
                 "opus_id",
                 "article_url",
                 "article_id",
+                "speaker_count",
+                "pending_unknown_cues",
             }
             lite_extra = {key: extra[key] for key in extra_keys if key in extra}
-            if lite_extra:
-                lite["extra"] = lite_extra
+            lite_extra["derived_content_stale"] = bool(extra.get("derived_content_stale"))
+            quality = extra.get("speaker_quality")
+            if isinstance(quality, dict) and "unassigned_segments" in quality:
+                lite_extra["speaker_quality"] = {
+                    "unassigned_segments": quality["unassigned_segments"],
+                }
+            lite["extra"] = lite_extra
+        else:
+            lite["extra"] = {"derived_content_stale": False}
         return lite
 
     @staticmethod

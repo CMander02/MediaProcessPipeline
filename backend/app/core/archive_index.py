@@ -136,6 +136,7 @@ MEDIA_CONDITIONS = {
     "video": "has_video=1",
     "audio": "has_video=0 AND has_image=0 AND has_audio=1",
     "image": "(has_image=1 OR content_subtype IN ('image_note','text_note'))",
+    "text": "has_video=0 AND has_audio=0 AND has_image=0",
 }
 ORDERING = {
     "processed_desc": "last_processed.processing_at DESC",
@@ -439,6 +440,9 @@ def query_library(
         "total": total,
         "page": page,
         "attempts": groups.attempts,
+        "duplicate_counts": {member["archive_id"]: len(members)
+                             for members in groups.by_key.values() if len(members) > 1
+                             for member in members} if filters["duplicates"] else {},
         "duplicates": filters["duplicates"],
         "facets": facets,
         'content_keys': groups.content_keys,
