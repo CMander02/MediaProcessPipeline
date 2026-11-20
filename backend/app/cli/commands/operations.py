@@ -15,6 +15,7 @@ import typer
 
 from app.cli.client import MppClient
 from app.cli.commands.common import api_call, client, resolve_task_ref
+from app.cli.commands.read import task_archive_reader
 from app.cli.context import get_cli_context, normalize_server_url, route_to_configured_server
 from app.cli.daemon import daemon_status, start_daemon, stop_daemon
 from app.cli.output import confirm_action, emit, emit_error
@@ -23,6 +24,8 @@ from app.cli.renderers import (
     render_storage_clean,
     render_storage_media,
     render_storage_usage,
+    render_voiceprint_person,
+    render_voiceprint_samples,
 )
 
 server_app = typer.Typer(help="本地 daemon 进程管理", no_args_is_help=True)
@@ -53,7 +56,9 @@ def sync_route(ctx: typer.Context):
 def storage_migrate(
     source: Optional[Path] = typer.Option(None, "--source", help="本地资料库；默认使用 data_root"),
     target: Optional[Path] = typer.Option(None, "--target", help="复制到指定目录；省略则原地整理"),
-    original_root: Optional[Path] = typer.Option(None, "--original-root", help="副本中旧绝对路径的原始根目录"),
+    original_root: Optional[Path] = typer.Option(
+        None, "--original-root", help="副本中旧绝对路径的原始根目录",
+    ),
     apply: bool = typer.Option(False, "--apply", help="执行或继续迁移"),
     rollback: bool = typer.Option(False, "--rollback", help="从迁移备份恢复旧布局"),
 ):
@@ -67,12 +72,19 @@ def storage_migrate(
         local = MppClient(base_url="http://localhost:18000", timeout=2)
         try:
             if local.ping():
-                emit_error("daemon_running", "Stop the local daemon before migrating storage", exit_code=4)
+                emit_error(
+                    "daemon_running", "Stop the local daemon before migrating storage", exit_code=4,
+                )
         finally:
             local.close()
     try:
-        migration = StorageMigration(source or get_runtime_settings().data_root, target, original_root)
-        result = migration.rollback() if rollback else migration.apply() if apply else migration.preview()
+        root = source or get_runtime_settings().data_root
+        migration = StorageMigration(root, target, original_root)
+        result = (
+            migration.rollback()
+            if rollback
+            else migration.apply() if apply else migration.preview()
+        )
     except (OSError, ValueError) as exc:
         emit_error("storage_migration_failed", str(exc), exit_code=2)
     emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
@@ -236,11 +248,19 @@ def voiceprint_list():
     emit(items, text=text)
 
 
-def _voiceprint_person(api, person_id: str) -> dict[str, Any]:
-    for item in api_call(api.voiceprint_persons):
-        if str(item.get("id")) == person_id:
+def _voiceprint_person(api, person_ref: str, *, allow_name: bool = False) -> dict[str, Any]:
+    persons = api_call(api.voiceprint_persons)
+    for item in persons:
+        if str(item.get("id")) == person_ref:
             return item
-    emit_error("voiceprint_person_not_found", f"Person {person_id!r} was not found.", exit_code=4)
+    if allow_name:
+        matches = [item for item in persons if item.get("name") == person_ref]
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            emit_error("ambiguous_voiceprint_person", "Multiple people have that name. Use an ID.",
+                       detail=[item["id"] for item in matches], exit_code=4)
+    emit_error("voiceprint_person_not_found", f"Person {person_ref!r} was not found.", exit_code=4)
 
 
 @voiceprint_app.command("show")
@@ -248,7 +268,7 @@ def voiceprint_show(person_id: str = typer.Argument(...)):
     """显示一个声纹人员。"""
     api = client()
     result = _voiceprint_person(api, person_id)
-    emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
+    emit(result, text=render_voiceprint_person(result))
 
 
 @voiceprint_app.command("update")
@@ -265,7 +285,7 @@ def voiceprint_update(
         emit_error("empty_patch", "Provide --name or --notes.", exit_code=2)
     api = client()
     result = api_call(lambda: api.update_voiceprint_person(person_id, patch))
-    emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
+    emit(result, text=render_voiceprint_person(result))
 
 
 @voiceprint_app.command("merge")
@@ -278,7 +298,7 @@ def voiceprint_merge(
     confirm_action(f"Merge voiceprint person {src_id} into {dst_id}?", explicit_yes=yes)
     api = client()
     result = api_call(lambda: api.merge_voiceprint_persons(dst_id, src_id))
-    emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))
+    emit(result, text=render_voiceprint_person(result))
 
 
 @voiceprint_app.command("delete")
@@ -307,6 +327,56 @@ def voiceprint_sample(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(data)
     emit({"sample_id": sample_id, "output": str(output), "size": len(data)}, text=str(output))
+
+
+@voiceprint_app.command("samples")
+def voiceprint_samples(person_ref: str):
+    """按人员 ID 或准确姓名列出声纹样本。"""
+    api = client()
+    person = _voiceprint_person(api, person_ref, allow_name=True)
+    samples = api_call(lambda: api.list_voiceprint_samples(person["id"]))
+    emit(samples, text=render_voiceprint_samples(samples))
+
+
+@voiceprint_app.command("sample-delete")
+def voiceprint_sample_delete(sample_id: str, yes: bool = typer.Option(False, "--yes")):
+    """删除声纹样本。"""
+    confirm_action(f"Delete voiceprint sample {sample_id}?", explicit_yes=yes)
+    api = client()
+    result = api_call(lambda: api.delete_voiceprint_sample(sample_id))
+    emit(result, text=f"Deleted sample {sample_id}")
+
+
+@voiceprint_app.command("enroll")
+def voiceprint_enroll(
+    name: str,
+    from_task: Optional[str] = typer.Option(None, "--from-task"),
+    speaker: Optional[str] = typer.Option(None, "--speaker"),
+    from_file: Optional[str] = typer.Option(None, "--from-file", help="服务端音频文件路径"),
+    start: Optional[float] = typer.Option(None, "--start"),
+    end: Optional[float] = typer.Option(None, "--end"),
+    notes: str = typer.Option("", "--notes"),
+):
+    """从任务人物或服务端音频文件录入声纹。"""
+    from_task_valid = (
+        from_task is not None and bool(speaker) and from_file is None
+        and start is None and end is None
+    )
+    from_file_valid = from_file is not None and from_task is None and speaker is None
+    if not (from_task_valid or from_file_valid):
+        emit_error("invalid_enrollment_source", "Use --from-task with --speaker, or --from-file.",
+                   exit_code=2)
+    api = client()
+    payload = {"name": name, "notes": notes}
+    if from_task_valid:
+        reader = task_archive_reader(from_task, api)
+        payload.update(task_id=reader.task_id, speaker_label=speaker)
+    else:
+        payload.update(audio_path=from_file, start_sec=start, end_sec=end)
+    result = api_call(lambda: api.enroll_voiceprint(payload))
+    status = "Reused embedding" if result["reused_existing_embedding"] else "Extracted embedding"
+    person = render_voiceprint_person(result["person"])
+    emit(result, text=f"{person}\n{status}\t{result['sample_id']}")
 
 
 def _log_text(payload: dict[str, Any]) -> str:

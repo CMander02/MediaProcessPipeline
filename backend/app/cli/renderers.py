@@ -236,3 +236,101 @@ def render_note_with_image_descriptions(
             label = f"Image {index}" if index is not None else "Image"
             sections.append(f"{label}\n{text}")
     return "\n\n".join(section for section in sections if section)
+
+
+def render_speaker_dossier(profile: dict[str, Any]) -> str:
+    lines = [
+        _row(profile.get("title"), profile.get("task_id"), profile.get("source_file")),
+        _row(f"Cues {profile['total_cues']}", f"Speakers {profile['speaker_count']}",
+             f"Anonymous {profile['anonymous_count']}", f"Pending {profile['pending_count']}"),
+    ]
+    if profile.get("derived_content_stale"):
+        reason = (
+            profile.get("derived_content_stale_reason") or "Summary and mind map need regeneration."
+        )
+        lines.append(f"[derived_content_stale] {_cell(reason)}")
+    if (quality := profile.get("speaker_quality")) and quality.get("status"):
+        lines.append(_row("Speaker quality", quality["status"], quality.get("reason")))
+    visual = profile.get("visual_participants") or {}
+    if visual.get("participants") or visual.get("count_estimate") is not None:
+        lines.extend(["", "Visual participant evidence"])
+        if visual.get("count_estimate") is not None:
+            lines.append(_row("Estimated participants", visual["count_estimate"]))
+        lines.append("NAME\tROLE\tEVIDENCE")
+        for participant in visual.get("participants", []):
+            evidence = participant.get("evidence") or []
+            observed = " | ".join(
+                f"{_cell(row.get('source'))} [{_cell(row.get('quote'))}]" for row in evidence
+            )
+            lines.append(_row(participant.get("name"), participant.get("role"), observed))
+    for key, label in (("conflicts", "Conflict"), ("uncertainties", "Uncertainty")):
+        lines.extend(_row(label, value) for value in visual.get(key, []))
+    for speaker in profile.get("speakers") or []:
+        lines.extend(["", _row(
+            speaker["name"], f"{speaker['share_pct']:.2f}%", f"{speaker['duration_seconds']:.3f}s",
+            f"{speaker['cue_count']} cues", speaker["first_timestamp"], speaker["last_timestamp"],
+        )])
+        lines.append(_row("Source label", speaker.get("source_label"), speaker.get("status"),
+                          speaker.get("provenance")))
+        for key, label in (
+            ("identity_quotes", "Identity quote"), ("sample_quotes", "Sample quote"),
+        ):
+            for quote in speaker.get(key, []):
+                lines.append(_row(label, f"#{quote['index']}", quote["timestamp"], quote["text"]))
+        for suggestion in speaker.get("voiceprint_suggestions", []):
+            name = suggestion.get("current_name") or suggestion.get("person_name")
+            lines.append(_row("Voiceprint candidate", name, suggestion.get("similarity"),
+                              suggestion.get("reason")))
+    return "\n".join(lines)
+
+
+def render_pending_speaker_cues(cues: list[dict[str, Any]]) -> str:
+    def turn(cue: dict | None) -> str:
+        if cue is None:
+            return "-"
+        speaker = _cell(cue.get("speaker") or "UNKNOWN")
+        return f"#{cue['index']} [{speaker}] {_cell(cue['text'])}"
+
+    lines = []
+    for cue in cues:
+        lines.extend([
+            f"#{cue['index']} [{_cell(cue['timestamp'])}]",
+            f"{turn(cue['prev_cue'])} -> >>> [UNKNOWN] {_cell(cue['text'])} <<<"
+            f" -> {turn(cue['next_cue'])}",
+        ])
+        for candidate in cue["candidates"]:
+            lines.append(_row(
+                "Candidate", candidate["speaker"],
+                f"overlap {candidate['acoustic_seconds']:g}s"
+                if candidate.get("acoustic_seconds") is not None else None,
+                f"voice similarity {candidate['voice_similarity']:g}"
+                if candidate.get("voice_similarity") is not None else None,
+            ))
+    return "\n".join(lines) if lines else "No pending cues."
+
+
+def render_speaker_repair_preview(preview: dict[str, Any]) -> str:
+    fields = ("index", "timestamp", "old_speaker", "proposed_speaker", "text")
+    table = _table(
+        "INDEX\tTIMESTAMP\tOLD\tPROPOSED\tTEXT",
+        (_row(*(row.get(key) for key in fields)) for row in preview.get("candidates") or []),
+    )
+    if preview.get("index_scope") == "raw_cues":
+        return "Cue IDs refer to the raw transcript.\n" + table
+    return table
+
+
+def render_voiceprint_person(person: dict[str, Any]) -> str:
+    return "\n".join(_row(label, person.get(key)) for label, key in (
+        ("Name", "name"), ("ID", "id"), ("Samples", "sample_count"),
+        ("Notes", "notes"), ("Created", "created_at"),
+    ))
+
+
+def render_voiceprint_samples(samples: list[dict[str, Any]]) -> str:
+    keys = (
+        "sample_id", "duration_sec", "quality_score", "task_id", "created_at", "audio_clip_path",
+    )
+    return _table("SAMPLE ID\tSECONDS\tQUALITY\tTASK ID\tCREATED\tCLIP", (
+        _row(*(sample.get(key) for key in keys)) for sample in samples
+    ))

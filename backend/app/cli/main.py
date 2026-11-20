@@ -78,7 +78,7 @@ app.add_typer(config_app, name="config")
 
 # Resource-oriented command groups. High-frequency top-level commands below
 # remain as compatibility aliases.
-from app.cli.commands.archive import archive_app, speaker_app  # noqa: E402
+from app.cli.commands.archive import archive_app  # noqa: E402
 from app.cli.commands.configuration import (  # noqa: E402
     flow_app,
     model_app,
@@ -102,6 +102,7 @@ from app.cli.commands.operations import (  # noqa: E402
 )
 from app.cli.commands.read import read  # noqa: E402
 from app.cli.commands.search import search  # noqa: E402
+from app.cli.commands.speaker import speaker_app  # noqa: E402
 from app.cli.commands.task import task_app  # noqa: E402
 
 app.add_typer(server_app, name="server")

@@ -1,4 +1,4 @@
-"""Archive, transcript, and speaker commands."""
+"""Archive and transcript commands."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from typing import Any, Optional
 import typer
 
 from app.cli.client import MppClient, MppClientError
-from app.cli.commands.common import api_call, client, resolve_archive_ref, resolve_task_ref
+from app.cli.commands.common import api_call, client, resolve_archive_ref
 from app.cli.commands.read import (
     TRANSCRIPT_FILES,
     ArtifactReader,
@@ -24,6 +24,7 @@ from app.cli.commands.read import (
     parse_cues,
     require_local,
 )
+from app.cli.commands.speaker import speaker_app as speaker_app
 from app.cli.context import configure_cli_context, get_cli_context
 from app.cli.output import confirm_action, emit, emit_error
 from app.cli.renderers import render_archive, render_fields, render_storage_media
@@ -31,7 +32,6 @@ from app.services.analysis.transcript_outputs import _segments_to_srt, _split_sp
 
 archive_app = typer.Typer(help="归档浏览、读取、导出与修改", no_args_is_help=True)
 transcript_app = typer.Typer(help="归档字幕导入与导出", no_args_is_help=True)
-speaker_app = typer.Typer(help="任务说话人修改", no_args_is_help=True)
 archive_app.add_typer(transcript_app, name="transcript")
 
 
@@ -721,26 +721,3 @@ def transcript_import(
     target = f"{root}{separator}{filename}"
     result = api_call(lambda: api.fs_write(target, content))
     emit({**summary, **result, "path": target}, text=target)
-
-
-@speaker_app.command("rename")
-def rename_speaker(
-    task_ref: str = typer.Argument(...),
-    old_name: str = typer.Argument(...),
-    new_name: str = typer.Argument(...),
-    on_conflict: str = typer.Option("ask", "--on-conflict", help="ask/merge/new"),
-):
-    """修改任务说话人名称并同步声纹映射与产物。"""
-    if on_conflict not in {"ask", "merge", "new"}:
-        emit_error("invalid_conflict_mode", f"Unknown conflict mode: {on_conflict}", exit_code=2)
-    api = client()
-    task_id = api_call(lambda: resolve_task_ref(task_ref, api))
-    result = api_call(lambda: api.rename_task_speaker(task_id, old_name, new_name, on_conflict))
-    if result.get("status") == "conflict":
-        emit_error(
-            "speaker_name_conflict",
-            "The target speaker name already belongs to another voiceprint person.",
-            detail=result,
-            exit_code=4,
-        )
-    emit(result, text=json.dumps(result, ensure_ascii=False, indent=2))

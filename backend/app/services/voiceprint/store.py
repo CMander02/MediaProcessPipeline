@@ -317,6 +317,40 @@ class VoiceprintStore:
 
     # ---- Sample CRUD ----
 
+    def ensure_enrollment_dimension(self, dimension: int) -> None:
+        dimension = int(dimension)
+        conn = self._get_conn()
+        with self._lock:
+            if self.embedding_dim == dimension:
+                return
+            if conn.execute("SELECT 1 FROM sample_meta LIMIT 1").fetchone():
+                raise ValueError("声纹模型的向量维度与现有样本不兼容")
+            with conn:
+                conn.execute("BEGIN")
+                conn.execute("DROP TABLE voiceprint_samples")
+                conn.execute(
+                    "CREATE VIRTUAL TABLE voiceprint_samples "
+                    f"USING vec0(embedding float[{dimension}])"
+                )
+            self.embedding_dim = dimension
+
+    def list_samples(self, person_id: str) -> list[dict[str, Any]]:
+        rows = self._get_conn().execute(
+            """SELECT sample_id, person_id, task_id, duration_sec, quality_score,
+                      audio_clip_path, created_at
+               FROM sample_meta WHERE person_id = ? ORDER BY created_at DESC, sample_id DESC""",
+            (person_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_sample(self, sample_id: str) -> dict[str, Any] | None:
+        row = self._get_conn().execute(
+            """SELECT sample_id, person_id, task_id, duration_sec, quality_score,
+                      audio_clip_path, created_at FROM sample_meta WHERE sample_id = ?""",
+            (sample_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
     def add_sample(
         self,
         person_id: str,
@@ -337,11 +371,12 @@ class VoiceprintStore:
         now = datetime.now().isoformat()
         if audio_clip_path:
             try:
-                audio_clip_path = Path(audio_clip_path).resolve().relative_to(self.clips_dir.resolve()).as_posix()
+                clip = Path(audio_clip_path).resolve()
+                audio_clip_path = clip.relative_to(self.clips_dir.resolve()).as_posix()
             except ValueError:
                 pass
         conn = self._get_conn()
-        with self._lock:
+        with self._lock, conn:
             cur = conn.execute(
                 "INSERT INTO voiceprint_samples (embedding) VALUES (?)",
                 (vec.tobytes(),),
@@ -349,11 +384,12 @@ class VoiceprintStore:
             rowid = cur.lastrowid
             conn.execute(
                 """INSERT INTO sample_meta
-                   (sample_id, rowid, person_id, task_id, duration_sec, quality_score, audio_clip_path, created_at)
+                   (sample_id, rowid, person_id, task_id, duration_sec, quality_score,
+                    audio_clip_path, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (sample_id, rowid, person_id, task_id, duration_sec, quality_score, audio_clip_path, now),
+                (sample_id, rowid, person_id, task_id, duration_sec, quality_score,
+                 audio_clip_path, now),
             )
-            conn.commit()
         return sample_id
 
     def delete_sample(self, sample_id: str) -> None:
@@ -380,11 +416,14 @@ class VoiceprintStore:
         embedding = np.asarray(embedding, dtype=np.float32).reshape(-1)
         self.configure_embedding_dim(embedding.shape[0])
         if embedding.shape != (self.embedding_dim,):
-            raise ValueError(f"embedding must be shape ({self.embedding_dim},), got {embedding.shape}")
+            raise ValueError(
+                f"embedding must be shape ({self.embedding_dim},), got {embedding.shape}"
+            )
         vec = _normalize(embedding)
         conn = self._get_conn()
         rows = conn.execute(
-            f"""SELECT v.rowid, v.distance, m.sample_id, m.person_id, p.name AS person_name
+            f"""SELECT v.rowid, v.distance, m.sample_id, m.person_id,
+                       p.name AS person_name
                 FROM voiceprint_samples v
                 JOIN sample_meta m ON m.rowid = v.rowid
                 JOIN persons p ON p.id = m.person_id
@@ -476,7 +515,9 @@ class VoiceprintStore:
             "SELECT audio_clip_path FROM sample_meta WHERE sample_id = ?",
             (sample_id,),
         ).fetchone()
-        return str(self._resolve_clip_path(row["audio_clip_path"])) if row and row["audio_clip_path"] else None
+        if row and row["audio_clip_path"]:
+            return str(self._resolve_clip_path(row["audio_clip_path"]))
+        return None
 
 
 # ---- Singleton ----

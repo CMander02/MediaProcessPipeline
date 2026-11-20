@@ -717,7 +717,9 @@ class MppClient:
         return self.request("DELETE", f"/api/voiceprints/samples/{sample_id}")
 
     def enroll_voiceprint(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.request("POST", "/api/voiceprints/enroll", json_body=payload)
+        return self.request(
+            "POST", "/api/voiceprints/enroll", json_body=payload, timeout=max(self.timeout, 360.0)
+        )
 
     def get_task_speakers(self, task_id: str) -> dict[str, Any]:
         return self.request("GET", f"/api/tasks/{task_id}/speakers")

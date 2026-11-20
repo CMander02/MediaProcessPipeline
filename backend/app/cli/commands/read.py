@@ -15,6 +15,7 @@ import typer
 
 from app.cli.client import MppClient, MppClientError
 from app.cli.commands.common import (
+    _valid_uuid,
     api_call,
     client,
     emit_client_error,
@@ -332,6 +333,35 @@ def archive_reader(ref: str, api: MppClient, *, fallback_task: bool = False) -> 
     if fallback_task:
         return ArtifactReader.for_task(connected, resolve_reader_task(ref, connected))
     emit_error("archive_not_found", f"No archive matches {ref!r}.", exit_code=4)
+
+
+def task_archive_reader(ref: str, api: MppClient | None) -> ArtifactReader:
+    normalized = ref.strip()
+    if normalized.startswith("@"):
+        return ArtifactReader.for_task(api, resolve_reader_task(normalized, api))
+    if api is not None and _valid_uuid(normalized):
+
+        def find_task():
+            try:
+                return api.get_task(normalized)
+            except MppClientError as exc:
+                if exc.status_code != 404:
+                    raise
+                return None
+
+        if task := api_call(find_task):
+            return ArtifactReader.for_task(api, task)
+    if api is None:
+        require_local()
+        archive = api_call(lambda: resolve_local_archive(normalized))
+    else:
+        archive = api_call(lambda: resolve_archive_ref(normalized, api, missing_ok=True))
+    if archive is not None:
+        reader = ArtifactReader(api, archive)
+        if reader.task_id:
+            return reader
+        emit_error("archive_task_not_found", "This archive has no linked task.", exit_code=4)
+    return ArtifactReader.for_task(api, resolve_reader_task(normalized, api))
 
 
 def seconds(value: Any) -> float | None:
