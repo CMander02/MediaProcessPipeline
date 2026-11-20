@@ -963,15 +963,20 @@ def test_platform_cookies_are_saved_on_daemon_without_echo(workspace, monkeypatc
         ("qoder_oauth", ["login"]),
     ],
 )
-def test_provider_login_verifies_daemon_and_syncs(workspace, monkeypatch, provider_type, arguments):
+def test_provider_login_verifies_daemon_and_syncs(
+    workspace, monkeypatch, tmp_path, provider_type, arguments,
+):
     from app.services.analysis import coding_plan_cli
 
     calls = []
+    executable = tmp_path / "Provider Tools" / "provider-cli"
 
     class Api:
         def get_settings(self):
             return {
-                "providers": [{"id": "oauth", "provider_type": provider_type, "cli_path": "/cli"}]
+                "providers": [
+                    {"id": "oauth", "provider_type": provider_type, "cli_path": str(executable)}
+                ]
             }
 
         def provider_oauth_status(self, provider_id):
@@ -988,7 +993,7 @@ def test_provider_login_verifies_daemon_and_syncs(workspace, monkeypatch, provid
         configuration, "sys", SimpleNamespace(stdout=SimpleNamespace(isatty=lambda: True))
     )
     monkeypatch.setattr(
-        coding_plan_cli, "resolve_coding_plan_executable", lambda *args: Path("/cli")
+        coding_plan_cli, "resolve_coding_plan_executable", lambda *args: executable
     )
 
     def login(command, *, check):
@@ -997,7 +1002,11 @@ def test_provider_login_verifies_daemon_and_syncs(workspace, monkeypatch, provid
 
     monkeypatch.setattr(configuration, "subprocess", SimpleNamespace(run=login))
     assert data(invoke("--json", "provider", "login", "oauth"))["authenticated"]
-    assert calls == [("login", ["/cli", *arguments], False), ("status", "oauth"), ("sync", "oauth")]
+    assert calls == [
+        ("login", [str(executable), *arguments], False),
+        ("status", "oauth"),
+        ("sync", "oauth"),
+    ]
     calls.clear()
     remote = invoke("--json", "--server", "https://remote.example", "provider", "login", "oauth")
     assert data(remote)["authenticated"]

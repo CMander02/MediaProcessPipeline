@@ -433,15 +433,11 @@ def test_online_search_filters_before_cue_sampling(library, monkeypatch):
     api = MppClient("http://localhost:18000")
     api.close()
     with TestClient(server) as test_server:
-        def handler(request):
-            return test_server.get(request.url.path, params=request.url.params)
-
-        with httpx.Client(base_url=api.base_url, transport=httpx.MockTransport(handler)) as http:
-            api._client = http
-            monkeypatch.setattr(api, "ping", lambda: True)
-            monkeypatch.setattr(api, "list_archives_paged", lambda **kw: {"archives": []})
-            _connect(monkeypatch, api)
-            output = _invoke("search", "index hit", "--speaker", "bOB")
+        api._client = test_server
+        monkeypatch.setattr(api, "ping", lambda: True)
+        monkeypatch.setattr(api, "list_archives_paged", lambda **kw: {"archives": []})
+        _connect(monkeypatch, api)
+        output = _invoke("search", "index hit", "--speaker", "bOB")
 
     assert "[00:00:10] [Bob] Index hit four" in output
     assert "(1 hit)" in output and "Alice" not in output
@@ -880,6 +876,7 @@ def test_folder_batch_export_task_zip_and_standalone_bundle(library, folder_api,
     standalone, archive_id = _standalone_archive(
         tmp_path, "Standalone", "https://www.youtube.com/watch?v=standalone",
     )
+    (standalone / "transcript.srt").write_text(RAW, encoding="utf-8", newline="\r\n")
     destination = tmp_path / "exports"
     result = _folder_data(
         "batch", "export", archive_id, task_content_key(task),
@@ -891,8 +888,10 @@ def test_folder_batch_export_task_zip_and_standalone_bundle(library, folder_api,
     assert "/api/filesystem/read" in folder_api
     with ZipFile(destination / f"{archive_id}.zip") as bundle:
         assert set(bundle.namelist()) == {"summary.md", "transcript.srt"}
-        assert bundle.read("summary.md") == (standalone / "summary.md").read_bytes()
-        assert bundle.read("transcript.srt") == (standalone / "transcript.srt").read_bytes()
+        assert bundle.read("summary.md").decode("utf-8") == (
+            standalone / "summary.md"
+        ).read_text(encoding="utf-8")
+        assert bundle.read("transcript.srt").decode("utf-8") == RAW
     key = task_content_key(task)
     task_zip = next(item for item in result["applied"] if item["content_key"] == key)
     with ZipFile(task_zip["output"]) as bundle:
@@ -914,7 +913,8 @@ def test_folder_batch_export_historical_archive_uses_its_own_transcript(
         "source_url": YOUTUBE, "status": "completed",
     }
     (historical / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-    (historical / "transcript.srt").write_text(RAW, encoding="utf-8")
+    transcript = historical / "transcript.srt"
+    transcript.write_text(RAW, encoding="utf-8", newline="\r\n")
     task.result["archive"] = {"output_dir": str(historical)}
     database.get_task_store().save(task)
     archive_sync.get_archive_sync_service().reconcile()
@@ -931,4 +931,4 @@ def test_folder_batch_export_historical_archive_uses_its_own_transcript(
     exported, = result["applied"]
     with ZipFile(exported["output"]) as bundle:
         assert bundle.namelist() == ["transcript.srt"]
-        assert bundle.read("transcript.srt").decode("utf-8") == RAW
+        assert bundle.read("transcript.srt") == transcript.read_bytes()
