@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import time
 from typing import Any, Callable
+from unicodedata import category
 
 import httpx
 
@@ -209,10 +210,17 @@ class LlamaCppASRService:
                 with tempfile.TemporaryDirectory(dir=temp_root) as directory:
                     wav = Path(directory) / "chunk.wav"
                     for i, segment in enumerate(segments):
+                        text = segment["text"]
+                        if all(char.isspace() or category(char).startswith("P") for char in text):
+                            logger.info(
+                                "Skipping punctuation-only alignment segment %d at %.3f-%.3fs",
+                                i + 1, segment["start"], segment["end"],
+                            )
+                            continue
                         progress(i, len(segments), f"正在对齐 {i + 1}/{len(segments)} 段", "aligning")
                         wav.write_bytes(wav_bytes(AudioChunk(segment["start"], segment["end"])))
                         units = aligner.align(
-                            wav, segment["text"], detected,
+                            wav, text, detected,
                             model_path=config["aligner_model_path"],
                             device=str(config.get("aligner_device") or "auto"),
                         )

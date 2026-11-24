@@ -47,7 +47,8 @@ def service(monkeypatch, config, tmp_path):
     return svc, audio, runtime, calls
 
 
-def mock_client(monkeypatch, *, fail=False, truncate_above=None):
+def mock_client(monkeypatch, *, fail=False, truncate_above=None, texts=None):
+    texts = texts or {}
     state = SimpleNamespace(active=0, peak=0, payloads=[], finished=[], durations=[])
     lock = threading.Lock()
     class Client:
@@ -69,8 +70,9 @@ def mock_client(monkeypatch, *, fail=False, truncate_above=None):
                 state.active -= 1
                 state.finished.append(index)
             truncated = (fail and index == 2) or (truncate_above is not None and len(wave) / sr > truncate_above)
+            text = texts.get(index, f"片段{index}。")
             choice = {"finish_reason": "length" if truncated else "stop",
-                      "message": {"content": f"language Chinese<asr_text>片段{index}。"}}
+                      "message": {"content": f"language Chinese<asr_text>{text}"}}
             return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"choices": [choice]})
     monkeypatch.setattr(module.httpx, "Client", Client)
     return state
@@ -221,6 +223,29 @@ def test_default_forced_alignment_uses_chunk_audio_and_absolute_offsets(monkeypa
 
 def test_auto_requires_aligner_instead_of_silent_vad_fallback(config):
     assert "required" in module.validate_llama_asr_config({**config, "timestamp_mode": "auto"})
+
+
+def test_forced_alignment_skips_punctuation_only_segment(monkeypatch, service, config):
+    from app.services.recognition import alignment
+
+    svc, audio, _, _ = service
+    mock_client(monkeypatch, texts={2: "。 …!?"})
+    config.update(timestamp_mode="qwen_forced", aligner_model_path=str(audio.parent))
+    aligned_texts = []
+
+    def align(path, text, language, **kwargs):
+        aligned_texts.append(text)
+        return [{"text": text, "start": 0.2, "end": 0.8}]
+
+    monkeypatch.setattr(alignment, "get_qwen_forced_aligner", lambda: SimpleNamespace(
+        align=align, release=lambda: None))
+    result = svc.transcribe(str(audio), runtime_config=config)
+
+    assert aligned_texts == ["片段1。", "片段3。"]
+    assert result["segments"] == [
+        {"text": "片段1。", "start": 0.2, "end": 0.8},
+        {"text": "片段3。", "start": 2.2, "end": 2.8},
+    ]
 
 
 def test_empty_alignment_fails_and_releases_model(monkeypatch, service, config):
