@@ -62,6 +62,17 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe("result viewer state", () => {
+  it("reloads task state when the workspace changes with the same task ID", async () => {
+    const { result } = renderHook(() => useResultViewer({ archivePath: mocks.archive.path, taskId: "task-1" }))
+    await waitFor(() => expect(result.current.taskStatus).toBe("completed"))
+    mocks.taskGet.mockResolvedValue({ id: "task-1", status: "failed", result: { output_dir: mocks.archive.path }, error: "New workspace error" })
+
+    act(() => window.dispatchEvent(new Event("mpp:offline-scope-change")))
+
+    await waitFor(() => expect(result.current.taskStatus).toBe("failed"))
+    expect(result.current.taskError).toBe("New workspace error")
+  })
+
   it("ignores late generated files and SSE responses from the previous archive", async () => {
     let resolveOld!: (value: string) => void
     let resolveSse!: (value: string) => void

@@ -125,6 +125,7 @@ class RemoteServer:
         )
 
     def client(self, **kwargs):
+        kwargs.pop("proxy", None)
         return httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), **kwargs)
 
 

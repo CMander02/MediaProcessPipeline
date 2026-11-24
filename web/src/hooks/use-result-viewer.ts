@@ -547,7 +547,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt, embe
     return () => {
       cancelled = true
     }
-  }, [resolvedTaskId, online, applyTaskSnapshot])
+  }, [resolvedTaskId, online, applyTaskSnapshot, scopeRevision])
 
   // Load image descriptions for image_note content type
   const loadImageDescriptions = useCallback(async () => {

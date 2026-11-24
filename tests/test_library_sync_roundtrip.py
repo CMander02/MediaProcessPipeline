@@ -52,6 +52,7 @@ class Workspace:
             database.reset_db_path(Path(previous.data_root) if previous else None)
 
     def client(self, **kwargs):
+        kwargs.pop("proxy", None)
         async def serve(scope, receive, send):
             with self.active():
                 await self.app(scope, receive, send)

@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from app.core.public_urls import public_urlopen as urllib_urlopen
 from app.core.settings import get_runtime_settings
+from app.services.ingestion.public_browser import goto_public_page, protect_browser_context
 
 logger = logging.getLogger(__name__)
 
@@ -122,13 +123,15 @@ def _fetch_initial_state_once(url: str, *, headless: bool) -> dict[str, Any]:
         )
         try:
             context = browser.new_context(
+                service_workers="block",
                 locale="zh-CN",
                 timezone_id="Asia/Shanghai",
                 viewport={"width": 1365, "height": 900},
                 user_agent=_UA,
             )
+            protect_browser_context(context)
             page = context.new_page()
-            page.goto(url, wait_until="commit", timeout=45_000)
+            goto_public_page(page, url, wait_until="commit", timeout=45_000)
             last: dict[str, Any] | None = None
             for _ in range(12):
                 page.wait_for_timeout(1_000)
