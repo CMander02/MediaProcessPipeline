@@ -58,7 +58,9 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install ffmpeg --no-progress -y
       - run: uv sync --extra dev
-      - run: uv pip install --torch-backend cpu "torch~=2.8.0" "torchaudio~=2.8.0"
+      - name: Install diarization test dependencies with CPU PyTorch
+        # The project's PyTorch sources point to CUDA wheels on both runners.
+        run: uv pip install --no-sources --torch-backend cpu --requirements pyproject.toml --extra diarization
       - run: uv run --no-sync pytest tests -q -p no:cacheprovider
 
   desktop:
