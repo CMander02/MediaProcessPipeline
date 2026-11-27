@@ -8,7 +8,9 @@ import { api } from "@/lib/api"
 import { formatDuration } from "@/lib/format"
 import { buildHash, navigate, useRoute } from "@/lib/router"
 import type { ArchiveItem } from "@/repositories/archive-types"
+import { ArchiveCoverFallback } from "@/components/archive-cover-fallback"
 import { PlatformIcon } from "@/components/platform-icon"
+import { resolveArchivePlatform } from "@/lib/archive-filters"
 import { SummaryTab } from "./summary-tab"
 
 export function MobileMediaOverview({ view, actions }: { view: ReturnType<typeof useResultViewer>; actions: ReactNode }) {
@@ -51,6 +53,7 @@ function MobileMediaQueue({ current }: { current: ArchiveItem | null }) {
   const library = useLibraryControls()
   const route = useRoute()
   const [limit, setLimit] = useState(20)
+  const [failedThumbs, setFailedThumbs] = useState<Set<string>>(() => new Set())
   const scope = library.scope === "all" ? {} : library.folder ? { folder_id: library.folder } : { unclassified: true }
   const media = library.media.filter((value) => value !== "image").join(",") || "video,audio"
   const { archives, total, loading, error } = useArchivePage({ page: 1, page_size: limit, ...archiveQueryFilters(library), media, ...scope })
@@ -64,17 +67,45 @@ function MobileMediaQueue({ current }: { current: ArchiveItem | null }) {
   }
   return <section aria-label="继续浏览" className="pb-[max(1rem,env(safe-area-inset-bottom))]">
     <h2 className="px-4 pb-1 pt-4 text-sm font-semibold">继续浏览</h2>
-    {items.map((item) => <button type="button" key={item.path} className="flex w-full items-start gap-3 border-b px-4 py-3 text-left active:bg-muted" onClick={() => open(item)}>
-      <span className="relative aspect-[535/304] w-[38%] max-w-44 shrink-0 overflow-hidden rounded-md bg-muted">
-        <img src={item.thumbnail_url ?? api.archives.thumbnailUrl(item.path)} alt="" loading="lazy" className="size-full object-cover" onError={(event) => { event.currentTarget.style.visibility = "hidden" }} />
-        {item.duration_seconds ? <span className="absolute bottom-1 right-1 rounded bg-black/65 px-1 text-[11px] text-white">{formatDuration(item.duration_seconds)}</span> : null}
-      </span>
-      <span className="flex min-w-0 flex-1 flex-col gap-2">
-        <span className="line-clamp-2 text-sm leading-5">{item.title}</span>
-        <span className="line-clamp-1 text-xs text-muted-foreground">{typeof item.metadata.uploader === "string" ? item.metadata.uploader : item.has_video ? "视频" : "音频"}</span>
-        <span className="text-xs text-muted-foreground">{item.date}</span>
-      </span>
-    </button>)}
+    {items.map((item) => {
+      const subtype = typeof item.metadata.content_subtype === "string" ? item.metadata.content_subtype : null
+      const isImageNote = item.has_image || subtype === "image_note"
+      const isTextNote = subtype === "text_note" || (item.metadata.media_removed === true && !item.has_image)
+      const mediaLabel = item.has_video ? "视频" : isImageNote ? "图文" : isTextNote ? "正文" : "音频"
+      const showThumb = item.has_thumbnail !== false && !failedThumbs.has(item.path) && (!isTextNote || item.has_image)
+      return <button type="button" key={item.path} className="flex w-full items-start gap-3 border-b px-4 py-3 text-left active:bg-muted" onClick={() => open(item)}>
+        <span className="relative aspect-[535/304] w-[38%] max-w-44 shrink-0 overflow-hidden rounded-md bg-muted">
+          {showThumb ? (
+            <img
+              src={item.thumbnail_url ?? api.archives.thumbnailUrl(item.path)}
+              alt=""
+              loading="lazy"
+              className="size-full object-cover"
+              onError={() => setFailedThumbs((prev) => new Set(prev).add(item.path))}
+            />
+          ) : (
+            <ArchiveCoverFallback
+              title={item.title}
+              platform={resolveArchivePlatform(item.metadata)}
+              uploader={typeof item.metadata.uploader === "string" ? item.metadata.uploader : null}
+              sourceUrl={typeof item.metadata.source_url === "string" ? item.metadata.source_url : null}
+              hintText={typeof item.metadata.description === "string" ? item.metadata.description : null}
+              mediaLabel={mediaLabel}
+              isVideo={item.has_video}
+              isImageNote={isImageNote}
+              isTextNote={isTextNote}
+              variant="card"
+            />
+          )}
+          {item.duration_seconds ? <span className="absolute bottom-1 right-1 rounded bg-black/65 px-1 text-[11px] text-white">{formatDuration(item.duration_seconds)}</span> : null}
+        </span>
+        <span className="flex min-w-0 flex-1 flex-col gap-2">
+          <span className="line-clamp-2 text-sm leading-5">{item.title}</span>
+          <span className="line-clamp-1 text-xs text-muted-foreground">{typeof item.metadata.uploader === "string" ? item.metadata.uploader : item.has_video ? "视频" : "音频"}</span>
+          <span className="text-xs text-muted-foreground">{item.date}</span>
+        </span>
+      </button>
+    })}
     {loading && <p className="px-4 py-3 text-sm text-muted-foreground">正在加载…</p>}
     {error && <p role="alert" className="px-4 py-3 text-sm text-destructive">{error}</p>}
     {!loading && !error && !items.length && <p className="px-4 py-3 text-sm text-muted-foreground">当前范围没有其他音视频</p>}

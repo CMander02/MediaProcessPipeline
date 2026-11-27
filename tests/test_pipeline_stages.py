@@ -805,7 +805,7 @@ async def test_metadata_speaker_count_is_ready_before_first_asr_pass(runtime, mo
     await pipeline.run_pipeline(task, _stop_after_transcribe=True)
     assert prepared.call_args.kwargs["enrich"] is True
     assert runtime.asr.call_args.kwargs["num_speakers"] is None
-    assert runtime.asr.call_args.kwargs["max_speakers"] is None
+    assert runtime.asr.call_args.kwargs["max_speakers"] == 2
     runtime.polish.assert_not_awaited()
 
 

@@ -18,11 +18,13 @@ from uuid import UUID, uuid4
 
 import httpx
 
+from app.core.archive_index import timestamp
 from app.core.archive_sync import build_archive_zip
 from app.core.database import TaskStore, _db_lock, _get_conn, get_task_store, task_write_transaction
 from app.core.library import catalog, collection_metadata, revision
 from app.core.library_sync import (
     folder_mappings,
+    folder_sync_records,
     library_sync_lock,
     remember_folder,
     remote_origin,
@@ -121,7 +123,9 @@ def _library_for_push(server: str, workspace: str) -> tuple[int, dict, dict[str,
         ).fetchone()
         if cursor and current_revision <= cursor["pushed_library_revision"]:
             return None
-        local_to_remote = {local: remote for remote, local in folder_mappings(conn, server, workspace).items()}
+        sync_records = folder_sync_records(conn, server, workspace)
+        local_to_remote = {local: remote for local, (remote, _) in sync_records.items()}
+        remote_updated_at_map = {local: updated_at for local, (_, updated_at) in sync_records.items()}
         members = [dict(row) for row in conn.execute(
             "SELECT * FROM library_folder_members WHERE origin!=?", (remote_origin(server, workspace),),
         )]
@@ -132,8 +136,12 @@ def _library_for_push(server: str, workspace: str) -> tuple[int, dict, dict[str,
         referenced = {row["folder_id"] for row in [*members, *covers]}
         replicas = {local for local, remote in local_to_remote.items()
                     if local == replica_folder_id(server, workspace, remote)}
-        folders = [dict(row) for row in conn.execute("SELECT * FROM library_folders")
-                   if row["id"] not in replicas or row["id"] in referenced]
+        folders = [
+            dict(row) for row in conn.execute("SELECT * FROM library_folders")
+            if row["id"] not in replicas
+            or row["id"] in referenced
+            or row["updated_at"] != remote_updated_at_map.get(row["id"], "")
+        ]
         collection_keys = {folder["source_collection_key"] for folder in folders}
         collections = [meta for meta in collection_metadata(conn) if meta["collection_key"] in collection_keys]
         submitted_ids = {}
@@ -157,16 +165,49 @@ def _library_for_push(server: str, workspace: str) -> tuple[int, dict, dict[str,
             if row["content_key"] in archive_ids:
                 row["archive_id"] = archive_ids[row["content_key"]]
             row["folder_id"] = local_to_remote.get(row["folder_id"], row["folder_id"])
+        live_folder_updated = {folder["id"]: folder["updated_at"] for folder in folders}
+        raw_deletions = [dict(row) for row in conn.execute("SELECT folder_id,deleted_at FROM library_folder_deletions")]
+        raw_deletion_ids = {row["folder_id"] for row in raw_deletions}
+        deleted_folders: dict[str, str] = {}
+        for row in raw_deletions:
+            fid = row["folder_id"]
+            if any(other != fid and replica_folder_id(server, workspace, other) == fid for other in raw_deletion_ids):
+                continue
+            mapped = local_to_remote.get(fid, fid)
+            if mapped in live_folder_updated and timestamp(live_folder_updated[mapped]) > timestamp(row["deleted_at"]):
+                continue
+            existing_deleted = deleted_folders.get(mapped)
+            if existing_deleted is None or timestamp(row["deleted_at"]) > timestamp(existing_deleted):
+                deleted_folders[mapped] = row["deleted_at"]
+        live_cover_updated = {row["folder_id"]: row["updated_at"] for row in covers}
+        deleted_covers: dict[str, str] = {}
+        for row in conn.execute("SELECT folder_id,deleted_at FROM library_folder_cover_deletions"):
+            mapped = local_to_remote.get(row["folder_id"], row["folder_id"])
+            if mapped in live_cover_updated and timestamp(live_cover_updated[mapped]) >= timestamp(row["deleted_at"]):
+                continue
+            existing_deleted = deleted_covers.get(mapped)
+            if existing_deleted is None or timestamp(row["deleted_at"]) > timestamp(existing_deleted):
+                deleted_covers[mapped] = row["deleted_at"]
+        collection_members = [
+            dict(row) for row in conn.execute("SELECT collection_key,content_key FROM library_collection_members")
+        ]
         return current_revision, {
-            "folders": folders, "members": members, "covers": covers, "collections": collections,
+            "folders": folders,
+            "members": members,
+            "covers": covers,
+            "collections": collections,
+            "deleted_folders": [{"folder_id": fid, "deleted_at": at} for fid, at in sorted(deleted_folders.items())],
+            "deleted_covers": [{"folder_id": fid, "deleted_at": at} for fid, at in sorted(deleted_covers.items())],
+            "collection_members": collection_members,
         }, submitted_ids
 
 
 def _acknowledge_library(server: str, workspace: str, pushed_revision: int, folder_ids: dict[str, str]) -> None:
     with task_write_transaction() as conn:
         for local_id, remote_id in folder_ids.items():
-            if conn.execute("SELECT 1 FROM library_folders WHERE id=?", (local_id,)).fetchone():
-                remember_folder(conn, server, workspace, remote_id, local_id)
+            row = conn.execute("SELECT updated_at FROM library_folders WHERE id=?", (local_id,)).fetchone()
+            if row is not None:
+                remember_folder(conn, server, workspace, remote_id, local_id, remote_updated_at=row["updated_at"])
         conn.execute(
             "INSERT INTO remote_sync_cursors(server_url,workspace_id,pushed_library_revision) VALUES(?,?,?) "
             "ON CONFLICT(server_url,workspace_id) DO UPDATE SET "
@@ -322,8 +363,16 @@ class RemoteArchiveUploadService:
                 from app.core.media_retention import uploading_media
 
                 task, output_dir = pending
-                with uploading_media(output_dir):
-                    await self._upload(task, output_dir, server_url, settings, store, workspace=workspace)
+                try:
+                    with uploading_media(output_dir):
+                        await self._upload(task, output_dir, server_url, settings, store, workspace=workspace)
+                except Exception:
+                    if workspace is not None and task_id is None:
+                        with suppress(Exception):
+                            client.headers["X-MPP-Workspace-ID"] = quote(workspace, safe="")
+                            async with library_sync_lock:
+                                await self._push_library(client, server_url, workspace)
+                    raise
                 return UploadResult(task_id=task.id)
             if workspace is not None:
                 client.headers["X-MPP-Workspace-ID"] = quote(workspace, safe="")

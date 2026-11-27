@@ -663,13 +663,21 @@ def _llm_binding_from_provider(
             reason=binding.reason,
             request_kwargs={},
         )
+    normalized_stage = _normalize_stage(stage)
     if transport in {"codex_cli", "agy_cli", "kimi_cli", "qoder_cli"}:
         default_params = binding.request_kwargs.get("default_params")
         if not isinstance(default_params, dict):
             default_params = {}
+        reasoning_effort = _clean_text(default_params.get("reasoning_effort"))
+        if (
+            normalized_stage == "polish"
+            and binding.provider_type == "codex_oauth"
+            and reasoning_effort.lower() in {"max", "xhigh", "high"}
+        ):
+            reasoning_effort = "low"
         return LLMBinding(
             provider=provider_id,
-            stage=_normalize_stage(stage),
+            stage=normalized_stage,
             transport=transport,
             model=_clean_text(binding.request_kwargs.get("cli_model_name")) or binding.model_id,
             configured=True,
@@ -678,7 +686,7 @@ def _llm_binding_from_provider(
                 "cli_path": binding.request_kwargs.get("cli_path", ""),
                 "timeout_sec": binding.request_kwargs.get("timeout_sec", 600),
                 "provider_type": binding.provider_type,
-                "reasoning_effort": _clean_text(default_params.get("reasoning_effort")),
+                "reasoning_effort": reasoning_effort,
             },
         )
     return LLMBinding(
@@ -1078,7 +1086,11 @@ def resolve_vlm_binding(rt: RuntimeSettings) -> EndpointBinding:
                 request_kwargs={
                     "max_tokens": rt.vlm_max_tokens,
                     "concurrency": rt.vlm_concurrency,
-                    "timeout_sec": rt.vlm_timeout_sec,
+                    "timeout_sec": (
+                        max(float(rt.vlm_timeout_sec), float(provider_binding.request_kwargs.get("timeout_sec") or 0))
+                        if oauth_cli
+                        else rt.vlm_timeout_sec
+                    ),
                     "transport": "oauth_cli" if oauth_cli else "openai_compatible",
                     "provider_id": provider_binding.provider_id,
                     "provider_type": provider_binding.provider_type,

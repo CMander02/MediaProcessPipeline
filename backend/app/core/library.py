@@ -80,16 +80,24 @@ def folder_directory(conn, contents=None):
         if timestamp(latest) > timestamp(folder['last_processed_at']):
             folder['last_processed_at'] = latest
     for folder_id, folder in folders.items():
-        # A chosen cover leads; the newest contents follow, so a folder shows what arrived last.
+        # A chosen cover leads; otherwise prefer items that already have thumbnails before coverless items.
         ranked = [key for _, key in sorted(members.get(folder_id, []), reverse=True)]
         cover = chosen.get(folder_id) if chosen.get(folder_id) in ranked else None
-        previews = []
-        for key in ([cover] if cover else []) + [key for key in ranked if key != cover]:
+        candidates = ([cover] if cover else []) + [key for key in ranked if key != cover]
+        thumbnailed = []
+        fallback = []
+        for key in candidates:
             item = _cover_item(key, contents[key])
-            if item:
-                previews.append(item)
-            if len(previews) == 3:
+            if not item:
+                continue
+            has_thumb = any(archive.get('has_thumbnail', True) for archive in contents[key]['archives'])
+            if key == cover or has_thumb:
+                thumbnailed.append(item)
+            else:
+                fallback.append(item)
+            if len(thumbnailed) == 3:
                 break
+        previews = (thumbnailed + fallback)[:3]
         folder['cover_content_key'] = cover
         folder['previews'] = previews
         collection_key = folder.get('source_collection_key')
@@ -357,11 +365,23 @@ class LibraryService:
     def delete(self, folder_id):
         with _db_lock, _get_conn() as conn:
             require_folder(conn, folder_id)
+            deleted_at = _now()
             released = conn.execute('SELECT COUNT(*) FROM library_folder_members WHERE folder_id=?', (folder_id,)).fetchone()[0]
+            remote_ids = [row[0] for row in conn.execute(
+                'SELECT remote_folder_id FROM remote_sync_folders WHERE local_folder_id=?', (folder_id,),
+            )]
+            for tombstone_id in {folder_id, *remote_ids}:
+                conn.execute(
+                    'INSERT INTO library_folder_deletions(folder_id,deleted_at) VALUES (?,?) '
+                    'ON CONFLICT(folder_id) DO UPDATE SET deleted_at=excluded.deleted_at',
+                    (tombstone_id, deleted_at),
+                )
+            conn.execute('DELETE FROM remote_sync_folders WHERE local_folder_id=?', (folder_id,))
             # Keep an explicit unclassified choice so future automatic imports cannot undo it.
             conn.execute("UPDATE library_folder_members SET origin='manual',added_at=? WHERE folder_id=?",
-                         (_now(), folder_id))
+                         (deleted_at, folder_id))
             conn.execute('DELETE FROM library_folder_covers WHERE folder_id=?', (folder_id,))
+            conn.execute('DELETE FROM library_folder_cover_deletions WHERE folder_id=?', (folder_id,))
             conn.execute('DELETE FROM library_folders WHERE id=?', (folder_id,))
             changed(conn)
             return {'released': released, 'library_revision': revision(conn)}
@@ -371,16 +391,23 @@ class LibraryService:
         """Pin one content as the folder cover; None returns to the newest content."""
         with _db_lock, _get_conn() as conn:
             require_folder(conn, folder_id)
+            updated_at = _now()
             if content_key is None:
                 conn.execute('DELETE FROM library_folder_covers WHERE folder_id=?', (folder_id,))
+                conn.execute(
+                    'INSERT INTO library_folder_cover_deletions(folder_id,deleted_at) VALUES (?,?) '
+                    'ON CONFLICT(folder_id) DO UPDATE SET deleted_at=excluded.deleted_at',
+                    (folder_id, updated_at),
+                )
             else:
                 row = conn.execute('SELECT folder_id FROM library_folder_members WHERE content_key=?', (content_key,)).fetchone()
                 if not row or row[0] != folder_id:
                     raise ValueError('封面只能选用这个文件夹里的内容')
+                conn.execute('DELETE FROM library_folder_cover_deletions WHERE folder_id=?', (folder_id,))
                 conn.execute(
                     'INSERT INTO library_folder_covers VALUES (?,?,?) ON CONFLICT(folder_id) DO UPDATE '
                     'SET content_key=excluded.content_key,updated_at=excluded.updated_at',
-                    (folder_id, content_key, _now()),
+                    (folder_id, content_key, updated_at),
                 )
             changed(conn)
             return {'folder_id': folder_id, 'cover_content_key': content_key, 'library_revision': revision(conn)}
@@ -505,7 +532,10 @@ class LibraryService:
                     'archives': [{'archive_id': item['archive_id'], 'content_key': key, 'folder_id': mapping.get(key)}
                                  for key, entry in contents.items() for item in entry['archives']],
                     'covers': [dict(row) for row in conn.execute('SELECT * FROM library_folder_covers')],
-                    'collections': collection_metadata(conn)}
+                    'collections': collection_metadata(conn),
+                    'deleted_folders': [dict(row) for row in conn.execute('SELECT * FROM library_folder_deletions ORDER BY deleted_at,folder_id')],
+                    'deleted_covers': [dict(row) for row in conn.execute('SELECT * FROM library_folder_cover_deletions ORDER BY deleted_at,folder_id')],
+                    'collection_members': [dict(row) for row in conn.execute('SELECT * FROM library_collection_members ORDER BY collection_key,content_key')]}
 
     @uses_workspace
     def merge_sync_snapshot(self, payload):

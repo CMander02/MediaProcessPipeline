@@ -13,6 +13,8 @@ import { usePlatform } from "@/platform/use-platform"
 import { createArchiveRepository } from "@/repositories/archive-repository"
 import type { ArchiveItem } from "@/repositories/archive-types"
 import type { LibraryFilters } from "@/lib/archive-filters"
+import { resolveArchivePlatform } from "@/lib/archive-filters"
+import { ArchiveCoverFallback } from "@/components/archive-cover-fallback"
 import { api } from "@/lib/api"
 import { buildHash, navigate, parseHash, useRoute } from "@/lib/router"
 import { cn } from "@/lib/utils"
@@ -58,6 +60,7 @@ function SplitViewGroup({ folderId, all = false, filters, active, onOpen, onFirs
   const { online, capabilities } = useAppAccess()
   const canMove = online && capabilities.archive_mutation
   const [moveKeys, setMoveKeys] = useState<string[] | null>(null)
+  const [failedThumbs, setFailedThumbs] = useState<Set<string>>(() => new Set())
   const moved: OnLibraryMoved = (keys, destination) => {
     setMoveKeys((current) => current?.filter((key) => !keys.includes(key)) ?? null)
     onMoved(keys, destination)
@@ -113,7 +116,30 @@ function SplitViewGroup({ folderId, all = false, filters, active, onOpen, onFirs
           onOpen(archive)
         }}
           draggable={canMove && !!archive.content_key && !busy} onDragStart={(event) => { startLibraryDrag(event, selected.has(key) ? [...selected] : [key]); onDragging(true) }} onDragEnd={() => onDragging(false)}>
-          <img draggable={false} src={archive.thumbnail_url ?? api.archives.thumbnailUrl(archive.path)} alt="" loading="lazy" className="aspect-[535/304] w-16 shrink-0 rounded bg-muted object-cover" onError={(event) => { event.currentTarget.style.visibility = "hidden" }} />
+          <span className="aspect-[535/304] w-16 shrink-0 overflow-hidden rounded bg-muted">
+            {archive.has_thumbnail !== false && !failedThumbs.has(archive.path) ? (
+              <img
+                draggable={false}
+                src={archive.thumbnail_url ?? api.archives.thumbnailUrl(archive.path)}
+                alt=""
+                loading="lazy"
+                className="h-full w-full object-cover"
+                onError={() => setFailedThumbs((prev) => new Set(prev).add(archive.path))}
+              />
+            ) : (
+              <ArchiveCoverFallback
+                title={archive.title}
+                platform={resolveArchivePlatform(archive.metadata)}
+                uploader={typeof archive.metadata.uploader === "string" ? archive.metadata.uploader : null}
+                sourceUrl={typeof archive.metadata.source_url === "string" ? archive.metadata.source_url : null}
+                mediaLabel={archive.has_video ? "视频" : archive.has_image ? "图文" : archive.metadata.content_subtype === "text_note" ? "正文" : "音频"}
+                isVideo={archive.has_video}
+                isImageNote={archive.has_image || archive.metadata.content_subtype === "image_note"}
+                isTextNote={archive.metadata.content_subtype === "text_note"}
+                variant="mini"
+              />
+            )}
+          </span>
           <span className="min-w-0"><span className="line-clamp-2 text-xs leading-5">{archive.title}</span><span className="flex min-w-0 gap-1.5 text-[10px] text-muted-foreground"><span className="shrink-0">{archive.processing ? "处理中" : archive.metadata.status === "failed" ? "处理失败" : archive.date}</span>{all && archive.folder_id && folderNames.has(archive.folder_id) && <span className="flex min-w-0 items-center gap-0.5" title={`在文件夹「${folderNames.get(archive.folder_id)}」中`}><HugeiconsIcon icon={FolderOpenIcon} className="size-3 shrink-0" /><span className="truncate">{folderNames.get(archive.folder_id)}</span></span>}</span></span>
         </button>
         {canMove && archive.content_key && <DropdownMenu><DropdownMenuTrigger asChild><Button size="icon-sm" variant="ghost" className="mr-1 size-6 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 max-md:opacity-100" aria-label={`${archive.title} 更多操作`}><HugeiconsIcon icon={MoreHorizontalIcon} className="size-3" /></Button></DropdownMenuTrigger><DropdownMenuContent align="start">

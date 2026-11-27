@@ -1,6 +1,53 @@
 """Keep established voices when a known count removes small extra clusters."""
 
+import math
 import numpy as np
+
+
+def absorb_micro_clusters(
+    embeddings,
+    labels,
+    *,
+    min_ratio: float = 0.015,
+    min_count: int = 3,
+    min_cosine_similarity: float = 0.55,
+    min_clusters: int | None = None,
+):
+    """Absorb tiny outlier clusters into the nearest major cluster when acoustically close."""
+    labels = np.asarray(labels).copy()
+    if len(embeddings) < 20:
+        return labels
+    unique, sizes = np.unique(labels, return_counts=True)
+    if len(unique) < 2:
+        return labels
+    floor = max(min_count, math.ceil(len(embeddings) * min_ratio))
+    major = [label for label, size in zip(unique, sizes) if size >= floor]
+    if not major:
+        return labels
+    vectors = np.asarray(embeddings, dtype=np.float64)
+    vectors = vectors / np.maximum(np.linalg.norm(vectors, axis=1, keepdims=True), 1e-12)
+    major_centers = np.stack([vectors[labels == label].mean(axis=0) for label in major])
+    major_centers /= np.maximum(np.linalg.norm(major_centers, axis=1, keepdims=True), 1e-12)
+    min_keep = max(1, int(min_clusters or 1))
+    current_unique = len(unique)
+    small = sorted(
+        [(size, label) for label, size in zip(unique, sizes) if size < floor],
+        key=lambda item: item[0],
+    )
+    for _, label in small:
+        if current_unique <= min_keep:
+            break
+        center = vectors[labels == label].mean(axis=0)
+        norm = np.linalg.norm(center)
+        if norm <= 1e-12:
+            continue
+        center = center / norm
+        sims = major_centers @ center
+        best_idx = int(np.argmax(sims))
+        if float(sims[best_idx]) >= min_cosine_similarity:
+            labels[labels == label] = major[best_idx]
+            current_unique -= 1
+    return labels
 
 
 def merge_to_known_count(embeddings, labels, count, *, strategy="largest"):
@@ -48,7 +95,17 @@ def with_known_count_clustering(previous, *, strategy="largest"):
                 labels = super().cluster(embeddings.copy(), 1, len(embeddings))
                 if len(np.unique(labels)) > count:
                     return merge_to_known_count(embeddings, labels, count, strategy=strategy)
-            return super().cluster(embeddings, min_clusters, max_clusters, num_clusters)
+                return labels
+            if max_clusters is not None and max_clusters > 0:
+                labels = super().cluster(embeddings.copy(), 1, len(embeddings))
+                labels = absorb_micro_clusters(embeddings, labels, min_clusters=min_clusters)
+                if len(np.unique(labels)) > max_clusters:
+                    return merge_to_known_count(embeddings, labels, max_clusters, strategy=strategy)
+                if min_clusters is not None and len(np.unique(labels)) < min_clusters:
+                    return super().cluster(embeddings, min_clusters, max_clusters, num_clusters)
+                return labels
+            labels = super().cluster(embeddings, min_clusters, max_clusters, num_clusters)
+            return absorb_micro_clusters(embeddings, labels, min_clusters=min_clusters)
 
     return KnownCountClustering(
         metric=previous.metric,

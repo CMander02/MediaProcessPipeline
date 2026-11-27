@@ -785,6 +785,12 @@ export const api = {
       | { enabled: true; upserted: number; deleted: number; skipped: number }
       | { enabled: false; reason?: "self_workspace"; upserted: 0; deleted: 0; skipped: 0 }
     >("/api/sync/pull"),
+    push: () => post<{
+      enabled: boolean
+      uploaded: number
+      library_pushed: boolean
+      task_ids?: string[]
+    }>("/api/sync/push"),
     status: () => get<{ workspace_id: string; revision: number }>("/api/sync/status"),
     changes: (cursor = 0, limit = 100) =>
       get<{ changes: SyncChange[]; next_cursor: number; has_more: boolean; server_revision: number }>(
@@ -890,6 +896,8 @@ export const api = {
         status: "renamed" | "merged" | "conflict"
         person_id?: string
         person_name?: string
+        derived_content_stale?: boolean
+        updated_files?: string[]
         conflict_person_id?: string
         conflict_person_name?: string
         conflict_sample_count?: number

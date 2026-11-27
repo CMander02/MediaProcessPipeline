@@ -85,12 +85,70 @@ export function normalizeSourceFilter(value: unknown): SourceFilter {
   return "other"
 }
 
+const ARCHIVE_PLATFORM_LABELS: Record<string, string> = {
+  apple_podcast: "Apple Podcasts",
+  apple: "Apple Podcasts",
+  bilibili: "哔哩哔哩",
+  bilibili_opus: "哔哩哔哩",
+  bilibili_video: "哔哩哔哩",
+  bili: "哔哩哔哩",
+  webpage: "网页",
+  web: "网页",
+  generic_webpage: "网页",
+  twitter: "X",
+  x: "X",
+  x_twitter: "X",
+  xiaohongshu: "小红书",
+  xhs: "小红书",
+  xiaoyuzhou: "小宇宙",
+  xyz: "小宇宙",
+  youtube: "YouTube",
+  yt: "YouTube",
+  zhihu: "知乎",
+  local: "本地文件",
+}
+
+export function getPlatformLabel(platform: string | null | undefined): string | null {
+  if (!platform) return null
+  return ARCHIVE_PLATFORM_LABELS[platform.toLowerCase()] ?? platform
+}
+
+export function resolveArchivePlatform(metadata?: Record<string, unknown> | null): string | null {
+  if (!metadata) return null
+  if (typeof metadata.platform === "string" && metadata.platform.trim()) {
+    return metadata.platform.trim()
+  }
+  const extra = metadata.extra
+  if (extra && typeof extra === "object") {
+    const extraPlatform = (extra as Record<string, unknown>).platform
+    if (typeof extraPlatform === "string" && extraPlatform.trim()) {
+      return extraPlatform.trim()
+    }
+  }
+  for (const field of [metadata.source_url, metadata.webpage_url, metadata.url]) {
+    if (typeof field !== "string" || !field.trim()) continue
+    try {
+      const host = new URL(field.trim()).hostname.toLowerCase()
+      if (host.includes("xiaoyuzhoufm.com")) return "xiaoyuzhou"
+      if (host.includes("xiaohongshu.com") || host.includes("xhslink.com")) return "xiaohongshu"
+      if (host.includes("bilibili.com") || host.includes("b23.tv")) return "bilibili"
+      if (host.includes("zhihu.com")) return "zhihu"
+      if (host.includes("youtube.com") || host.includes("youtu.be")) return "youtube"
+      if (host.includes("podcasts.apple.com")) return "apple_podcast"
+      if (host === "x.com" || host.endsWith(".x.com") || host.includes("twitter.com")) return "x"
+    } catch {
+      // Non-URL sources (e.g. local file paths) fall through cleanly.
+    }
+  }
+  return null
+}
+
 export function sourceFilterFromMetadata(metadata: Record<string, unknown> | undefined): SourceFilter {
   if (!metadata) return "other"
   const extra = metadata.extra
   const extraRecord = extra && typeof extra === "object" ? extra as Record<string, unknown> : {}
   const candidates = [
-    metadata.platform,
+    resolveArchivePlatform(metadata),
     extraRecord.platform,
     metadata.source_type,
     metadata.media_type,

@@ -133,7 +133,15 @@ def _cache_remote_thumbnail(url: str, archive_dir: Path) -> Path | None:
 
 def _can_return_raw_image(path: Path) -> bool:
     try:
-        return path.stat().st_size <= _RAW_IMAGE_FALLBACK_MAX_BYTES
+        size = path.stat().st_size
+        if size <= 0 or size > _RAW_IMAGE_FALLBACK_MAX_BYTES:
+            return False
+        from app.services.archiving.thumbnails import detect_image_format
+
+        with path.open("rb") as handle:
+            if detect_image_format(handle.read(64)) == "heic":
+                return False
+        return True
     except OSError:
         return False
 

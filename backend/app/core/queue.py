@@ -48,7 +48,12 @@ _ANALYSIS_OUTPUTS = (
     "summary.md", "summary.json", "mindmap.md", "mindmap.json", "detail.md", "analysis.json",
     "content_selection.json",
 )
-_POLISH_OUTPUTS = ("transcript_polished.srt", "transcript_polished.md", "transcript_lineage.json")
+_POLISH_OUTPUTS = (
+    "transcript_polished.srt",
+    "transcript_polished.md",
+    "transcript_lineage.json",
+    "polish.checkpoint.json",
+)
 _SPEAKER_OUTPUTS = (
     "speaker_review.json",
     "subtitle_speakers.json",
@@ -651,6 +656,7 @@ class TaskQueue:
                 "speaker_review.checkpoint.json", "subtitle_speakers.checkpoint.json",
                 "speaker_identity.checkpoint.json", "identity_evidence.checkpoint.json",
                 "speaker_repair.checkpoint.json", "speaker_repair.preview.json",
+                "polish.checkpoint.json",
                 ".asr-checkpoint.json", ".asr-checkpoint.tmp",
             )
             for filename in generated:

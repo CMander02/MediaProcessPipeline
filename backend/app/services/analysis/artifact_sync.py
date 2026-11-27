@@ -10,6 +10,7 @@ from typing import Any
 
 from app.core.database import get_task_store
 from app.core.artifacts import ArtifactStore
+from app.services.analysis.speaker_identity import is_placeholder_speaker
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,72 @@ SPEAKER_ARTIFACTS = (
     "analysis.json",
     "speaker_map.json",
 )
+
+DERIVED_ARTIFACTS = (
+    "summary.md",
+    "summary.json",
+    "mindmap.md",
+    "mindmap.json",
+    "detail.md",
+)
+
+
+def _whole_token_pattern(name: str) -> re.Pattern[str]:
+    return re.compile(r"(?<![A-Za-z0-9_-])" + re.escape(name) + r"(?![A-Za-z0-9_-])")
+
+
+def _replace_placeholder_in_json(value: Any, pattern: re.Pattern[str], new_name: str) -> tuple[Any, bool]:
+    if isinstance(value, str):
+        replaced, count = pattern.subn(lambda _: new_name, value)
+        return replaced, count > 0
+    if isinstance(value, list):
+        changed = False
+        items = []
+        for item in value:
+            next_item, item_changed = _replace_placeholder_in_json(item, pattern, new_name)
+            changed = changed or item_changed
+            items.append(next_item)
+        return items, changed
+    if isinstance(value, dict):
+        changed = False
+        updated = {}
+        for key, item in value.items():
+            next_item, item_changed = _replace_placeholder_in_json(item, pattern, new_name)
+            changed = changed or item_changed
+            updated[key] = next_item
+        return updated, changed
+    return value, False
+
+
+def _sync_derived_artifact(path: Path, old_name: str, new_name: str) -> str | None:
+    original = path.read_text(encoding="utf-8")
+    if old_name not in original:
+        return None
+    pattern = _whole_token_pattern(old_name)
+    if path.suffix.lower() == ".json":
+        try:
+            payload = json.loads(original)
+        except json.JSONDecodeError:
+            logger.warning("Skipping malformed derived artifact JSON: %s", path)
+            return None
+        updated, changed = _replace_placeholder_in_json(payload, pattern, new_name)
+        if not changed:
+            return None
+        return f"{json.dumps(updated, ensure_ascii=False, indent=2)}\n"
+    replaced, count = pattern.subn(lambda _: new_name, original)
+    return replaced if count > 0 else None
+
+
+def _derived_contains_name(path: Path, name: str) -> bool:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return False
+    if name not in content:
+        return False
+    if name.isascii():
+        return bool(_whole_token_pattern(name).search(content))
+    return True
 
 
 def _replace_json_strings(value: Any, old_name: str, new_name: str) -> Any:
@@ -106,6 +173,24 @@ def sync_speaker_artifacts(
         artifacts.write(task_id, archive_dir, filename, updated)
         changed.append(filename)
 
+    placeholder = is_placeholder_speaker(old_name)
+    needs_regeneration = False
+    for filename in DERIVED_ARTIFACTS:
+        path = archive_dir / filename
+        if not path.is_file():
+            continue
+        if placeholder:
+            try:
+                updated = _sync_derived_artifact(path, old_name, new_name)
+            except (OSError, UnicodeError) as exc:
+                logger.warning("Could not update derived artifact %s: %s", path, exc)
+                continue
+            if updated is not None:
+                artifacts.write(task_id, archive_dir, filename, updated)
+                changed.append(filename)
+        elif _derived_contains_name(path, old_name):
+            needs_regeneration = True
+
     metadata_path = archive_dir / "metadata.json"
     if metadata_path.is_file():
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -118,8 +203,9 @@ def sync_speaker_artifacts(
             finalize_speaker_quality(extra, transcript_path.read_text(encoding="utf-8"),
                                      (extra.get("speaker_quality") or {}).get("target_count"))
         extra["speaker_revision"] = int(extra.get("speaker_revision") or 0) + 1
-        extra["derived_content_stale"] = True
-        extra["derived_content_stale_reason"] = "人物名称已手动修改，摘要与导图待更新"
+        if needs_regeneration:
+            extra["derived_content_stale"] = True
+            extra["derived_content_stale_reason"] = "人物名称已手动修改，摘要与导图待更新"
         artifacts.write(task_id, archive_dir, "metadata.json", json.dumps(metadata, ensure_ascii=False, indent=2))
         if "metadata.json" not in changed:
             changed.append("metadata.json")

@@ -307,3 +307,39 @@ def test_known_count_preserves_main_voices_and_absorbs_small_outliers():
     assert set(assigned[130:133]) == {assigned[0]}
     assert set(assigned[133:]) == {assigned[90]}
     np.testing.assert_equal(vectors, original)
+
+
+def test_absorb_micro_clusters_absorbs_close_outlier_and_keeps_distinct_voice():
+    import numpy as np
+    from app.services.recognition.speaker_clustering import absorb_micro_clusters
+
+    vectors = np.array(
+        [[1.0, 0.0, 0.0]] * 60
+        + [[0.0, 1.0, 0.0]] * 60
+        + [[0.92, 0.39, 0.0]] * 2   # close to cluster 0
+        + [[0.0, 0.0, 1.0]] * 2     # orthogonal genuine short voice
+    )
+    labels = np.array([0] * 60 + [1] * 60 + [2] * 2 + [3] * 2)
+    merged = absorb_micro_clusters(vectors, labels)
+    assert set(merged[120:122]) == {0}
+    assert set(merged[122:]) == {3}
+    assert set(merged) == {0, 1, 3}
+
+
+def test_known_count_clustering_caps_at_max_clusters():
+    import numpy as np
+    from pyannote.audio.pipelines.clustering import AgglomerativeClustering
+    from app.services.recognition.speaker_clustering import with_known_count_clustering
+
+    base = AgglomerativeClustering(metric="cosine").instantiate(
+        {"threshold": 0.3, "method": "centroid", "min_cluster_size": 1}
+    )
+    wrapped = with_known_count_clustering(base)
+    rng = np.random.default_rng(7)
+    emb = np.vstack([
+        np.tile([1.0, 0.0, 0.0], (30, 1)) + rng.normal(0, 0.01, (30, 3)),
+        np.tile([0.0, 1.0, 0.0], (30, 1)) + rng.normal(0, 0.01, (30, 3)),
+        np.tile([0.0, 0.0, 1.0], (4, 1)) + rng.normal(0, 0.01, (4, 3)),
+    ])
+    assigned = wrapped.cluster(emb, min_clusters=1, max_clusters=2, num_clusters=None)
+    assert len(set(assigned)) == 2

@@ -130,7 +130,7 @@ def test_metadata_roster_cannot_create_hard_count():
     context = build_deterministic_source_context({
         "title": "两人对谈", "description": "主持人：张明；嘉宾：李华", "uploader": "科学频道",
     })
-    assert speaker_constraints(context) == (None, None, None)
+    assert speaker_constraints(context) == (None, 1, 2)
     assert speaker_constraints(context, {"num_speakers": 2}) == (2, 2, 2)
 
 

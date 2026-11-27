@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import threading
 import tomllib
+from collections import deque
 from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
@@ -67,32 +68,51 @@ class _CodexRequestLimiter:
     def __init__(self) -> None:
         self._active = 0
         self._lock = threading.Lock()
-        self._waiters: set[Future[None]] = set()
+        self._waiters: deque[Future[None]] = deque()
+
+    def _grant_next_locked(self) -> list[Future[None]]:
+        from app.core.settings import get_runtime_settings
+
+        limit = max(1, int(get_runtime_settings().codex_max_concurrency))
+        granted: list[Future[None]] = []
+        while self._active < limit and self._waiters:
+            waiter = self._waiters.popleft()
+            if waiter.set_running_or_notify_cancel():
+                self._active += 1
+                granted.append(waiter)
+        return granted
 
     async def __aenter__(self) -> None:
         from app.core.settings import get_runtime_settings
 
-        while True:
-            limit = get_runtime_settings().codex_max_concurrency
+        limit = max(1, int(get_runtime_settings().codex_max_concurrency))
+        with self._lock:
+            if self._active < limit and not self._waiters:
+                self._active += 1
+                return
+            waiter: Future[None] = Future()
+            self._waiters.append(waiter)
+        try:
+            await asyncio.wrap_future(waiter)
+        except BaseException:
+            granted_next: list[Future[None]] = []
             with self._lock:
-                if self._active < limit:
-                    self._active += 1
-                    return
-                waiter: Future[None] = Future()
-                self._waiters.add(waiter)
-            try:
-                await asyncio.wrap_future(waiter)
-            finally:
-                with self._lock:
-                    self._waiters.discard(waiter)
+                try:
+                    self._waiters.remove(waiter)
+                except ValueError:
+                    if waiter.done() and not waiter.cancelled():
+                        self._active -= 1
+                        granted_next = self._grant_next_locked()
+            for next_waiter in granted_next:
+                next_waiter.set_result(None)
+            raise
 
     async def __aexit__(self, *_exc: Any) -> None:
         with self._lock:
             self._active -= 1
-            waiters, self._waiters = self._waiters, set()
-        for waiter in waiters:
-            if waiter.set_running_or_notify_cancel():
-                waiter.set_result(None)
+            granted = self._grant_next_locked()
+        for waiter in granted:
+            waiter.set_result(None)
 
 
 _CODEX_LIMITER = _CodexRequestLimiter()

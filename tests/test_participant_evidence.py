@@ -55,3 +55,57 @@ def test_all_frames_sent_in_one_request(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match='预算'):
         service.describe_participants(frames, {"evidence": 'x' * 12001}, binding)
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_audio_only_podcast_collects_text_participant_evidence_without_vlm(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    from app.core.pipeline_steps import participant_evidence as step_module
+    from app.core.pipeline_steps import state as state_module
+
+    audio = tmp_path / "episode.mp3"
+    audio.write_bytes(b"mp3")
+    srt = "1\n00:00:00,000 --> 00:00:03,000\n[SPEAKER_00] 欢迎收听播客，我是曲凯，今天邀请了孟繁青。\n"
+    ctx = SimpleNamespace(
+        task=SimpleNamespace(id="task-audio", options={}),
+        done=set(),
+        task_dir=tmp_path,
+        metadata=SimpleNamespace(
+            file_path=str(audio),
+            duration_seconds=3600,
+            platform="xiaoyuzhou",
+            uploader="42章经",
+            title="对谈孟繁青",
+            description="主持人：曲凯；嘉宾：孟繁青",
+            extra={},
+        ),
+        source_context={
+            "content_type": "podcast_interview",
+            "speaker_candidates": [
+                {"name": "曲凯", "role": "host", "evidence": "description", "confidence": 0.98},
+                {"name": "孟繁青", "role": "guest", "evidence": "description", "confidence": 0.98},
+            ],
+            "speaker_count_hint": {"exact": 2, "confidence": 0.97},
+        },
+        srt=srt,
+        recognition_segments=[{"speaker": "SPEAKER_00", "text": "..."}],
+    )
+
+    monkeypatch.setattr(state_module, "_raise_if_cancelled", AsyncMock())
+    monkeypatch.setattr(
+        step_module,
+        "extract_identity_evidence",
+        AsyncMock(return_value={
+            "status": "completed",
+            "evidence": [{"index": 1, "timestamp": "00:00:00,000", "quote": "我是曲凯，今天邀请了孟繁青", "kind": "intro"}],
+            "failed_windows": [],
+        }),
+    )
+    monkeypatch.setattr(step_module, "_extract_frame", lambda *a, **k: pytest.fail("must not run ffmpeg"))
+
+    await step_module.prepare_participant_evidence(ctx)
+    pe = ctx.metadata.extra["participant_evidence"]
+    assert pe["status"] == "completed"
+    assert pe["count_estimate"] == 2
+    assert pe["roster_complete"] is True
+    assert [p["name"] for p in pe["participants"]] == ["曲凯", "孟繁青"]

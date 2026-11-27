@@ -706,11 +706,14 @@ def speaker_constraints(
     if context is None:
         return None, None, None
     value = context if isinstance(context, SourceContext) else SourceContext.model_validate(context)
-    # Lists and model confidence are evidence, not permission to suppress an
-    # unlisted host, audience member, or off-screen guest.
     if value.user_speaker_count:
         exact = value.user_speaker_count
         return exact, exact, exact
+    hint = value.speaker_count_hint
+    if hint.exact is not None and hint.exact > 0 and hint.confidence >= 0.85:
+        return None, 1, hint.exact
+    if hint.max is not None and hint.max > 0 and hint.confidence >= 0.65:
+        return None, hint.min, hint.max
     return None, None, None
 
 

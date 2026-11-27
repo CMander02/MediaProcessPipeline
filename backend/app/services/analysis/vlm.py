@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import re
+import tempfile
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -15,6 +16,11 @@ from typing import Any
 
 from app.core.logging_setup import log_event
 from app.core.model_router import EndpointBinding, resolve_vlm_binding
+from app.services.archiving.thumbnails import (
+    detect_image_format,
+    image_mime_for_format,
+    transcode_heic_to_jpeg_bytes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,16 +56,11 @@ _USER_IMAGE_PROMPT = (
 
 
 def _detect_media_type(data: bytes, suffix: str) -> str:
-    if data.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "image/webp"
-    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
-        return "image/gif"
+    fmt = detect_image_format(data[:64])
+    if fmt and (mime := image_mime_for_format(fmt)):
+        return mime
     media_type_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
-                      "webp": "image/webp", "gif": "image/gif"}
+                      "webp": "image/webp", "gif": "image/gif", "avif": "image/avif", "heic": "image/heic"}
     return media_type_map.get(suffix, "image/jpeg")
 
 
@@ -74,7 +75,11 @@ def _prepare_image_bytes(image_path: Path, *, max_edge: int = 1800) -> tuple[byt
     try:
         from PIL import Image
 
-        with Image.open(io.BytesIO(raw)) as image:
+        source_bytes = raw
+        if detect_image_format(raw[:64]) == "heic":
+            source_bytes = transcode_heic_to_jpeg_bytes(raw, source_path=image_path)
+            meta["transcoded_from"] = "heic"
+        with Image.open(io.BytesIO(source_bytes)) as image:
             meta["source_size"] = list(image.size)
             image = image.convert("RGB")
             if max(image.size) > max_edge:
@@ -82,7 +87,11 @@ def _prepare_image_bytes(image_path: Path, *, max_edge: int = 1800) -> tuple[byt
             output = io.BytesIO()
             image.save(output, format="JPEG", quality=88, optimize=True)
             prepared = output.getvalue()
-            if prepared and (len(prepared) < len(raw) or max(meta["source_size"]) > max_edge):
+            if prepared and (
+                meta.get("transcoded_from") == "heic"
+                or len(prepared) < len(raw)
+                or max(meta["source_size"]) > max_edge
+            ):
                 meta["payload_bytes"] = len(prepared)
                 meta["payload_size"] = list(image.size)
                 meta["media_type"] = "image/jpeg"
@@ -90,6 +99,39 @@ def _prepare_image_bytes(image_path: Path, *, max_edge: int = 1800) -> tuple[byt
     except Exception as exc:
         meta["prepare_error"] = str(exc)
     return raw, original_media_type, meta
+
+
+def _extension_for_media_type(media_type: str) -> str:
+    return {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+        "image/avif": ".avif",
+    }.get(media_type, ".jpg")
+
+
+def _stage_cli_image_paths(paths: list[Path], *, max_edge: int = 1800) -> tuple[list[Path], list[Path]]:
+    """Stage converted/resized temporary files for oauth_cli when the original cannot be sent directly."""
+    staged: list[Path] = []
+    temp_files: list[Path] = []
+    for path in paths:
+        raw = path.read_bytes()
+        prepared, media_type, _ = _prepare_image_bytes(path, max_edge=max_edge)
+        expected_ext = _extension_for_media_type(media_type)
+        actual_ext = ".jpg" if path.suffix.lower() == ".jpeg" else path.suffix.lower()
+        if prepared != raw or (actual_ext and actual_ext != expected_ext):
+            handle = tempfile.NamedTemporaryFile(prefix="mpp-vlm-", suffix=expected_ext, delete=False)
+            try:
+                handle.write(prepared)
+            finally:
+                handle.close()
+            temp_path = Path(handle.name)
+            staged.append(temp_path)
+            temp_files.append(temp_path)
+        else:
+            staged.append(path)
+    return staged, temp_files
 
 
 def _encode_image(image_path: Path) -> tuple[str, str, dict[str, Any]]:
@@ -195,16 +237,21 @@ class VLMService:
         started = time.monotonic()
         if binding.request_kwargs.get("transport") == "oauth_cli":
             from app.services.analysis.coding_plan_cli import call_coding_plan_cli
-            raw_text = asyncio.run(call_coding_plan_cli(
-                str(binding.request_kwargs.get("provider_type") or ""),
-                model=binding.model,
-                prompt=PARTICIPANT_PROMPT + "\n" + payload + "\n" + json.dumps([
-                    {"id": f["id"], "time": f["time"]} for f in frames
-                ]),
-                cli_path=str(binding.request_kwargs.get("cli_path") or ""),
-                timeout_sec=timeout,
-                image_paths=[Path(f["path"]) for f in frames],
-            ))
+            cli_images, temp_files = _stage_cli_image_paths([Path(f["path"]) for f in frames], max_edge=image_edge)
+            try:
+                raw_text = asyncio.run(call_coding_plan_cli(
+                    str(binding.request_kwargs.get("provider_type") or ""),
+                    model=binding.model,
+                    prompt=PARTICIPANT_PROMPT + "\n" + payload + "\n" + json.dumps([
+                        {"id": f["id"], "time": f["time"]} for f in frames
+                    ]),
+                    cli_path=str(binding.request_kwargs.get("cli_path") or ""),
+                    timeout_sec=timeout,
+                    image_paths=cli_images,
+                ))
+            finally:
+                for tmp_file in temp_files:
+                    tmp_file.unlink(missing_ok=True)
         else:
             client, model = self._get_client(binding)
             request_options = {}
@@ -248,36 +295,41 @@ class VLMService:
             from app.services.analysis.coding_plan_cli import call_coding_plan_cli
 
             provider_type = str(binding.request_kwargs.get("provider_type") or "")
-            raw = asyncio.run(
-                call_coding_plan_cli(
-                    provider_type,
-                    model=binding.model,
-                    prompt=f"{_SYSTEM_PROMPT}\n\n{_USER_IMAGE_PROMPT}",
-                    cli_path=str(binding.request_kwargs.get("cli_path") or ""),
-                    timeout_sec=timeout_sec,
-                    reasoning_effort=str(
-                        binding.request_kwargs.get("reasoning_effort") or ""
-                    ),
-                    image_paths=[image_path],
-                )
-            )
-            result = _parse_response(raw)
-            if not result["text"].strip():
-                retry_text = asyncio.run(
+            cli_images, temp_files = _stage_cli_image_paths([image_path])
+            try:
+                raw = asyncio.run(
                     call_coding_plan_cli(
                         provider_type,
                         model=binding.model,
-                        prompt=_OCR_RETRY_PROMPT,
+                        prompt=f"{_SYSTEM_PROMPT}\n\n{_USER_IMAGE_PROMPT}",
                         cli_path=str(binding.request_kwargs.get("cli_path") or ""),
                         timeout_sec=timeout_sec,
                         reasoning_effort=str(
                             binding.request_kwargs.get("reasoning_effort") or ""
                         ),
-                        image_paths=[image_path],
+                        image_paths=cli_images,
                     )
-                ).strip()
-                if retry_text:
-                    result = {"kind": "text", "text": retry_text}
+                )
+                result = _parse_response(raw)
+                if not result["text"].strip():
+                    retry_text = asyncio.run(
+                        call_coding_plan_cli(
+                            provider_type,
+                            model=binding.model,
+                            prompt=_OCR_RETRY_PROMPT,
+                            cli_path=str(binding.request_kwargs.get("cli_path") or ""),
+                            timeout_sec=timeout_sec,
+                            reasoning_effort=str(
+                                binding.request_kwargs.get("reasoning_effort") or ""
+                            ),
+                            image_paths=cli_images,
+                        )
+                    ).strip()
+                    if retry_text:
+                        result = {"kind": "text", "text": retry_text}
+            finally:
+                for tmp_file in temp_files:
+                    tmp_file.unlink(missing_ok=True)
             duration_ms = int((time.monotonic() - started) * 1000)
             result["payload_meta"] = payload_meta
             result["duration_ms"] = duration_ms

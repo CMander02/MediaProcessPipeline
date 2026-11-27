@@ -962,3 +962,34 @@ async def test_cli_cleanup_kills_helpers_even_after_parent_exits(tmp_path, outco
         if not pending.done():
             pending.cancel()
             await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_codex_limiter_grants_queued_waiters_in_fifo_order(monkeypatch):
+    from app.core import settings
+
+    monkeypatch.setattr(
+        settings, "get_runtime_settings", lambda: SimpleNamespace(codex_max_concurrency=1)
+    )
+    limiter = coding_plan_cli._CODEX_LIMITER
+    holder_entered = asyncio.Event()
+    release_holder = asyncio.Event()
+    order: list[int] = []
+
+    async def holder():
+        async with limiter:
+            holder_entered.set()
+            await release_holder.wait()
+
+    async def queued(idx: int):
+        async with limiter:
+            order.append(idx)
+
+    t0 = asyncio.create_task(holder())
+    await holder_entered.wait()
+    waiters = [asyncio.create_task(queued(i)) for i in (1, 2, 3)]
+    for _ in range(3):
+        await asyncio.sleep(0)
+    release_holder.set()
+    await asyncio.gather(t0, *waiters)
+    assert order == [1, 2, 3]

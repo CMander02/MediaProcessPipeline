@@ -324,7 +324,7 @@ def _cache_note_cover_thumbnail(
 ) -> Path | None:
     if metadata.content_subtype != "image_note" or not image_paths:
         return None
-    if metadata.platform not in {"bilibili", "bilibili_opus"}:
+    if metadata.platform not in {"bilibili", "bilibili_opus", "xiaohongshu"}:
         return None
     try:
         from app.services.archiving.thumbnails import create_image_thumbnail

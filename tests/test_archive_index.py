@@ -271,3 +271,24 @@ def test_failed_archive_carries_error_and_clears_it_when_requeued(library):
     item = service.list_all()[0]
     assert item["metadata"]["status"] == "queued"
     assert item["metadata"]["error"] is None
+
+
+def test_text_note_with_legacy_video_media_type_is_not_flagged_as_video(library):
+    from app.services.archiving import archive as archive_module
+
+    root, _service = library
+    directory = root / "zhihu-note"
+    directory.mkdir()
+    (directory / "metadata.json").write_text(
+        json.dumps({
+            "archive_id": str(uuid4()),
+            "title": "知乎图文",
+            "platform": "zhihu",
+            "media_type": "video",
+            "content_subtype": "text_note",
+        }),
+        encoding="utf-8",
+    )
+    item = archive_module.ArchiveService()._archive_item(directory, {})
+    assert item["has_video"] is False
+    assert item["has_thumbnail"] is False

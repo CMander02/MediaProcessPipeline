@@ -159,6 +159,63 @@ def test_vlm_service_passes_image_to_oauth_cli(monkeypatch, tmp_path):
     assert captured["image_paths"] == [image_path]
 
 
+def test_vlm_oauth_cli_inherits_provider_timeout_and_stages_transcoded_heic(monkeypatch, tmp_path):
+    settings = RuntimeSettings(
+        vlm_timeout_sec=180,
+        providers=[
+            {
+                "id": "codex-oauth",
+                "name": "Codex OAuth",
+                "provider_type": "codex_oauth",
+                "enabled": True,
+                "cli_path": "/usr/local/bin/codex",
+                "timeout_sec": 600,
+                "models": [
+                    {
+                        "id": "codex-oauth:default",
+                        "model_id": "default",
+                        "display_name": "GPT",
+                        "model_type": "llm",
+                        "capabilities": ["llm", "vision"],
+                        "cli_model_name": "gpt-5",
+                        "enabled": True,
+                    }
+                ],
+            }
+        ],
+        runtime_model_bindings={
+            "vision": {"provider_id": "codex-oauth", "model_id": "default", "capability": "vision"}
+        },
+    )
+    binding = resolve_vlm_binding(settings)
+    assert binding.request_kwargs["timeout_sec"] == 600.0
+
+    import io
+    from PIL import Image
+    from app.services.analysis import vlm as vlm_module
+
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 30), color=(200, 100, 50)).save(buf, format="JPEG")
+    real_jpeg = buf.getvalue()
+
+    heic_path = tmp_path / "photo.jpg"
+    heic_path.write_bytes(b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic")
+    monkeypatch.setattr(vlm_module, "transcode_heic_to_jpeg_bytes", lambda data, source_path=None: real_jpeg)
+
+    seen_paths = []
+
+    async def fake_call(_provider_type, **kwargs):
+        seen_paths.extend(kwargs["image_paths"])
+        assert kwargs["image_paths"][0].read_bytes().startswith(b"\xff\xd8\xff")
+        return "KIND: content\nHEIC图片内容"
+
+    monkeypatch.setattr(coding_plan_cli, "call_coding_plan_cli", fake_call)
+    res = VLMService().describe_image(heic_path, binding)
+    assert res["kind"] == "content"
+    assert seen_paths and seen_paths[0] != heic_path
+    assert not seen_paths[0].exists()
+
+
 def test_embedding_binding_tracks_kb_enablement_and_vector_settings():
     disabled = RuntimeSettings(
         kb_enabled=False,

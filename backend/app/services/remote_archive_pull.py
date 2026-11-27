@@ -32,13 +32,18 @@ from app.core.events import TaskEvent, get_event_bus
 from app.core.library_sync import (
     LibraryPush,
     RemoteArchiveFolder,
+    RemoteCoverDeletion,
     RemoteFolder as RemoteFolder,
+    RemoteFolderDeletion,
     RemoteMembership,
     folder_mappings,
     library_sync_lock,
+    merge_collection_members,
     merge_collections,
     merge_cover,
+    merge_cover_deletions,
     merge_folder,
+    merge_folder_deletions,
     remember_folder,
     remote_origin,
     replica_folder_id,
@@ -434,7 +439,20 @@ def _merge_library(server_url: str, workspace_id: str, library: RemoteLibrary) -
     with task_write_transaction() as conn:
         before = conn.total_changes
         previous = folder_mappings(conn, server_url, workspace_id)
+        expanded_deletions: list[RemoteFolderDeletion] = []
+        for deletion in library.deleted_folders:
+            for target_id in {
+                deletion.folder_id,
+                previous.get(deletion.folder_id, ""),
+                replica_folder_id(server_url, workspace_id, deletion.folder_id),
+            }:
+                if target_id:
+                    expanded_deletions.append(
+                        RemoteFolderDeletion(folder_id=target_id, deleted_at=deletion.deleted_at)
+                    )
+        merge_folder_deletions(conn, expanded_deletions)
         mapping = {}
+        folder_by_id = {folder.id: folder for folder in library.folders}
         for folder in library.folders:
             replica_id = replica_folder_id(server_url, workspace_id, folder.id)
             local_id = previous.get(folder.id)
@@ -446,7 +464,9 @@ def _merge_library(server_url: str, workspace_id: str, library: RemoteLibrary) -
                 ).fetchone()
                 if same_folder:
                     local_id = folder.id
-            mapping[folder.id] = merge_folder(conn, folder, local_id or replica_id, replica_id)
+            merged_id = merge_folder(conn, folder, local_id or replica_id, replica_id)
+            if merged_id is not None:
+                mapping[folder.id] = merged_id
 
         direct_members = {member.content_key: member for member in library.members}
         members = direct_members.copy()
@@ -466,12 +486,20 @@ def _merge_library(server_url: str, workspace_id: str, library: RemoteLibrary) -
                     members.setdefault(key, source_member or RemoteMembership(content_key=key, folder_id=folder_id))
 
         _pull_members(conn, members, mapping, origin)
+        cover_deletions: list[RemoteCoverDeletion] = []
+        for deletion in library.deleted_covers:
+            target_id = mapping.get(deletion.folder_id) or previous.get(deletion.folder_id) or replica_folder_id(
+                server_url, workspace_id, deletion.folder_id,
+            )
+            cover_deletions.append(RemoteCoverDeletion(folder_id=target_id, deleted_at=deletion.deleted_at))
+        merge_cover_deletions(conn, cover_deletions)
         for cover in library.covers:
             folder_id = mapping.get(cover.folder_id)
             if folder_id is not None:
                 for key in sorted(cover_keys.get(cover.content_key, {cover.content_key})):
                     merge_cover(conn, folder_id, key, cover.updated_at)
         merge_collections(conn, library.collections)
+        merge_collection_members(conn, library.collection_members)
         local_ids = set(mapping.values())
         for remote_id, local_id in previous.items():
             if remote_id in mapping or local_id in local_ids:
@@ -492,7 +520,15 @@ def _merge_library(server_url: str, workspace_id: str, library: RemoteLibrary) -
                 (server_url, workspace_id, remote_id),
             )
         for remote_id, local_id in mapping.items():
-            remember_folder(conn, server_url, workspace_id, remote_id, local_id)
+            remote_folder = folder_by_id.get(remote_id)
+            remember_folder(
+                conn,
+                server_url,
+                workspace_id,
+                remote_id,
+                local_id,
+                remote_updated_at=remote_folder.updated_at if remote_folder else "",
+            )
         conn.execute(
             "INSERT INTO remote_sync_cursors(server_url,workspace_id,library_revision) "
             "VALUES(?,?,?) ON CONFLICT(server_url,workspace_id) DO UPDATE SET "

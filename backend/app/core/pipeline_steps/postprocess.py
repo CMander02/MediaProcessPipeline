@@ -138,7 +138,11 @@ async def postprocess(ctx: PipelineContext, *, finalize_archive: bool = True) ->
             elif hotwords:
                 ctx.analysis = {"proper_nouns": hotwords}
             polish_context = dict(ctx.analysis)
-            ctx.polished = await polish_text(ctx.reviewed_srt or ctx.srt, context=polish_context)
+            ctx.polished = await polish_text(
+                ctx.reviewed_srt or ctx.srt,
+                context=polish_context,
+                checkpoint_path=ctx.task_dir / "polish.checkpoint.json",
+            )
             if lineage := polish_context.pop("_speaker_lineage", None):
                 import json
                 await _write_text_artifact(ctx.task, ctx.task_dir, "transcript_lineage.json", json.dumps(lineage, ensure_ascii=False, indent=2))

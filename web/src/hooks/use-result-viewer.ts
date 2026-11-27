@@ -27,6 +27,7 @@ import {
   type SubtitleTrackInfo,
 } from "@/lib/subtitle-tracks"
 import { timelineEventKey, timelineStatusText } from "../lib/result-timeline"
+import { resolveArchivePlatform } from "@/lib/archive-filters"
 import {
   resolveSourceUrl,
   sourceUrlAtTime,
@@ -217,8 +218,15 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt, embe
 
   const [mergeInfo, setMergeInfo] = useState<SpeakerMergeInfo | null>(null)
 
+  const reloadDerivedArtifactsRef = useRef<() => Promise<void>>(async () => {})
+
   const applyRenameLocally = useCallback(
-    async (oldName: string, newName: string, persist = true) => {
+    async (
+      oldName: string,
+      newName: string,
+      persist = true,
+      options?: { derivedContentStale?: boolean; updatedFiles?: string[] },
+    ) => {
       const updated = subtitles.map((sub) =>
         sub.speaker === oldName ? { ...sub, speaker: newName } : sub,
       )
@@ -232,9 +240,22 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt, embe
       setSpeakerSubtitles(updated)
       primarySubtitles.current = updated
       setTranscript(content)
-      setDerivedContentStale(true)
+      if (persist) {
+        const derivedText = [summary, mindmap, detail].filter(Boolean).join("\n")
+        if (derivedText.includes(oldName)) {
+          setDerivedContentStale(true)
+        }
+      } else {
+        if (options?.derivedContentStale !== undefined) {
+          setDerivedContentStale(Boolean(options.derivedContentStale))
+        }
+        const derivedNames = new Set(["summary.md", "summary.json", "mindmap.md", "mindmap.json", "detail.md"])
+        if (options?.updatedFiles?.some((name) => derivedNames.has(name))) {
+          void reloadDerivedArtifactsRef.current()
+        }
+      }
     },
-    [subtitles, archivePath, sep, isPolished, transcript],
+    [subtitles, archivePath, sep, isPolished, transcript, summary, mindmap, detail],
   )
 
   const handleRenameSpeaker = async (oldName: string, newName: string) => {
@@ -262,7 +283,10 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt, embe
       }
       // renamed or merged — both mean local SRT should reflect the resolved name
       const appliedName = res.person_name ?? newName
-      await applyRenameLocally(oldName, appliedName, false)
+      await applyRenameLocally(oldName, appliedName, false, {
+        derivedContentStale: res.derived_content_stale,
+        updatedFiles: res.updated_files,
+      })
     } catch (err) {
       if (request !== speakerEditVersion.current) return
       notifyError("改名失败，请刷新字幕后重试", err)
@@ -297,7 +321,10 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt, embe
       )
       if (request !== speakerEditVersion.current) return
       const appliedName = res.person_name ?? mergeInfo.newName
-      await applyRenameLocally(mergeInfo.oldName, appliedName, false)
+      await applyRenameLocally(mergeInfo.oldName, appliedName, false, {
+        derivedContentStale: res.derived_content_stale,
+        updatedFiles: res.updated_files,
+      })
     } catch (err) {
       console.warn("Conflict resolution failed:", err)
     } finally {
@@ -311,7 +338,7 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt, embe
 
   const applyMetadataState = useCallback((metadata: Record<string, unknown>) => {
     setSourceUrl(resolveSourceUrl(metadata))
-    setPlatform((metadata.platform as string | null) ?? null)
+    setPlatform(resolveArchivePlatform(metadata))
     setUploader((metadata.uploader as string | null) ?? null)
     setContentSubtype((metadata.content_subtype as string | null) ?? null)
     setNoteText((metadata.description as string | null) ?? null)
@@ -518,6 +545,30 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt, embe
     }
   }, [archivePath, applyTranscriptContent, loadFile])
 
+  const reloadDerivedArtifacts = useCallback(async (basePath = archivePath) => {
+    const generation = viewerGeneration.current
+    const [summaryMd, mindmapMd, mindmapJson, summaryJson, detailMd] = await Promise.all([
+      loadFile("summary.md", basePath),
+      loadFile("mindmap.md", basePath),
+      loadFile("mindmap.json", basePath),
+      loadFile("summary.json", basePath),
+      loadFile("detail.md", basePath),
+    ])
+    if (generation !== viewerGeneration.current) return
+    if (summaryMd) setSummary(summaryMd)
+    if (mindmapMd) setMindmap(mindmapMd)
+    if (mindmapJson) {
+      try {
+        setMindmapTree(JSON.parse(mindmapJson) as TranscriptTocNode)
+      } catch (err) {
+        console.warn("Failed to parse mindmap.json:", err)
+      }
+    }
+    if (summaryJson) setSummaryChapterNodes(parseChapterTimeline(summaryJson))
+    if (detailMd) setDetail(detailMd)
+  }, [archivePath, loadFile])
+  reloadDerivedArtifactsRef.current = () => reloadDerivedArtifacts(archivePath)
+
   const refreshTaskSnapshot = useCallback(async () => {
     if (!resolvedTaskId || !online) return null
     const generation = viewerGeneration.current
@@ -592,51 +643,46 @@ export function useResultViewer({ archivePath, taskId: taskIdProp, startAt, embe
       const imagesDir = archivePath + sep + "images"
       const listing = await api.filesystem.browse(imagesDir, "file")
       const images = (listing.items ?? [])
-        .filter((item) => !item.is_dir && /\.(?:jpe?g|png|webp|gif|bmp)$/i.test(item.name))
+        .filter((item) => !item.is_dir && /\.(?:jpe?g|png|webp|gif|bmp|avif)$/i.test(item.name))
         .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
-      for (const item of images) {
+      let descFiles: string[] = []
+      try {
+        const descListing = await api.filesystem.browse(archivePath + sep + "descriptions", "file")
+        descFiles = (descListing.items ?? [])
+          .filter((item) => !item.is_dir && item.name.toLowerCase().endsWith(".md"))
+          .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+          .map((item) => item.path)
+      } catch {
+        // Descriptions directory may not exist yet.
+      }
+      for (let pos = 0; pos < images.length; pos++) {
+        const item = images[pos]
         const stem = item.name.replace(/\.[^.]+$/, "")
         const descPath = archivePath + sep + "descriptions" + sep + `${stem}.md`
         let text = ""
         try {
           text = (await api.filesystem.read(descPath)).content ?? ""
         } catch {
-          // Description files are optional.
+          if (descFiles.length === images.length && descFiles[pos]) {
+            try {
+              text = (await api.filesystem.read(descFiles[pos])).content ?? ""
+            } catch {
+              // Description files are optional.
+            }
+          }
         }
         const index = Number.parseInt(stem, 10)
-        const fromResult = Number.isFinite(index) ? resultByIndex.get(index) : undefined
+        const fromResult = Number.isFinite(index) ? resultByIndex.get(index) : resultByIndex.get(pos)
         descs.push({
           ...(fromResult ?? {}),
-          index: Number.isFinite(index) ? index : descs.length,
+          index: Number.isFinite(index) ? index : pos,
           image_path: item.path,
           kind: fromResult?.kind ?? "content",
           text: (fromResult?.text || text || ""),
         })
       }
     } catch {
-      // Legacy numbered images provide the fallback source below.
-    }
-    for (let i = descs.length > 0 ? 30 : 0; i < 30; i++) {
-      const imgPath = archivePath + sep + "images" + sep + `${String(i).padStart(2, "0")}.jpg`
-      const descPath = archivePath + sep + "descriptions" + sep + `${String(i).padStart(2, "0")}.md`
-      try {
-        const check = await api.filesystem.read(imgPath)
-        if (!check || !check.success) break
-        let text = ""
-        try {
-          text = (await api.filesystem.read(descPath)).content ?? ""
-        } catch {
-          // Description files are optional.
-        }
-        const fromResult = resultByIndex.get(i)
-        descs.push({
-          ...(fromResult ?? {}),
-          index: i,
-          image_path: imgPath,
-          kind: fromResult?.kind ?? "content",
-          text: fromResult?.text || text,
-        })
-      } catch { break }
+      // Directory browse unavailable.
     }
     const merged = descs.length > 0 ? descs : resultDescriptions
     if (generation === viewerGeneration.current && merged.length > 0) {

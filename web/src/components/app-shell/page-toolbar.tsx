@@ -38,6 +38,7 @@ const SOURCE_ICON_PLATFORMS = new Set([
   "webpage",
   "x",
   "xiaohongshu",
+  "xiaoyuzhou",
   "youtube",
   "zhihu",
 ])

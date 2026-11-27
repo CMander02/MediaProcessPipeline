@@ -19,6 +19,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { RenameDialog } from "@/components/rename-dialog"
+import { ArchiveCoverFallback } from "@/components/archive-cover-fallback"
 import { PlatformIcon } from "@/components/platform-icon"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
@@ -27,7 +28,7 @@ import {
   MoreHorizontalIcon, Tick02Icon,
 } from "@hugeicons/core-free-icons"
 import { archiveDisplayTitle, checkpointAction } from "@/lib/task-display"
-import { normalizeSourceFilter } from "@/lib/archive-filters"
+import { normalizeSourceFilter, resolveArchivePlatform } from "@/lib/archive-filters"
 
 interface ArchiveCardProps {
   archive: ArchiveItem
@@ -111,6 +112,8 @@ export function ArchiveCard({
   const showCheckpoint = Boolean(checkpoint && onCheckpointRerun)
   const showFullRerun = Boolean(onRerun) && !archive.processing
   const { title, untitled } = archiveDisplayTitle(archive)
+  const resolvedPlatform = resolveArchivePlatform(archive.metadata)
+  const sourceUrl = typeof archive.metadata?.source_url === "string" ? archive.metadata.source_url : null
   const uploader = typeof archive.metadata?.uploader === "string" ? archive.metadata.uploader : null
   const progress = task ? Math.round((task.progress ?? 0) * 100) : null
   // Only unusual gaps are worth a word; nearly every finished video has both.
@@ -242,19 +245,19 @@ export function ArchiveCard({
                   onError={() => setImgError(true)}
                   className={thumbnailClassName}
                 />
-              ) : archive.has_video ? (
-                <div className="flex h-full w-full items-center justify-center">
-                  <HugeiconsIcon icon={Video01Icon} className="h-8 w-8 text-muted-foreground/30" />
-                </div>
               ) : (
-                <div className="flex h-full w-full items-center justify-center bg-muted">
-                  <div className="p-3">
-                    <HugeiconsIcon
-                      icon={isImageNote ? Image01Icon : isTextNote ? Note01Icon : MusicNote01Icon}
-                      className="h-6 w-6 text-muted-foreground/50"
-                    />
-                  </div>
-                </div>
+                <ArchiveCoverFallback
+                  title={title}
+                  platform={resolvedPlatform}
+                  uploader={uploader}
+                  sourceUrl={sourceUrl}
+                  hintText={typeof archive.metadata?.description === "string" ? archive.metadata.description : null}
+                  mediaLabel={mediaLabel}
+                  isVideo={archive.has_video}
+                  isImageNote={isImageNote}
+                  isTextNote={isTextNote}
+                  variant="card"
+                />
               )}
 
               {/* Task state sits in the corner so the cover itself stays clean */}
@@ -314,14 +317,14 @@ export function ArchiveCard({
                     <span className="truncate">{folderName}</span>
                   </span>
                 )}
-                {typeof archive.metadata?.platform === "string" && (
-                  normalizeSourceFilter(archive.metadata.platform) === "local" ? (
+                {resolvedPlatform && (
+                  normalizeSourceFilter(resolvedPlatform) === "local" ? (
                     <span className="flex shrink-0 items-center" title="本地文件">
                       <HugeiconsIcon icon={FolderOpenIcon} className="h-3.5 w-3.5" strokeWidth={1.75} />
                     </span>
                   ) : (
                     <PlatformIcon
-                      platform={archive.metadata.platform as string}
+                      platform={resolvedPlatform}
                       uploader={uploader}
                       className="h-3.5 w-3.5 shrink-0"
                     />

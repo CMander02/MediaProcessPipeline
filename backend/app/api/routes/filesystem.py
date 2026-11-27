@@ -271,10 +271,46 @@ def _browser_cache_matches(
 
 
 def _ensure_browser_playable(file_path: Path) -> tuple[Path, str]:
-    """If the file is an m4a/ogg/etc. that Chrome may choke on, return a
-    transcoded mp3 copy (cached next to the original).  Otherwise return the
-    file as-is.
+    """If the file is an m4a/ogg/etc. or HEIC image that Chrome may choke on,
+    return a transcoded copy cached next to the original. Otherwise return the
+    file as-is (using magic-byte MIME detection for images).
     """
+    from app.services.archiving.thumbnails import (
+        detect_image_format,
+        image_mime_for_format,
+        transcode_heic_to_jpeg_bytes,
+    )
+
+    if file_path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif", ".heic"}:
+        try:
+            with file_path.open("rb") as handle:
+                fmt = detect_image_format(handle.read(64))
+        except OSError:
+            fmt = None
+        if fmt == "heic":
+            import hashlib
+            from app.core.paths import get_workspace_paths
+            from app.core.settings import get_runtime_settings
+
+            cache_dir = get_workspace_paths(get_runtime_settings().data_root).temporary("browser_image_cache")
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.sha256(str(file_path.resolve()).encode("utf-8")).hexdigest()[:24]
+            jpg_path = cache_dir / f"{digest}.jpg"
+            source_mtime = file_path.stat().st_mtime_ns
+            if jpg_path.is_file() and jpg_path.stat().st_size > 0 and jpg_path.stat().st_mtime_ns >= source_mtime:
+                return jpg_path, "image/jpeg"
+            try:
+                converted = transcode_heic_to_jpeg_bytes(file_path.read_bytes(), source_path=file_path)
+                jpg_path.write_bytes(converted)
+                return jpg_path, "image/jpeg"
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("HEIC transcode failed for %s: %s", file_path.name, exc)
+        if fmt and (mime := image_mime_for_format(fmt)):
+            return file_path, mime
+        ct, _ = mimetypes.guess_type(str(file_path))
+        return file_path, ct or "application/octet-stream"
+
     needs_transcode = file_path.suffix.lower() in {".m4a", ".ogg", ".opus", ".wma", ".aac"}
     if not needs_transcode:
         ct, _ = mimetypes.guess_type(str(file_path))

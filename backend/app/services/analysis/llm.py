@@ -1,19 +1,23 @@
 """LLM service for text analysis via LiteLLM unified gateway."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 os.environ.setdefault("LITELLM_LOG", "WARNING")
 
 from app.core.async_utils import cancel_and_wait, gather_cancel_on_error
+from app.core.atomic_file import atomic_write_text
 from app.core.compute_device import detect_compute_capabilities, resolve_compute_device
 from app.core.config import get_settings
 from app.core.logging_setup import log_event
+from app.core.model_router import resolve_llm_binding
 from app.core.settings import get_runtime_settings
 from app.services.analysis import mindmap_outputs as _mindmap_outputs
 from app.services.analysis import response_parsing as _response_parsing
@@ -77,6 +81,23 @@ def _is_retryable_llm_error(error: BaseException) -> bool:
         if isinstance(status_code, int) and (
             status_code in {408, 409, 425, 429} or status_code >= 500
         ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _is_timeout_error(error: BaseException) -> bool:
+    """Return whether an exception or its cause chain represents a timeout."""
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (TimeoutError, asyncio.TimeoutError)):
+            return True
+        if type(current).__name__ in {"APITimeoutError", "ReadTimeout", "ConnectTimeout"}:
+            return True
+        message = str(current).lower()
+        if "timeout" in message or "timed out" in message or "超时" in message:
             return True
         current = current.__cause__ or current.__context__
     return False
@@ -797,6 +818,7 @@ class LLMService:
         overlap: int = 16,
         max_concurrency: int = 8,
         provider_override: str = "",
+        checkpoint_path: Path | None = None,
     ) -> str:
         """
         Phase 2: Polish transcript using parallel chunks with context.
@@ -809,6 +831,7 @@ class LLMService:
             overlap: Overlap between chunks (default 16)
             max_concurrency: Maximum parallel LLM calls (default 8)
             provider_override: If non-empty, use this provider instead of global llm_provider
+            checkpoint_path: Optional path to persist completed chunks for resume after failure
         """
         from app.services.analysis.long_text import compact_metadata, prompt_budget
         caller_context = context
@@ -827,9 +850,9 @@ class LLMService:
                 # Transformers shares one model.generate() instance.
                 max_concurrency = 1
 
-        # Kimi Code produces subtitle JSON reliably at this bounded response
-        # size. Larger chunks can exceed the OAuth CLI request timeout.
-        if effective_provider in {"kimi-oauth", "kimi_oauth"}:
+        # OAuth CLI providers produce subtitle JSON reliably at this bounded
+        # response size. Larger chunks can exceed the CLI request timeout.
+        if effective_provider in {"kimi-oauth", "kimi_oauth", "codex-oauth", "codex_oauth"}:
             chunk_size = min(chunk_size, 24)
             overlap = min(overlap, 4)
 
@@ -839,7 +862,7 @@ class LLMService:
             return await self._polish_plain(srt_content, provider_override)
 
         # Generate all chunks with overlap
-        chunks: list[tuple[int, int, list[dict]]] = []
+        chunks: list[tuple[int, int, int, list[dict]]] = []
         i = 0
         chunk_idx = 0
         while i < len(segments):
@@ -850,6 +873,61 @@ class LLMService:
                 break
             # Move forward by (chunk_size - overlap) to create overlap
             i += chunk_size - overlap
+
+        checkpoint_sig = ""
+        cached_chunks: dict[int, list[dict]] = {}
+        checkpoint_lock = asyncio.Lock()
+        resolved_checkpoint = Path(checkpoint_path) if checkpoint_path is not None else None
+        if resolved_checkpoint is not None:
+            binding_model = ""
+            binding_effort = ""
+            try:
+                binding = resolve_llm_binding(rt, provider_override=provider_override, stage="polish")
+                binding_model = str(binding.model or "")
+                binding_effort = str(binding.request_kwargs.get("reasoning_effort") or "")
+            except Exception:
+                pass
+            sig_payload = {
+                "version": 1,
+                "srt_sha256": hashlib.sha256(srt_content.encode("utf-8")).hexdigest(),
+                "chunk_size": chunk_size,
+                "overlap": overlap,
+                "provider": effective_provider,
+                "model": binding_model,
+                "reasoning_effort": binding_effort,
+            }
+            checkpoint_sig = hashlib.sha256(
+                json.dumps(sig_payload, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            try:
+                if resolved_checkpoint.is_file():
+                    saved = json.loads(resolved_checkpoint.read_text(encoding="utf-8"))
+                    if saved.get("signature") == checkpoint_sig and isinstance(saved.get("chunks"), dict):
+                        for raw_key, raw_rows in saved["chunks"].items():
+                            if isinstance(raw_rows, list):
+                                cached_chunks[int(raw_key)] = raw_rows
+                        if cached_chunks:
+                            log_event(
+                                logger,
+                                logging.INFO,
+                                "llm.polish.checkpoint_restored",
+                                restored_chunks=len(cached_chunks),
+                                total_chunks=len(chunks),
+                            )
+            except (OSError, ValueError, TypeError):
+                cached_chunks = {}
+
+        async def save_chunk_checkpoint(idx: int, rows: list[dict]) -> None:
+            if resolved_checkpoint is None:
+                return
+            async with checkpoint_lock:
+                cached_chunks[idx] = rows
+                payload = {
+                    "version": 1,
+                    "signature": checkpoint_sig,
+                    "chunks": {str(k): v for k, v in sorted(cached_chunks.items())},
+                }
+                atomic_write_text(resolved_checkpoint, json.dumps(payload, ensure_ascii=False))
 
         log_event(
             logger,
@@ -865,10 +943,9 @@ class LLMService:
         # Create semaphore to limit concurrency
         semaphore = asyncio.Semaphore(max_concurrency)
 
-        async def process_chunk(
-            idx: int, start: int, end: int, chunk_segments: list[dict]
-        ) -> tuple[int, list[dict]]:
-            """Process a single chunk with semaphore control."""
+        async def _polish_chunk_body(
+            idx: int, start: int, end: int, chunk_segments: list[dict],
+        ) -> list[dict]:
             async with semaphore:
                 chunk_t0 = time.perf_counter()
                 log_event(
@@ -881,9 +958,6 @@ class LLMService:
                     total_segments=len(segments),
                     segments=len(chunk_segments),
                 )
-
-                # Convert chunk to SRT text
-                chunk_srt = self._segments_to_srt(chunk_segments)
 
                 speaker_ids = sorted(
                     {
@@ -1066,16 +1140,39 @@ class LLMService:
                     preserved_original=len(missing_indexes),
                     duration_ms=round((time.perf_counter() - chunk_t0) * 1000),
                 )
-                polished_segs = self._enforce_polish_constraints(
+                return self._enforce_polish_constraints(
                     polished_segs,
                     chunk_segments,
                     context,
                 )
-                return (idx, polished_segs)
+
+        async def process_chunk(
+            idx: int, start: int, end: int, chunk_segments: list[dict], *, persist: bool = True,
+        ) -> tuple[int, list[dict]]:
+            polished_segs = await _polish_chunk_body(idx, start, end, chunk_segments)
+            if persist:
+                await save_chunk_checkpoint(idx, polished_segs)
+            return (idx, polished_segs)
+
+        async def cached_chunk(idx: int) -> tuple[int, list[dict]]:
+            return (idx, cached_chunks[idx])
+
+        async def retry_subchunk(idx: int, start: int, end: int, sub_segs: list[dict]) -> list[dict]:
+            try:
+                return await _polish_chunk_body(idx, start, end, sub_segs)
+            except Exception as err:
+                if _is_timeout_error(err) and len(sub_segs) > 8:
+                    mid = len(sub_segs) // 2
+                    left = await retry_subchunk(idx, start, start + mid, sub_segs[:mid])
+                    right = await retry_subchunk(idx, start + mid, end, sub_segs[mid:])
+                    return left + right
+                raise
 
         # Process all chunks in parallel (with semaphore limiting concurrency)
         tasks = [
-            asyncio.create_task(process_chunk(idx, start, end, segs))
+            asyncio.create_task(
+                cached_chunk(idx) if idx in cached_chunks else process_chunk(idx, start, end, segs)
+            )
             for idx, start, end, segs in chunks
         ]
         batch = asyncio.gather(*tasks)
@@ -1117,9 +1214,18 @@ class LLMService:
                     "llm.polish.chunk_retry_started",
                     chunk=idx,
                     previous_error=previous_error,
+                    split_on_timeout=_is_timeout_error(previous_error) and len(segs) > 8,
                 )
                 try:
-                    results.append(await process_chunk(idx, start, end, segs))
+                    if _is_timeout_error(previous_error) and len(segs) > 8:
+                        mid = len(segs) // 2
+                        left = await retry_subchunk(idx, start, start + mid, segs[:mid])
+                        right = await retry_subchunk(idx, start + mid, end, segs[mid:])
+                        merged_chunk = left + right
+                        await save_chunk_checkpoint(idx, merged_chunk)
+                        results.append((idx, merged_chunk))
+                    else:
+                        results.append(await process_chunk(idx, start, end, segs))
                 except Exception as retry_error:
                     log_event(
                         logger,
@@ -1167,9 +1273,17 @@ class LLMService:
             input_segments=len(polished_segments),
             output_segments=merged_count,
         )
+        if resolved_checkpoint is not None:
+            resolved_checkpoint.unlink(missing_ok=True)
         return merged_srt
 
-    async def polish(self, text: str, context: dict[str, Any] | None = None) -> str:
+    async def polish(
+        self,
+        text: str,
+        context: dict[str, Any] | None = None,
+        *,
+        checkpoint_path: Path | None = None,
+    ) -> str:
         """Polish text, optionally with context from analysis phase.
 
         Routing: if the input parses as multi-cue SRT, always use the chunked
@@ -1184,7 +1298,10 @@ class LLMService:
             context = {}
         if self._parse_srt(text):
             return await self.polish_with_context_parallel(
-                text, context, provider_override=provider_override
+                text,
+                context,
+                provider_override=provider_override,
+                checkpoint_path=checkpoint_path,
             )
         return await self._polish_plain(text, provider_override)
 
@@ -1748,9 +1865,14 @@ async def analyze_content(
     )
 
 
-async def polish_text(text: str, context: dict[str, Any] | None = None) -> str:
+async def polish_text(
+    text: str,
+    context: dict[str, Any] | None = None,
+    *,
+    checkpoint_path: Path | None = None,
+) -> str:
     """Polish text with optional context (Phase 2)."""
-    return await get_llm_service().polish(text, context)
+    return await get_llm_service().polish(text, context, checkpoint_path=checkpoint_path)
 
 
 def merge_consecutive_speaker_segments(srt_content: str, **kwargs: Any) -> str:

@@ -50,11 +50,29 @@ class RemoteArchiveFolder(BaseModel):
     folder_id: str | None
 
 
+class RemoteFolderDeletion(BaseModel):
+    folder_id: str = Field(min_length=1, max_length=1024)
+    deleted_at: str
+
+
+class RemoteCoverDeletion(BaseModel):
+    folder_id: str = Field(min_length=1, max_length=1024)
+    deleted_at: str
+
+
+class RemoteCollectionMember(BaseModel):
+    collection_key: str = Field(min_length=1, max_length=1024)
+    content_key: str = Field(min_length=1, max_length=4096)
+
+
 class LibraryPush(BaseModel):
     folders: list[RemoteFolder] = Field(max_length=100_000)
     members: list[RemoteMembership] = Field(max_length=1_000_000)
     covers: list[RemoteCover] = Field(default_factory=list)
     collections: list[RemoteCollection] = Field(default_factory=list)
+    deleted_folders: list[RemoteFolderDeletion] = Field(default_factory=list)
+    deleted_covers: list[RemoteCoverDeletion] = Field(default_factory=list)
+    collection_members: list[RemoteCollectionMember] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def valid_memberships(self):
@@ -91,18 +109,116 @@ def folder_mappings(conn: Connection, server_url: str, workspace_id: str) -> dic
     ))
 
 
-def remember_folder(conn: Connection, server: str, workspace: str, remote_id: str, local_id: str) -> None:
+def folder_sync_records(conn: Connection, server_url: str, workspace_id: str) -> dict[str, tuple[str, str]]:
+    """Return local_folder_id -> (remote_folder_id, remote_updated_at) for active folders."""
+    return {
+        row["local_folder_id"]: (row["remote_folder_id"], row["remote_updated_at"] or "")
+        for row in conn.execute(
+            "SELECT r.local_folder_id,r.remote_folder_id,r.remote_updated_at FROM remote_sync_folders r "
+            "JOIN library_folders f ON f.id=r.local_folder_id WHERE r.server_url=? AND r.workspace_id=?",
+            (server_url, workspace_id),
+        )
+    }
+
+
+def remember_folder(
+    conn: Connection,
+    server: str,
+    workspace: str,
+    remote_id: str,
+    local_id: str,
+    remote_updated_at: str = "",
+) -> None:
+    by_remote = conn.execute(
+        "SELECT local_folder_id,remote_updated_at FROM remote_sync_folders "
+        "WHERE server_url=? AND workspace_id=? AND remote_folder_id=?",
+        (server, workspace, remote_id),
+    ).fetchone()
+    by_local = conn.execute(
+        "SELECT server_url,workspace_id,remote_folder_id,remote_updated_at FROM remote_sync_folders "
+        "WHERE local_folder_id=?",
+        (local_id,),
+    ).fetchone()
+    if by_remote is not None:
+        new_local = local_id if (by_remote["local_folder_id"] != local_id and by_local is None) else by_remote["local_folder_id"]
+        next_updated_at = remote_updated_at or by_remote["remote_updated_at"] or ""
+        if new_local != by_remote["local_folder_id"] or next_updated_at != (by_remote["remote_updated_at"] or ""):
+            conn.execute(
+                "UPDATE remote_sync_folders SET local_folder_id=?,remote_updated_at=? "
+                "WHERE server_url=? AND workspace_id=? AND remote_folder_id=?",
+                (new_local, next_updated_at, server, workspace, remote_id),
+            )
+        return
+    if by_local is not None:
+        if (by_local["server_url"], by_local["workspace_id"], by_local["remote_folder_id"]) == (server, workspace, remote_id):
+            if remote_updated_at and remote_updated_at != (by_local["remote_updated_at"] or ""):
+                conn.execute(
+                    "UPDATE remote_sync_folders SET remote_updated_at=? WHERE local_folder_id=?",
+                    (remote_updated_at, local_id),
+                )
+        return
     conn.execute(
-        "INSERT INTO remote_sync_folders VALUES(?,?,?,?) "
-        "ON CONFLICT(server_url,workspace_id,remote_folder_id) DO UPDATE SET local_folder_id=excluded.local_folder_id "
-        "WHERE local_folder_id!=excluded.local_folder_id "
-        "AND NOT EXISTS (SELECT 1 FROM remote_sync_folders WHERE local_folder_id=excluded.local_folder_id) "
-        "ON CONFLICT(local_folder_id) DO NOTHING",
-        (server, workspace, remote_id, local_id),
+        "INSERT INTO remote_sync_folders(server_url,workspace_id,remote_folder_id,local_folder_id,remote_updated_at) "
+        "VALUES(?,?,?,?,?)",
+        (server, workspace, remote_id, local_id, remote_updated_at),
     )
 
 
-def merge_folder(conn: Connection, folder: RemoteFolder, preferred_id: str, fallback_id: str) -> str:
+def merge_folder_deletions(conn: Connection, deletions: list[RemoteFolderDeletion]) -> None:
+    for deletion in deletions:
+        tombstone = conn.execute(
+            "SELECT deleted_at FROM library_folder_deletions WHERE folder_id=?",
+            (deletion.folder_id,),
+        ).fetchone()
+        if tombstone is None or timestamp(deletion.deleted_at) > timestamp(tombstone["deleted_at"]):
+            conn.execute(
+                "INSERT INTO library_folder_deletions(folder_id,deleted_at) VALUES(?,?) "
+                "ON CONFLICT(folder_id) DO UPDATE SET deleted_at=excluded.deleted_at",
+                (deletion.folder_id, deletion.deleted_at),
+            )
+        folder = conn.execute("SELECT id,updated_at FROM library_folders WHERE id=?", (deletion.folder_id,)).fetchone()
+        if folder and timestamp(deletion.deleted_at) > timestamp(folder["updated_at"]):
+            conn.execute(
+                "UPDATE library_folder_members SET origin='manual',added_at=? WHERE folder_id=?",
+                (deletion.deleted_at, deletion.folder_id),
+            )
+            conn.execute("DELETE FROM library_folder_covers WHERE folder_id=?", (deletion.folder_id,))
+            conn.execute("DELETE FROM library_folder_cover_deletions WHERE folder_id=?", (deletion.folder_id,))
+            conn.execute("DELETE FROM remote_sync_folders WHERE local_folder_id=?", (deletion.folder_id,))
+            conn.execute("DELETE FROM library_folders WHERE id=?", (deletion.folder_id,))
+
+
+def merge_cover_deletions(conn: Connection, deletions: list[RemoteCoverDeletion]) -> None:
+    for deletion in deletions:
+        if not conn.execute("SELECT 1 FROM library_folders WHERE id=?", (deletion.folder_id,)).fetchone():
+            continue
+        tombstone = conn.execute(
+            "SELECT deleted_at FROM library_folder_cover_deletions WHERE folder_id=?",
+            (deletion.folder_id,),
+        ).fetchone()
+        if tombstone is None or timestamp(deletion.deleted_at) > timestamp(tombstone["deleted_at"]):
+            conn.execute(
+                "INSERT INTO library_folder_cover_deletions(folder_id,deleted_at) VALUES(?,?) "
+                "ON CONFLICT(folder_id) DO UPDATE SET deleted_at=excluded.deleted_at",
+                (deletion.folder_id, deletion.deleted_at),
+            )
+        cover = conn.execute(
+            "SELECT updated_at FROM library_folder_covers WHERE folder_id=?",
+            (deletion.folder_id,),
+        ).fetchone()
+        if cover and timestamp(deletion.deleted_at) > timestamp(cover["updated_at"]):
+            conn.execute("DELETE FROM library_folder_covers WHERE folder_id=?", (deletion.folder_id,))
+
+
+def merge_collection_members(conn: Connection, members: list[RemoteCollectionMember]) -> None:
+    for item in members:
+        conn.execute(
+            "INSERT OR IGNORE INTO library_collection_members(collection_key,content_key) VALUES(?,?)",
+            (item.collection_key, item.content_key),
+        )
+
+
+def merge_folder(conn: Connection, folder: RemoteFolder, preferred_id: str, fallback_id: str) -> str | None:
     row = conn.execute("SELECT * FROM library_folders WHERE id=?", (preferred_id,)).fetchone()
     collection_key = folder.source_collection_key or None
     collection_folder = conn.execute(
@@ -111,12 +227,29 @@ def merge_folder(conn: Connection, folder: RemoteFolder, preferred_id: str, fall
     row = row or collection_folder
     if row is None and fallback_id != preferred_id:
         row = conn.execute("SELECT * FROM library_folders WHERE id=?", (fallback_id,)).fetchone()
+    tombstone_candidates = {preferred_id, fallback_id, folder.id}
+    if row is not None:
+        tombstone_candidates.add(row["id"])
+    tombstones = [
+        conn.execute("SELECT deleted_at FROM library_folder_deletions WHERE folder_id=?", (fid,)).fetchone()
+        for fid in tombstone_candidates
+    ]
+    latest_deleted = max((t["deleted_at"] for t in tombstones if t is not None), key=timestamp, default="")
     if row is None:
+        if latest_deleted and timestamp(latest_deleted) >= timestamp(folder.updated_at):
+            return None
+        for fid in tombstone_candidates:
+            conn.execute("DELETE FROM library_folder_deletions WHERE folder_id=?", (fid,))
         conn.execute(
             "INSERT INTO library_folders VALUES(?,?,?,?,?)",
             (fallback_id, folder.name, collection_key, folder.created_at, folder.updated_at),
         )
         return fallback_id
+    if latest_deleted and timestamp(latest_deleted) > timestamp(folder.updated_at):
+        return None
+    if latest_deleted:
+        for fid in tombstone_candidates:
+            conn.execute("DELETE FROM library_folder_deletions WHERE folder_id=?", (fid,))
     if timestamp(folder.updated_at) > timestamp(row["updated_at"]):
         conn.execute(
             "UPDATE library_folders SET name=?,updated_at=? WHERE id=?",
@@ -149,9 +282,16 @@ def merge_cover(conn: Connection, folder_id: str, key: str, updated_at: str) -> 
     member = conn.execute("SELECT folder_id FROM library_folder_members WHERE content_key=?", (key,)).fetchone()
     if not member or member["folder_id"] != folder_id:
         return
+    deleted = conn.execute(
+        "SELECT deleted_at FROM library_folder_cover_deletions WHERE folder_id=?", (folder_id,),
+    ).fetchone()
+    if deleted and timestamp(deleted["deleted_at"]) >= timestamp(updated_at):
+        return
     cover = conn.execute("SELECT updated_at FROM library_folder_covers WHERE folder_id=?", (folder_id,)).fetchone()
     if cover and timestamp(updated_at) <= timestamp(cover["updated_at"]):
         return
+    if deleted:
+        conn.execute("DELETE FROM library_folder_cover_deletions WHERE folder_id=?", (folder_id,))
     conn.execute(
         "INSERT INTO library_folder_covers VALUES(?,?,?) ON CONFLICT(folder_id) DO UPDATE "
         "SET content_key=excluded.content_key,updated_at=excluded.updated_at",
@@ -171,20 +311,38 @@ def merge_push(conn: Connection, payload: LibraryPush, archive_keys: dict[str, s
     from app.core.library import changed
 
     before = conn.total_changes
-    mapping = {folder.id: merge_folder(conn, folder, folder.id, folder.id) for folder in payload.folders}
+    merge_folder_deletions(conn, payload.deleted_folders)
+    mapping: dict[str, str] = {}
+    alive: dict[str, str] = {}
+    for folder in payload.folders:
+        merged_id = merge_folder(conn, folder, folder.id, folder.id)
+        if merged_id is not None:
+            mapping[folder.id] = merged_id
+            alive[folder.id] = merged_id
+        else:
+            mapping[folder.id] = folder.id
     keys = {}
     for member in payload.members:
         key = keys[member.content_key] = archive_keys.get(member.archive_id or "", member.content_key)
         existing = conn.execute("SELECT * FROM library_folder_members WHERE content_key=?", (key,)).fetchone()
         origin = "manual" if member.origin == "manual" else "collection"
+        target_folder_id = alive.get(member.folder_id) if member.folder_id is not None else None
+        if member.folder_id is not None and target_folder_id is None:
+            continue
         if (existing is None or timestamp(member.added_at) > timestamp(existing["added_at"])
                 or (existing["origin"] != "manual" and origin == "manual")):
-            write_member(conn, key, mapping.get(member.folder_id), origin, member.added_at or "")
+            write_member(conn, key, target_folder_id, origin, member.added_at or "")
+    mapped_cover_deletions = [
+        RemoteCoverDeletion(folder_id=mapping.get(d.folder_id, d.folder_id), deleted_at=d.deleted_at)
+        for d in payload.deleted_covers
+    ]
+    merge_cover_deletions(conn, mapped_cover_deletions)
     for cover in payload.covers:
-        if cover.folder_id in mapping:
+        if cover.folder_id in alive:
             key = keys.get(cover.content_key) or archive_keys.get(cover.archive_id or "", cover.content_key)
-            merge_cover(conn, mapping[cover.folder_id], key, cover.updated_at)
+            merge_cover(conn, alive[cover.folder_id], key, cover.updated_at)
     merge_collections(conn, payload.collections)
+    merge_collection_members(conn, payload.collection_members)
     if conn.total_changes != before:
         changed(conn)
     return mapping

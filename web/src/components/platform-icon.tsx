@@ -1,8 +1,10 @@
+import { getPlatformLabel } from "@/lib/archive-filters"
 import applePodcastsSvg from "@/assets/platform-icons/apple-podcasts.svg"
 import bilibiliSvg from "@/assets/platform-icons/bilibili.svg"
 import webpageSvg from "@/assets/platform-icons/webpage.svg"
 import xTwitterSvg from "@/assets/platform-icons/x-twitter.svg"
 import xiaohongshuSvg from "@/assets/platform-icons/xiaohongshu.svg"
+import xiaoyuzhouSvg from "@/assets/platform-icons/xiaoyuzhou.svg"
 import youtubeSvg from "@/assets/platform-icons/youtube.svg"
 import zhihuSvg from "@/assets/platform-icons/zhihu.svg"
 
@@ -21,6 +23,8 @@ const PLATFORM_ICONS: Record<string, { src: string; label: string }> = {
   x_twitter: { src: xTwitterSvg, label: "X" },
   xiaohongshu: { src: xiaohongshuSvg, label: "小红书" },
   xhs: { src: xiaohongshuSvg, label: "小红书" },
+  xiaoyuzhou: { src: xiaoyuzhouSvg, label: "小宇宙" },
+  xyz: { src: xiaoyuzhouSvg, label: "小宇宙" },
   youtube: { src: youtubeSvg, label: "YouTube" },
   yt: { src: youtubeSvg, label: "YouTube" },
   zhihu: { src: zhihuSvg, label: "知乎" },
@@ -28,6 +32,8 @@ const PLATFORM_ICONS: Record<string, { src: string; label: string }> = {
 
 const PLATFORM_LABELS: Record<string, string> = {
   xiaoyuzhou: "小宇宙",
+  xyz: "小宇宙",
+  local: "本地文件",
 }
 
 interface PlatformIconProps {
@@ -46,7 +52,8 @@ export function PlatformIcon({ platform, className, uploader, iconOnly }: Platfo
   if (!platform) return null
   const key = platform.toLowerCase()
   const entry = PLATFORM_ICONS[key]
-  const title = uploader ? `${entry?.label ?? PLATFORM_LABELS[key] ?? platform} · ${uploader}` : entry?.label ?? PLATFORM_LABELS[key] ?? platform
+  const resolvedLabel = entry?.label ?? PLATFORM_LABELS[key] ?? getPlatformLabel(platform) ?? platform
+  const title = uploader ? `${resolvedLabel} · ${uploader}` : resolvedLabel
 
   if (entry) {
     return (

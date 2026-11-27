@@ -309,3 +309,88 @@ def test_pull_aligns_archive_alias_and_preserves_pending_manual_move(workspaces)
         assert library.sync_snapshot()["covers"] == []
         assert any(member["content_key"] == key and member["folder_id"] is None and member["origin"] == "manual"
                    for member in library.sync_snapshot()["members"])
+
+
+@pytest.mark.asyncio
+async def test_replica_rename_delete_unpin_cover_and_collection_members_sync(workspaces, monkeypatch):
+    desktop, coordinator, reader = workspaces
+    library = get_library_service()
+
+    async def healthy(_server):
+        return None
+
+    desktop_upload = RemoteArchiveUploadService(settings_getter=lambda: desktop.settings, client_factory=coordinator.client)
+    desktop_pull = RemoteArchivePullService(settings_getter=lambda: desktop.settings, client_factory=coordinator.client)
+    reader_upload = RemoteArchiveUploadService(settings_getter=lambda: reader.settings, client_factory=coordinator.client)
+    reader_pull = RemoteArchivePullService(settings_getter=lambda: reader.settings, client_factory=coordinator.client)
+    monkeypatch.setattr(desktop_upload, "_check_server_health", healthy)
+    monkeypatch.setattr(reader_upload, "_check_server_health", healthy)
+
+    with desktop.active():
+        folder_id = library.create("原始目录")["id"]
+        collection = {
+            **COLLECTION,
+            "items": [{"content_key": "bilibili:BV1xx411c7mD:p1"}],
+        }
+        library.register_collection(collection, create=True)
+        _, key = add_archive(desktop.root, "synced-clip")
+        library.move([key], folder_id)
+        library.set_cover(folder_id, key)
+        assert await desktop_upload.sync_once()  # uploads archive
+        assert await desktop_upload.sync_once()  # pushes library + collection_members
+        assert not await desktop_upload.sync_once()
+
+    with reader.active():
+        outcome = await reader_pull.sync_once()
+        assert outcome["library_changed"]
+        reader_snap = library.sync_snapshot()
+        assert {"collection_key": COLLECTION["collection_key"], "content_key": "bilibili:BV1xx411c7mD:p1"} in reader_snap["collection_members"]
+        replica = next(row for row in reader_snap["folders"] if row["name"] == "原始目录")
+        library.rename(replica["id"], "重命名目录")
+        library.set_cover(replica["id"], None)
+        assert await reader_upload.sync_once()
+        assert not await reader_upload.sync_once()
+
+    with desktop.active():
+        outcome = await desktop_pull.sync_once()
+        assert outcome["library_changed"]
+        names = {row["id"]: row["name"] for row in library.sync_snapshot()["folders"]}
+        assert names[folder_id] == "重命名目录"
+        assert library.sync_snapshot()["covers"] == []
+
+    # Delete replica on reader -> deleted on coordinator and desktop, and pull does not resurrect it
+    with reader.active():
+        library.delete(replica["id"])
+        assert await reader_upload.sync_once()
+
+    assert all(row["id"] != folder_id for row in coordinator.snapshot()["folders"])
+    with desktop.active():
+        await desktop_pull.sync_once()
+        assert all(row["id"] != folder_id for row in library.sync_snapshot()["folders"])
+        assert not (await desktop_pull.sync_once())["library_changed"]
+    with reader.active():
+        assert not (await reader_pull.sync_once())["library_changed"]
+        assert all(row["name"] != "重命名目录" for row in library.sync_snapshot()["folders"])
+
+
+@pytest.mark.asyncio
+async def test_failed_archive_upload_does_not_block_library_push(workspaces, monkeypatch):
+    desktop, coordinator, _ = workspaces
+    upload = RemoteArchiveUploadService(settings_getter=lambda: desktop.settings, client_factory=coordinator.client)
+
+    async def healthy(_server):
+        return None
+
+    async def broken_upload(*args, **kwargs):
+        raise RuntimeError("transient archive upload failure")
+
+    monkeypatch.setattr(upload, "_check_server_health", healthy)
+    monkeypatch.setattr(upload, "_upload", broken_upload)
+
+    with desktop.active():
+        add_archive(desktop.root, "broken-archive")
+        folder = get_library_service().create("重要文件夹")
+        with pytest.raises(RuntimeError, match="transient archive upload failure"):
+            await upload.sync_once()
+
+    assert [row["name"] for row in coordinator.snapshot()["folders"]] == [folder["name"]]

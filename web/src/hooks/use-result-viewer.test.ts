@@ -276,4 +276,18 @@ describe("result viewer state", () => {
     expect(result.current.mergeInfo).toBeNull()
     expect(result.current.subtitles[0].speaker).toBe("李华")
   })
+
+  it("keeps derived content fresh when speaker rename returns derived_content_stale false", async () => {
+    mocks.renameSpeaker.mockResolvedValueOnce({
+      status: "renamed",
+      person_name: "李华",
+      derived_content_stale: false,
+      updated_files: ["transcript_polished.srt", "summary.md", "metadata.json"],
+    })
+    const { result } = renderHook(() => useResultViewer({ archivePath: mocks.archive.path, taskId: "task-1" }))
+    await waitFor(() => expect(result.current.subtitles).toHaveLength(1))
+    await act(async () => { await result.current.handleRenameSpeaker("Speaker 1", "李华") })
+    expect(result.current.subtitles[0].speaker).toBe("李华")
+    expect(result.current.derivedContentStale).toBe(false)
+  })
 })

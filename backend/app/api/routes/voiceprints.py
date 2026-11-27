@@ -9,7 +9,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, StrictInt
+from pydantic import BaseModel, Field, StrictInt
 
 from app.core.artifacts import ArtifactMirrorError
 from app.core.database import get_task_store
@@ -107,6 +107,8 @@ class SpeakerRenameResponse(BaseModel):
     status: Literal["renamed", "merged", "conflict"]
     person_id: str | None = None
     person_name: str | None = None
+    derived_content_stale: bool = False
+    updated_files: list[str] = Field(default_factory=list)
     # When status == "conflict":
     conflict_person_id: str | None = None
     conflict_person_name: str | None = None
@@ -352,24 +354,37 @@ async def rename_task_speaker(task_id: UUID, req: SpeakerRenameRequest):
             )
     store = get_voiceprint_store()
 
-    def sync_artifacts(final_name: str) -> None:
+    async def sync_artifacts(final_name: str) -> tuple[list[str], bool]:
         task = get_task_store().get(task_id)
         result = task.result if task and task.result else {}
         output_dir = result.get("output_dir")
         if not output_dir and isinstance(result.get("archive"), dict):
             output_dir = result["archive"].get("output_dir")
-        if output_dir:
-            changed = sync_speaker_artifacts(
-                str(task_id), output_dir, req.old_name, final_name
+        if not output_dir:
+            return [], False
+        changed = sync_speaker_artifacts(
+            str(task_id), output_dir, req.old_name, final_name
+        )
+        derived_stale = False
+        meta_path = Path(output_dir) / "metadata.json"
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                derived_stale = (meta.get("extra") or {}).get("derived_content_stale") is True
+            except (OSError, ValueError):
+                pass
+        if changed:
+            logger.info(
+                "Synchronized speaker rename task=%s old=%s new=%s files=%s",
+                task_id,
+                req.old_name,
+                final_name,
+                ",".join(changed),
             )
-            if changed:
-                logger.info(
-                    "Synchronized speaker rename task=%s old=%s new=%s files=%s",
-                    task_id,
-                    req.old_name,
-                    final_name,
-                    ",".join(changed),
-                )
+            bus = get_event_bus()
+            for filename in changed:
+                await bus.publish(TaskEvent(task_id, "file_ready", {"file": filename}))
+        return changed, derived_stale
 
     mapping = store.get_task_speaker(str(task_id), req.old_name)
     if not mapping:
@@ -408,14 +423,26 @@ async def rename_task_speaker(task_id: UUID, req: SpeakerRenameRequest):
             task_id,
             req.old_name,
         )
-        sync_artifacts(new_name)
-        return SpeakerRenameResponse(status="renamed", person_id=None, person_name=new_name)
+        changed, derived_stale = await sync_artifacts(new_name)
+        return SpeakerRenameResponse(
+            status="renamed",
+            person_id=None,
+            person_name=new_name,
+            derived_content_stale=derived_stale,
+            updated_files=changed,
+        )
 
     person_id = mapping["person_id"]
     current = store.get_person(person_id)
     if current and current.name == new_name:
-        sync_artifacts(new_name)
-        return SpeakerRenameResponse(status="renamed", person_id=person_id, person_name=new_name)
+        changed, derived_stale = await sync_artifacts(new_name)
+        return SpeakerRenameResponse(
+            status="renamed",
+            person_id=person_id,
+            person_name=new_name,
+            derived_content_stale=derived_stale,
+            updated_files=changed,
+        )
 
     existing = store.find_person_by_name(new_name)
     if existing and existing.id != person_id:
@@ -431,24 +458,34 @@ async def rename_task_speaker(task_id: UUID, req: SpeakerRenameRequest):
         elif req.on_conflict == "merge":
             # Merge current (src) into existing (dst)
             store.merge_persons(src_id=person_id, dst_id=existing.id)
-            sync_artifacts(existing.name)
+            changed, derived_stale = await sync_artifacts(existing.name)
             return SpeakerRenameResponse(
                 status="merged",
                 person_id=existing.id,
                 person_name=existing.name,
+                derived_content_stale=derived_stale,
+                updated_files=changed,
             )
         else:  # "new"
             suffix = hex(hash(str(task_id)) & 0xFFF)[2:]
             disambiguated = f"{new_name} ({suffix})"
             store.rename_person(person_id, disambiguated)
-            sync_artifacts(disambiguated)
+            changed, derived_stale = await sync_artifacts(disambiguated)
             return SpeakerRenameResponse(
                 status="renamed",
                 person_id=person_id,
                 person_name=disambiguated,
+                derived_content_stale=derived_stale,
+                updated_files=changed,
             )
 
     # No conflict — direct rename
     store.rename_person(person_id, new_name)
-    sync_artifacts(new_name)
-    return SpeakerRenameResponse(status="renamed", person_id=person_id, person_name=new_name)
+    changed, derived_stale = await sync_artifacts(new_name)
+    return SpeakerRenameResponse(
+        status="renamed",
+        person_id=person_id,
+        person_name=new_name,
+        derived_content_stale=derived_stale,
+        updated_files=changed,
+    )

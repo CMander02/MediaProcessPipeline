@@ -26,6 +26,7 @@ export function MultiDeviceSettings({ settings, updateSetting, saving, saved, mo
   const [registry, setRegistry] = useState<ExecutionNodesResponse | null>(null)
   const [nodeError, setNodeError] = useState("")
   const [pulling, setPulling] = useState(false)
+  const [pushing, setPushing] = useState(false)
   const [pullMessage, setPullMessage] = useState("")
   const loadNodes = useCallback(async () => {
     try {
@@ -59,6 +60,27 @@ export function MultiDeviceSettings({ settings, updateSetting, saving, saved, mo
       setPulling(false)
     }
   }
+  const push = async () => {
+    setPushing(true)
+    setPullMessage("")
+    try {
+      const result = await api.sync.push()
+      if (!result.enabled) {
+        setPullMessage("请先启用归档同步并填写远程服务器地址。")
+      } else if (result.uploaded === 0 && !result.library_pushed) {
+        setPullMessage("推送完成：当前没有待推送的归档或文件夹变更。")
+      } else {
+        setPullMessage(
+          `推送完成：上传 ${result.uploaded} 项归档${result.library_pushed ? "，文件夹设置已同步" : ""}。`,
+        )
+      }
+      libraryChanged()
+    } catch (error) {
+      setPullMessage(error instanceof Error ? error.message : "推送同步失败")
+    } finally {
+      setPushing(false)
+    }
+  }
   const fieldProps = { onSave: updateSetting, saving, saved }
   const toggle = (key: string, label: string, checked: boolean) => (
     <div className="flex items-center justify-between gap-3" key={key}>
@@ -81,7 +103,10 @@ export function MultiDeviceSettings({ settings, updateSetting, saving, saved, mo
         {synchronizationSwitches.map(({ key, label, defaultValue }) => toggle(key, label, Boolean(settings[key] ?? defaultValue)))}
         {toggle("remote_execution_worker_enabled", "本机领取远程任务", Boolean(settings.remote_execution_worker_enabled))}
         <p className="text-xs text-muted-foreground">默认同步文本、封面和图文配图。归档拉取不下载原始音视频。</p>
-        <Button variant="outline" disabled={pulling} onClick={() => void pull()}>{pulling ? "拉取中…" : "立即拉取同步"}</Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" disabled={pulling || pushing} onClick={() => void pull()}>{pulling ? "拉取中…" : "立即拉取同步"}</Button>
+          <Button variant="outline" disabled={pulling || pushing} onClick={() => void push()}>{pushing ? "推送中…" : "立即推送同步"}</Button>
+        </div>
         {pullMessage && <p role="status" className="text-sm text-muted-foreground">{pullMessage}</p>}
       </CardContent>
     </Card>}

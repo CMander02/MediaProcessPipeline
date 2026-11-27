@@ -777,3 +777,58 @@ def test_xiaohongshu_metadata_maps_to_video_media_type():
 
     assert metadata.media_type == MediaType.VIDEO
     assert metadata.extra["platform"] == "xiaohongshu"
+
+
+def test_xiaohongshu_initial_state_handles_js_set_and_undefined():
+    html = (
+        '<script>window.__INITIAL_STATE__={"note":{"noteDetailMap":{"id1":{"note":'
+        '{"noteId":"id1","type":"normal","title":"测试","seenIds":new Set(["a"]),'
+        '"extraTags":new Set(),"score":undefined,"list":[undefined,"ok"]}}}}}</script>'
+    )
+    parsed = _extract_initial_state(html)
+    note = _extract_note(parsed, "id1")
+    assert note["title"] == "测试"
+    assert note["seenIds"] == ["a"]
+    assert note["extraTags"] == []
+    assert note["score"] is None
+    assert note["list"] == [None, "ok"]
+
+
+def test_xiaohongshu_rednotecdn_urls_are_recognized_and_have_fallback_variants():
+    url = "https://sns-webpic-qc.rednotecdn.com/20261127/sig123/1040g00831abc!nd_dft_wlteh_webp_3"
+    assert xhs_api._looks_like_image_url(url)
+    variants = xhs_api._image_original_url_variants(url)
+    assert variants[0] == url
+    assert "https://ci.xiaohongshu.com/1040g00831abc" in variants
+
+
+def test_xiaohongshu_download_rejects_html_and_transcodes_heic(tmp_path, monkeypatch):
+    class FakeResp:
+        def __init__(self, data: bytes):
+            self.headers = {"Content-Length": str(len(data))}
+            self._data = data
+            self._pos = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def read(self, size):
+            chunk = self._data[self._pos:self._pos + size]
+            self._pos += len(chunk)
+            return chunk
+
+    monkeypatch.setattr(xhs_api, "urllib_urlopen", lambda *_a, **_k: FakeResp(b"<html>403 Forbidden</html>"))
+    monkeypatch.setattr(xhs_api.time, "sleep", lambda _s: None)
+    with pytest.raises(RuntimeError, match="not an image"):
+        xhs_api._download_file("https://ci.xiaohongshu.com/bad", tmp_path / "bad.jpg", "https://www.xiaohongshu.com/", attempts=1)
+
+    heic_stub = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic"
+    from app.services.archiving import thumbnails
+    monkeypatch.setattr(thumbnails, "transcode_heic_to_jpeg_bytes", lambda data, source_path=None: b"\xff\xd8\xff\xe0JPEGDATA")
+    monkeypatch.setattr(xhs_api, "urllib_urlopen", lambda *_a, **_k: FakeResp(heic_stub))
+    dest = tmp_path / "00.jpg"
+    xhs_api._download_file("https://ci.xiaohongshu.com/heic", dest, "https://www.xiaohongshu.com/", attempts=1)
+    assert dest.read_bytes().startswith(b"\xff\xd8\xff")

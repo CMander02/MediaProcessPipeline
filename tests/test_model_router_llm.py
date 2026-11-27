@@ -282,3 +282,36 @@ def test_qoder_oauth_provider_uses_parallel_safe_cli_transport():
     assert binding.transport == "qoder_cli"
     assert binding.model == "performance"
     assert binding.configured is True
+
+
+def test_codex_oauth_polish_downgrades_max_reasoning_effort_to_low():
+    settings = RuntimeSettings(
+        runtime_model_bindings={
+            "polish": {"provider_id": "codex-oauth", "model_id": "default", "capability": "llm"},
+            "summary": {"provider_id": "codex-oauth", "model_id": "default", "capability": "llm"},
+        },
+        providers=[
+            {
+                "id": "codex-oauth",
+                "name": "Codex OAuth",
+                "provider_type": "codex_oauth",
+                "enabled": True,
+                "cli_path": "/usr/local/bin/codex",
+                "timeout_sec": 600,
+                "models": [
+                    {
+                        "id": "codex-oauth:default",
+                        "model_id": "default",
+                        "model_type": "llm",
+                        "capabilities": ["llm", "chat"],
+                        "enabled": True,
+                        "default_params": {"reasoning_effort": "max"},
+                    }
+                ],
+            }
+        ],
+    )
+    polish_binding = resolve_llm_binding(settings, stage="polish")
+    summary_binding = resolve_llm_binding(settings, stage="summary")
+    assert polish_binding.request_kwargs["reasoning_effort"] == "low"
+    assert summary_binding.request_kwargs["reasoning_effort"] == "max"

@@ -42,15 +42,42 @@ def test_speaker_rename_updates_text_json_and_sqlite_mirrors(tmp_path, monkeypat
         "task-id", tmp_path, "SPEAKER_00", "孟繁青"
     )
 
-    assert set(changed) == {"transcript_polished.srt", "metadata.json"}
+    assert set(changed) == {"transcript_polished.srt", "summary.md", "metadata.json"}
     assert "[孟繁青]" in (tmp_path / "transcript_polished.srt").read_text(encoding="utf-8")
-    assert (tmp_path / "summary.md").read_text(encoding="utf-8") == "SPEAKER_00 介绍了项目。"
+    assert (tmp_path / "summary.md").read_text(encoding="utf-8") == "孟繁青 介绍了项目。"
     metadata = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["speakers"] == ["孟繁青"]
     assert metadata["nested"]["host"] == "SPEAKER_00"
-    assert metadata["extra"]["derived_content_stale"] is True
+    assert metadata["extra"].get("derived_content_stale") is not True
     assert set(saved) == set(changed)
     assert saved["metadata.json"][2] == "application/json"
+
+
+def test_real_name_rename_marks_stale_only_when_derived_artifacts_reference_old_name(tmp_path, monkeypatch):
+    (tmp_path / "transcript_polished.srt").write_text(
+        "1\n00:00:00,000 --> 00:00:01,000\n[张明] 你好",
+        encoding="utf-8",
+    )
+    (tmp_path / "metadata.json").write_text(
+        json.dumps({"speakers": ["张明"]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (tmp_path / "summary.md").write_text("本期嘉宾分享了研究。", encoding="utf-8")
+    monkeypatch.setattr(
+        artifact_sync,
+        "get_task_store",
+        lambda: SimpleNamespace(save_artifact=lambda *args: None, get=lambda _tid: None),
+    )
+
+    artifact_sync.sync_speaker_artifacts("task-1", tmp_path, "张明", "李华")
+    meta_unreferenced = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
+    assert meta_unreferenced["extra"].get("derived_content_stale") is not True
+
+    (tmp_path / "summary.md").write_text("李华和王五参与了讨论。", encoding="utf-8")
+    artifact_sync.sync_speaker_artifacts("task-2", tmp_path, "王五", "赵六")
+    meta_referenced = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
+    assert meta_referenced["extra"]["derived_content_stale"] is True
+    assert (tmp_path / "summary.md").read_text(encoding="utf-8") == "李华和王五参与了讨论。"
 
 
 @pytest.mark.asyncio

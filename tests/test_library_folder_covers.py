@@ -134,3 +134,26 @@ def test_old_collection_folder_looks_up_owner_and_backs_off_after_failure(api, m
     assert only_folder(client)['collection']['avatar'] == 'none'
     assert client.get(f"/api/library/folders/{folder['id']}/avatar").status_code == 404
     assert videos == ['BV1DK4y1b7bY']  # No second request inside the retry window.
+
+
+def test_folder_auto_preview_prefers_items_with_thumbnails(api):
+    client, _sync = api
+    target = client.post('/api/library/folders', json={'name': '混合目录'}).json()['id']
+    with_thumb = imported(client, [VIDEO])[0]
+    without_thumb = imported(client, [OTHER])[0]
+    client.post(
+        '/api/library/folder-members/move',
+        json={'folder_id': target, 'content_keys': [with_thumb['content_key'], without_thumb['content_key']]},
+    )
+    _sync.flush_changes()
+    conn = database._get_conn()
+    for row in conn.execute('SELECT archive_id,snapshot FROM archive_sync_index WHERE deleted=0').fetchall():
+        import json
+        snap = json.loads(row['snapshot'])
+        has_thumb = (snap.get('metadata') or {}).get('source_url') == VIDEO
+        snap['has_thumbnail'] = has_thumb
+        conn.execute('UPDATE archive_sync_index SET snapshot=? WHERE archive_id=?', (json.dumps(snap), row['archive_id']))
+    conn.commit()
+
+    folder = only_folder(client)
+    assert folder['previews'][0]['content_key'] == with_thumb['content_key']

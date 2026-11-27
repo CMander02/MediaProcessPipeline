@@ -588,3 +588,101 @@ async def test_polish_obeys_configured_concurrency(
     result = await service.polish_with_context_parallel(_srt(segments), {}, chunk_size=1, overlap=0)
     assert peak == expected
     assert service._parse_srt(result) == segments
+
+
+@pytest.mark.asyncio
+async def test_codex_polish_caps_chunk_size_and_splits_on_timeout_with_checkpoint(tmp_path, monkeypatch):
+    service = LLMService()
+    segments = [_srt_segment(index, f"cue-{index}") for index in range(1, 31)]
+    calls: list[list[int]] = []
+
+    monkeypatch.setattr(service, "_effective_provider", lambda _override="": "codex-oauth")
+    monkeypatch.setattr(
+        llm_module,
+        "get_runtime_settings",
+        lambda: SimpleNamespace(llm_polish_concurrency=1),
+    )
+
+    fail_first_timeout = True
+
+    async def fake_call(prompt, **_kwargs):
+        nonlocal fail_first_timeout
+        cue_ids = [int(value) for value in re.findall(r"cue-(\d+)", prompt)]
+        selected = [segment for segment in segments if int(segment["index"]) in cue_ids]
+        calls.append([int(segment["index"]) for segment in selected])
+        if len(selected) == 24 and fail_first_timeout:
+            fail_first_timeout = False
+            raise TimeoutError("timed out after 600s")
+        return json.dumps(selected, ensure_ascii=False)
+
+    monkeypatch.setattr(service, "_call", fake_call)
+    checkpoint_file = tmp_path / "polish.checkpoint.json"
+    polished = await service.polish_with_context_parallel(
+        _srt(segments),
+        {},
+        chunk_size=64,
+        overlap=16,
+        checkpoint_path=checkpoint_file,
+    )
+
+    # First chunk capped to 24 segments; initial 24-seg timed out and split into two 12-seg halves;
+    # second chunk started at 24 - 4 = 20 (indices 21..30).
+    assert [len(batch) for batch in calls] == [24, 10, 12, 12]
+    assert not checkpoint_file.exists()
+    assert [segment["text"] for segment in service._parse_srt(polished)] == [
+        segment["text"] for segment in segments
+    ]
+
+
+@pytest.mark.asyncio
+async def test_polish_resumes_from_disk_checkpoint_without_recomputing_completed_chunks(tmp_path, monkeypatch):
+    service = LLMService()
+    segments = [_srt_segment(index, f"cue-{index}") for index in range(1, 13)]
+    seen_calls: list[list[int]] = []
+    checkpoint_file = tmp_path / "polish.checkpoint.json"
+
+    monkeypatch.setattr(service, "_effective_provider", lambda _override="": "deepseek")
+    monkeypatch.setattr(
+        llm_module,
+        "get_runtime_settings",
+        lambda: SimpleNamespace(llm_polish_concurrency=1),
+    )
+
+    fail_second = True
+
+    async def fake_call(prompt, **_kwargs):
+        cue_ids = [int(value) for value in re.findall(r"cue-(\d+)", prompt)]
+        selected = [segment for segment in segments if int(segment["index"]) in cue_ids]
+        seen_calls.append([int(segment["index"]) for segment in selected])
+        if fail_second and 7 in cue_ids:
+            raise ConnectionError("network drop")
+        return json.dumps(selected, ensure_ascii=False)
+
+    monkeypatch.setattr(service, "_call", fake_call)
+    with pytest.raises(RuntimeError, match="重试失败"):
+        await service.polish_with_context_parallel(
+            _srt(segments),
+            {},
+            chunk_size=6,
+            overlap=0,
+            checkpoint_path=checkpoint_file,
+        )
+
+    assert checkpoint_file.is_file()
+    saved = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+    assert "0" in saved["chunks"]
+
+    fail_second = False
+    seen_calls.clear()
+    resumed = await service.polish_with_context_parallel(
+        _srt(segments),
+        {},
+        chunk_size=6,
+        overlap=0,
+        checkpoint_path=checkpoint_file,
+    )
+    assert seen_calls == [list(range(7, 13))]
+    assert not checkpoint_file.exists()
+    assert [segment["text"] for segment in service._parse_srt(resumed)] == [
+        segment["text"] for segment in segments
+    ]

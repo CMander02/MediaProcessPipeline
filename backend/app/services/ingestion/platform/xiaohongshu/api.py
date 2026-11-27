@@ -713,8 +713,9 @@ def _looks_like_image_url(url: str) -> bool:
     lower = url.lower()
     return (
         "xhscdn.com" in lower
+        or "rednotecdn.com" in lower
         or "xiaohongshu.com" in lower and ("/spectrum/" in lower or "/ci/" in lower or "/notes/" in lower)
-        or any(marker in lower for marker in (".jpg", ".jpeg", ".png", ".webp", "image"))
+        or any(marker in lower for marker in (".jpg", ".jpeg", ".png", ".webp", ".avif", ".heic", "image"))
     )
 
 
@@ -867,7 +868,7 @@ def _download_failed_images_with_browser(
                             "via": "playwright_request",
                         })
                         if response.is_success:
-                            body = response.content
+                            body = _prepare_downloaded_image_bytes(response.content)
                             if body:
                                 dest.write_bytes(body)
                                 records.append({
@@ -1064,6 +1065,84 @@ def _fetch_text(url: str, referer: str) -> str:
         return raw.decode(encoding, errors="replace")
 
 
+def _sanitize_js_literal(raw: str) -> str:
+    """Replace JS-only tokens outside JSON string literals (undefined, NaN, Infinity, new Set/Map)."""
+    out: list[str] = []
+    n = len(raw)
+    i = 0
+    closing_parens_to_drop: list[int] = []
+    paren_depth = 0
+    while i < n:
+        ch = raw[i]
+        if ch in ('"', "'"):
+            quote_char = ch
+            # Preserve string content as double-quoted if already double-quoted
+            out.append(ch)
+            i += 1
+            while i < n:
+                c = raw[i]
+                out.append(c)
+                i += 1
+                if c == "\\" and i < n:
+                    out.append(raw[i])
+                    i += 1
+                elif c == quote_char:
+                    break
+            continue
+        if raw.startswith("new", i) and (i == 0 or not (raw[i - 1].isalnum() or raw[i - 1] == "_")):
+            rest = raw[i:]
+            m_set = re.match(r"new\s+Set\s*\(\s*\)", rest)
+            if m_set:
+                out.append("[]")
+                i += m_set.end()
+                continue
+            m_set_open = re.match(r"new\s+Set\s*\(", rest)
+            if m_set_open:
+                paren_depth += 1
+                closing_parens_to_drop.append(paren_depth)
+                i += m_set_open.end()
+                continue
+            m_map_empty = re.match(r"new\s+Map\s*\(\s*\)", rest)
+            if m_map_empty:
+                out.append("{}")
+                i += m_map_empty.end()
+                continue
+        if ch == "(":
+            paren_depth += 1
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ")":
+            if closing_parens_to_drop and closing_parens_to_drop[-1] == paren_depth:
+                closing_parens_to_drop.pop()
+                paren_depth -= 1
+                i += 1
+                continue
+            paren_depth = max(0, paren_depth - 1)
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "-" and raw.startswith("-Infinity", i) and (i + 9 == n or not (raw[i + 9].isalnum() or raw[i + 9] == "_")):
+            out.append("null")
+            i += 9
+            continue
+        if ch.isalpha() or ch == "_":
+            prev_ok = i == 0 or not (raw[i - 1].isalnum() or raw[i - 1] == "_")
+            if prev_ok:
+                matched_token = None
+                for token in ("undefined", "Infinity", "NaN"):
+                    if raw.startswith(token, i) and (i + len(token) == n or not (raw[i + len(token)].isalnum() or raw[i + len(token)] == "_")):
+                        matched_token = token
+                        break
+                if matched_token is not None:
+                    out.append("null")
+                    i += len(matched_token)
+                    continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _extract_initial_state(page_html: str) -> dict[str, Any]:
     match = re.search(
         r"window\.__INITIAL_STATE__\s*=\s*({[\s\S]*?})(?:</script>|;|$)",
@@ -1071,8 +1150,7 @@ def _extract_initial_state(page_html: str) -> dict[str, Any]:
     )
     if not match:
         raise RuntimeError("Xiaohongshu initial state not found")
-    raw = html.unescape(match.group(1))
-    raw = raw.replace(":undefined", ":null")
+    raw = _sanitize_js_literal(html.unescape(match.group(1)))
     try:
         state = json.loads(raw)
     except json.JSONDecodeError as e:
@@ -1212,7 +1290,7 @@ def _image_original_url_variants(value: str) -> list[str]:
     except Exception:
         return [value]
     path_parts = [s for s in parsed.path.split("/") if s]
-    if "xhscdn.com" in parsed.netloc:
+    if "xhscdn.com" in parsed.netloc or "rednotecdn.com" in parsed.netloc:
         subdirs_and_id = path_parts[2:] if len(path_parts) > 2 else path_parts
     elif parsed.netloc == "ci.xiaohongshu.com":
         subdirs_and_id = path_parts
@@ -1224,8 +1302,10 @@ def _image_original_url_variants(value: str) -> list[str]:
     subdirs_and_id[-1] = image_id
     path = "/".join(subdirs_and_id)
     variants = [f"https://{host}/{path}" for host in _IMAGE_ORIGINAL_HOSTS]
-    if parsed.netloc == "ci.xiaohongshu.com":
+    if parsed.netloc == "ci.xiaohongshu.com" or "rednotecdn.com" in parsed.netloc:
         canonical = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        if parsed.query:
+            canonical = f"{canonical}?{parsed.query}"
         if canonical not in variants:
             variants.insert(0, canonical)
     return variants
@@ -1515,6 +1595,20 @@ def _sleep_with_cancel(seconds: float, should_cancel: Callable[[], bool] | None)
         time.sleep(min(remaining, 0.2))
 
 
+def _prepare_downloaded_image_bytes(data: bytes, *, source_path: Path | None = None) -> bytes | None:
+    from app.services.archiving.thumbnails import (
+        detect_image_format,
+        is_probably_error_payload,
+        transcode_heic_to_jpeg_bytes,
+    )
+
+    if is_probably_error_payload(data):
+        return None
+    if detect_image_format(data[:64]) == "heic":
+        return transcode_heic_to_jpeg_bytes(data, source_path=source_path)
+    return data
+
+
 def _download_file(
     url: str,
     dest: Path,
@@ -1524,6 +1618,8 @@ def _download_file(
     *,
     should_cancel: Callable[[], bool] | None = None,
 ) -> None:
+    from app.services.archiving.thumbnails import detect_image_format, is_probably_error_payload, transcode_heic_to_jpeg_bytes
+
     last_error: Exception | None = None
     part = dest.with_name(dest.name + ".part")
     for attempt in range(1, attempts + 1):
@@ -1546,6 +1642,16 @@ def _download_file(
                         downloaded += len(chunk)
             if total and downloaded < total:
                 raise RuntimeError(f"Incomplete download: {downloaded}/{total} bytes")
+            if downloaded <= 0:
+                raise RuntimeError("Downloaded image file is empty (0 bytes)")
+            with part.open("rb") as probe:
+                head = probe.read(512)
+            if is_probably_error_payload(head):
+                raise RuntimeError("Downloaded response is not an image payload")
+            if detect_image_format(head[:64]) == "heic":
+                jpeg_bytes = transcode_heic_to_jpeg_bytes(part.read_bytes(), source_path=part)
+                part.write_bytes(jpeg_bytes)
+                downloaded = len(jpeg_bytes)
             part.replace(dest)
             logger.info(f"Downloaded Xiaohongshu file: {downloaded:,} bytes -> {dest.name}")
             return

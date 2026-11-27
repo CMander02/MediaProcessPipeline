@@ -49,7 +49,12 @@ def test_source_context_extracts_timeline_entities_and_speaker_constraint():
         "孟繁青": "guest",
     }
     assert context.speaker_count_hint.exact == 2
-    assert speaker_constraints(context) == (None, None, None)
+    assert speaker_constraints(context) == (None, 1, 2)
+    assert speaker_constraints(context, {"num_speakers": 3}) == (3, 3, 3)
+    low_confidence = context.model_copy(
+        update={"speaker_count_hint": context.speaker_count_hint.model_copy(update={"confidence": 0.4})}
+    )
+    assert speaker_constraints(low_confidence) == (None, None, None)
     assert {"Evolvent AI", "RSIBench-Data", "Kimi K2.5", "曲凯", "孟繁青"} <= set(
         context.asr_hotwords
     )
